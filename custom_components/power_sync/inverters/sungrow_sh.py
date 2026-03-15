@@ -119,6 +119,13 @@ class SungrowSHController(InverterController):
     # Backup Reserve
     REG_BACKUP_RESERVE = 13099         # 13100 - Reserved SOC for backup (% * 10)
 
+    # Forced Charge/Discharge Power
+    REG_CHARGE_DISCHARGE_POWER = 13051  # 13052 - Forced charge/discharge power (W)
+
+    # Max Battery Charge/Discharge Power (needed on some models before force charge works)
+    REG_MAX_CHARGE_POWER = 33046       # 33047 - Max battery charge power (W)
+    REG_MAX_DISCHARGE_POWER = 33047    # 33048 - Max battery discharge power (W)
+
     # Fallback battery voltage for kW to Amp conversion (used until real voltage is read)
     BATTERY_VOLTAGE_FALLBACK = 48      # Typical LFP battery pack voltage
 
@@ -146,6 +153,7 @@ class SungrowSHController(InverterController):
         self._battery_voltage: float = self.BATTERY_VOLTAGE_FALLBACK
         self._original_ems_mode: Optional[int] = None
         self._in_forced_stop: bool = False
+        self._ems_registers_supported: bool = True  # Set False if 13049 reads fail (SH10RS+SBH)
 
     async def connect(self) -> bool:
         """Connect to the Sungrow SH inverter via Modbus TCP."""
@@ -628,12 +636,12 @@ class SungrowSHController(InverterController):
 
     # ===== Battery Control Methods (for use as battery system) =====
 
-    async def _write_forced_mode(self, cmd: int, label: str) -> bool:
+    async def _write_forced_mode(self, cmd: int, label: str, power_w: int = 5000) -> bool:
         """Set EMS to forced mode with a charge/discharge command and verify.
 
-        Writes REG_EMS_MODE and REG_CHARGE_CMD, then reads back both registers
-        to confirm the inverter accepted them. Retries once on verification
-        failure (covers silent Modbus collisions).
+        Writes charge/discharge power first (required on some models like SH10RS
+        to avoid exception code 4), then EMS mode and command. Retries once on
+        verification failure (covers silent Modbus collisions).
         """
         max_attempts = 2
         for attempt in range(1, max_attempts + 1):
@@ -646,6 +654,16 @@ class SungrowSHController(InverterController):
                     ems_raw = await self._read_register(self.REG_EMS_MODE, 1)
                     if ems_raw:
                         self._original_ems_mode = ems_raw[0]
+                    else:
+                        # Register read failed (SH10RS+SBH) — assume self-consumption
+                        self._original_ems_mode = self.EMS_SELF_CONSUMPTION
+                        self._ems_registers_supported = False
+                        _LOGGER.info("Sungrow EMS mode read failed — assuming self-consumption (SH-RS model?)")
+
+                # Set charge/discharge power first (required on SH-RS / SBH models)
+                power_ok = await self._write_register(self.REG_CHARGE_DISCHARGE_POWER, power_w)
+                if not power_ok:
+                    _LOGGER.debug("Sungrow %s: charge power write to 13051 failed, trying without", label)
 
                 success = await self._write_register(self.REG_EMS_MODE, self.EMS_FORCED)
                 if not success:
@@ -664,24 +682,33 @@ class SungrowSHController(InverterController):
                     return False
 
                 # Verify: read back EMS mode to confirm inverter accepted it
-                await asyncio.sleep(0.5)
-                ems_check = await self._read_register(self.REG_EMS_MODE, 1)
-                if ems_check and ems_check[0] == self.EMS_FORCED:
+                # Skip verification if holding register reads aren't supported
+                if self._ems_registers_supported:
+                    await asyncio.sleep(0.5)
+                    ems_check = await self._read_register(self.REG_EMS_MODE, 1)
+                    if ems_check and ems_check[0] == self.EMS_FORCED:
+                        _LOGGER.info(
+                            "Sungrow SH at %s now in %s mode%s",
+                            self.host, label,
+                            "" if attempt == 1 else f" (attempt {attempt})",
+                        )
+                        return True
+                    else:
+                        _LOGGER.warning(
+                            "Sungrow %s verify failed: EMS mode=%s (attempt %d/%d)",
+                            label, ems_check, attempt, max_attempts,
+                        )
+                        if attempt < max_attempts:
+                            await asyncio.sleep(1)
+                            continue
+                        return False
+                else:
+                    # Can't verify — assume success if writes didn't fail
                     _LOGGER.info(
-                        "Sungrow SH at %s now in %s mode%s",
+                        "Sungrow SH at %s %s mode set (unverified — EMS register reads not supported)",
                         self.host, label,
-                        "" if attempt == 1 else f" (attempt {attempt})",
                     )
                     return True
-                else:
-                    _LOGGER.warning(
-                        "Sungrow %s verify failed: EMS mode=%s (attempt %d/%d)",
-                        label, ems_check, attempt, max_attempts,
-                    )
-                    if attempt < max_attempts:
-                        await asyncio.sleep(1)
-                        continue
-                    return False
 
             except Exception as e:
                 _LOGGER.error("Error setting %s: %s", label, e)
@@ -717,15 +744,29 @@ class SungrowSHController(InverterController):
             if not await self.connect():
                 return False
 
-            # Stop forced mode
-            success = await self._write_register(self.REG_CHARGE_CMD, self.CMD_STOP)
-            if not success:
-                _LOGGER.warning("Failed to send stop command")
+            # Stop forced mode first
+            stop_ok = await self._write_register(self.REG_CHARGE_CMD, self.CMD_STOP)
+            if not stop_ok:
+                _LOGGER.warning("Failed to send stop command to REG_CHARGE_CMD")
+
+            # Clear charge/discharge power (helps on SH-RS models)
+            await self._write_register(self.REG_CHARGE_DISCHARGE_POWER, 0)
 
             # Restore original EMS mode
-            success = await self._write_register(self.REG_EMS_MODE, target_mode)
-            if not success:
+            ems_ok = await self._write_register(self.REG_EMS_MODE, target_mode)
+            if not ems_ok:
                 _LOGGER.error("Failed to set EMS to %s", mode_name)
+                # On SH-RS models where writes fail, the stop command alone
+                # may be enough — the inverter returns to self-consumption
+                # when forced mode has no active command
+                if not self._ems_registers_supported:
+                    _LOGGER.info(
+                        "EMS mode write unsupported — stop command sent, "
+                        "inverter should return to self-consumption"
+                    )
+                    self._original_ems_mode = None
+                    self._in_forced_stop = False
+                    return True
                 return False
 
             self._original_ems_mode = None
@@ -1022,35 +1063,46 @@ class SungrowSHController(InverterController):
             if pv_dc and len(pv_dc) >= 2:
                 data["pv_power"] = self._to_unsigned32(pv_dc[0], pv_dc[1])
 
-            # Read EMS mode
-            ems_mode = await self._read_register(self.REG_EMS_MODE, 1)
-            if ems_mode:
-                data["ems_mode"] = ems_mode[0]
-                data["ems_mode_name"] = {
-                    0: "self_consumption",
-                    2: "forced",
-                    3: "external_ems",
-                    4: "vpp",
-                }.get(ems_mode[0], "unknown")
+            # Read EMS mode (holding registers — may not be supported on SH-RS + SBH)
+            if self._ems_registers_supported:
+                ems_mode = await self._read_register(self.REG_EMS_MODE, 1)
+                if ems_mode:
+                    data["ems_mode"] = ems_mode[0]
+                    data["ems_mode_name"] = {
+                        0: "self_consumption",
+                        2: "forced",
+                        3: "external_ems",
+                        4: "vpp",
+                    }.get(ems_mode[0], "unknown")
+                else:
+                    # Mark as unsupported to avoid repeated failed reads
+                    self._ems_registers_supported = False
+                    _LOGGER.info(
+                        "Sungrow EMS register 13049 not readable — disabling EMS register reads "
+                        "(SH-RS/SBH model, writes may still work)"
+                    )
 
-            # Read charge command state
-            charge_cmd = await self._read_register(self.REG_CHARGE_CMD, 1)
-            if charge_cmd:
-                data["charge_cmd"] = charge_cmd[0]
+                # Read charge command state
+                if self._ems_registers_supported:
+                    charge_cmd = await self._read_register(self.REG_CHARGE_CMD, 1)
+                    if charge_cmd:
+                        data["charge_cmd"] = charge_cmd[0]
 
-            # Read min/max SOC
-            min_soc = await self._read_register(self.REG_MIN_SOC, 1)
-            if min_soc:
-                data["min_soc"] = round(min_soc[0] * 0.1, 1)
+                # Read min/max SOC
+                if self._ems_registers_supported:
+                    min_soc = await self._read_register(self.REG_MIN_SOC, 1)
+                    if min_soc:
+                        data["min_soc"] = round(min_soc[0] * 0.1, 1)
 
-            max_soc = await self._read_register(self.REG_MAX_SOC, 1)
-            if max_soc:
-                data["max_soc"] = round(max_soc[0] * 0.1, 1)
+                    max_soc = await self._read_register(self.REG_MAX_SOC, 1)
+                    if max_soc:
+                        data["max_soc"] = round(max_soc[0] * 0.1, 1)
 
-            # Read backup reserve
-            backup_reserve = await self._read_register(self.REG_BACKUP_RESERVE, 1)
-            if backup_reserve:
-                data["backup_reserve"] = round(backup_reserve[0] * 0.1, 1)
+            # Read backup reserve (holding register — may fail on SH-RS)
+            if self._ems_registers_supported:
+                backup_reserve = await self._read_register(self.REG_BACKUP_RESERVE, 1)
+                if backup_reserve:
+                    data["backup_reserve"] = round(backup_reserve[0] * 0.1, 1)
 
             # Read charge/discharge current limits and convert to kW using actual voltage
             max_charge_current = await self._read_register(self.REG_MAX_CHARGE_CURRENT, 1)
