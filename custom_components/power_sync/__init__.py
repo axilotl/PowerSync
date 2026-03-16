@@ -37,11 +37,6 @@ from .const import (
     CONF_AUTO_SYNC_ENABLED,
     CONF_TESLEMETRY_API_TOKEN,
     CONF_TESLA_ENERGY_SITE_ID,
-    CONF_TESLA_ENERGY_SITE_ID_2,
-    CONF_TESLA_API_TOKEN_2,
-    CONF_TESLA_BATTERY_CAPACITY_1,
-    CONF_TESLA_BATTERY_CAPACITY_2,
-    DEFAULT_TESLA_BATTERY_CAPACITY,
     CONF_DEMAND_CHARGE_ENABLED,
     CONF_DEMAND_CHARGE_RATE,
     CONF_DEMAND_CHARGE_START_TIME,
@@ -307,7 +302,6 @@ from .coordinator import (
     SigenergyEnergyCoordinator,
     SungrowEnergyCoordinator,
     DualSungrowCoordinator,
-    DualTeslaCoordinator,
     FoxESSEnergyCoordinator,
     GoodWeEnergyCoordinator,
     DemandChargeCoordinator,
@@ -2420,28 +2414,13 @@ def get_tesla_api_token(hass: HomeAssistant, entry: ConfigEntry) -> tuple[str | 
 def _get_tesla_site_configs(
     hass: HomeAssistant, entry: ConfigEntry
 ) -> list[tuple[str, str, str]]:
-    """Return list of (site_id, token, provider) for all Tesla gateways.
-
-    For dual Powerwall setups, returns configs for both primary and secondary
-    gateways. The secondary uses its own token if configured (different Tesla
-    account), otherwise shares the primary token.
-    """
+    """Return list of (site_id, token, provider) for the Tesla gateway."""
     configs = []
     primary_id = entry.data.get(CONF_TESLA_ENERGY_SITE_ID)
     if primary_id:
         token, provider = get_tesla_api_token(hass, entry)
         if token:
             configs.append((primary_id, token, provider))
-
-    secondary_id = entry.data.get(CONF_TESLA_ENERGY_SITE_ID_2)
-    if secondary_id:
-        # Use secondary token if configured, else share primary token
-        token2 = entry.data.get(CONF_TESLA_API_TOKEN_2)
-        if token2:
-            configs.append((secondary_id, token2, TESLA_PROVIDER_TESLEMETRY))
-        elif configs:
-            # Share primary token/provider
-            configs.append((secondary_id, configs[0][1], configs[0][2]))
     return configs
 
 
@@ -11335,46 +11314,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await amber_coordinator.async_config_entry_first_refresh()
     if tesla_coordinator:
         await tesla_coordinator.async_config_entry_first_refresh()
-
-        # Initialize secondary Tesla and wrap in DualTeslaCoordinator
-        secondary_site_id = entry.data.get(CONF_TESLA_ENERGY_SITE_ID_2)
-        if secondary_site_id:
-            try:
-                # Determine token for secondary gateway
-                token2 = entry.data.get(CONF_TESLA_API_TOKEN_2)
-                if token2:
-                    sec_token = token2
-                    sec_provider = TESLA_PROVIDER_TESLEMETRY
-                    sec_token_getter = None
-                else:
-                    sec_token = tesla_api_token
-                    sec_provider = tesla_api_provider
-                    sec_token_getter = token_getter
-
-                tesla_coordinator_2 = TeslaEnergyCoordinator(
-                    hass,
-                    secondary_site_id,
-                    sec_token,
-                    api_provider=sec_provider,
-                    token_getter=sec_token_getter,
-                    entry_id=entry.entry_id,
-                )
-                await tesla_coordinator_2.async_config_entry_first_refresh()
-                _LOGGER.info("Secondary Tesla coordinator initialized for site %s", secondary_site_id)
-
-                cap1 = entry.data.get(CONF_TESLA_BATTERY_CAPACITY_1, DEFAULT_TESLA_BATTERY_CAPACITY)
-                cap2 = entry.data.get(CONF_TESLA_BATTERY_CAPACITY_2, DEFAULT_TESLA_BATTERY_CAPACITY)
-                tesla_coordinator = DualTeslaCoordinator(
-                    hass, tesla_coordinator, tesla_coordinator_2,
-                    cap1_kwh=cap1, cap2_kwh=cap2,
-                )
-                await tesla_coordinator.async_config_entry_first_refresh()
-                _LOGGER.info("Dual Tesla coordinator active (%.1f kWh + %.1f kWh)", cap1, cap2)
-            except Exception as e:
-                _LOGGER.warning(
-                    "Secondary Tesla coordinator failed to initialize: %s — "
-                    "falling back to single-gateway mode", e
-                )
     if sigenergy_coordinator:
         try:
             await sigenergy_coordinator.async_config_entry_first_refresh()
@@ -13846,7 +13785,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.error("No Tesla API token available for TOU sync")
             return
 
-        # Send to all Tesla gateways (primary + optional secondary)
+        # Send to Tesla gateway
         site_configs = _get_tesla_site_configs(hass, entry)
         if not site_configs:
             _LOGGER.error("No Tesla site configs available for TOU sync")
@@ -13864,11 +13803,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             if not site_success:
                 _LOGGER.error("Failed to sync TOU to Tesla site %s", site_id)
                 success = False
-            elif len(site_configs) > 1:
-                await asyncio.sleep(1)  # Rate limit between gateways
 
         if success:
-            _LOGGER.info(f"TOU schedule synced to {len(site_configs)} gateway(s) ({sync_mode})")
+            _LOGGER.info(f"TOU schedule synced to Tesla gateway ({sync_mode})")
 
             # Alpha: Force mode toggle for faster Powerwall response
             # Only toggle on settled prices, not forecast (reduces unnecessary toggles)
@@ -15300,7 +15237,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 return
 
         try:
-            # Get all Tesla gateway configs (primary + optional secondary)
+            # Get Tesla gateway config
             site_configs = _get_tesla_site_configs(hass, entry)
             if not site_configs:
                 force_discharge_state["active"] = False
@@ -15995,7 +15932,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 return
 
         try:
-            # Get all Tesla gateway configs (primary + optional secondary)
+            # Get Tesla gateway config
             site_configs = _get_tesla_site_configs(hass, entry)
             if not site_configs:
                 force_charge_state["active"] = False
@@ -16600,7 +16537,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             return
 
         try:
-            # Get all Tesla gateway configs (primary + optional secondary)
+            # Get Tesla gateway config
             site_configs = _get_tesla_site_configs(hass, entry)
             if not site_configs:
                 _LOGGER.error("Missing Tesla site ID or token for restore normal")
@@ -16647,7 +16584,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             elif saved_tariff:
                 # Non-dynamic users - restore saved tariffs per site
                 _LOGGER.info("Restoring saved tariffs...")
-                # Check for per-site saved states (dual mode) or fall back to global saved tariff
+                # Check for per-site saved states or fall back to global saved tariff
                 discharge_saved = force_discharge_state.get("saved_states") or {}
                 charge_saved = force_charge_state.get("saved_states") or {}
                 for site_id, current_token, provider in site_configs:
