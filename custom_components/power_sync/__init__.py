@@ -19461,20 +19461,21 @@ class OptimizationSettingsView(HomeAssistantView):
             settings = await request.json()
             changes = []
 
-            # Find the optimization coordinator
+            # Find the config entry and optimization coordinator
             opt_coordinator = None
             config_entry = None
             entry_id = None
-            for eid, data in self._hass.data.get(DOMAIN, {}).items():
-                if isinstance(data, dict):
-                    if "optimization_coordinator" in data:
-                        opt_coordinator = data["optimization_coordinator"]
-                    # Get the config entry for this domain
-                    for entry in self._hass.config_entries.async_entries(DOMAIN):
-                        if entry.entry_id == eid:
-                            config_entry = entry
-                            entry_id = eid
-                            break
+
+            # First, find the config entry directly
+            entries = self._hass.config_entries.async_entries(DOMAIN)
+            if entries:
+                config_entry = entries[0]
+                entry_id = config_entry.entry_id
+
+                # Then look for optimizer in hass.data
+                entry_data = self._hass.data.get(DOMAIN, {}).get(entry_id)
+                if isinstance(entry_data, dict):
+                    opt_coordinator = entry_data.get("optimization_coordinator")
 
             # If coordinator exists, use it
             if opt_coordinator:

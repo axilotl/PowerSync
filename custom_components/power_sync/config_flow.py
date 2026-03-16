@@ -3892,6 +3892,12 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
 
             # Update config entry data with new Tesla provider and optimization provider
             new_data = dict(self.config_entry.data)
+
+            # Update Teslemetry token if provided
+            new_token = user_input.get("update_teslemetry_token", "").strip()
+            if new_token:
+                new_data[CONF_TESLEMETRY_API_TOKEN] = new_token
+                _LOGGER.info("Teslemetry API token updated via options flow")
             if self._tesla_provider != current_tesla_provider:
                 new_data[CONF_TESLA_API_PROVIDER] = self._tesla_provider
             new_data[CONF_OPTIMIZATION_PROVIDER] = optimization_provider
@@ -3999,8 +4005,15 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                         CONF_TESLA_API_TOKEN_2,
                         default="",
                     ): str,
+                    vol.Optional(
+                        "update_teslemetry_token",
+                        default="",
+                    ): str,
                 }
             ),
+            description_placeholders={
+                "teslemetry_hint": "Paste a new Teslemetry API token to update it (leave blank to keep current)",
+            },
         )
 
     async def async_step_init_sigenergy(
@@ -4606,6 +4619,16 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
         is_tesla = battery_system == BATTERY_SYSTEM_TESLA
 
         if user_input is not None:
+            # Update Amber API token if provided
+            new_amber_token = user_input.pop("update_amber_token", "").strip()
+            if new_amber_token:
+                new_data = dict(self.config_entry.data)
+                new_data[CONF_AMBER_API_TOKEN] = new_amber_token
+                self.hass.config_entries.async_update_entry(
+                    self.config_entry, data=new_data
+                )
+                _LOGGER.info("Amber API token updated via options flow")
+
             # Store amber options temporarily
             self._amber_options = user_input
             self._amber_options[CONF_ELECTRICITY_PROVIDER] = "amber"
@@ -4619,6 +4642,10 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
 
         # Build schema dict - conditionally include force mode toggle for Tesla only
         schema_dict = {
+            vol.Optional(
+                "update_amber_token",
+                default="",
+            ): str,
             vol.Optional(
                 CONF_AUTO_SYNC_ENABLED,
                 default=self._get_option(CONF_AUTO_SYNC_ENABLED, True),

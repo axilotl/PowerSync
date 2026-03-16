@@ -588,7 +588,8 @@
           "tesla_energy_site_id_2": "Dual PW2+PW3: Secondary Site ID (optional)",
           "tesla_battery_capacity_1": "Primary Battery Capacity (kWh)",
           "tesla_battery_capacity_2": "Secondary Battery Capacity (kWh)",
-          "tesla_api_token_2": "Secondary API Token (different account only)"
+          "tesla_api_token_2": "Secondary API Token (different account only)",
+          "update_teslemetry_token": "Update Teslemetry API Token"
         },
         "data_description": {
           "optimization_provider": "Choose between Tesla's built-in optimization or Smart Optimization (Built-in LP)",
@@ -596,7 +597,8 @@
           "tesla_energy_site_id_2": "Only for a separate PW2 + PW3 on the same circuit. Do NOT use this for multiple PW3 units in a leader/follower setup — Tesla manages those as a single system. Leave blank for single Powerwall.",
           "tesla_battery_capacity_1": "Battery capacity of your primary Powerwall in kWh (default 13.5)",
           "tesla_battery_capacity_2": "Battery capacity of your secondary Powerwall in kWh (default 13.5)",
-          "tesla_api_token_2": "Only needed if the secondary Powerwall is on a different Tesla account"
+          "tesla_api_token_2": "Only needed if the secondary Powerwall is on a different Tesla account",
+          "update_teslemetry_token": "Paste a new token from teslemetry.com to update it. Leave blank to keep current token."
         },
         "submit_button": "Next"
       },
@@ -718,6 +720,7 @@
         "title": "Amber Electric Options",
         "description": "Configure Amber Electric TOU sync, export boost, and pricing options.",
         "data": {
+          "update_amber_token": "Update Amber API Token",
           "auto_sync_enabled": "Enable automatic TOU schedule syncing",
           "amber_forecast_type": "Amber Forecast Type",
           "battery_curtailment_enabled": "Enable DC Solar Curtailment (stop export at negative prices)",
