@@ -2983,7 +2983,7 @@ async def _dynamic_ev_update(
     battery_power_kw = (live_status.get("battery_power", 0) or 0) / 1000
     grid_power_kw = (live_status.get("grid_power", 0) or 0) / 1000
     current_ev_power_kw = (current_amps * voltage * phases) / 1000
-    battery_soc = live_status.get("percentage_charged", 0) or 0
+    battery_soc = live_status.get("battery_soc", 0) or 0
 
     # Target battery power in same convention (negative = charging)
     # If target_battery_charge_kw = 5, we want battery_power = -5 kW
