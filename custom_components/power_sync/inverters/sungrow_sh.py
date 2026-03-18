@@ -861,6 +861,19 @@ class SungrowSHController(InverterController):
             _LOGGER.error(f"Error setting backup reserve: {e}")
             return False
 
+    async def get_backup_reserve(self) -> Optional[int]:
+        """Read current minimum SOC (backup reserve) percentage."""
+        try:
+            if not await self.connect():
+                return None
+            result = await self._read_register(self.REG_MIN_SOC, 1)
+            if result:
+                return round(result[0] * 0.1)
+            return None
+        except Exception as e:
+            _LOGGER.debug(f"Error reading min SOC: {e}")
+            return None
+
     async def set_min_soc(self, percent: int) -> bool:
         """Set minimum SOC (backup reserve via MIN_SOC register).
 

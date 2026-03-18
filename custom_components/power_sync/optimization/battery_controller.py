@@ -178,16 +178,26 @@ class BatteryControllerWrapper:
         """
         Read current battery backup reserve percentage.
 
-        Reads from the energy coordinator's underlying controller (Modbus/API).
+        Reads from the energy coordinator's underlying controller (Modbus/API)
+        or from the Tesla coordinator's cached site_info.
         Returns None if not available.
         """
         try:
             from ..const import DOMAIN
             for entry_id, entry_data in self.hass.data.get(DOMAIN, {}).items():
+                if not isinstance(entry_data, dict):
+                    continue
+                # Modbus-based batteries: read from controller
                 for coord_key in ("sigenergy_coordinator", "sungrow_coordinator", "foxess_coordinator", "goodwe_coordinator"):
-                    coord = entry_data.get(coord_key) if isinstance(entry_data, dict) else None
+                    coord = entry_data.get(coord_key)
                     if coord and hasattr(coord, "_controller") and hasattr(coord._controller, "get_backup_reserve"):
                         return await coord._controller.get_backup_reserve()
+                # Tesla: read from cached site_info (refreshed every 6 hours)
+                tesla_coord = entry_data.get("coordinator")
+                if tesla_coord and hasattr(tesla_coord, "_site_info_cache") and tesla_coord._site_info_cache:
+                    reserve = tesla_coord._site_info_cache.get("backup_reserve_percent")
+                    if reserve is not None:
+                        return int(reserve)
             return None
         except Exception as e:
             _LOGGER.debug(f"get_backup_reserve failed: {e}")
