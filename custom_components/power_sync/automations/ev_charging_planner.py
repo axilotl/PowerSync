@@ -5116,6 +5116,30 @@ class PriceLevelChargingExecutor:
                 if time.time() < zaptec_state.stop_cooldown_until:
                     _LOGGER.debug("Zaptec stop in cooldown (%.0fs remaining)", zaptec_state.stop_cooldown_until - time.time())
                     return False
+
+                # Skip stop command if charger is already not charging
+                # (e.g. connected_waiting after set_installation_current failed to start)
+                cached_state = entry_data.get("zaptec_cached_state", {})
+                charger_mode = cached_state.get("charger_operation_mode", "")
+                if charger_mode in ("connected_waiting", "disconnected", ""):
+                    _LOGGER.info(
+                        f"Zaptec already in {charger_mode or 'unknown'} mode, "
+                        f"skipping stop command — updating state only"
+                    )
+                    if vehicle_vin:
+                        state = self._get_or_create_vehicle_state(vehicle_vin)
+                        state.is_charging = False
+                        state.charging_mode = ""
+                        state.last_decision = "stopped"
+                        state.last_decision_reason = reason
+                    else:
+                        self._state.is_charging = False
+                        self._state.charging_mode = ""
+                        self._state.last_decision = "stopped"
+                        self._state.last_decision_reason = reason
+                    zaptec_state.managed_by_powersync = True
+                    return True
+
                 try:
                     await client.stop_charging(charger_id)
                     if vehicle_vin:
@@ -5444,9 +5468,9 @@ class PriceLevelChargingExecutor:
                     return results
 
                 if should_charge and not vehicle_state.is_charging:
-                    await self._start_charging(mode, reason)
+                    await self._start_charging(mode, reason, vehicle_vin="zaptec_standalone")
                 elif not should_charge and vehicle_state.is_charging:
-                    await self._stop_charging(reason)
+                    await self._stop_charging(reason, vehicle_vin="zaptec_standalone")
                 else:
                     vehicle_state.last_decision = "charging" if vehicle_state.is_charging else "waiting"
                     vehicle_state.last_decision_reason = reason
@@ -6001,6 +6025,19 @@ class EVChargingModeCoordinator:
             client = entry_data.get("zaptec_client")
             charger_id = opts.get(CONF_ZAPTEC_CHARGER_ID, "")
             if client and charger_id:
+                # Skip stop command if charger is already not charging
+                cached_state = entry_data.get("zaptec_cached_state", {})
+                charger_mode = cached_state.get("charger_operation_mode", "")
+                if charger_mode in ("connected_waiting", "disconnected", ""):
+                    _LOGGER.info(
+                        f"EV Coordinator: Zaptec already in {charger_mode or 'unknown'} mode, "
+                        f"skipping stop command"
+                    )
+                    self._is_charging = False
+                    self._active_modes = []
+                    self._last_reason = reason
+                    return True
+
                 try:
                     await client.stop_charging(charger_id)
                     self._is_charging = False
