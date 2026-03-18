@@ -1000,6 +1000,34 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 # Never hold below the configured optimizer backup reserve
                 configured_idle_floor = int(self._config.backup_reserve * 100)
 
+                # At or below the floor, there's nothing to hold — switch to
+                # self_consumption so the battery naturally serves home load
+                # (avoiding expensive grid import).  The hardware min_soc
+                # prevents over-discharge below the user's physical reserve.
+                if soc_pct <= configured_idle_floor:
+                    _LOGGER.info(
+                        "Optimizer: SOC %d%% at/below floor %d%% — using "
+                        "self_consumption instead of IDLE (nothing to hold)",
+                        soc_pct, configured_idle_floor,
+                    )
+                    effective_action = "self_consumption"
+                    # Restore from IDLE hold mode if we were in it
+                    if self._last_executed_action == "idle":
+                        if (
+                            self.energy_coordinator
+                            and hasattr(self.energy_coordinator, "restore_work_mode_from_idle")
+                        ):
+                            await self.energy_coordinator.restore_work_mode_from_idle()
+                        if hasattr(battery, "set_backup_reserve") and self._pre_idle_backup_reserve is not None:
+                            await battery.set_backup_reserve(self._pre_idle_backup_reserve)
+                            self._pre_idle_backup_reserve = None
+                    if hasattr(battery, "set_self_consumption_mode"):
+                        await battery.set_self_consumption_mode()
+                    elif hasattr(battery, "restore_normal"):
+                        await battery.restore_normal()
+                    self._last_executed_action = effective_action
+                    return
+
                 # Save the battery's current physical backup reserve before
                 # IDLE raises it, so we can restore the user's setting later.
                 if self._pre_idle_backup_reserve is None:
