@@ -19014,8 +19014,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 CONF_OPTIMIZATION_BACKUP_RESERVE,
                 entry.data.get(CONF_OPTIMIZATION_BACKUP_RESERVE))
             if saved_backup_reserve_pct is not None:
-                # Config entry stores as percentage (0-100), convert to decimal
-                saved_backup_reserve = saved_backup_reserve_pct / 100
+                # Config flow stores as decimal (0.0-1.0), set_settings stores as percentage (0-100)
+                # Handle both formats: values > 1 are percentages, values <= 1 are already decimal
+                if saved_backup_reserve_pct > 1:
+                    saved_backup_reserve = saved_backup_reserve_pct / 100
+                else:
+                    saved_backup_reserve = saved_backup_reserve_pct
             else:
                 saved_backup_reserve = DEFAULT_OPTIMIZATION_BACKUP_RESERVE  # 0.20
 
@@ -19458,12 +19462,12 @@ class OptimizationSettingsView(HomeAssistantView):
 
             if "backup_reserve" in settings:
                 from .const import CONF_OPTIMIZATION_BACKUP_RESERVE
-                # Convert from decimal to percentage if needed
+                # Store as decimal (0.0-1.0) to match config flow convention
                 reserve = settings["backup_reserve"]
-                if reserve <= 1:
-                    reserve = int(reserve * 100)
+                if reserve > 1:
+                    reserve = reserve / 100.0
                 new_data[CONF_OPTIMIZATION_BACKUP_RESERVE] = reserve
-                changes.append(f"Set backup reserve to {reserve}%")
+                changes.append(f"Set backup reserve to {int(reserve * 100)}%")
 
             # Update the config entry (both data and options)
             self._hass.config_entries.async_update_entry(config_entry, data=new_data, options=new_options)
