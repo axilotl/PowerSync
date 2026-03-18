@@ -436,8 +436,21 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """
         if not self._enabled:
             return
-        # FoxESS/Sungrow: ensure normal operation mode on startup (may have been
-        # left in IDLE hold mode if HA restarted during IDLE)
+        # Start in self-consumption mode so the battery serves home load
+        # immediately. Without this, the first LP action might be IDLE
+        # (especially at night with no solar), forcing grid import until
+        # the optimizer completes its first run.
+        battery = self._executor.battery_controller if self._executor else None
+        if battery:
+            try:
+                if hasattr(battery, "set_self_consumption_mode"):
+                    await battery.set_self_consumption_mode()
+                    _LOGGER.info("Optimizer startup: set self-consumption mode (battery serves load)")
+            except Exception as e:
+                _LOGGER.warning("Failed to set self-consumption on startup: %s", e)
+
+        # FoxESS/Sungrow/Sigenergy: also ensure normal work mode (exit any
+        # leftover IDLE hold mode from a previous HA restart)
         if (
             self.energy_coordinator
             and hasattr(self.energy_coordinator, "restore_work_mode_from_idle")
