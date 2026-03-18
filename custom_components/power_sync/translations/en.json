@@ -230,12 +230,12 @@
       },
       "ml_options": {
         "title": "Smart Optimization Settings",
-        "description": "Configure the backup reserve for the built-in LP optimizer.\n\nThe optimizer uses electricity price forecasts, solar generation, and load patterns to find the cost-minimizing charge/discharge schedule.",
+        "description": "Configure the minimum discharge level for the built-in LP optimizer.\n\nThe optimizer uses electricity price forecasts, solar generation, and load patterns to find the cost-minimizing charge/discharge schedule.\n\nNote: This is the optimizer's discharge floor, not your battery's hardware backup reserve for grid outages.",
         "data": {
-          "optimization_backup_reserve": "Backup Reserve (%)"
+          "optimization_backup_reserve": "Minimum Discharge Level (%)"
         },
         "data_description": {
-          "optimization_backup_reserve": "Minimum battery charge level to maintain (only applies to Smart Optimization)"
+          "optimization_backup_reserve": "Optimizer will not discharge below this level. This is separate from your battery's hardware backup reserve (set in the mobile app)."
         },
         "submit_button": "Next"
       },
@@ -514,11 +514,11 @@
         "description": "Choose how PowerSync should manage your battery:\n\n**Manual**: Use PowerSync automations to control charge/discharge.\n\n**TOU Sync**: Sync prices to battery, let battery's built-in scheduler decide.\n\n**Smart Optimization**: Built-in LP scheduling to minimize costs. No external dependencies required.",
         "data": {
           "battery_management_mode": "Battery Management Mode",
-          "optimization_backup_reserve": "Backup Reserve (%)"
+          "optimization_backup_reserve": "Minimum Discharge Level (%)"
         },
         "data_description": {
           "battery_management_mode": "Select how PowerSync should manage your battery system",
-          "optimization_backup_reserve": "Minimum battery charge level to maintain (20% recommended for backup)"
+          "optimization_backup_reserve": "Optimizer will not discharge below this level. This is separate from your battery's hardware backup reserve (set in the mobile app)."
         },
         "submit_button": "Next"
       }
@@ -567,12 +567,12 @@
           "electricity_provider": "Electricity Provider",
           "tesla_api_provider": "Tesla API Provider",
           "optimization_provider": "Optimization Provider",
-          "optimization_backup_reserve": "Backup Reserve (%)",
+          "optimization_backup_reserve": "Minimum Discharge Level (%)",
           "update_teslemetry_token": "Update Teslemetry API Token"
         },
         "data_description": {
           "optimization_provider": "Choose between Tesla's built-in optimization or Smart Optimization (Built-in LP)",
-          "optimization_backup_reserve": "Minimum battery charge level to maintain (only applies to Smart Optimization)",
+          "optimization_backup_reserve": "Optimizer will not discharge below this level. This is separate from your battery's hardware backup reserve (set in the mobile app).",
           "update_teslemetry_token": "Paste a new token from teslemetry.com to update it. Leave blank to keep current token."
         },
         "submit_button": "Next"
@@ -583,7 +583,7 @@
         "data": {
           "electricity_provider": "Electricity Provider",
           "optimization_provider": "Optimization Provider",
-          "optimization_backup_reserve": "Backup Reserve (%)",
+          "optimization_backup_reserve": "Minimum Discharge Level (%)",
           "sigenergy_modbus_host": "Sigenergy IP Address",
           "sigenergy_modbus_port": "Modbus Port",
           "sigenergy_modbus_slave_id": "Modbus Slave ID",
@@ -611,7 +611,7 @@
         "data": {
           "electricity_provider": "Electricity Provider",
           "optimization_provider": "Optimization Provider",
-          "optimization_backup_reserve": "Backup Reserve (%)",
+          "optimization_backup_reserve": "Minimum Discharge Level (%)",
           "sungrow_host": "Sungrow IP Address",
           "sungrow_port": "Modbus Port",
           "sungrow_slave_id": "Modbus Slave ID",
@@ -624,7 +624,7 @@
         },
         "data_description": {
           "optimization_provider": "Choose between Sungrow's built-in scheduling or Smart Optimization (Built-in LP)",
-          "optimization_backup_reserve": "Minimum battery charge level to maintain (only applies to Smart Optimization)",
+          "optimization_backup_reserve": "Optimizer will not discharge below this level. This is separate from your battery's hardware backup reserve (set in the mobile app).",
           "sungrow_host": "Local IP address of your Sungrow inverter or WiNet-S dongle (e.g., 192.168.1.100)",
           "sungrow_port": "Modbus TCP port (default: 502)",
           "sungrow_slave_id": "Modbus slave ID (default: 1)",
@@ -643,7 +643,7 @@
         "data": {
           "electricity_provider": "Electricity Provider",
           "optimization_provider": "Optimization Provider",
-          "optimization_backup_reserve": "Backup Reserve (%)",
+          "optimization_backup_reserve": "Minimum Discharge Level (%)",
           "foxess_connection_type": "Connection Type",
           "foxess_host": "FoxESS IP Address",
           "foxess_port": "Modbus Port",
@@ -653,7 +653,7 @@
         },
         "data_description": {
           "optimization_provider": "Choose between FoxESS built-in scheduling or Smart Optimization (Built-in LP)",
-          "optimization_backup_reserve": "Minimum battery charge level to maintain (only applies to Smart Optimization)",
+          "optimization_backup_reserve": "Optimizer will not discharge below this level. This is separate from your battery's hardware backup reserve (set in the mobile app).",
           "foxess_connection_type": "Modbus TCP (LAN) or RS485 Serial",
           "foxess_host": "Local IP address of your FoxESS inverter (e.g., 192.168.1.100)",
           "foxess_port": "Modbus TCP port (default: 502)",
@@ -669,14 +669,14 @@
         "data": {
           "electricity_provider": "Electricity Provider",
           "optimization_provider": "Optimization Provider",
-          "optimization_backup_reserve": "Backup Reserve (%)",
+          "optimization_backup_reserve": "Minimum Discharge Level (%)",
           "goodwe_host": "GoodWe IP Address",
           "goodwe_protocol": "Protocol",
           "goodwe_port": "Port"
         },
         "data_description": {
           "optimization_provider": "Choose between GoodWe built-in scheduling or Smart Optimization (Built-in LP)",
-          "optimization_backup_reserve": "Minimum battery charge level to maintain (only applies to Smart Optimization)",
+          "optimization_backup_reserve": "Optimizer will not discharge below this level. This is separate from your battery's hardware backup reserve (set in the mobile app).",
           "goodwe_host": "Local IP address of your GoodWe inverter (e.g., 192.168.1.100)",
           "goodwe_protocol": "UDP (WiFi dongle, port 8899) or TCP (LAN dongle, port 502)",
           "goodwe_port": "Connection port (default: 8899 for UDP, 502 for TCP)"
