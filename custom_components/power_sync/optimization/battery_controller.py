@@ -174,6 +174,25 @@ class BatteryControllerWrapper:
             _LOGGER.error(f"Set autonomous mode failed: {e}", exc_info=True)
             return False
 
+    async def get_backup_reserve(self) -> int | None:
+        """
+        Read current battery backup reserve percentage.
+
+        Reads from the energy coordinator's underlying controller (Modbus/API).
+        Returns None if not available.
+        """
+        try:
+            from ..const import DOMAIN
+            for entry_id, entry_data in self.hass.data.get(DOMAIN, {}).items():
+                for coord_key in ("sigenergy_coordinator", "sungrow_coordinator", "foxess_coordinator", "goodwe_coordinator"):
+                    coord = entry_data.get(coord_key) if isinstance(entry_data, dict) else None
+                    if coord and hasattr(coord, "_controller") and hasattr(coord._controller, "get_backup_reserve"):
+                        return await coord._controller.get_backup_reserve()
+            return None
+        except Exception as e:
+            _LOGGER.debug(f"get_backup_reserve failed: {e}")
+            return None
+
     async def set_backup_reserve(self, percent: int) -> bool:
         """
         Set battery backup reserve percentage.
