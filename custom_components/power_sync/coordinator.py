@@ -2218,6 +2218,16 @@ class SigenergyEnergyCoordinator(DataUpdateCoordinator):
         except Exception as err:
             raise UpdateFailed(f"Error fetching Sigenergy energy data: {err}") from err
 
+    async def set_backup_mode(self) -> bool:
+        """Set Sigenergy to STANDBY for IDLE (prevents all charge/discharge)."""
+        async with self._controller:
+            return await self._controller.set_standby_mode()
+
+    async def restore_work_mode_from_idle(self) -> bool:
+        """Restore self-consumption mode after IDLE."""
+        async with self._controller:
+            return await self._controller.restore_from_standby()
+
     async def async_shutdown(self) -> None:
         """Disconnect from Sigenergy system on shutdown."""
         await self._controller.disconnect()

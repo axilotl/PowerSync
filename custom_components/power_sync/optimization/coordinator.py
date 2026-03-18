@@ -1032,11 +1032,14 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     and hasattr(self.energy_coordinator, "set_backup_mode")
                 ):
                     await self.energy_coordinator.set_backup_mode()
-                    if hasattr(battery, "set_backup_reserve"):
+                    # FoxESS/Sungrow: also set min_soc as a safety floor in hold mode.
+                    # Sigenergy: STANDBY stops all battery activity — don't touch
+                    # backup_reserve (it causes grid-charging to reach the level).
+                    if hasattr(battery, "set_backup_reserve") and self.battery_system != "sigenergy":
                         await battery.set_backup_reserve(soc_pct)
                     _LOGGER.info(
-                        "Optimizer: IDLE — holding SOC at %d%% (hold mode + min_soc=%d%%)",
-                        soc_pct, soc_pct,
+                        "Optimizer: IDLE — holding SOC at %d%% (hold mode)",
+                        soc_pct,
                     )
                 elif hasattr(battery, "set_backup_reserve"):
                     # Tesla IDLE: always use self_consumption mode.

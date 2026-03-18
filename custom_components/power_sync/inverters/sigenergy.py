@@ -853,6 +853,43 @@ class SigenergyController(InverterController):
             _LOGGER.error(f"Error setting self-consumption mode: {e}")
             return False
 
+    async def set_standby_mode(self) -> bool:
+        """Set Remote EMS to STANDBY mode for IDLE hold.
+
+        STANDBY stops all battery charge/discharge without touching backup_reserve.
+        This prevents the Sigenergy firmware from grid-charging to reach backup SOC
+        when the optimizer just wants to hold the current SOC.
+
+        Returns:
+            True if successful
+        """
+        try:
+            if not await self.connect():
+                return False
+
+            ems_result = await self._write_holding_registers(self.REG_REMOTE_EMS_ENABLE, [1])
+            if not ems_result:
+                _LOGGER.error("Failed to enable Remote EMS for standby")
+                return False
+
+            mode_result = await self._write_holding_registers(
+                self.REG_REMOTE_EMS_CONTROL_MODE, [self.REMOTE_EMS_MODE_STANDBY]
+            )
+            if not mode_result:
+                _LOGGER.error("Failed to set Remote EMS mode to standby")
+                return False
+
+            _LOGGER.info("Sigenergy Remote EMS set to STANDBY (mode 1) for IDLE hold")
+            return True
+
+        except Exception as e:
+            _LOGGER.error(f"Error setting standby mode: {e}")
+            return False
+
+    async def restore_from_standby(self) -> bool:
+        """Restore from STANDBY to self-consumption mode."""
+        return await self.set_self_consumption_mode()
+
     async def force_charge(self, power_kw: float = 10.0) -> bool:
         """Force battery to charge from grid.
 
