@@ -3797,6 +3797,7 @@ class SungrowSettingsView(HomeAssistantView):
                 "battery_power": data.get("battery_power"),
                 "charge_rate_limit_kw": data.get("charge_rate_limit_kw"),
                 "discharge_rate_limit_kw": data.get("discharge_rate_limit_kw"),
+                "rate_limit_writable": data.get("rate_limit_writable", False),
                 "export_limit_w": data.get("export_limit_w"),
                 "export_limit_enabled": data.get("export_limit_enabled"),
                 "backup_reserve": data.get("backup_reserve"),

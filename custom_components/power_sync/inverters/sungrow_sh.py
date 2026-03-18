@@ -154,6 +154,7 @@ class SungrowSHController(InverterController):
         self._original_ems_mode: Optional[int] = None
         self._in_forced_stop: bool = False
         self._ems_registers_supported: bool = True  # Set False if 13049 reads fail (SH10RS+SBH)
+        self._rate_limit_writable: bool | None = None  # None = untested, True/False = cached result
 
     async def connect(self) -> bool:
         """Connect to the Sungrow SH inverter via Modbus TCP."""
@@ -905,13 +906,16 @@ class SungrowSHController(InverterController):
             success = await self._write_register(self.REG_MAX_CHARGE_CURRENT, value)
             if not success:
                 _LOGGER.error("Failed to set charge rate limit")
+                self._rate_limit_writable = False
                 return False
 
+            self._rate_limit_writable = True
             _LOGGER.info("Sungrow SH charge rate limit set to %s kW (%.1f A @ %.1fV)", kw, amps, voltage)
             return True
 
         except Exception as e:
             _LOGGER.error("Error setting charge rate limit: %s", e)
+            self._rate_limit_writable = False
             return False
 
     async def set_discharge_rate_limit(self, kw: float) -> bool:
@@ -931,14 +935,22 @@ class SungrowSHController(InverterController):
             success = await self._write_register(self.REG_MAX_DISCHARGE_CURRENT, value)
             if not success:
                 _LOGGER.error("Failed to set discharge rate limit")
+                self._rate_limit_writable = False
                 return False
 
+            self._rate_limit_writable = True
             _LOGGER.info("Sungrow SH discharge rate limit set to %s kW (%.1f A @ %.1fV)", kw, amps, voltage)
             return True
 
         except Exception as e:
             _LOGGER.error("Error setting discharge rate limit: %s", e)
+            self._rate_limit_writable = False
             return False
+
+    @property
+    def rate_limit_writable(self) -> bool | None:
+        """Whether charge/discharge rate limit registers are writable. None = untested."""
+        return self._rate_limit_writable
 
     async def set_max_soc(self, percent: int) -> bool:
         """Set maximum battery SOC percentage (0-100%).
@@ -1114,6 +1126,16 @@ class SungrowSHController(InverterController):
             if max_discharge_current:
                 amps = max_discharge_current[0] / 1000  # Convert from milliamps
                 data["discharge_rate_limit_kw"] = round(amps * self._battery_voltage / 1000, 2)
+
+            # Test writeability once by writing current value back (no-op)
+            if self._rate_limit_writable is None and max_charge_current:
+                test_ok = await self._write_register(self.REG_MAX_CHARGE_CURRENT, max_charge_current[0])
+                self._rate_limit_writable = test_ok
+                if not test_ok:
+                    _LOGGER.info("Sungrow charge/discharge rate limit registers are read-only on this model")
+                else:
+                    _LOGGER.info("Sungrow charge/discharge rate limit registers are writable")
+            data["rate_limit_writable"] = self._rate_limit_writable or False
 
             # Read export limit
             export_limit = await self._read_register(self.REG_EXPORT_LIMIT_SETTING, 1)
