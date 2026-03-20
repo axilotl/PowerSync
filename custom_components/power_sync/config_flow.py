@@ -2608,7 +2608,7 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required("period_type", default="PEAK"): vol.In(period_types),
                 vol.Required("period_start", default="15:00"): vol.In(hour_options),
                 vol.Required("period_end", default="21:00"): vol.In(hour_options),
-                vol.Optional("period_days", default="weekdays"): vol.In(day_options),
+                vol.Optional("period_days", default="all_days"): vol.In(day_options),
                 vol.Required("import_rate", default=45): vol.All(
                     vol.Coerce(float), vol.Range(min=0, max=200)
                 ),
@@ -5987,7 +5987,7 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     vol.Required("period_type", default="PEAK"): vol.In(period_types),
                     vol.Required("period_start", default="15:00"): vol.In(hour_options),
                     vol.Required("period_end", default="21:00"): vol.In(hour_options),
-                    vol.Optional("period_days", default="weekdays"): vol.In(day_options),
+                    vol.Optional("period_days", default="all_days"): vol.In(day_options),
                     vol.Required("import_rate", default=45): vol.All(
                         vol.Coerce(float), vol.Range(min=0, max=200)
                     ),
