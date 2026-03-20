@@ -2178,9 +2178,10 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 tou_periods.keys(),
                 key=lambda n: (
                     0 if n.startswith("SUPER_OFF_PEAK") else
-                    1 if n.startswith("PEAK") else
-                    2 if n.startswith("SHOULDER") else
-                    3  # OFF_PEAK and others
+                    1 if n.startswith("PEAK_") else   # PEAK_2, PEAK_3 (specific overrides)
+                    2 if n == "PEAK" else              # Plain PEAK (base)
+                    3 if n.startswith("SHOULDER") else
+                    4  # OFF_PEAK and others
                 ),
             )
             for period_name in sorted_periods:

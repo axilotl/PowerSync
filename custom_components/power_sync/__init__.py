@@ -5704,13 +5704,14 @@ async def fetch_tesla_tariff_schedule(hass: HomeAssistant, entry: ConfigEntry) -
         tou_periods = seasons.get(current_season, {}).get("tou_periods", {})
         # Include all common TOU period names in priority order (most specific first)
         # Check all defined periods — supports custom names like PEAK_1, PEAK_2.
-        # Priority: SUPER_OFF_PEAK > PEAK variants > SHOULDER > OFF_PEAK
+        # Priority: SUPER_OFF_PEAK > PEAK_N (specific) > PEAK (base) > SHOULDER > OFF_PEAK
         sorted_priority = sorted(
             tou_periods.keys(),
             key=lambda n: (
                 0 if n.startswith("SUPER_OFF_PEAK") else
-                1 if n.startswith("PEAK") else
-                2 if n.startswith("SHOULDER") else 3
+                1 if n.startswith("PEAK_") else
+                2 if n == "PEAK" else
+                3 if n.startswith("SHOULDER") else 4
             ),
         )
         current_period = None
@@ -5876,13 +5877,14 @@ def convert_custom_tariff_to_schedule(custom_tariff: dict) -> dict:
         # SUPER_OFF_PEAK must be checked before OFF_PEAK since OFF_PEAK may include hours
         # that overlap with SUPER_OFF_PEAK
         # Check all defined periods — supports custom names like PEAK_1, PEAK_2.
-        # Priority: SUPER_OFF_PEAK > PEAK variants > SHOULDER > OFF_PEAK
+        # Priority: SUPER_OFF_PEAK > PEAK_N (specific) > PEAK (base) > SHOULDER > OFF_PEAK
         sorted_priority = sorted(
             tou_periods.keys(),
             key=lambda n: (
                 0 if n.startswith("SUPER_OFF_PEAK") else
-                1 if n.startswith("PEAK") else
-                2 if n.startswith("SHOULDER") else 3
+                1 if n.startswith("PEAK_") else
+                2 if n == "PEAK" else
+                3 if n.startswith("SHOULDER") else 4
             ),
         )
         current_period = None
@@ -6029,13 +6031,14 @@ def get_current_price_from_tariff_schedule(tariff_schedule: dict) -> tuple[float
         # SUPER_OFF_PEAK must be checked before OFF_PEAK since OFF_PEAK may include hours
         # that overlap with SUPER_OFF_PEAK (e.g., OFF_PEAK 21:00-24:00 overlaps with SUPER_OFF_PEAK 23:00-07:00)
         # Check all defined periods — supports custom names like PEAK_1, PEAK_2.
-        # Priority: SUPER_OFF_PEAK > PEAK variants > SHOULDER > OFF_PEAK
+        # Priority: SUPER_OFF_PEAK > PEAK_N (specific) > PEAK (base) > SHOULDER > OFF_PEAK
         sorted_priority = sorted(
             tou_periods.keys(),
             key=lambda n: (
                 0 if n.startswith("SUPER_OFF_PEAK") else
-                1 if n.startswith("PEAK") else
-                2 if n.startswith("SHOULDER") else 3
+                1 if n.startswith("PEAK_") else
+                2 if n == "PEAK" else
+                3 if n.startswith("SHOULDER") else 4
             ),
         )
         current_period = None
