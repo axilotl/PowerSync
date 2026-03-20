@@ -1642,6 +1642,43 @@ class TariffScheduleSensor(SensorEntity):
             attributes["buy_rates"] = {k: round(v * 100 if v < 1 else v, 2) for k, v in buy_rates.items()}
             attributes["sell_rates"] = {k: round(v * 100 if v < 1 else v, 2) for k, v in sell_rates.items()}
 
+            # Also generate 48-slot schedule list for price chart compatibility.
+            # Maps each half-hour of the day to its TOU period's buy/sell rate.
+            # Sort entries by priority: SUPER_OFF_PEAK first, OFF_PEAK last.
+            sorted_tou = sorted(
+                tou_schedule,
+                key=lambda e: (
+                    2 if e["period"].startswith("OFF_PEAK") else
+                    0 if e["period"].startswith("SUPER_OFF_PEAK") else 1
+                ),
+            )
+            schedule_list = []
+            today_dow = now.weekday()
+            tesla_dow = (today_dow + 1) % 7  # Tesla: 0=Sunday
+            for slot in range(48):
+                hour = slot // 2
+                minute = (slot % 2) * 30
+                time_str = f"{hour:02d}:{minute:02d}"
+                slot_buy = 0.0
+                slot_sell = 0.0
+                matched = False
+                for entry in sorted_tou:
+                    for w in entry.get("windows", []):
+                        fd = w.get("from_day", 0)
+                        td = w.get("to_day", 6)
+                        fh = w.get("from_hour", 0)
+                        th = w.get("to_hour", 24)
+                        if fd <= tesla_dow <= td:
+                            if (fh <= th and fh <= hour < th) or (fh > th and (hour >= fh or hour < th)):
+                                slot_buy = entry["buy"] / 100  # cents → $/kWh
+                                slot_sell = entry["sell"] / 100
+                                matched = True
+                                break
+                    if matched:
+                        break
+                schedule_list.append({"time": time_str, "buy": slot_buy, "sell": slot_sell})
+            attributes["schedule"] = schedule_list
+
         return attributes
 
 
