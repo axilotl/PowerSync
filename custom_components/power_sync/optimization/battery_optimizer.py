@@ -686,7 +686,12 @@ class BatteryOptimizer:
             soc = max(self.backup_reserve, min(1.0, soc))
 
             # Determine action
-            if charge_kw > threshold_kw and import_kw > (load[t] + threshold_kw):
+            if import_prices[t] <= 0.001 and soc < 0.99 and charge_kw > 0:
+                # Free electricity and battery not full — always force charge
+                # to maximize free grid intake (don't oscillate with SC)
+                action = "charge"
+                power_w = max(charge_kw * 1000, self.max_charge_w)
+            elif charge_kw > threshold_kw and import_kw > (load[t] + threshold_kw):
                 # Grid is providing more than load needs → grid charging battery
                 action = "charge"
                 power_w = charge_kw * 1000
