@@ -326,6 +326,18 @@ class BatteryOptimizer:
         else:
             terminal_price = max(0.001, min_grid_recharge) if min_grid_recharge > 0 else 0.0
 
+        # Floor: even when recharging is free (e.g. GloBird SUPER_OFF_PEAK 0c),
+        # round-trip efficiency losses mean discharge isn't free. Use a minimum
+        # terminal price so the LP doesn't dump battery energy at 0c sell price
+        # just because it can recharge for free later.
+        if terminal_price < 0.01:
+            # Use efficiency-adjusted median import as minimum replacement cost.
+            # This reflects the real cost of the energy already stored.
+            all_nonzero = [p for p in import_prices if p > 0.01]
+            if all_nonzero:
+                median_price = sorted(all_nonzero)[len(all_nonzero) // 2]
+                terminal_price = max(terminal_price, median_price * (1 - eff))
+
         if terminal_price > 0:
             for t in range(n):
                 # Charging adds SOC → subtract cost (incentivize keeping charge)
