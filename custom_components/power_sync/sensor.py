@@ -1644,12 +1644,13 @@ class TariffScheduleSensor(SensorEntity):
 
             # Also generate 48-slot schedule list for price chart compatibility.
             # Maps each half-hour of the day to its TOU period's buy/sell rate.
-            # Sort entries by priority: SUPER_OFF_PEAK first, OFF_PEAK last.
+            # Sort by priority: SUPER_OFF_PEAK > PEAK variants > SHOULDER > OFF_PEAK
             sorted_tou = sorted(
                 tou_schedule,
                 key=lambda e: (
-                    2 if e["period"].startswith("OFF_PEAK") else
-                    0 if e["period"].startswith("SUPER_OFF_PEAK") else 1
+                    0 if e["period"].startswith("SUPER_OFF_PEAK") else
+                    1 if e["period"].startswith("PEAK") else
+                    2 if e["period"].startswith("SHOULDER") else 3
                 ),
             )
             schedule_list = []
