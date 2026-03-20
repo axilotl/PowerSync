@@ -2170,21 +2170,11 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # Tesla format: 0=Sunday, Python: 0=Monday
             tesla_dow = (dow + 1) % 7
 
-            matched_period = None
-            # Check all defined periods. Priority order (most specific first):
-            # SUPER_OFF_PEAK > PEAK variants > SHOULDER > OFF_PEAK (catch-all).
-            # PEAK_2/PEAK_3 must match before SHOULDER for overlapping hours.
-            sorted_periods = sorted(
-                tou_periods.keys(),
-                key=lambda n: (
-                    0 if n.startswith("SUPER_OFF_PEAK") else
-                    1 if n.startswith("PEAK_") else   # PEAK_2, PEAK_3 (specific overrides)
-                    2 if n == "PEAK" else              # Plain PEAK (base)
-                    3 if n.startswith("SHOULDER") else
-                    4  # OFF_PEAK and others
-                ),
-            )
-            for period_name in sorted_periods:
+            # Find ALL matching periods for this hour, then pick the one
+            # with the highest sell rate. This handles overlapping periods
+            # correctly regardless of naming conventions.
+            candidates = []
+            for period_name in tou_periods.keys():
                 periods_list = tou_periods[period_name]
                 if not isinstance(periods_list, list):
                     continue
@@ -2205,14 +2195,22 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     # Hour check (handles overnight periods)
                     if from_hour <= to_hour:
                         if from_hour <= hour < to_hour:
-                            matched_period = period_name
+                            candidates.append(period_name)
                             break
                     else:
                         if hour >= from_hour or hour < to_hour:
-                            matched_period = period_name
+                            candidates.append(period_name)
                             break
-                if matched_period:
-                    break
+
+            if candidates:
+                # Pick the candidate with the highest sell rate (best for user).
+                # On tie, prefer the one with the highest buy rate (most specific).
+                matched_period = max(
+                    candidates,
+                    key=lambda p: (sell_rates.get(p, 0), buy_rates.get(p, 0)),
+                )
+            else:
+                matched_period = None
 
             if not matched_period:
                 matched_period = "OFF_PEAK"
