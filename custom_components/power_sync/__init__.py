@@ -13992,17 +13992,53 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                                     await asyncio.sleep(3)
 
                             if not switched_back:
-                                _LOGGER.error("❌ CRITICAL: Failed to switch back to autonomous after 3 attempts - system may be stuck in self_consumption mode!")
-                                # Send push notification for critical failure
-                                try:
-                                    from .automations.actions import _send_expo_push
-                                    await _send_expo_push(
-                                        hass,
-                                        "Battery Alert",
-                                        "Failed to restore normal mode - check settings"
-                                    )
-                                except Exception as notify_err:
-                                    _LOGGER.warning(f"Could not send failure notification: {notify_err}")
+                                _LOGGER.error("❌ Failed to switch back to autonomous after 3 attempts — starting background retry")
+                                # Send push notification ONCE (not every sync cycle)
+                                entry_data_notify = hass.data[DOMAIN].get(entry.entry_id, {})
+                                if not entry_data_notify.get("_mode_restore_notified"):
+                                    try:
+                                        from .automations.actions import _send_expo_push
+                                        await _send_expo_push(
+                                            hass,
+                                            "Battery Alert",
+                                            "Failed to restore normal mode - retrying in background"
+                                        )
+                                        entry_data_notify["_mode_restore_notified"] = True
+                                    except Exception as notify_err:
+                                        _LOGGER.warning(f"Could not send failure notification: {notify_err}")
+
+                                # Background retry with exponential backoff
+                                async def _retry_autonomous_restore():
+                                    for retry in range(6):  # Up to ~10 minutes total
+                                        delay = min(300, 30 * (2 ** retry))  # 30, 60, 120, 240, 300, 300
+                                        _LOGGER.info("Mode restore retry %d/6 in %ds", retry + 1, delay)
+                                        await asyncio.sleep(delay)
+                                        try:
+                                            async with session.post(
+                                                f"{api_base}/api/1/energy_sites/{site_id}/operation",
+                                                headers=headers,
+                                                json={"default_real_mode": "autonomous"},
+                                                timeout=aiohttp.ClientTimeout(total=30),
+                                            ) as resp:
+                                                if resp.status == 200:
+                                                    await asyncio.sleep(3)
+                                                    async with session.get(
+                                                        f"{api_base}/api/1/energy_sites/{site_id}/site_info",
+                                                        headers=headers,
+                                                        timeout=aiohttp.ClientTimeout(total=30),
+                                                    ) as vresp:
+                                                        if vresp.status == 200:
+                                                            vdata = await vresp.json()
+                                                            if vdata.get("response", {}).get("default_real_mode") == "autonomous":
+                                                                _LOGGER.info("✅ Mode restore succeeded on retry %d", retry + 1)
+                                                                ed = hass.data[DOMAIN].get(entry.entry_id, {})
+                                                                ed.pop("_mode_restore_notified", None)
+                                                                return
+                                        except Exception as e:
+                                            _LOGGER.debug("Mode restore retry %d failed: %s", retry + 1, e)
+                                    _LOGGER.error("❌ Mode restore failed after all retries — will retry on next sync cycle")
+
+                                hass.async_create_task(_retry_autonomous_restore())
                 except Exception as e:
                     _LOGGER.warning(f"Force mode toggle failed: {e}")
 
