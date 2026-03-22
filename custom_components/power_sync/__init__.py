@@ -15345,10 +15345,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                             data = await response.json()
                             site_info = data.get("response", {})
                             site_state["saved_operation_mode"] = site_info.get("default_real_mode")
-                            site_state["saved_backup_reserve"] = site_info.get("backup_reserve_percent")
-                            _LOGGER.info("Site %s: saved operation mode: %s, backup reserve: %s%%",
+                            # Use optimizer's pre-IDLE backup reserve if available,
+                            # otherwise Tesla API value (which may be IDLE-elevated)
+                            api_reserve = site_info.get("backup_reserve_percent")
+                            opt_coord = hass.data.get(DOMAIN, {}).get(entry.entry_id, {}).get("optimization_coordinator")
+                            pre_idle = getattr(opt_coord, "_pre_idle_backup_reserve", None) if opt_coord else None
+                            site_state["saved_backup_reserve"] = pre_idle if pre_idle is not None else api_reserve
+                            _LOGGER.info("Site %s: saved operation mode: %s, backup reserve: %s%% (api=%s%%, pre_idle=%s%%)",
                                          site_id, site_state["saved_operation_mode"],
-                                         site_state["saved_backup_reserve"])
+                                         site_state["saved_backup_reserve"], api_reserve, pre_idle)
 
                             components = site_info.get("components", {})
                             saved_export_rule = components.get("customer_preferred_export_rule")
@@ -16047,10 +16052,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                             data = await response.json()
                             site_info = data.get("response", {})
                             site_state["saved_operation_mode"] = site_info.get("default_real_mode")
-                            site_state["saved_backup_reserve"] = site_info.get("backup_reserve_percent")
-                            _LOGGER.info("Site %s: saved operation mode: %s, backup reserve: %s%%",
+                            # Use optimizer's pre-IDLE backup reserve if available,
+                            # otherwise Tesla API value (which may be IDLE-elevated)
+                            api_reserve = site_info.get("backup_reserve_percent")
+                            opt_coord = hass.data.get(DOMAIN, {}).get(entry.entry_id, {}).get("optimization_coordinator")
+                            pre_idle = getattr(opt_coord, "_pre_idle_backup_reserve", None) if opt_coord else None
+                            site_state["saved_backup_reserve"] = pre_idle if pre_idle is not None else api_reserve
+                            _LOGGER.info("Site %s: saved operation mode: %s, backup reserve: %s%% (api=%s%%, pre_idle=%s%%)",
                                          site_id, site_state["saved_operation_mode"],
-                                         site_state["saved_backup_reserve"])
+                                         site_state["saved_backup_reserve"], api_reserve, pre_idle)
 
                             if not site_state.get("saved_tariff"):
                                 site_tariff = site_info.get("tariff_content_v2") or site_info.get("tariff_content")
