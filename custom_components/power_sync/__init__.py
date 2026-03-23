@@ -15345,15 +15345,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                             data = await response.json()
                             site_info = data.get("response", {})
                             site_state["saved_operation_mode"] = site_info.get("default_real_mode")
-                            # Use optimizer's pre-IDLE backup reserve if available,
-                            # otherwise Tesla API value (which may be IDLE-elevated)
+                            # Determine the user's real backup reserve to restore later.
+                            # Priority: 1) optimizer's pre-IDLE value (if IDLE elevated it)
+                            #           2) previous force cycle's saved value (if active=False gap)
+                            #           3) Tesla API value (if nothing else available)
                             api_reserve = site_info.get("backup_reserve_percent")
                             opt_coord = hass.data.get(DOMAIN, {}).get(entry.entry_id, {}).get("optimization_coordinator")
                             pre_idle = getattr(opt_coord, "_pre_idle_backup_reserve", None) if opt_coord else None
-                            site_state["saved_backup_reserve"] = pre_idle if pre_idle is not None else api_reserve
-                            _LOGGER.info("Site %s: saved operation mode: %s, backup reserve: %s%% (api=%s%%, pre_idle=%s%%)",
+                            # Check if a previous force cycle already saved a valid reserve
+                            prev_saved = (
+                                force_discharge_state.get("saved_backup_reserve")
+                                or force_charge_state.get("saved_backup_reserve")
+                            )
+                            if pre_idle is not None:
+                                site_state["saved_backup_reserve"] = pre_idle
+                            elif prev_saved is not None and prev_saved > 0:
+                                site_state["saved_backup_reserve"] = prev_saved
+                            else:
+                                site_state["saved_backup_reserve"] = api_reserve
+                            _LOGGER.info("Site %s: saved operation mode: %s, backup reserve: %s%% (api=%s%%, pre_idle=%s%%, prev=%s%%)",
                                          site_id, site_state["saved_operation_mode"],
-                                         site_state["saved_backup_reserve"], api_reserve, pre_idle)
+                                         site_state["saved_backup_reserve"], api_reserve, pre_idle, prev_saved)
 
                             components = site_info.get("components", {})
                             saved_export_rule = components.get("customer_preferred_export_rule")
@@ -16052,15 +16064,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                             data = await response.json()
                             site_info = data.get("response", {})
                             site_state["saved_operation_mode"] = site_info.get("default_real_mode")
-                            # Use optimizer's pre-IDLE backup reserve if available,
-                            # otherwise Tesla API value (which may be IDLE-elevated)
+                            # Determine the user's real backup reserve to restore later.
+                            # Priority: 1) optimizer's pre-IDLE value (if IDLE elevated it)
+                            #           2) previous force cycle's saved value (if active=False gap)
+                            #           3) Tesla API value (if nothing else available)
                             api_reserve = site_info.get("backup_reserve_percent")
                             opt_coord = hass.data.get(DOMAIN, {}).get(entry.entry_id, {}).get("optimization_coordinator")
                             pre_idle = getattr(opt_coord, "_pre_idle_backup_reserve", None) if opt_coord else None
-                            site_state["saved_backup_reserve"] = pre_idle if pre_idle is not None else api_reserve
-                            _LOGGER.info("Site %s: saved operation mode: %s, backup reserve: %s%% (api=%s%%, pre_idle=%s%%)",
+                            # Check if a previous force cycle already saved a valid reserve
+                            prev_saved = (
+                                force_discharge_state.get("saved_backup_reserve")
+                                or force_charge_state.get("saved_backup_reserve")
+                            )
+                            if pre_idle is not None:
+                                site_state["saved_backup_reserve"] = pre_idle
+                            elif prev_saved is not None and prev_saved > 0:
+                                site_state["saved_backup_reserve"] = prev_saved
+                            else:
+                                site_state["saved_backup_reserve"] = api_reserve
+                            _LOGGER.info("Site %s: saved operation mode: %s, backup reserve: %s%% (api=%s%%, pre_idle=%s%%, prev=%s%%)",
                                          site_id, site_state["saved_operation_mode"],
-                                         site_state["saved_backup_reserve"], api_reserve, pre_idle)
+                                         site_state["saved_backup_reserve"], api_reserve, pre_idle, prev_saved)
 
                             if not site_state.get("saved_tariff"):
                                 site_tariff = site_info.get("tariff_content_v2") or site_info.get("tariff_content")
