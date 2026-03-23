@@ -929,7 +929,7 @@ async def _action_set_backup_reserve(
     # Clamp to valid range
     reserve_percent = max(0, min(100, int(reserve_percent)))
 
-    for attempt in range(3):
+    for attempt in range(10):
         try:
             await hass.services.async_call(
                 DOMAIN,
@@ -937,12 +937,14 @@ async def _action_set_backup_reserve(
                 {"percent": reserve_percent},
                 blocking=True,
             )
+            if attempt > 0:
+                _LOGGER.info(f"set_backup_reserve succeeded on attempt {attempt + 1}")
             return True
         except Exception as e:
-            _LOGGER.warning(f"set_backup_reserve attempt {attempt + 1}/3 failed: {e}")
-            if attempt < 2:
-                await asyncio.sleep(5 * (attempt + 1))  # 5s, 10s backoff
-    _LOGGER.error(f"Failed to set backup reserve to {reserve_percent}% after 3 attempts")
+            delay = min(60, 5 * (2 ** attempt))  # 5, 10, 20, 40, 60, 60...
+            _LOGGER.warning(f"set_backup_reserve attempt {attempt + 1}/10 failed: {e} — retrying in {delay}s")
+            await asyncio.sleep(delay)
+    _LOGGER.error(f"Failed to set backup reserve to {reserve_percent}% after 10 attempts")
     return False
 
 
@@ -1005,7 +1007,7 @@ async def _action_set_operation_mode(
         _LOGGER.error(f"set_operation_mode: invalid mode '{mode}'")
         return False
 
-    for attempt in range(3):
+    for attempt in range(10):
         try:
             await hass.services.async_call(
                 DOMAIN,
@@ -1013,12 +1015,14 @@ async def _action_set_operation_mode(
                 {"mode": mode},
                 blocking=True,
             )
+            if attempt > 0:
+                _LOGGER.info(f"set_operation_mode succeeded on attempt {attempt + 1}")
             return True
         except Exception as e:
-            _LOGGER.warning(f"set_operation_mode attempt {attempt + 1}/3 failed: {e}")
-            if attempt < 2:
-                await asyncio.sleep(5 * (attempt + 1))
-    _LOGGER.error(f"Failed to set operation mode to {mode} after 3 attempts")
+            delay = min(60, 5 * (2 ** attempt))  # 5, 10, 20, 40, 60, 60...
+            _LOGGER.warning(f"set_operation_mode attempt {attempt + 1}/10 failed: {e} — retrying in {delay}s")
+            await asyncio.sleep(delay)
+    _LOGGER.error(f"Failed to set operation mode to {mode} after 10 attempts")
     return False
 
 
