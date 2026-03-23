@@ -929,17 +929,21 @@ async def _action_set_backup_reserve(
     # Clamp to valid range
     reserve_percent = max(0, min(100, int(reserve_percent)))
 
-    try:
-        await hass.services.async_call(
-            DOMAIN,
-            SERVICE_SET_BACKUP_RESERVE,
-            {"percent": reserve_percent},
-            blocking=True,
-        )
-        return True
-    except Exception as e:
-        _LOGGER.error(f"Failed to set backup reserve: {e}")
-        return False
+    for attempt in range(3):
+        try:
+            await hass.services.async_call(
+                DOMAIN,
+                SERVICE_SET_BACKUP_RESERVE,
+                {"percent": reserve_percent},
+                blocking=True,
+            )
+            return True
+        except Exception as e:
+            _LOGGER.warning(f"set_backup_reserve attempt {attempt + 1}/3 failed: {e}")
+            if attempt < 2:
+                await asyncio.sleep(5 * (attempt + 1))  # 5s, 10s backoff
+    _LOGGER.error(f"Failed to set backup reserve to {reserve_percent}% after 3 attempts")
+    return False
 
 
 async def _action_preserve_charge(
@@ -1001,17 +1005,21 @@ async def _action_set_operation_mode(
         _LOGGER.error(f"set_operation_mode: invalid mode '{mode}'")
         return False
 
-    try:
-        await hass.services.async_call(
-            DOMAIN,
-            SERVICE_SET_OPERATION_MODE,
-            {"mode": mode},
-            blocking=True,
-        )
-        return True
-    except Exception as e:
-        _LOGGER.error(f"Failed to set operation mode: {e}")
-        return False
+    for attempt in range(3):
+        try:
+            await hass.services.async_call(
+                DOMAIN,
+                SERVICE_SET_OPERATION_MODE,
+                {"mode": mode},
+                blocking=True,
+            )
+            return True
+        except Exception as e:
+            _LOGGER.warning(f"set_operation_mode attempt {attempt + 1}/3 failed: {e}")
+            if attempt < 2:
+                await asyncio.sleep(5 * (attempt + 1))
+    _LOGGER.error(f"Failed to set operation mode to {mode} after 3 attempts")
+    return False
 
 
 async def _action_force_discharge(
