@@ -193,7 +193,7 @@ class BatteryControllerWrapper:
                     if coord and hasattr(coord, "_controller") and hasattr(coord._controller, "get_backup_reserve"):
                         return await coord._controller.get_backup_reserve()
                 # Tesla: read from cached site_info (refreshed every 6 hours)
-                tesla_coord = entry_data.get("coordinator")
+                tesla_coord = entry_data.get("tesla_coordinator") or entry_data.get("coordinator")
                 if tesla_coord and hasattr(tesla_coord, "_site_info_cache") and tesla_coord._site_info_cache:
                     reserve = tesla_coord._site_info_cache.get("backup_reserve_percent")
                     if reserve is not None:
