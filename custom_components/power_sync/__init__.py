@@ -9732,10 +9732,25 @@ class EVWidgetDataView(HomeAssistantView):
 
                 vehicle_name = params.get("vehicle_name", vehicle_id[:8] if len(vehicle_id) > 8 else vehicle_id)
 
+                # Determine connected status from actual charging or WC data,
+                # not just session activity (session stays active when car drives away)
+                is_connected = actually_charging
+                if not is_connected and actual_ev_power_kw is not None:
+                    # Tesla WC: check if wall connector reports a vehicle
+                    is_connected = actual_ev_power_kw > 0.05
+                if not is_connected:
+                    # Check HA wall_connector vehicle sensors
+                    for wc_state in self._hass.states.async_all("sensor"):
+                        wc_eid = wc_state.entity_id.lower()
+                        if "wall_connector" in wc_eid and "vehicle" in wc_eid and "power" not in wc_eid:
+                            if wc_state.state.lower() not in ("disconnected", "unknown", "unavailable", ""):
+                                is_connected = True
+                                break
+
                 widget_data.append({
                     "vehicle_name": vehicle_name,
                     "is_charging": actually_charging,
-                    "is_connected": state.get("active", False),
+                    "is_connected": is_connected,
                     "current_soc": current_soc,
                     "target_soc": target_soc,
                     "current_power_kw": round(current_power_kw, 2),
