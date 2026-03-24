@@ -574,8 +574,9 @@ def _get_ev_vehicles_status(hass, entry) -> list:
             # Check charging_state sensor for connected status
             if entity.domain == "sensor" and "charging_state" in eid:
                 # Values like "Charging", "Connected", "Stopped", "Complete" = plugged in
-                # "Disconnected" = not plugged in
-                if state.state not in ("Disconnected",):
+                # "Disconnected", "unknown", "unavailable" = not plugged in
+                connected_states = ("charging", "connected", "stopped", "complete")
+                if state.state.lower() in connected_states:
                     is_connected = True
 
             if not entity.entity_id.startswith("sensor."):
