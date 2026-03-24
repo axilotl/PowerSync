@@ -692,9 +692,11 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if self._current_schedule and self._current_schedule.actions:
                     current_action = self._get_current_action()
                     if current_action and self._executor:
+                        # Log the *executed* action (may differ from planned if overridden)
+                        executed = self._last_executed_action or current_action.action
                         _LOGGER.info(
                             "Polling: current action=%s power=%.0fW soc=%.1f%%",
-                            current_action.action,
+                            executed,
                             current_action.power_w,
                             current_action.soc * 100,
                         )
@@ -1023,12 +1025,19 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 # (avoiding expensive grid import).  The hardware min_soc
                 # prevents over-discharge below the user's physical reserve.
                 if soc_pct <= configured_idle_floor:
+                    effective_action = "self_consumption"
+                    # Already in SC from a previous floor override — skip redundant commands
+                    if self._last_executed_action == "self_consumption":
+                        _LOGGER.debug(
+                            "Optimizer: SOC %d%% at/below floor %d%% — already in self_consumption",
+                            soc_pct, configured_idle_floor,
+                        )
+                        return
                     _LOGGER.info(
-                        "Optimizer: SOC %d%% at/below floor %d%% — using "
-                        "self_consumption instead of IDLE (nothing to hold)",
+                        "Optimizer: SOC %d%% at/below floor %d%% — switching to "
+                        "self_consumption (nothing to hold)",
                         soc_pct, configured_idle_floor,
                     )
-                    effective_action = "self_consumption"
                     # Restore from IDLE hold mode if we were in it
                     if self._last_executed_action == "idle":
                         if (
