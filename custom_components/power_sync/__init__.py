@@ -610,6 +610,54 @@ def _get_ev_vehicles_status(hass, entry) -> list:
             "is_charging": ev_power_kw > 0.05,
         })
 
+    # Supplement with Wall Connector sensors for better detection.
+    # WC sensors stay awake even when the car is asleep, providing
+    # reliable power and connected status.
+    wc_power = 0.0
+    wc_connected = False
+    for state_obj in hass.states.async_all("sensor"):
+        eid = state_obj.entity_id.lower()
+        if "wall_connector" not in eid:
+            continue
+        if state_obj.state in ("unknown", "unavailable"):
+            continue
+        # Wall Connector vehicle sensor: "disconnected", "charging", "connected", etc.
+        if "vehicle" in eid and "power" not in eid:
+            if state_obj.state.lower() not in ("disconnected", "unknown", "unavailable", ""):
+                wc_connected = True
+        # Wall Connector power sensor
+        if "power" in eid:
+            try:
+                val = float(state_obj.state)
+                if val > 0:
+                    wc_power = max(wc_power, val)
+            except (ValueError, TypeError):
+                pass
+
+    # Apply WC data to vehicles (improve detection when car sensors are stale)
+    if wc_connected or wc_power > 0.05:
+        if vehicles:
+            # Update first vehicle with WC data
+            v = vehicles[0]
+            if wc_power > v["ev_power_kw"]:
+                v["ev_power_kw"] = wc_power
+            v["is_connected"] = True
+            v["is_charging"] = wc_power > 0.05
+        else:
+            # No vehicle found but WC shows connected — add a WC-based entry
+            vehicles.append({
+                "vehicle_name": "Wall Connector",
+                "ev_power_kw": wc_power,
+                "ev_soc": None,
+                "is_connected": True,
+                "is_charging": wc_power > 0.05,
+            })
+    elif vehicles:
+        # WC says disconnected — override stale vehicle sensor data
+        for v in vehicles:
+            if not v["is_charging"]:
+                v["is_connected"] = False
+
     return vehicles
 
 
