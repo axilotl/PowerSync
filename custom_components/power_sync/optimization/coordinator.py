@@ -1055,6 +1055,43 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     self._last_executed_action = effective_action
                     return
 
+                # Only IDLE when current import price is below median (genuinely
+                # cheap). If we're paying average or above-average prices, the
+                # battery should serve home load (self_consumption) rather than
+                # importing from grid for a marginal future gain.
+                if self._last_import_prices:
+                    current_price = self._last_import_prices[0]
+                    median_price = sorted(self._last_import_prices)[len(self._last_import_prices) // 2]
+                    if current_price >= median_price * 0.9:  # Within 10% of median or above
+                        effective_action = "self_consumption"
+                        if self._last_executed_action == "self_consumption":
+                            _LOGGER.debug(
+                                "Optimizer: IDLE overridden — import %.1fc >= median %.1fc, already in SC",
+                                current_price * 100, median_price * 100,
+                            )
+                            return
+                        _LOGGER.info(
+                            "Optimizer: IDLE overridden to self_consumption — current import "
+                            "%.1fc/kWh >= median %.1fc (not cheap enough to justify grid import)",
+                            current_price * 100, median_price * 100,
+                        )
+                        # Restore from IDLE if needed
+                        if self._last_executed_action == "idle":
+                            if (
+                                self.energy_coordinator
+                                and hasattr(self.energy_coordinator, "restore_work_mode_from_idle")
+                            ):
+                                await self.energy_coordinator.restore_work_mode_from_idle()
+                            if hasattr(battery, "set_backup_reserve") and self._pre_idle_backup_reserve is not None:
+                                await battery.set_backup_reserve(self._pre_idle_backup_reserve)
+                                self._pre_idle_backup_reserve = None
+                        if hasattr(battery, "set_self_consumption_mode"):
+                            await battery.set_self_consumption_mode()
+                        elif hasattr(battery, "restore_normal"):
+                            await battery.restore_normal()
+                        self._last_executed_action = effective_action
+                        return
+
                 # Save the battery's current physical backup reserve before
                 # IDLE raises it, so we can restore the user's setting later.
                 if self._pre_idle_backup_reserve is None:
