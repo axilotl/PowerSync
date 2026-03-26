@@ -2574,55 +2574,6 @@ async def _dynamic_ev_update_surplus(
 
     battery_soc = live_status.get("battery_soc") or 0
 
-    # Check if electricity is free/very cheap — skip battery threshold
-    # and charge EV at max rate (no cost penalty for grid import)
-    current_import_price = 99.0  # Default: assume not free
-    try:
-        from ..const import DOMAIN
-        entry_data = hass.data.get(DOMAIN, {}).get(config_entry.entry_id, {})
-        # Try price sensor
-        import_sensor = hass.states.get("sensor.power_sync_current_import_price")
-        if import_sensor and import_sensor.state not in ("unknown", "unavailable"):
-            current_import_price = float(import_sensor.state) * 100  # $/kWh → c/kWh
-        # Try tariff schedule
-        elif entry_data.get("tariff_schedule"):
-            from ..__init__ import get_current_price_from_tariff_schedule
-            buy_c, _, _ = get_current_price_from_tariff_schedule(entry_data["tariff_schedule"])
-            current_import_price = buy_c
-    except Exception:
-        pass
-
-    # Threshold: free tariff periods (GloBird 0c) AND very cheap dynamic
-    # prices (Amber negative/near-zero during solar glut). At ≤5c the grid
-    # is practically free — no point waiting for solar surplus.
-    cheap_threshold = params.get("cheap_grid_threshold_cents", 5.0)
-    if current_import_price <= cheap_threshold:
-        max_amps = params.get("max_charge_amps", 32)
-        if not state.get("_free_power_logged"):
-            _LOGGER.info(
-                "⚡ Solar surplus EV: Free electricity (%.1fc/kWh) — charging at max %dA "
-                "(skipping battery threshold)",
-                current_import_price, max_amps,
-            )
-            state["_free_power_logged"] = True
-        state["paused"] = False
-        state["paused_reason"] = None
-
-        # Set max amps and send command
-        new_amps = max_amps
-        current_amps_now = state.get("current_amps", 0)
-        if not state.get("charging_started") or abs(new_amps - current_amps_now) >= 1:
-            success = await _action_set_ev_charging_amps(
-                hass, config_entry, {"amps": new_amps, "vehicle_id": vehicle_id}
-            )
-            if success:
-                state["current_amps"] = new_amps
-                state["charging_started"] = True
-        return
-
-    # Clear free power log flag when price rises
-    state.pop("_free_power_logged", None)
-
     # Battery priority check
     min_soc = params.get("min_battery_soc", 80)
     pause_soc = params.get("pause_below_soc", 70)
