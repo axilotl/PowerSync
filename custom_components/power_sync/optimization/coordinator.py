@@ -197,6 +197,28 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._initial_opt_task: asyncio.Task | None = None
         self._deferred_restore_task: asyncio.Task | None = None
 
+    async def _restore_pre_idle_backup_reserve(self, battery, context: str = "") -> bool:
+        """Restore pre-IDLE backup reserve with retry. Only clears on success."""
+        if self._pre_idle_backup_reserve is None:
+            return True
+        if not hasattr(battery, "set_backup_reserve"):
+            return True
+        try:
+            await battery.set_backup_reserve(self._pre_idle_backup_reserve)
+            _LOGGER.info(
+                "Optimizer: Restored backup reserve to %d%%%s",
+                self._pre_idle_backup_reserve,
+                f" ({context})" if context else "",
+            )
+            self._pre_idle_backup_reserve = None
+            return True
+        except Exception as e:
+            _LOGGER.warning(
+                "Failed to restore backup reserve to %d%%: %s (will retry next cycle)",
+                self._pre_idle_backup_reserve, e,
+            )
+            return False
+
     @property
     def enabled(self) -> bool:
         """Check if optimization is enabled."""
@@ -688,6 +710,14 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Periodically re-optimize and execute current action."""
         while self._enabled:
             try:
+                # Safety: if a pre-IDLE backup reserve restore is pending,
+                # keep trying until it succeeds. This catches API failures
+                # during previous restore attempts.
+                if self._pre_idle_backup_reserve is not None and self._last_executed_action != "idle":
+                    battery = self._executor.battery_controller if self._executor else None
+                    if battery:
+                        await self._restore_pre_idle_backup_reserve(battery, "polling safety check")
+
                 # Execute current action from schedule
                 if self._current_schedule and self._current_schedule.actions:
                     current_action = self._get_current_action()
@@ -1046,8 +1076,11 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         ):
                             await self.energy_coordinator.restore_work_mode_from_idle()
                         if hasattr(battery, "set_backup_reserve") and self._pre_idle_backup_reserve is not None:
-                            await battery.set_backup_reserve(self._pre_idle_backup_reserve)
-                            self._pre_idle_backup_reserve = None
+                            try:
+                                await battery.set_backup_reserve(self._pre_idle_backup_reserve)
+                                self._pre_idle_backup_reserve = None  # Only clear on success
+                            except Exception as e:
+                                _LOGGER.warning("Failed to restore backup reserve to %d%%: %s (will retry)", self._pre_idle_backup_reserve, e)
                     if hasattr(battery, "set_self_consumption_mode"):
                         await battery.set_self_consumption_mode()
                     elif hasattr(battery, "restore_normal"):
@@ -1070,8 +1103,11 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                                 "Optimizer: Restoring backup reserve to %d%% (was elevated by IDLE)",
                                 self._pre_idle_backup_reserve,
                             )
-                            await battery.set_backup_reserve(self._pre_idle_backup_reserve)
-                            self._pre_idle_backup_reserve = None
+                            try:
+                                await battery.set_backup_reserve(self._pre_idle_backup_reserve)
+                                self._pre_idle_backup_reserve = None  # Only clear on success
+                            except Exception as e:
+                                _LOGGER.warning("Failed to restore backup reserve to %d%%: %s (will retry)", self._pre_idle_backup_reserve, e)
                         if self._last_executed_action == "self_consumption":
                             _LOGGER.debug(
                                 "Optimizer: IDLE overridden — import %.1fc >= median %.1fc, already in SC",
