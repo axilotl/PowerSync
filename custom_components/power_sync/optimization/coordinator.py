@@ -190,6 +190,9 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Restored when exiting IDLE so we don't overwrite the user's
         # hardware reserve with the optimizer's LP floor.
         self._pre_idle_backup_reserve: int | None = None
+        # User's real backup reserve captured ONCE on startup, before any
+        # IDLE modifies it. Used as the authoritative restore value.
+        self._startup_backup_reserve: int | None = None
         self._charge_holdoff: int = 0  # Hysteresis for entering CHARGE (require 2 consecutive)
 
         # Background task handles (for cancellation on disable)
@@ -464,6 +467,17 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # the optimizer completes its first run.
         battery = self._executor.battery_controller if self._executor else None
         if battery:
+            # Capture the user's real backup reserve BEFORE any IDLE modifies it.
+            # This is the authoritative value for all future restores.
+            try:
+                if hasattr(battery, "get_backup_reserve"):
+                    startup_reserve = await battery.get_backup_reserve()
+                    if startup_reserve is not None:
+                        self._startup_backup_reserve = startup_reserve
+                        _LOGGER.info("Optimizer startup: captured user backup reserve: %d%%", startup_reserve)
+            except Exception as e:
+                _LOGGER.debug("Could not read startup backup reserve: %s", e)
+
             try:
                 if hasattr(battery, "set_self_consumption_mode"):
                     await battery.set_self_consumption_mode()
@@ -1136,25 +1150,29 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         self._last_executed_action = effective_action
                         return
 
-                # Save the battery's current physical backup reserve before
-                # IDLE raises it, so we can restore the user's setting later.
+                # Use the startup-captured backup reserve as the restore value.
+                # Don't read from the API here — it may already show an
+                # IDLE-elevated value from a previous cycle.
                 if self._pre_idle_backup_reserve is None:
-                    saved = None
-                    # Try reading from battery controller directly
-                    if hasattr(battery, "get_backup_reserve"):
-                        try:
-                            saved = await battery.get_backup_reserve()
-                        except Exception:
-                            pass
-                    # Fallback: read from coordinator data (backup_reserve or min_soc)
-                    if saved is None and self.energy_coordinator and hasattr(self.energy_coordinator, "data"):
-                        coord_data = self.energy_coordinator.data or {}
-                        saved = coord_data.get("backup_reserve") or coord_data.get("min_soc")
+                    if self._startup_backup_reserve is not None:
+                        self._pre_idle_backup_reserve = self._startup_backup_reserve
+                        _LOGGER.debug("Optimizer: Using startup backup reserve for IDLE restore: %d%%", self._startup_backup_reserve)
+                    else:
+                        # Startup capture failed — try reading now as last resort
+                        saved = None
+                        if hasattr(battery, "get_backup_reserve"):
+                            try:
+                                saved = await battery.get_backup_reserve()
+                            except Exception:
+                                pass
+                        if saved is None and self.energy_coordinator and hasattr(self.energy_coordinator, "data"):
+                            coord_data = self.energy_coordinator.data or {}
+                            saved = coord_data.get("backup_reserve") or coord_data.get("min_soc")
+                            if saved is not None:
+                                saved = int(saved)
                         if saved is not None:
-                            saved = int(saved)
-                    if saved is not None:
-                        self._pre_idle_backup_reserve = saved
-                        _LOGGER.debug("Optimizer: Saved pre-IDLE backup reserve: %d%%", saved)
+                            self._pre_idle_backup_reserve = saved
+                            _LOGGER.debug("Optimizer: Saved pre-IDLE backup reserve (fallback): %d%%", saved)
                 soc_pct = max(soc_pct, configured_idle_floor)
 
                 # FoxESS/Sungrow: Use a hold mode for IDLE. In normal
