@@ -483,6 +483,9 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                             # Persist it so it survives restarts
                             if self._entry:
                                 new_opts = {**self._entry.options, "_user_backup_reserve": startup_reserve}
+                                from ..const import DOMAIN as _DOM
+                                _ed = self.hass.data.get(_DOM, {}).get(self.entry_id, {})
+                                _ed["_skip_reload"] = True
                                 self.hass.config_entries.async_update_entry(self._entry, options=new_opts)
                 except Exception as e:
                     _LOGGER.debug("Could not read startup backup reserve: %s", e)
