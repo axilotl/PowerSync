@@ -14610,9 +14610,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
                 _LOGGER.info(f"🚫 CURTAILMENT TRIGGERED: Applying DC curtailment (export='never')")
 
-                # If already curtailed AND verified from API, no action needed
-                # If using cache, always apply curtailment to be safe (cache may be stale)
-                if current_export_rule == "never" and not using_cached_rule:
+                # If already curtailed AND verified from API, skip unless
+                # 15 minutes have passed since last re-apply.  Tesla PW3
+                # firmware can drift out of sync with the API — periodically
+                # re-sending the command forces the gateway to re-read it.
+                import time as _time_mod
+                _curtailment_reapply_interval = 900  # 15 minutes
+                _last_reapply = entry_data.get("_last_curtailment_reapply", 0)
+                _needs_reapply = (_time_mod.monotonic() - _last_reapply) >= _curtailment_reapply_interval
+
+                if current_export_rule == "never" and not using_cached_rule and not _needs_reapply:
                     _LOGGER.info(f"✅ Already curtailed (export='never', verified from API) - no action needed")
 
                     # Still need to ensure AC-coupled inverter is curtailed (independent of Tesla state)
@@ -14620,8 +14627,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
                     _LOGGER.info(f"📊 Action summary: Curtailment active (earnings: {export_earnings:.2f}c/kWh, export: 'never')")
                 else:
-                    # Apply curtailment (either not 'never' or using unverified cache)
-                    if using_cached_rule:
+                    # Apply curtailment (either not 'never', using unverified cache, or periodic re-apply)
+                    if _needs_reapply and current_export_rule == "never":
+                        _LOGGER.info(f"Re-applying curtailment (periodic enforcement, {_curtailment_reapply_interval}s since last apply)")
+                    elif using_cached_rule:
                         _LOGGER.info(f"Applying curtailment (cache says '{current_export_rule}' but unverified) → 'never'")
                     else:
                         _LOGGER.info(f"Applying curtailment: '{current_export_rule}' → 'never'")
@@ -14676,6 +14685,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                                     _LOGGER.info(f"✓ Curtailment verified via read-back: export_rule='{verified_rule}'")
 
                         _LOGGER.info(f"✅ CURTAILMENT APPLIED: Export rule changed '{current_export_rule}' → 'never'")
+                        entry_data["_last_curtailment_reapply"] = _time_mod.monotonic()
                         await update_cached_export_rule("never")
 
                         # Also curtail AC-coupled inverter if configured (uses smart logic)
@@ -14912,9 +14922,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
                 _LOGGER.info(f"🚫 CURTAILMENT TRIGGERED: Applying DC curtailment (export='never')")
 
-                # If already curtailed AND verified from API, no action needed
-                # If using cache, always apply curtailment to be safe (cache may be stale)
-                if current_export_rule == "never" and not using_cached_rule:
+                # If already curtailed AND verified from API, skip unless
+                # 15 minutes have passed since last re-apply.  Tesla PW3
+                # firmware can drift out of sync with the API — periodically
+                # re-sending the command forces the gateway to re-read it.
+                import time as _time_mod
+                _curtailment_reapply_interval = 900  # 15 minutes
+                _last_reapply = entry_data.get("_last_curtailment_reapply", 0)
+                _needs_reapply = (_time_mod.monotonic() - _last_reapply) >= _curtailment_reapply_interval
+
+                if current_export_rule == "never" and not using_cached_rule and not _needs_reapply:
                     _LOGGER.info(f"✅ Already curtailed (export='never', verified from API) - no action needed")
 
                     # Still need to ensure AC-coupled inverter is curtailed (independent of Tesla state)
@@ -14922,8 +14939,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
                     _LOGGER.info(f"📊 Action summary: Curtailment active (earnings: {export_earnings:.2f}c/kWh, export: 'never')")
                 else:
-                    # Apply curtailment (either not 'never' or using unverified cache)
-                    if using_cached_rule:
+                    # Apply curtailment (either not 'never', using unverified cache, or periodic re-apply)
+                    if _needs_reapply and current_export_rule == "never":
+                        _LOGGER.info(f"Re-applying curtailment (periodic enforcement, {_curtailment_reapply_interval}s since last apply)")
+                    elif using_cached_rule:
                         _LOGGER.info(f"Applying curtailment (cache says '{current_export_rule}' but unverified) → 'never'")
                     else:
                         _LOGGER.info(f"Applying curtailment: '{current_export_rule}' → 'never'")
@@ -14978,6 +14997,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                                     _LOGGER.info(f"✓ Curtailment verified via read-back: export_rule='{verified_rule}'")
 
                         _LOGGER.info(f"✅ CURTAILMENT APPLIED: Export rule changed '{current_export_rule}' → 'never'")
+                        entry_data["_last_curtailment_reapply"] = _time_mod.monotonic()
                         await update_cached_export_rule("never")
 
                         # Also curtail AC-coupled inverter if configured (uses smart logic)

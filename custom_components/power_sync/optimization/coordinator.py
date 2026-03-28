@@ -1251,7 +1251,9 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 # able to run all the way to 0% (powering the home naturally).
                 # The backup_reserve floor only applies to optimizer-controlled
                 # discharge/export (force_discharge to grid).
-                if hasattr(battery, "set_self_consumption_mode"):
+                if self._last_executed_action == "self_consumption":
+                    _LOGGER.debug("Optimizer: Already in self-consumption mode — skipping redundant API call")
+                elif hasattr(battery, "set_self_consumption_mode"):
                     await battery.set_self_consumption_mode()
                 elif hasattr(battery, "restore_normal"):
                     await battery.restore_normal()
