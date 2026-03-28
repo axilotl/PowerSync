@@ -17478,16 +17478,28 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 _LOGGER.error(f"Error setting Tesla backup reserve: {e}", exc_info=True)
 
         # Persist the user's chosen backup reserve so the optimizer knows
-        # the correct restore value (survives HA restarts and IDLE cycles)
+        # the correct restore value (survives HA restarts and IDLE cycles).
+        # Skip when the optimizer is in IDLE — IDLE temporarily elevates
+        # backup_reserve to hold SOC and must not overwrite the real value.
         try:
             entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
             opt_coord = entry_data.get("optimization_coordinator")
-            if opt_coord:
-                opt_coord._startup_backup_reserve = percent
-            new_opts = {**entry.options, "_user_backup_reserve": percent}
-            entry_data["_skip_reload"] = True
-            hass.config_entries.async_update_entry(entry, options=new_opts)
-            _LOGGER.info("Persisted user backup reserve: %d%%", percent)
+            optimizer_is_idle = (
+                opt_coord is not None
+                and getattr(opt_coord, "_idle_reserve_adjustment", False)
+            )
+            if not optimizer_is_idle:
+                if opt_coord:
+                    opt_coord._startup_backup_reserve = percent
+                new_opts = {**entry.options, "_user_backup_reserve": percent}
+                entry_data["_skip_reload"] = True
+                hass.config_entries.async_update_entry(entry, options=new_opts)
+                _LOGGER.info("Persisted user backup reserve: %d%%", percent)
+            else:
+                _LOGGER.debug(
+                    "Skipping backup reserve persistence (optimizer IDLE — temporary hold at %d%%)",
+                    percent,
+                )
         except Exception as e:
             _LOGGER.debug("Could not persist backup reserve: %s", e)
 

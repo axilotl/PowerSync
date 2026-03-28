@@ -193,6 +193,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # User's real backup reserve captured ONCE on startup, before any
         # IDLE modifies it. Used as the authoritative restore value.
         self._startup_backup_reserve: int | None = None
+        self._idle_reserve_adjustment: bool = False  # True while IDLE is setting backup_reserve (suppresses persistence)
         self._charge_holdoff: int = 0  # Hysteresis for entering CHARGE (require 2 consecutive)
 
         # Background task handles (for cancellation on disable)
@@ -1202,7 +1203,11 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     # Sigenergy: STANDBY stops all battery activity — don't touch
                     # backup_reserve (it causes grid-charging to reach the level).
                     if hasattr(battery, "set_backup_reserve") and self.battery_system != "sigenergy":
-                        await battery.set_backup_reserve(soc_pct)
+                        self._idle_reserve_adjustment = True
+                        try:
+                            await battery.set_backup_reserve(soc_pct)
+                        finally:
+                            self._idle_reserve_adjustment = False
                     _LOGGER.info(
                         "Optimizer: IDLE — holding SOC at %d%% (hold mode)",
                         soc_pct,
@@ -1225,7 +1230,11 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     reserve = min(max(soc_pct, configured_reserve_pct), 80)
                     if hasattr(battery, "set_self_consumption_mode"):
                         await battery.set_self_consumption_mode()
-                    await battery.set_backup_reserve(reserve)
+                    self._idle_reserve_adjustment = True
+                    try:
+                        await battery.set_backup_reserve(reserve)
+                    finally:
+                        self._idle_reserve_adjustment = False
                     _LOGGER.info(
                         "Optimizer: IDLE — holding SOC at %d%% via self_consumption "
                         "(backup reserve=%d%%)",
