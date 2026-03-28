@@ -820,6 +820,10 @@ SENSOR_TYPE_TOTAL_MONTHLY_COST = "total_monthly_cost"
 SWITCH_TYPE_AUTO_SYNC = "auto_sync"
 SWITCH_TYPE_FORCE_DISCHARGE = "force_discharge"
 SWITCH_TYPE_FORCE_CHARGE = "force_charge"
+SWITCH_TYPE_MONITORING_MODE = "monitoring_mode"
+
+# Monitoring mode — blocks all battery/inverter control commands
+CONF_MONITORING_MODE = "monitoring_mode"
 
 # Battery mode sensor (for automation triggers)
 SENSOR_TYPE_BATTERY_MODE = "battery_mode"

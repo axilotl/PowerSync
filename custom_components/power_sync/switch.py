@@ -17,9 +17,11 @@ from .const import (
     DOMAIN,
     CONF_AUTO_SYNC_ENABLED,
     CONF_ELECTRICITY_PROVIDER,
+    CONF_MONITORING_MODE,
     SWITCH_TYPE_AUTO_SYNC,
     SWITCH_TYPE_FORCE_DISCHARGE,
     SWITCH_TYPE_FORCE_CHARGE,
+    SWITCH_TYPE_MONITORING_MODE,
     DEFAULT_DISCHARGE_DURATION,
     ATTR_LAST_SYNC,
     ATTR_SYNC_STATUS,
@@ -56,6 +58,19 @@ async def async_setup_entry(
     _LOGGER.info(f"🔋 Switch setup: is_tesla={is_tesla}, provider={electricity_provider}, has_tou_sync={has_tou_sync}")
 
     entities = []
+
+    # Monitoring mode switch — always available for all battery systems
+    entities.append(
+        MonitoringModeSwitch(
+            hass=hass,
+            entry=entry,
+            description=SwitchEntityDescription(
+                key=SWITCH_TYPE_MONITORING_MODE,
+                name="Monitoring Mode",
+                icon="mdi:eye-outline",
+            ),
+        ),
+    )
 
     # Only add auto-sync switch for providers that actually sync TOU schedules
     if has_tou_sync:
@@ -474,3 +489,68 @@ class ForceChargeSwitch(SwitchEntity):
         if self._cancel_expiry_timer:
             self._cancel_expiry_timer()
             self._cancel_expiry_timer = None
+
+
+class MonitoringModeSwitch(SwitchEntity):
+    """Switch to enable monitoring-only mode (blocks all battery/inverter control)."""
+
+    _attr_has_entity_name = True
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: ConfigEntry,
+        description: SwitchEntityDescription,
+    ) -> None:
+        """Initialize the switch."""
+        self.hass = hass
+        self.entity_description = description
+        self._entry = entry
+        self._attr_unique_id = f"{entry.entry_id}_{description.key}"
+        self._attr_suggested_object_id = f"power_sync_{description.key}"
+
+        self._attr_is_on = entry.options.get(
+            CONF_MONITORING_MODE,
+            entry.data.get(CONF_MONITORING_MODE, False),
+        )
+
+    @property
+    def device_info(self):
+        """Return device info to link to the PowerSync device."""
+        return {
+            "identifiers": {(DOMAIN, self._entry.entry_id)},
+        }
+
+    @property
+    def is_on(self) -> bool:
+        """Return True if monitoring mode is active."""
+        return self._attr_is_on
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Enable monitoring mode — all control commands will be logged but not executed."""
+        _LOGGER.info("Monitoring mode ENABLED — all battery/inverter commands will be blocked")
+        self._attr_is_on = True
+
+        new_options = {**self._entry.options}
+        new_options[CONF_MONITORING_MODE] = True
+        self.hass.config_entries.async_update_entry(
+            self._entry,
+            options=new_options,
+        )
+
+        self.async_write_ha_state()
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Disable monitoring mode — resume normal battery/inverter control."""
+        _LOGGER.info("Monitoring mode DISABLED — normal battery/inverter control resumed")
+        self._attr_is_on = False
+
+        new_options = {**self._entry.options}
+        new_options[CONF_MONITORING_MODE] = False
+        self.hass.config_entries.async_update_entry(
+            self._entry,
+            options=new_options,
+        )
+
+        self.async_write_ha_state()

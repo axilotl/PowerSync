@@ -35,6 +35,7 @@ from .const import (
     CONF_AMBER_SITE_ID,
     CONF_AMBER_FORECAST_TYPE,
     CONF_AUTO_SYNC_ENABLED,
+    CONF_MONITORING_MODE,
     CONF_TESLEMETRY_API_TOKEN,
     CONF_TESLA_ENERGY_SITE_ID,
     CONF_DEMAND_CHARGE_ENABLED,
@@ -5192,6 +5193,12 @@ class ProviderConfigView(HomeAssistantView):
                 entry.data.get(CONF_DEMAND_CHARGE_BILLING_DAY, 1)
             )
 
+            # Add monitoring mode flag (applies to all providers)
+            config["monitoring_mode"] = entry.options.get(
+                CONF_MONITORING_MODE,
+                entry.data.get(CONF_MONITORING_MODE, False)
+            )
+
             result = {
                 "success": True,
                 "electricity_provider": electricity_provider,
@@ -5233,6 +5240,7 @@ class ProviderConfigView(HomeAssistantView):
             key_mapping = {
                 # Common
                 "auto_sync": CONF_AUTO_SYNC_ENABLED,
+                "monitoring_mode": CONF_MONITORING_MODE,
                 # Amber
                 "forecast_type": CONF_AMBER_FORECAST_TYPE,
                 "spike_protection_enabled": CONF_SPIKE_PROTECTION_ENABLED,
@@ -11161,6 +11169,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     has_custom_tariff_provider = electricity_provider in ("globird", "aemo_vpp", "tou_only", "other", "nz")
     has_tesla_site = bool(entry.data.get(CONF_TESLA_ENERGY_SITE_ID))
 
+    def _is_monitoring_mode() -> bool:
+        """Check if monitoring mode is active (blocks all control commands)."""
+        return entry.options.get(CONF_MONITORING_MODE, entry.data.get(CONF_MONITORING_MODE, False))
+
     if has_amber:
         _LOGGER.info("Running in Amber TOU Sync mode (provider: %s)", electricity_provider)
     elif has_localvolts:
@@ -13144,6 +13156,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 - 'websocket_update': Re-sync only if price differs (Stage 2)
                 - 'rest_api_check': Check REST API and re-sync if differs (Stage 3/4)
         """
+        if _is_monitoring_mode():
+            _LOGGER.info("[MONITORING] Would sync TOU schedule (%s) — blocked by monitoring mode", sync_mode)
+            return
+
         # Determine battery system type for routing
         battery_system = entry.data.get(CONF_BATTERY_SYSTEM, "tesla")
 
@@ -14486,6 +14502,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.debug("Solar curtailment is disabled, skipping check")
             return
 
+        if _is_monitoring_mode():
+            _LOGGER.info("[MONITORING] Would check solar curtailment — blocked by monitoring mode")
+            return
+
         # Skip if EV charging has overridden curtailment to allow full solar production
         entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
         if entry_data.get("ev_curtailment_override"):
@@ -14808,6 +14828,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         if not curtailment_enabled:
             _LOGGER.debug("Solar curtailment is disabled, skipping check")
+            return
+
+        if _is_monitoring_mode():
+            _LOGGER.info("[MONITORING] Would check solar curtailment (websocket) — blocked by monitoring mode")
             return
 
         # Skip if EV charging has overridden curtailment to allow full solar production

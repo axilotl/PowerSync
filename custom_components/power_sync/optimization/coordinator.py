@@ -799,6 +799,17 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if not self._executor or not self._executor.battery_controller:
             return
 
+        # Monitoring mode — log what would happen but don't execute
+        from ..const import CONF_MONITORING_MODE
+        if self._entry and self._entry.options.get(
+            CONF_MONITORING_MODE, self._entry.data.get(CONF_MONITORING_MODE, False)
+        ):
+            _LOGGER.info(
+                "[MONITORING] Optimizer would execute: %s (power=%sW) — blocked by monitoring mode",
+                action.action, getattr(action, 'power_w', 'N/A'),
+            )
+            return
+
         battery = self._executor.battery_controller
 
         # Check if force charge/discharge is active.
