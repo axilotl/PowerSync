@@ -3112,9 +3112,18 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "feasible": self._last_optimizer_result.feasible,
             }
 
+        # Read monitoring mode from config entry
+        from ..const import CONF_MONITORING_MODE
+        monitoring_mode = False
+        if self._entry:
+            monitoring_mode = self._entry.options.get(
+                CONF_MONITORING_MODE, self._entry.data.get(CONF_MONITORING_MODE, False)
+            )
+
         data = {
             "success": True,
             "enabled": self._enabled,
+            "monitoring_mode": monitoring_mode,
             "optimizer_available": optimizer_available,
             "engine_available": optimizer_available,
             "engine": "built-in",
