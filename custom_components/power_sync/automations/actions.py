@@ -775,6 +775,7 @@ async def _get_sigenergy_controller(config_entry: ConfigEntry) -> Optional["Sige
         CONF_SIGENERGY_MODBUS_HOST,
         CONF_SIGENERGY_MODBUS_PORT,
         CONF_SIGENERGY_MODBUS_SLAVE_ID,
+        CONF_SIGENERGY_EXPORT_LIMIT_KW,
     )
     from ..inverters.sigenergy import SigenergyController
 
@@ -795,11 +796,13 @@ async def _get_sigenergy_controller(config_entry: ConfigEntry) -> Optional["Sige
         CONF_SIGENERGY_MODBUS_SLAVE_ID,
         config_entry.data.get(CONF_SIGENERGY_MODBUS_SLAVE_ID, 1)
     )
+    export_limit_kw = config_entry.data.get(CONF_SIGENERGY_EXPORT_LIMIT_KW)
 
     return SigenergyController(
         host=modbus_host,
         port=modbus_port,
         slave_id=modbus_slave_id,
+        max_export_limit_kw=export_limit_kw,
     )
 
 

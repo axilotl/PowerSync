@@ -4147,6 +4147,7 @@ class AutoScheduleExecutor:
             CONF_SIGENERGY_MODBUS_HOST,
             CONF_SIGENERGY_MODBUS_PORT,
             CONF_SIGENERGY_MODBUS_SLAVE_ID,
+            CONF_SIGENERGY_EXPORT_LIMIT_KW,
         )
         from ..inverters.sigenergy import SigenergyController
 
@@ -4166,11 +4167,13 @@ class AutoScheduleExecutor:
             CONF_SIGENERGY_MODBUS_SLAVE_ID,
             self.config_entry.data.get(CONF_SIGENERGY_MODBUS_SLAVE_ID, 247)
         )
+        export_limit_kw = self.config_entry.data.get(CONF_SIGENERGY_EXPORT_LIMIT_KW)
 
         return SigenergyController(
             host=modbus_host,
             port=modbus_port,
             slave_id=modbus_slave_id,
+            max_export_limit_kw=export_limit_kw,
         )
 
     async def _get_current_backup_reserve(self) -> Optional[int]:

@@ -379,10 +379,12 @@
         "title": "Sigenergy DC Solar Curtailment",
         "description": "Configure DC solar curtailment for your Sigenergy system.\n\nWhen enabled, PowerSync can limit DC solar production during negative prices by setting the PV power limit via Modbus.\n\n**Note:** This is for DC solar connected directly to your Sigenergy system. AC-coupled inverters from other brands can be configured separately.",
         "data": {
-          "sigenergy_dc_curtailment_enabled": "Enable DC Solar Curtailment"
+          "sigenergy_dc_curtailment_enabled": "Enable DC Solar Curtailment",
+          "sigenergy_export_limit_kw": "Grid Export Limit (kW)"
         },
         "data_description": {
-          "sigenergy_dc_curtailment_enabled": "Allow PowerSync to control DC solar production during negative prices"
+          "sigenergy_dc_curtailment_enabled": "Allow PowerSync to control DC solar production during negative prices",
+          "sigenergy_export_limit_kw": "Your DNSP grid export limit in kW. Leave blank to auto-detect from inverter registers. This prevents PowerSync from ever setting an export limit higher than your grid connection allows."
         },
         "submit_button": "Next"
       },
@@ -588,6 +590,7 @@
           "sigenergy_modbus_port": "Modbus Port",
           "sigenergy_modbus_slave_id": "Modbus Slave ID",
           "sigenergy_dc_curtailment_enabled": "Enable DC Solar Curtailment",
+          "sigenergy_export_limit_kw": "Grid Export Limit (kW)",
           "sigenergy_username": "Sigenergy Cloud Email",
           "sigenergy_password": "Password",
           "sigenergy_pass_enc": "Encrypted Password (Advanced)",
@@ -597,6 +600,7 @@
         "data_description": {
           "sigenergy_modbus_host": "Local IP address of your Sigenergy inverter (e.g., 192.168.1.100)",
           "sigenergy_dc_curtailment_enabled": "Allow PowerSync to limit DC solar production during negative prices",
+          "sigenergy_export_limit_kw": "Your DNSP grid export limit in kW. Leave blank to auto-detect from inverter registers.",
           "sigenergy_username": "Your Sigenergy Cloud account email address",
           "sigenergy_password": "Your Sigenergy account password (leave blank to keep existing)",
           "sigenergy_pass_enc": "Pre-encoded password - leave blank unless you know what this is",

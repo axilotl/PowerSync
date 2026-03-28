@@ -223,6 +223,7 @@ def get_inverter_controller(
     enphase_normal_profile: Optional[str] = None,
     enphase_zero_export_profile: Optional[str] = None,
     enphase_is_installer: bool = False,
+    max_export_limit_kw: Optional[float] = None,
 ) -> Optional[InverterController]:
     """Factory function to get the appropriate inverter controller.
 
@@ -338,6 +339,7 @@ def get_inverter_controller(
             port=port,
             slave_id=slave_id,
             model=model,
+            max_export_limit_kw=max_export_limit_kw,
         )
 
     if brand_lower == "foxess":

@@ -177,6 +177,7 @@ from .const import (
     CONF_SIGENERGY_MODBUS_HOST,
     CONF_SIGENERGY_MODBUS_PORT,
     CONF_SIGENERGY_MODBUS_SLAVE_ID,
+    CONF_SIGENERGY_EXPORT_LIMIT_KW,
     CONF_SIGENERGY_ACCESS_TOKEN,
     CONF_SIGENERGY_REFRESH_TOKEN,
     CONF_SIGENERGY_TOKEN_EXPIRES_AT,
@@ -3617,6 +3618,7 @@ class InverterStatusView(HomeAssistantView):
                 enphase_normal_profile=enphase_normal_profile,
                 enphase_zero_export_profile=enphase_zero_export_profile,
                 enphase_is_installer=enphase_is_installer,
+                max_export_limit_kw=entry.data.get(CONF_SIGENERGY_EXPORT_LIMIT_KW),
             )
 
             if not controller:
@@ -11285,12 +11287,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 "Initializing Sigenergy Modbus coordinator: %s:%s (slave %s)",
                 sigenergy_modbus_host, sigenergy_modbus_port, sigenergy_modbus_slave_id
             )
+            sigenergy_export_limit_kw = entry.data.get(CONF_SIGENERGY_EXPORT_LIMIT_KW)
             sigenergy_coordinator = SigenergyEnergyCoordinator(
                 hass,
                 sigenergy_modbus_host,
                 port=sigenergy_modbus_port,
                 slave_id=sigenergy_modbus_slave_id,
                 entry_id=entry.entry_id,
+                max_export_limit_kw=sigenergy_export_limit_kw,
             )
         else:
             _LOGGER.warning("Sigenergy mode enabled but no Modbus host configured - energy sensors will be unavailable")
@@ -12556,6 +12560,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 enphase_normal_profile=enphase_normal_profile,
                 enphase_zero_export_profile=enphase_zero_export_profile,
                 enphase_is_installer=enphase_is_installer,
+                max_export_limit_kw=entry.data.get(CONF_SIGENERGY_EXPORT_LIMIT_KW),
             )
 
             if not controller:
@@ -15347,11 +15352,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     CONF_SIGENERGY_MODBUS_SLAVE_ID,
                     entry.data.get(CONF_SIGENERGY_MODBUS_SLAVE_ID, 1)
                 )
+                export_limit_kw = entry.data.get(CONF_SIGENERGY_EXPORT_LIMIT_KW)
 
                 controller = SigenergyController(
                     host=modbus_host,
                     port=modbus_port,
                     slave_id=modbus_slave_id,
+                    max_export_limit_kw=export_limit_kw,
                 )
 
                 # Enable Remote EMS + set discharge mode + set rate
@@ -16028,11 +16035,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     CONF_SIGENERGY_MODBUS_SLAVE_ID,
                     entry.data.get(CONF_SIGENERGY_MODBUS_SLAVE_ID, 1)
                 )
+                export_limit_kw = entry.data.get(CONF_SIGENERGY_EXPORT_LIMIT_KW)
 
                 controller = SigenergyController(
                     host=modbus_host,
                     port=modbus_port,
                     slave_id=modbus_slave_id,
+                    max_export_limit_kw=export_limit_kw,
                 )
 
                 # Cancel active discharge mode if switching to charge
@@ -16697,14 +16706,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         CONF_SIGENERGY_MODBUS_SLAVE_ID,
                         entry.data.get(CONF_SIGENERGY_MODBUS_SLAVE_ID, 1)
                     )
+                    export_limit_kw = entry.data.get(CONF_SIGENERGY_EXPORT_LIMIT_KW)
 
                     controller = SigenergyController(
                         host=modbus_host,
                         port=modbus_port,
                         slave_id=modbus_slave_id,
+                        max_export_limit_kw=export_limit_kw,
                     )
 
-                    # Disable Remote EMS — return to native EMS behavior
+                    # Restore to self-consumption with export safety cap
                     result = await controller.restore_normal()
                     await controller.disconnect()
 
@@ -17437,11 +17448,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     CONF_SIGENERGY_MODBUS_SLAVE_ID,
                     entry.data.get(CONF_SIGENERGY_MODBUS_SLAVE_ID, 1)
                 )
+                export_limit_kw = entry.data.get(CONF_SIGENERGY_EXPORT_LIMIT_KW)
 
                 controller = SigenergyController(
                     host=modbus_host,
                     port=modbus_port,
                     slave_id=modbus_slave_id,
+                    max_export_limit_kw=export_limit_kw,
                 )
 
                 success = await controller.set_backup_reserve(percent)
@@ -17784,6 +17797,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 enphase_normal_profile=enphase_normal_profile,
                 enphase_zero_export_profile=enphase_zero_export_profile,
                 enphase_is_installer=enphase_is_installer,
+                max_export_limit_kw=entry.data.get(CONF_SIGENERGY_EXPORT_LIMIT_KW),
             )
 
             home_load_w = None
@@ -17919,6 +17933,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 enphase_normal_profile=enphase_normal_profile,
                 enphase_zero_export_profile=enphase_zero_export_profile,
                 enphase_is_installer=enphase_is_installer,
+                max_export_limit_kw=entry.data.get(CONF_SIGENERGY_EXPORT_LIMIT_KW),
             )
 
             _LOGGER.info(f"🟢 Restoring {inverter_brand} inverter at {inverter_host}")

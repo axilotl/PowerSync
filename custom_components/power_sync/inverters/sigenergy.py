@@ -98,11 +98,16 @@ class SigenergyController(InverterController):
     REMOTE_EMS_MODE_DISCHARGE_PV = 5        # Command discharging (PV first)
     REMOTE_EMS_MODE_DISCHARGE_ESS = 6       # Command discharging (ESS first)
 
+    # ESS rated power registers (input, read-only)
+    REG_ESS_RATED_CHARGE_POWER = 30079    # ESS rated charge power (U32, gain 1000, kW)
+    REG_ESS_RATED_DISCHARGE_POWER = 30081 # ESS rated discharge power (U32, gain 1000, kW)
+
     # Curtailment values
     # Zero export lets the inverter self-curtail PV at hardware speed —
     # solar continues powering house and charging battery, only grid export is blocked.
     EXPORT_LIMIT_ZERO = 0         # Zero export
     EXPORT_LIMIT_UNLIMITED = 0xFFFFFFFE  # Unlimited export (normal operation)
+    EXPORT_LIMIT_INVALID = 0xFFFFFFFF    # Invalid register value (per Sigenergy Modbus docs)
     PV_POWER_LIMIT_ZERO = 0       # Set PV limit to 0 kW (full shutdown - not used)
     ACTIVE_POWER_PCT_ZERO = 0     # 0% active power
 
@@ -121,6 +126,7 @@ class SigenergyController(InverterController):
         port: int = 502,
         slave_id: int = 1,
         model: Optional[str] = None,
+        max_export_limit_kw: Optional[float] = None,
     ):
         """Initialize Sigenergy controller.
 
@@ -129,12 +135,14 @@ class SigenergyController(InverterController):
             port: Modbus TCP port (default: 502)
             slave_id: Modbus slave ID (default: 1)
             model: Sigenergy model (optional)
+            max_export_limit_kw: User-configured DNSP export limit in kW (None = auto-detect)
         """
         super().__init__(host, port, slave_id, model)
         self._client: Optional[AsyncModbusTcpClient] = None
         self._lock = asyncio.Lock()
         self._original_pv_limit: Optional[int] = None  # Store original limit for restore
         self._use_inverter_registers: Optional[bool] = None  # None=unknown, True=inverter, False=plant
+        self._configured_max_export_limit_kw = max_export_limit_kw
         # For AC Charger setups: AC Charger is slave 1, inverter is slave 2
         # Use user-configured slave_id for inverter registers instead of hardcoded default
         # This allows users with AC Chargers to specify slave 2 and have it work correctly
@@ -331,6 +339,80 @@ class SigenergyController(InverterController):
             return self._to_unsigned32(regs[0], regs[1])
         return None
 
+    async def _get_effective_export_safety_cap_kw(self) -> Optional[float]:
+        """Determine the effective export safety cap from multiple sources.
+
+        Priority chain:
+        1. User-configured cap (CONF_SIGENERGY_EXPORT_LIMIT_KW)
+        2. ESS rated charge/discharge power (input registers 30079/30081) — takes the lower
+        3. ESS max charge/discharge limits (holding registers 40032/40034) — takes the lower
+        4. PCS export limit register (40042) — when valid
+        5. Grid export limit register (40038) — when valid and finite
+
+        Returns:
+            Safety cap in kW, or None if no cap could be determined
+        """
+        # 1. User-configured cap takes priority
+        if self._configured_max_export_limit_kw is not None:
+            return self._configured_max_export_limit_kw
+
+        if not await self.connect():
+            return None
+
+        # 2. ESS rated power (input registers — hardware specs)
+        rated_charge_regs = await self._read_input_registers(self.REG_ESS_RATED_CHARGE_POWER, 2)
+        rated_discharge_regs = await self._read_input_registers(self.REG_ESS_RATED_DISCHARGE_POWER, 2)
+        if rated_charge_regs and len(rated_charge_regs) >= 2 and rated_discharge_regs and len(rated_discharge_regs) >= 2:
+            rated_charge = self._to_unsigned32(rated_charge_regs[0], rated_charge_regs[1])
+            rated_discharge = self._to_unsigned32(rated_discharge_regs[0], rated_discharge_regs[1])
+            if rated_charge > 0 and rated_discharge > 0:
+                cap_kw = min(rated_charge, rated_discharge) / self.GAIN_POWER
+                _LOGGER.debug(f"Export safety cap from ESS rated power: {cap_kw} kW")
+                return cap_kw
+
+        # 3. ESS max charge/discharge limits (holding registers — current config)
+        max_charge_regs = await self._read_holding_registers(self.REG_ESS_MAX_CHARGE_LIMIT, 2)
+        max_discharge_regs = await self._read_holding_registers(self.REG_ESS_MAX_DISCHARGE_LIMIT, 2)
+        if max_charge_regs and len(max_charge_regs) >= 2 and max_discharge_regs and len(max_discharge_regs) >= 2:
+            max_charge = self._to_unsigned32(max_charge_regs[0], max_charge_regs[1])
+            max_discharge = self._to_unsigned32(max_discharge_regs[0], max_discharge_regs[1])
+            if 0 < max_charge < self.EXPORT_LIMIT_UNLIMITED and 0 < max_discharge < self.EXPORT_LIMIT_UNLIMITED:
+                cap_kw = min(max_charge, max_discharge) / self.GAIN_POWER
+                _LOGGER.debug(f"Export safety cap from ESS max limits: {cap_kw} kW")
+                return cap_kw
+
+        # 4. PCS export limit (holding register 40042)
+        pcs_regs = await self._read_holding_registers(self.REG_PCS_EXPORT_LIMIT, 2)
+        if pcs_regs and len(pcs_regs) >= 2:
+            pcs_limit = self._to_unsigned32(pcs_regs[0], pcs_regs[1])
+            if 0 < pcs_limit < self.EXPORT_LIMIT_UNLIMITED and pcs_limit != self.EXPORT_LIMIT_INVALID:
+                cap_kw = pcs_limit / self.GAIN_POWER
+                _LOGGER.debug(f"Export safety cap from PCS export limit: {cap_kw} kW")
+                return cap_kw
+
+        # 5. Current grid export limit (if finite)
+        export_regs = await self._read_holding_registers(self.REG_GRID_EXPORT_LIMIT, 2)
+        if export_regs and len(export_regs) >= 2:
+            export_limit = self._to_unsigned32(export_regs[0], export_regs[1])
+            if 0 < export_limit < self.EXPORT_LIMIT_UNLIMITED and export_limit != self.EXPORT_LIMIT_INVALID:
+                cap_kw = export_limit / self.GAIN_POWER
+                _LOGGER.debug(f"Export safety cap from grid export limit: {cap_kw} kW")
+                return cap_kw
+
+        return None
+
+    async def resolve_export_safety_cap_kw(self) -> Optional[float]:
+        """Resolve and return the export safety cap.
+
+        Public method for use during setup to auto-detect and persist the cap.
+        """
+        cap = await self._get_effective_export_safety_cap_kw()
+        if cap is not None:
+            _LOGGER.info(f"Resolved Sigenergy export safety cap: {cap} kW")
+        else:
+            _LOGGER.warning("Could not resolve Sigenergy export safety cap from any source")
+        return cap
+
     async def curtail(
         self,
         home_load_w: Optional[float] = None,
@@ -381,7 +463,7 @@ class SigenergyController(InverterController):
     async def restore(self) -> bool:
         """Restore normal export operation.
 
-        Restores grid export limit to the original value or unlimited.
+        Restores grid export limit to the original value, safety cap, or unlimited.
 
         Returns:
             True if restore successful
@@ -393,8 +475,15 @@ class SigenergyController(InverterController):
                 _LOGGER.error("Cannot restore: failed to connect to Sigenergy")
                 return False
 
-            # Use stored original limit or set to unlimited
-            restore_value = self._original_pv_limit if self._original_pv_limit else self.EXPORT_LIMIT_UNLIMITED
+            # Use stored original limit, or fall back to safety cap, or unlimited
+            if self._original_pv_limit and self._original_pv_limit < self.EXPORT_LIMIT_UNLIMITED:
+                restore_value = self._original_pv_limit
+            else:
+                safety_cap = await self._get_effective_export_safety_cap_kw()
+                if safety_cap is not None:
+                    restore_value = int(safety_cap * self.GAIN_POWER)
+                else:
+                    restore_value = self.EXPORT_LIMIT_UNLIMITED
             limit_str = f"{restore_value / self.GAIN_POWER} kW" if restore_value < self.EXPORT_LIMIT_UNLIMITED else "unlimited"
             _LOGGER.info(f"Restoring export limit to: {limit_str}")
 
@@ -633,6 +722,13 @@ class SigenergyController(InverterController):
                     else:
                         attrs["export_limit_kw"] = "unlimited"
 
+                # Also read PCS export limit for diagnostics
+                pcs_limit_regs = await self._read_holding_registers(self.REG_PCS_EXPORT_LIMIT, 2)
+                if pcs_limit_regs and len(pcs_limit_regs) >= 2:
+                    pcs_limit = self._to_unsigned32(pcs_limit_regs[0], pcs_limit_regs[1])
+                    if pcs_limit < self.EXPORT_LIMIT_UNLIMITED and pcs_limit != self.EXPORT_LIMIT_INVALID:
+                        attrs["pcs_export_limit_kw"] = round(pcs_limit / self.GAIN_POWER, 2)
+
             # If we couldn't read ANY meaningful registers, the inverter is likely sleeping/offline
             if not attrs or len(attrs) == 0:
                 _LOGGER.debug("Sigenergy: No register data - inverter likely sleeping")
@@ -708,7 +804,7 @@ class SigenergyController(InverterController):
             return False
 
     async def set_export_limit(self, limit_kw: float) -> bool:
-        """Set a specific grid export limit.
+        """Set a specific grid export limit, clamped to the safety cap.
 
         Args:
             limit_kw: Export limit in kW (0 = no export)
@@ -719,6 +815,14 @@ class SigenergyController(InverterController):
         try:
             if not await self.connect():
                 return False
+
+            # Clamp to safety cap if available
+            safety_cap = await self._get_effective_export_safety_cap_kw()
+            if safety_cap is not None and limit_kw > safety_cap:
+                _LOGGER.warning(
+                    f"Requested export limit {limit_kw} kW exceeds safety cap {safety_cap} kW — clamping"
+                )
+                limit_kw = safety_cap
 
             scaled_value = int(limit_kw * self.GAIN_POWER)
             if scaled_value < 0:
@@ -735,7 +839,10 @@ class SigenergyController(InverterController):
             return False
 
     async def restore_export_limit(self) -> bool:
-        """Restore the export limit to unlimited (normal operation).
+        """Restore the export limit to the safety cap (or unlimited if no cap).
+
+        Uses the export safety cap to prevent restoring to a value that
+        exceeds DNSP limits or hardware ratings.
 
         Returns:
             True if successful
@@ -744,13 +851,20 @@ class SigenergyController(InverterController):
             if not await self.connect():
                 return False
 
-            _LOGGER.info("Restoring Sigenergy export limit to unlimited")
-            values = self._from_unsigned32(self.EXPORT_LIMIT_UNLIMITED)
+            safety_cap = await self._get_effective_export_safety_cap_kw()
+            if safety_cap is not None:
+                restore_value = int(safety_cap * self.GAIN_POWER)
+                _LOGGER.info(f"Restoring Sigenergy export limit to safety cap: {safety_cap} kW")
+            else:
+                restore_value = self.EXPORT_LIMIT_UNLIMITED
+                _LOGGER.info("Restoring Sigenergy export limit to unlimited (no safety cap available)")
+
+            values = self._from_unsigned32(restore_value)
             success = await self._write_holding_registers(self.REG_GRID_EXPORT_LIMIT, values)
 
             if success:
-                _LOGGER.info("Successfully restored Sigenergy export limit to unlimited")
-                # Clear stored original limit
+                limit_str = f"{safety_cap} kW" if safety_cap is not None else "unlimited"
+                _LOGGER.info(f"Successfully restored Sigenergy export limit to {limit_str}")
                 self._original_pv_limit = None
             else:
                 _LOGGER.error("Failed to restore Sigenergy export limit")
@@ -983,13 +1097,41 @@ class SigenergyController(InverterController):
             _LOGGER.error(f"Error in Sigenergy force discharge: {e}")
             return False
 
+    async def _restore_ess_max_limits_to_rated(self) -> None:
+        """Restore ESS max charge/discharge limits to rated values.
+
+        Force charge/discharge may have set lower limits — this restores
+        them to the hardware-rated values so normal operation isn't constrained.
+        """
+        try:
+            rated_charge_regs = await self._read_input_registers(self.REG_ESS_RATED_CHARGE_POWER, 2)
+            rated_discharge_regs = await self._read_input_registers(self.REG_ESS_RATED_DISCHARGE_POWER, 2)
+
+            if rated_charge_regs and len(rated_charge_regs) >= 2:
+                rated_charge = self._to_unsigned32(rated_charge_regs[0], rated_charge_regs[1])
+                if 0 < rated_charge < self.EXPORT_LIMIT_UNLIMITED:
+                    values = self._from_unsigned32(rated_charge)
+                    await self._write_holding_registers(self.REG_ESS_MAX_CHARGE_LIMIT, values)
+                    _LOGGER.debug(f"Restored ESS max charge limit to rated: {rated_charge / self.GAIN_POWER} kW")
+
+            if rated_discharge_regs and len(rated_discharge_regs) >= 2:
+                rated_discharge = self._to_unsigned32(rated_discharge_regs[0], rated_discharge_regs[1])
+                if 0 < rated_discharge < self.EXPORT_LIMIT_UNLIMITED:
+                    values = self._from_unsigned32(rated_discharge)
+                    await self._write_holding_registers(self.REG_ESS_MAX_DISCHARGE_LIMIT, values)
+                    _LOGGER.debug(f"Restored ESS max discharge limit to rated: {rated_discharge / self.GAIN_POWER} kW")
+
+        except Exception as e:
+            _LOGGER.warning(f"Failed to restore ESS max limits to rated: {e}")
+
     async def restore_normal(self) -> bool:
         """Restore normal self-consumption operation.
 
-        Sets Remote EMS to maximum self-consumption mode (mode 2) and
-        restores grid export limit to unlimited. Remote EMS stays enabled
-        — mode 2 is equivalent to native self-consumption but allows
-        instant transitions to charge/discharge modes.
+        Sets Remote EMS to maximum self-consumption mode (mode 2),
+        restores grid export limit to the safety cap, and restores ESS
+        max limits to rated values. Remote EMS stays enabled — mode 2
+        is equivalent to native self-consumption but allows instant
+        transitions to charge/discharge modes.
 
         Returns:
             True if successful
@@ -1004,13 +1146,16 @@ class SigenergyController(InverterController):
                 _LOGGER.error("Failed to set self-consumption mode during restore")
                 return False
 
-            # 2. Restore grid export limit to unlimited
+            # 2. Restore grid export limit to safety cap
             # force_discharge sets this to a specific value — need to clear it
             export_result = await self.restore_export_limit()
             if not export_result:
-                _LOGGER.warning("Failed to restore grid export limit to unlimited")
+                _LOGGER.warning("Failed to restore grid export limit")
 
-            _LOGGER.info("Sigenergy restored to self-consumption (Remote EMS mode 2, unlimited export)")
+            # 3. Restore ESS max limits to rated values
+            await self._restore_ess_max_limits_to_rated()
+
+            _LOGGER.info("Sigenergy restored to self-consumption (Remote EMS mode 2, export limit restored)")
             return True
 
         except Exception as e:

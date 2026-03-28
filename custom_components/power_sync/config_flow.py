@@ -76,6 +76,7 @@ from .const import (
     CONF_SIGENERGY_MODBUS_HOST,
     CONF_SIGENERGY_MODBUS_PORT,
     CONF_SIGENERGY_MODBUS_SLAVE_ID,
+    CONF_SIGENERGY_EXPORT_LIMIT_KW,
     DEFAULT_SIGENERGY_MODBUS_PORT,
     DEFAULT_SIGENERGY_MODBUS_SLAVE_ID,
     CONF_AEMO_SPIKE_ENABLED,
@@ -1632,6 +1633,9 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 return back
             dc_enabled = user_input.get(CONF_SIGENERGY_DC_CURTAILMENT_ENABLED, False)
             self._sigenergy_data[CONF_SIGENERGY_DC_CURTAILMENT_ENABLED] = dc_enabled
+            export_limit = user_input.get(CONF_SIGENERGY_EXPORT_LIMIT_KW)
+            if export_limit is not None:
+                self._sigenergy_data[CONF_SIGENERGY_EXPORT_LIMIT_KW] = export_limit
             return await self.async_step_curtailment_setup()
 
         self._push_step("sigenergy_dc_curtailment")
@@ -1644,6 +1648,9 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     CONF_SIGENERGY_DC_CURTAILMENT_ENABLED,
                     default=False,
                 ): bool,
+                vol.Optional(
+                    CONF_SIGENERGY_EXPORT_LIMIT_KW,
+                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
             })),
             errors=errors,
         )
@@ -3935,6 +3942,11 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 new_data[CONF_SIGENERGY_DC_CURTAILMENT_ENABLED] = user_input.get(
                     CONF_SIGENERGY_DC_CURTAILMENT_ENABLED, False
                 )
+                export_limit = user_input.get(CONF_SIGENERGY_EXPORT_LIMIT_KW)
+                if export_limit is not None:
+                    new_data[CONF_SIGENERGY_EXPORT_LIMIT_KW] = export_limit
+                elif CONF_SIGENERGY_EXPORT_LIMIT_KW in new_data:
+                    del new_data[CONF_SIGENERGY_EXPORT_LIMIT_KW]
 
                 # Update Sigenergy Cloud API credentials if provided
                 sigen_username = user_input.get(CONF_SIGENERGY_USERNAME, "").strip()
@@ -3990,6 +4002,7 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
         current_modbus_port = self._get_option(CONF_SIGENERGY_MODBUS_PORT, DEFAULT_SIGENERGY_MODBUS_PORT)
         current_modbus_slave_id = self._get_option(CONF_SIGENERGY_MODBUS_SLAVE_ID, DEFAULT_SIGENERGY_MODBUS_SLAVE_ID)
         current_dc_curtailment = self._get_option(CONF_SIGENERGY_DC_CURTAILMENT_ENABLED, False)
+        current_export_limit = self.config_entry.data.get(CONF_SIGENERGY_EXPORT_LIMIT_KW)
         current_opt_provider = self.config_entry.data.get(CONF_OPTIMIZATION_PROVIDER, OPT_PROVIDER_NATIVE)
         current_backup_reserve = self.config_entry.data.get(CONF_OPTIMIZATION_BACKUP_RESERVE, DEFAULT_OPTIMIZATION_BACKUP_RESERVE)
 
@@ -4037,6 +4050,10 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                         CONF_SIGENERGY_DC_CURTAILMENT_ENABLED,
                         default=current_dc_curtailment,
                     ): bool,
+                    vol.Optional(
+                        CONF_SIGENERGY_EXPORT_LIMIT_KW,
+                        description={"suggested_value": current_export_limit},
+                    ): vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
                     # Sigenergy Cloud API credentials for tariff sync
                     vol.Optional(
                         CONF_SIGENERGY_USERNAME,

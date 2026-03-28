@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, date
 import logging
 import re
 import time
-from typing import Any
+from typing import Any, Optional
 import asyncio
 
 import aiohttp
@@ -2113,6 +2113,7 @@ class SigenergyEnergyCoordinator(DataUpdateCoordinator):
         port: int = 502,
         slave_id: int = 1,
         entry_id: str = "",
+        max_export_limit_kw: Optional[float] = None,
     ) -> None:
         """Initialize the coordinator.
 
@@ -2122,6 +2123,7 @@ class SigenergyEnergyCoordinator(DataUpdateCoordinator):
             port: Modbus TCP port (default: 502)
             slave_id: Modbus slave ID (default: 1)
             entry_id: Config entry ID for price lookups
+            max_export_limit_kw: User-configured DNSP export limit in kW
         """
         from .inverters.sigenergy import SigenergyController
 
@@ -2129,7 +2131,7 @@ class SigenergyEnergyCoordinator(DataUpdateCoordinator):
         self.port = port
         self.slave_id = slave_id
         self._entry_id = entry_id
-        self._controller = SigenergyController(host, port, slave_id)
+        self._controller = SigenergyController(host, port, slave_id, max_export_limit_kw=max_export_limit_kw)
         self._energy_acc = EnergyAccumulator(hass, "sigenergy")
 
         super().__init__(
