@@ -5193,6 +5193,20 @@ class ProviderConfigView(HomeAssistantView):
                 entry.data.get(CONF_DEMAND_CHARGE_BILLING_DAY, 1)
             )
 
+            # Add price spike alert fields for all providers (notifications are provider-agnostic)
+            config["price_spike_alert"] = entry.options.get(
+                CONF_PRICE_SPIKE_ALERT,
+                entry.data.get(CONF_PRICE_SPIKE_ALERT, False)
+            )
+            config["price_spike_import_threshold"] = entry.options.get(
+                CONF_PRICE_SPIKE_IMPORT_THRESHOLD,
+                entry.data.get(CONF_PRICE_SPIKE_IMPORT_THRESHOLD, DEFAULT_PRICE_SPIKE_IMPORT_THRESHOLD)
+            )
+            config["price_spike_export_threshold"] = entry.options.get(
+                CONF_PRICE_SPIKE_EXPORT_THRESHOLD,
+                entry.data.get(CONF_PRICE_SPIKE_EXPORT_THRESHOLD, DEFAULT_PRICE_SPIKE_EXPORT_THRESHOLD)
+            )
+
             # Add monitoring mode flag (applies to all providers)
             config["monitoring_mode"] = entry.options.get(
                 CONF_MONITORING_MODE,
