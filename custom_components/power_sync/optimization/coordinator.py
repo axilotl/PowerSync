@@ -3284,6 +3284,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 len(self._current_schedule.actions),
             )
             action_ranges: list[dict[str, Any]] = []
+            interval_delta = timedelta(minutes=self._config.interval_minutes)
             for a in self._current_schedule.actions[:intervals_24h]:
                 ad = a.to_dict()
                 # Match executor behavior: override idle → self_consumption
@@ -3294,8 +3295,9 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     action_ranges
                     and action_ranges[-1]["action"] == ad["action"]
                 ):
-                    # Extend the current range
-                    action_ranges[-1]["end_time"] = ad["timestamp"]
+                    # Extend the current range — end_time is the END of this
+                    # interval (start + duration), not the start.
+                    action_ranges[-1]["end_time"] = ad["timestamp"] + interval_delta
                     action_ranges[-1]["soc"] = ad["soc"]
                     if ad["power_w"]:
                         power_vals = action_ranges[-1].setdefault("_powers", [])
@@ -3306,7 +3308,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     action_ranges.append({
                         "action": ad["action"],
                         "timestamp": ad["timestamp"],
-                        "end_time": ad["timestamp"],
+                        "end_time": ad["timestamp"] + interval_delta,
                         "power_w": ad["power_w"],
                         "soc": ad["soc"],
                         "_powers": [ad["power_w"]] if ad["power_w"] else [],
