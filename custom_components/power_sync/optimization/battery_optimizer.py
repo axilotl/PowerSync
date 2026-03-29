@@ -287,10 +287,19 @@ class BatteryOptimizer:
         # === Objective function: cost minimization ===
         # minimize SUM(import_price * grid_import - export_price * grid_export) * dt
         c = [0.0] * (4 * n)
+        # Tiny time-preference epsilon to break LP degeneracy.  When multiple
+        # timesteps have the same price (e.g. flat TOU rate across a window),
+        # the LP is indifferent about which ones to use and HiGHS may scatter
+        # actions across non-contiguous timesteps (charge-SC-charge-SC…).
+        # Adding a monotonic epsilon concentrates actions into contiguous blocks:
+        #   - Exports: prefer earlier (decreasing eps) → discharge first, then SC
+        #   - Imports/charging: prefer later (increasing eps) → SC first, then charge
+        # 1e-7 per step is ~5e-5 across 576 steps — negligible vs real prices.
+        eps = 1e-7
         for t in range(n):
-            c[t] = import_prices[t] * dt        # grid_import cost
+            c[t] = (import_prices[t] + eps * (n - t)) * dt  # grid_import: prefer later
             if export_prices[t] > 0:
-                c[n + t] = -export_prices[t] * dt   # grid_export revenue (negative = profit)
+                c[n + t] = -(export_prices[t] + eps * (n - t)) * dt  # grid_export: prefer earlier
             else:
                 c[n + t] = 0.01 * dt                # chip-suppressed: small cost to avoid free exports
 
