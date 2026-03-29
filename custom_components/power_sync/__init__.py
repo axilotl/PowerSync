@@ -5220,7 +5220,13 @@ class ProviderConfigView(HomeAssistantView):
                 "config": config,
             }
 
-            _LOGGER.info(f"✅ Provider config response: provider={electricity_provider}")
+            _LOGGER.info(
+                "✅ Provider config response: provider=%s, price_spike_alert=%s, monitoring_mode=%s, config_keys=%s",
+                electricity_provider,
+                config.get("price_spike_alert"),
+                config.get("monitoring_mode"),
+                list(config.keys()),
+            )
             return web.json_response(result)
 
         except Exception as e:
@@ -5322,7 +5328,11 @@ class ProviderConfigView(HomeAssistantView):
             entry_data["_skip_reload"] = True
             self._hass.config_entries.async_update_entry(entry, options=new_options)
 
-            _LOGGER.info(f"✅ Provider config updated successfully")
+            _LOGGER.info(
+                "✅ Provider config updated successfully. price_spike_alert in options: %s, options keys: %s",
+                new_options.get(CONF_PRICE_SPIKE_ALERT),
+                [k for k in new_options if 'spike' in k or 'price' in k],
+            )
             return web.json_response({"success": True})
 
         except Exception as e:
