@@ -14,7 +14,7 @@
 
 </div>
 
-> **Disclaimer:** This is an unofficial integration and is not affiliated with or endorsed by Tesla, Sigenergy, Sungrow, FoxESS, GoodWe, Amber Electric, Localvolts, or Octopus Energy. Use at your own risk.
+> **Disclaimer:** This is an unofficial integration and is not affiliated with or endorsed by Tesla, Sigenergy, Sungrow, FoxESS, GoodWe, Amber Electric, Localvolts, Octopus Energy, or EPEX/ENTSO-E. Use at your own risk.
 
 ---
 
@@ -39,6 +39,7 @@
 | **Flow Power / AEMO** | Australia | Wholesale pricing |
 | **Globird / AEMO VPP** | Australia | Static + spike detection |
 | **Octopus Energy** | UK | Dynamic 30-min (Agile, Go, Flux, Tracker) |
+| **EPEX Day-Ahead** | EU (DE, AT, BE, NL, DK, SE) | Hourly day-ahead pricing with configurable surcharge & tax |
 | **NZ TOU** | New Zealand | Static TOU (Octopus NZ, Electric Kiwi, Contact Energy, Custom) |
 
 ---
