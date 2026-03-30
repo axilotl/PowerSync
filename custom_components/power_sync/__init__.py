@@ -11920,7 +11920,29 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         octopus_export_product_code = entry.data.get(CONF_OCTOPUS_EXPORT_PRODUCT_CODE)
         octopus_export_tariff_code = entry.data.get(CONF_OCTOPUS_EXPORT_TARIFF_CODE)
 
-        # Fallback: derive export codes from product key if not stored (existing installs)
+        # Try to discover actual export tariff from user's Octopus account
+        if not octopus_export_product_code:
+            octopus_api_key = entry.data.get(CONF_OCTOPUS_API_KEY) or entry.options.get(CONF_OCTOPUS_API_KEY, "")
+            octopus_account = entry.data.get(CONF_OCTOPUS_ACCOUNT_NUMBER) or entry.options.get(CONF_OCTOPUS_ACCOUNT_NUMBER, "")
+
+            if octopus_api_key and octopus_account:
+                try:
+                    from .octopus_api import OctopusAPIClient
+                    discovery_client = OctopusAPIClient(async_get_clientsession(hass))
+                    discovered_product, discovered_tariff = await discovery_client.discover_export_tariff(
+                        octopus_api_key, octopus_account,
+                    )
+                    if discovered_product and discovered_tariff:
+                        octopus_export_product_code = discovered_product
+                        octopus_export_tariff_code = discovered_tariff
+                        _LOGGER.info(
+                            "Discovered export tariff from Octopus account: %s (%s)",
+                            discovered_product, discovered_tariff,
+                        )
+                except Exception as e:
+                    _LOGGER.debug("Could not discover export tariff from account: %s", e)
+
+        # Fallback: derive export codes from product key if not stored or discovered
         if not octopus_export_product_code:
             octopus_product_key = entry.data.get(CONF_OCTOPUS_PRODUCT, "")
             fallback_export_code = OCTOPUS_EXPORT_PRODUCT_CODES.get(octopus_product_key)

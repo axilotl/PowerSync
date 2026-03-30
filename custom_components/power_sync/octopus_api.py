@@ -213,6 +213,94 @@ class OctopusAPIClient:
 
         return None
 
+    async def discover_export_tariff(
+        self,
+        api_key: str,
+        account_number: str,
+    ) -> tuple[str | None, str | None]:
+        """Discover the user's actual export tariff from their Octopus account.
+
+        Uses the REST API account endpoint with API key authentication to find
+        the export meter's active agreement and extract the tariff/product codes.
+
+        Args:
+            api_key: Octopus API key (used as basic auth username)
+            account_number: Octopus account number (e.g., "A-12345678")
+
+        Returns:
+            Tuple of (export_product_code, export_tariff_code), or (None, None)
+        """
+        import base64
+        import re
+
+        url = f"{self.BASE_URL}/accounts/{account_number}/"
+        auth_str = base64.b64encode(f"{api_key}:".encode()).decode()
+
+        try:
+            async with self.session.get(
+                url,
+                headers={"Authorization": f"Basic {auth_str}"},
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as response:
+                if response.status != 200:
+                    _LOGGER.debug(
+                        "Could not fetch Octopus account %s: HTTP %s",
+                        account_number, response.status,
+                    )
+                    return (None, None)
+
+                data = await response.json()
+
+        except Exception as err:
+            _LOGGER.debug("Error fetching Octopus account: %s", err)
+            return (None, None)
+
+        # Search for export meter point with active agreement
+        for prop in data.get("properties", []):
+            for mp in prop.get("electricity_meter_points", []):
+                # Export meters have "is_export" flag or "EXPORT" in MPAN metadata
+                is_export = mp.get("is_export", False)
+
+                # Also check by direction or register type
+                if not is_export:
+                    # Check agreements for export tariff codes
+                    for agreement in mp.get("agreements", []):
+                        tariff_code = agreement.get("tariff_code", "")
+                        if "OUTGOING" in tariff_code.upper() or "EXPORT" in tariff_code.upper():
+                            is_export = True
+                            break
+
+                if not is_export:
+                    continue
+
+                # Find active agreement
+                now_str = datetime.now(timezone.utc).isoformat()
+                for agreement in mp.get("agreements", []):
+                    valid_from = agreement.get("valid_from", "")
+                    valid_to = agreement.get("valid_to")
+
+                    # Check if agreement is current
+                    if valid_from and valid_from <= now_str:
+                        if valid_to is None or valid_to >= now_str:
+                            tariff_code = agreement.get("tariff_code", "")
+                            if tariff_code:
+                                # Extract product code from tariff code
+                                # Format: E-1R-{PRODUCT_CODE}-{REGION}
+                                match = re.match(
+                                    r"E-1R-(.+)-([A-P])$", tariff_code
+                                )
+                                if match:
+                                    product_code = match.group(1)
+                                    _LOGGER.info(
+                                        "Discovered export tariff from account: "
+                                        "product=%s, tariff=%s",
+                                        product_code, tariff_code,
+                                    )
+                                    return (product_code, tariff_code)
+
+        _LOGGER.debug("No export tariff found in Octopus account %s", account_number)
+        return (None, None)
+
     async def discover_tracker_product(self) -> str | None:
         """Discover the latest Tracker product code from the Octopus API.
 
