@@ -2099,6 +2099,149 @@ class AEMOPriceCoordinator(DataUpdateCoordinator):
 AEMOSensorCoordinator = AEMOPriceCoordinator
 
 
+class EPEXPriceCoordinator(DataUpdateCoordinator):
+    """Coordinator that fetches EPEX day-ahead price data.
+
+    Uses the EPEX Predictor API (epexpredictor.batzill.com) for European
+    day-ahead electricity prices. Supports DE, AT, BE, NL, SE1-4, DK1-2.
+
+    The API applies surcharges and taxes server-side, so returned prices
+    are the final consumer price in ct/kWh.
+
+    Data is converted to Amber-compatible format for the optimizer.
+    """
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        region: str,
+        session: aiohttp.ClientSession,
+        surcharge: float = 0.0,
+        tax_percent: float = 0.0,
+        export_rate: float = 0.0,
+    ) -> None:
+        """Initialize the coordinator.
+
+        Args:
+            hass: HomeAssistant instance
+            region: EPEX bidding zone code (DE, AT, BE, NL, SE1-4, DK1-2)
+            session: aiohttp client session for API requests
+            surcharge: Fixed surcharge in ct/kWh (network fees, levies)
+            tax_percent: Tax percentage (e.g. 21 for Belgian VAT)
+            export_rate: Fixed feed-in rate in ct/kWh (0 = use wholesale price)
+        """
+        from .epex_api import EPEXAPIClient
+
+        self.region = region
+        self._surcharge = surcharge
+        self._tax_percent = tax_percent
+        self._export_rate = export_rate
+        self._client = EPEXAPIClient(session)
+
+        super().__init__(
+            hass,
+            _LOGGER,
+            name=f"{DOMAIN}_epex",
+            update_interval=timedelta(minutes=30),
+        )
+
+    async def _async_update_data(self) -> dict[str, Any]:
+        """Fetch data from EPEX API and convert to Amber-compatible format.
+
+        Returns:
+            dict with 'current', 'forecast', and 'last_update' in Amber-compatible format
+        """
+        try:
+            prices = await self._client.get_prices(
+                region=self.region,
+                surcharge=self._surcharge,
+                tax_percent=self._tax_percent,
+            )
+
+            if not prices:
+                raise UpdateFailed(f"No prices returned from EPEX API for {self.region}")
+
+            now = dt_util.utcnow()
+            current_prices = []
+            forecast_prices = []
+
+            for entry in prices:
+                starts_at_str = entry.get("startsAt", "")
+                total_ct = entry.get("total", 0)
+
+                if not starts_at_str:
+                    continue
+
+                try:
+                    starts_at = datetime.fromisoformat(starts_at_str)
+                    if starts_at.tzinfo is None:
+                        starts_at = starts_at.replace(tzinfo=dt_util.UTC)
+                    ends_at = starts_at + timedelta(hours=1)
+                except (ValueError, TypeError):
+                    continue
+
+                # Determine interval type
+                if starts_at <= now < ends_at:
+                    interval_type = "CurrentInterval"
+                elif ends_at <= now:
+                    interval_type = "ActualInterval"
+                else:
+                    interval_type = "ForecastInterval"
+
+                # Import price entry (ct/kWh = Amber's perKwh format)
+                import_entry = {
+                    "nemTime": ends_at.isoformat(),
+                    "perKwh": total_ct,
+                    "channelType": "general",
+                    "type": interval_type,
+                    "duration": 60,
+                }
+
+                # Export price: use fixed rate if configured, otherwise wholesale (no surcharge/tax)
+                if self._export_rate > 0:
+                    export_ct = -self._export_rate
+                else:
+                    # Use negative of import price (wholesale approximation)
+                    export_ct = -total_ct
+
+                export_entry = {
+                    "nemTime": ends_at.isoformat(),
+                    "perKwh": export_ct,
+                    "channelType": "feedIn",
+                    "type": interval_type,
+                    "duration": 60,
+                }
+
+                if interval_type == "CurrentInterval":
+                    current_prices.extend([import_entry, export_entry])
+                elif interval_type == "ForecastInterval":
+                    forecast_prices.extend([import_entry, export_entry])
+
+            if not current_prices and forecast_prices:
+                # No current interval yet — use first forecast as current
+                current_prices = forecast_prices[:2]
+
+            _LOGGER.info(
+                "EPEX API data for %s: %d current, %d forecast entries "
+                "(surcharge=%.1f ct, tax=%.1f%%)",
+                self.region,
+                len(current_prices),
+                len(forecast_prices),
+                self._surcharge,
+                self._tax_percent,
+            )
+
+            return {
+                "current": current_prices,
+                "forecast": forecast_prices,
+                "last_update": dt_util.utcnow(),
+                "source": "epex_api",
+            }
+
+        except Exception as err:
+            raise UpdateFailed(f"Error fetching EPEX data: {err}") from err
+
+
 class SigenergyEnergyCoordinator(DataUpdateCoordinator):
     """Coordinator to fetch Sigenergy energy data via Modbus.
 

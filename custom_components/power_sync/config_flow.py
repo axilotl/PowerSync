@@ -231,6 +231,12 @@ from .const import (
     CONF_LOCALVOLTS_API_KEY,
     CONF_LOCALVOLTS_PARTNER_ID,
     CONF_LOCALVOLTS_NMI,
+    # EPEX Day-Ahead (EU) configuration
+    CONF_EPEX_REGION,
+    CONF_EPEX_SURCHARGE,
+    CONF_EPEX_TAX_PERCENT,
+    CONF_EPEX_EXPORT_RATE,
+    EPEX_REGIONS,
     # Smart Optimization configuration
     CONF_BATTERY_MANAGEMENT_MODE,
     BATTERY_MODE_MANUAL,
@@ -612,6 +618,7 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._flow_power_data: dict[str, Any] = {}
         self._octopus_data: dict[str, Any] = {}  # Octopus Energy UK configuration
         self._localvolts_data: dict[str, Any] = {}  # Localvolts configuration
+        self._epex_data: dict[str, Any] = {}  # EPEX Day-Ahead (EU) configuration
         self._selected_electricity_provider: str = "amber"
         self._custom_tariff_data: dict[str, Any] = {}  # Custom tariff for non-Amber users
         # Optimization provider selection (for Tesla/Sigenergy)
@@ -703,6 +710,11 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 self._aemo_only_mode = False
                 self._amber_data = {}  # No Amber API needed
                 return await self.async_step_octopus()
+            elif provider == "epex":
+                # EPEX Day-Ahead: European dynamic pricing
+                self._aemo_only_mode = False
+                self._amber_data = {}
+                return await self.async_step_epex()
             elif provider == "nz":
                 # New Zealand TOU: Static tariff with retailer templates
                 self._aemo_only_mode = True
@@ -1217,6 +1229,66 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             description_placeholders={
                 "amber_url": "https://app.amber.com.au/developers",
             },
+        )
+
+    async def async_step_epex(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Handle EPEX Day-Ahead (EU) configuration."""
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            back = await self._check_back(user_input)
+            if back:
+                return back
+
+            region = user_input.get(CONF_EPEX_REGION, "DE")
+            surcharge = user_input.get(CONF_EPEX_SURCHARGE, 0.0)
+            tax_percent = user_input.get(CONF_EPEX_TAX_PERCENT, 0.0)
+            export_rate = user_input.get(CONF_EPEX_EXPORT_RATE, 0.0)
+
+            # Validate by fetching prices from EPEX API
+            try:
+                from .epex_api import EPEXAPIClient
+
+                client = EPEXAPIClient(async_get_clientsession(self.hass))
+                valid = await client.validate_region(region)
+
+                if not valid:
+                    errors["base"] = "no_prices"
+                    _LOGGER.error("No EPEX prices found for region %s", region)
+            except Exception as err:
+                errors["base"] = "cannot_connect"
+                _LOGGER.exception("Error validating EPEX region: %s", err)
+
+            if not errors:
+                self._epex_data = {
+                    CONF_EPEX_REGION: region,
+                    CONF_EPEX_SURCHARGE: surcharge,
+                    CONF_EPEX_TAX_PERCENT: tax_percent,
+                    CONF_EPEX_EXPORT_RATE: export_rate,
+                }
+
+                _LOGGER.info(
+                    "EPEX config validated: region=%s, surcharge=%.1f ct, tax=%.1f%%, export=%.1f ct",
+                    region, surcharge, tax_percent, export_rate,
+                )
+
+                return await self.async_step_amber_settings()
+
+        data_schema = vol.Schema({
+            vol.Required(CONF_EPEX_REGION, default="DE"): vol.In(EPEX_REGIONS),
+            vol.Optional(CONF_EPEX_SURCHARGE, default=0.0): vol.Coerce(float),
+            vol.Optional(CONF_EPEX_TAX_PERCENT, default=0.0): vol.Coerce(float),
+            vol.Optional(CONF_EPEX_EXPORT_RATE, default=0.0): vol.Coerce(float),
+        })
+
+        self._push_step("epex")
+
+        return self.async_show_form(
+            step_id="epex",
+            data_schema=self._schema_with_back(data_schema),
+            errors=errors,
         )
 
     async def async_step_localvolts(
@@ -1774,6 +1846,7 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             **self._flow_power_data,
             **self._octopus_data,  # Include Octopus Energy UK configuration
             **self._localvolts_data,
+            **self._epex_data,
             **self._sigenergy_data,
             **self._aemo_data,  # Include AEMO configuration
             **getattr(self, '_demand_data', {}),
@@ -1923,6 +1996,7 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             **self._flow_power_data,
             **self._octopus_data,  # Include Octopus Energy UK configuration
             **self._localvolts_data,
+            **self._epex_data,
             **self._sungrow_data,
             **self._aemo_data,  # Include AEMO configuration
             **getattr(self, '_demand_data', {}),
@@ -2214,6 +2288,7 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             **self._flow_power_data,
             **self._octopus_data,
             **self._localvolts_data,
+            **self._epex_data,
             **self._foxess_data,
             **self._aemo_data,
             **getattr(self, '_demand_data', {}),
@@ -2313,6 +2388,7 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             **self._flow_power_data,
             **self._octopus_data,
             **self._localvolts_data,
+            **self._epex_data,
             **self._goodwe_data,
             **self._aemo_data,
             **getattr(self, '_demand_data', {}),
@@ -3663,6 +3739,7 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             **self._flow_power_data,
             **self._octopus_data,
             **self._localvolts_data,
+            **self._epex_data,
             **getattr(self, '_curtailment_data', {}),
             **getattr(self, '_inverter_data', {}),
             **getattr(self, '_demand_data', {}),
@@ -3965,6 +4042,8 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 return await self.async_step_localvolts_options()
             elif self._provider == "octopus":
                 return await self.async_step_octopus_options()
+            elif self._provider == "epex":
+                return await self.async_step_epex_options()
             elif self._provider == "nz":
                 return await self.async_step_nz_options()
 
@@ -4100,6 +4179,8 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     return await self.async_step_globird_options()
                 elif self._provider == "octopus":
                     return await self.async_step_octopus_options()
+                elif self._provider == "epex":
+                    return await self.async_step_epex_options()
                 elif self._provider == "nz":
                     return await self.async_step_nz_options()
 
@@ -4265,6 +4346,8 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     return await self.async_step_globird_options()
                 elif self._provider == "octopus":
                     return await self.async_step_octopus_options()
+                elif self._provider == "epex":
+                    return await self.async_step_epex_options()
                 elif self._provider == "nz":
                     return await self.async_step_nz_options()
 
@@ -4402,6 +4485,8 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     return await self.async_step_globird_options()
                 elif self._provider == "octopus":
                     return await self.async_step_octopus_options()
+                elif self._provider == "epex":
+                    return await self.async_step_epex_options()
                 elif self._provider == "nz":
                     return await self.async_step_nz_options()
 
@@ -4514,6 +4599,8 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     return await self.async_step_globird_options()
                 elif self._provider == "octopus":
                     return await self.async_step_octopus_options()
+                elif self._provider == "epex":
+                    return await self.async_step_epex_options()
                 elif self._provider == "nz":
                     return await self.async_step_nz_options()
 
@@ -5775,6 +5862,67 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 vol.Required(CONF_LOCALVOLTS_NMI, default=current_nmi): TextSelector(),
                 vol.Optional(CONF_AUTO_SYNC_ENABLED, default=current_auto_sync): bool,
                 vol.Optional(CONF_BATTERY_CURTAILMENT_ENABLED, default=current_curtailment): bool,
+            }),
+            errors=errors,
+        )
+
+    async def async_step_epex_options(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Step 2f: EPEX Day-Ahead (EU) specific options."""
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            region = user_input.get(CONF_EPEX_REGION, "DE")
+            surcharge = user_input.get(CONF_EPEX_SURCHARGE, 0.0)
+            tax_percent = user_input.get(CONF_EPEX_TAX_PERCENT, 0.0)
+            export_rate = user_input.get(CONF_EPEX_EXPORT_RATE, 0.0)
+
+            # Validate by fetching prices
+            try:
+                from .epex_api import EPEXAPIClient
+
+                client = EPEXAPIClient(async_get_clientsession(self.hass))
+                valid = await client.validate_region(region)
+
+                if not valid:
+                    errors["base"] = "no_prices"
+            except Exception as err:
+                errors["base"] = "cannot_connect"
+                _LOGGER.exception("Error validating EPEX region: %s", err)
+
+            if not errors:
+                self._amber_options = {
+                    CONF_ELECTRICITY_PROVIDER: "epex",
+                    CONF_EPEX_REGION: region,
+                    CONF_EPEX_SURCHARGE: surcharge,
+                    CONF_EPEX_TAX_PERCENT: tax_percent,
+                    CONF_EPEX_EXPORT_RATE: export_rate,
+                    CONF_AUTO_SYNC_ENABLED: user_input.get(CONF_AUTO_SYNC_ENABLED, True),
+                    CONF_BATTERY_CURTAILMENT_ENABLED: user_input.get(CONF_BATTERY_CURTAILMENT_ENABLED, False),
+                }
+                return await self.async_step_demand_charge_options()
+
+        current_region = self._get_option(CONF_EPEX_REGION, "DE")
+        current_surcharge = self._get_option(CONF_EPEX_SURCHARGE, 0.0)
+        current_tax = self._get_option(CONF_EPEX_TAX_PERCENT, 0.0)
+        current_export = self._get_option(CONF_EPEX_EXPORT_RATE, 0.0)
+
+        return self.async_show_form(
+            step_id="epex_options",
+            data_schema=vol.Schema({
+                vol.Required(CONF_EPEX_REGION, default=current_region): vol.In(EPEX_REGIONS),
+                vol.Optional(CONF_EPEX_SURCHARGE, default=current_surcharge): vol.Coerce(float),
+                vol.Optional(CONF_EPEX_TAX_PERCENT, default=current_tax): vol.Coerce(float),
+                vol.Optional(CONF_EPEX_EXPORT_RATE, default=current_export): vol.Coerce(float),
+                vol.Optional(
+                    CONF_AUTO_SYNC_ENABLED,
+                    default=self._get_option(CONF_AUTO_SYNC_ENABLED, True),
+                ): bool,
+                vol.Optional(
+                    CONF_BATTERY_CURTAILMENT_ENABLED,
+                    default=self._get_option(CONF_BATTERY_CURTAILMENT_ENABLED, False),
+                ): bool,
             }),
             errors=errors,
         )

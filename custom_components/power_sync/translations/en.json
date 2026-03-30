@@ -109,6 +109,23 @@
         },
         "submit_button": "Next"
       },
+      "epex": {
+        "title": "EPEX Day-Ahead (EU) Configuration",
+        "description": "Configure EPEX day-ahead electricity pricing for European markets.\n\nPrices are sourced from ENTSO-E via the EPEX Predictor API (free, no account needed).\n\n**Surcharge**: Add fixed network fees, levies, and other charges (ct/kWh).\n**Tax**: VAT percentage applied on top (e.g. 21% for Belgium, 19% for Germany).\n**Export Rate**: Fixed feed-in tariff in ct/kWh. Leave at 0 to use the wholesale price for export valuation.",
+        "data": {
+          "epex_region": "Bidding Zone",
+          "epex_surcharge": "Surcharge (ct/kWh)",
+          "epex_tax_percent": "Tax (%)",
+          "epex_export_rate": "Fixed Export Rate (ct/kWh)"
+        },
+        "data_description": {
+          "epex_region": "Your EPEX electricity market bidding zone",
+          "epex_surcharge": "Fixed additional charges per kWh (network fees, levies, etc.)",
+          "epex_tax_percent": "Tax percentage applied to the total price (e.g. 21 for 21% VAT)",
+          "epex_export_rate": "Fixed feed-in rate in ct/kWh. Set to 0 to use wholesale price for exports."
+        },
+        "submit_button": "Next"
+      },
       "octopus": {
         "title": "Octopus Energy UK Configuration",
         "description": "Configure your Octopus Energy tariff. Select your product and GSP region.\n\n**Agile Octopus**: Dynamic half-hourly pricing based on wholesale rates.\n**Octopus Go**: EV tariff with cheap overnight rates (00:30-05:30).\n**Intelligent Octopus Go**: Smart EV/battery tariff with optimised overnight rates.\n**Octopus Flux**: Solar/battery optimised import/export tariff.\n**Intelligent Octopus Flux**: Smart battery optimised import/export tariff.\n**Tracker**: Daily price tracking based on wholesale rates.\n\nFind your GSP region on your Octopus bill or at {octopus_url}",
@@ -835,6 +852,19 @@
           "localvolts_nmi": "Your 10-digit National Meter Identifier. Use * for all authorized NMIs.",
           "auto_sync_enabled": "Automatically upload TOU tariff schedules to your battery system based on current electricity prices",
           "battery_curtailment_enabled": "Stop battery from exporting when prices are negative to avoid paying to export"
+        },
+        "submit_button": "Next"
+      },
+      "epex_options": {
+        "title": "EPEX Day-Ahead (EU) Options",
+        "description": "Configure your EPEX day-ahead pricing settings.\n\n**Surcharge**: Fixed network fees, levies, and other charges (ct/kWh).\n**Tax**: VAT percentage (e.g. 21% for Belgium).\n**Export Rate**: Fixed feed-in tariff in ct/kWh. 0 = use wholesale price.",
+        "data": {
+          "epex_region": "Bidding Zone",
+          "epex_surcharge": "Surcharge (ct/kWh)",
+          "epex_tax_percent": "Tax (%)",
+          "epex_export_rate": "Fixed Export Rate (ct/kWh)",
+          "auto_sync_enabled": "Auto Sync Enabled",
+          "battery_curtailment_enabled": "Battery Curtailment"
         },
         "submit_button": "Next"
       },

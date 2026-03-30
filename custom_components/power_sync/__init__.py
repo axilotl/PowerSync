@@ -245,6 +245,11 @@ from .const import (
     CONF_LOCALVOLTS_API_KEY,
     CONF_LOCALVOLTS_PARTNER_ID,
     CONF_LOCALVOLTS_NMI,
+    # EPEX Day-Ahead (EU) configuration
+    CONF_EPEX_REGION,
+    CONF_EPEX_SURCHARGE,
+    CONF_EPEX_TAX_PERCENT,
+    CONF_EPEX_EXPORT_RATE,
     # OpenWeatherMap for automations weather triggers
     CONF_OPENWEATHERMAP_API_KEY,
     # EV BLE configuration
@@ -11136,6 +11141,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         expected_title = "PowerSync Localvolts"
     elif electricity_provider == "octopus":
         expected_title = "PowerSync Octopus"
+    elif electricity_provider == "epex":
+        expected_title = "PowerSync EPEX"
     elif electricity_provider == "nz":
         expected_title = "PowerSync NZ"
     else:
@@ -11177,6 +11184,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         entry.data.get(CONF_OCTOPUS_PRODUCT_CODE)
     )
 
+    # Check for EPEX Day-Ahead (EU) configuration
+    has_epex = electricity_provider == "epex" and bool(
+        entry.data.get(CONF_EPEX_REGION)
+    )
+
     # Check for custom tariff providers (Globird, AEMO VPP, etc.)
     # These don't need a real-time pricing API — they use a TOU schedule from config
     # (synced to Tesla if Tesla, or used directly for Sungrow/FoxESS/etc.)
@@ -11195,6 +11207,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.info("Running in Flow Power mode with AEMO API pricing")
     elif has_octopus:
         _LOGGER.info("Running in Octopus Energy UK mode with dynamic pricing")
+    elif has_epex:
+        _LOGGER.info("Running in EPEX Day-Ahead mode with EU dynamic pricing (region: %s)",
+                     entry.data.get(CONF_EPEX_REGION))
     elif aemo_spike_enabled:
         _LOGGER.info("Running in AEMO Spike Detection only mode (%s)", electricity_provider)
     elif has_custom_tariff_provider:
@@ -11947,6 +11962,34 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.error("Failed to initialize Localvolts coordinator: %s", e)
             localvolts_coordinator = None
 
+    # Initialize EPEX Day-Ahead Price Coordinator if configured
+    epex_coordinator = None
+    if has_epex:
+        from .coordinator import EPEXPriceCoordinator
+
+        epex_region = entry.data.get(CONF_EPEX_REGION, "DE")
+        epex_surcharge = entry.data.get(CONF_EPEX_SURCHARGE, 0.0)
+        epex_tax_percent = entry.data.get(CONF_EPEX_TAX_PERCENT, 0.0)
+        epex_export_rate = entry.data.get(CONF_EPEX_EXPORT_RATE, 0.0)
+
+        epex_coordinator = EPEXPriceCoordinator(
+            hass,
+            region=epex_region,
+            session=async_get_clientsession(hass),
+            surcharge=epex_surcharge,
+            tax_percent=epex_tax_percent,
+            export_rate=epex_export_rate,
+        )
+        try:
+            await epex_coordinator.async_config_entry_first_refresh()
+            _LOGGER.info(
+                "EPEX Price Coordinator initialized: region=%s, surcharge=%.1f ct, tax=%.1f%%",
+                epex_region, epex_surcharge, epex_tax_percent,
+            )
+        except Exception as e:
+            _LOGGER.error("Failed to initialize EPEX coordinator: %s", e)
+            epex_coordinator = None
+
     # Initialize persistent storage for data that survives HA restarts
     # (like Teslemetry's RestoreEntity pattern for export rule state)
     store = Store(hass, STORAGE_VERSION, f"{STORAGE_KEY}.{entry.entry_id}")
@@ -11981,6 +12024,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "solcast_coordinator": solcast_coordinator,  # For Solcast solar forecasting
         "octopus_coordinator": octopus_coordinator,  # For Octopus Energy UK pricing
         "localvolts_coordinator": localvolts_coordinator,  # For Localvolts pricing
+        "epex_coordinator": epex_coordinator,  # For EPEX Day-Ahead EU pricing
         "ws_client": ws_client,  # Store for cleanup on unload
         "entry": entry,
         "auto_sync_cancel": None,  # Will store the timer cancel function
@@ -19526,7 +19570,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 entry=entry,  # Pass entry so coordinator can persist settings
                 battery_system=battery_system,
                 battery_controller=battery_controller,
-                price_coordinator=amber_coordinator or localvolts_coordinator or octopus_coordinator or aemo_sensor_coordinator,
+                price_coordinator=amber_coordinator or localvolts_coordinator or octopus_coordinator or epex_coordinator or aemo_sensor_coordinator,
                 energy_coordinator=energy_coordinator,
                 tariff_schedule=tariff_schedule,  # For Globird/TOU-based pricing
                 force_state_getter=get_force_state,  # For checking if force mode is active

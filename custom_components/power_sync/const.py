@@ -345,6 +345,7 @@ ELECTRICITY_PROVIDERS = {
     "globird": "Globird",
     "aemo_vpp": "AEMO VPP (AGL, Engie, etc.)",
     "octopus": "Octopus Energy (UK)",
+    "epex": "EPEX Day-Ahead (EU)",
     "nz": "New Zealand TOU",
     "other": "Other / Custom TOU",
 }
@@ -354,6 +355,25 @@ CONF_LOCALVOLTS_API_KEY = "localvolts_api_key"
 CONF_LOCALVOLTS_PARTNER_ID = "localvolts_partner_id"
 CONF_LOCALVOLTS_NMI = "localvolts_nmi"
 LOCALVOLTS_API_BASE_URL = "https://api.localvolts.com/v1"
+
+# EPEX Day-Ahead configuration (EU markets via epexpredictor.batzill.com)
+CONF_EPEX_REGION = "epex_region"
+CONF_EPEX_SURCHARGE = "epex_surcharge"  # Fixed surcharge in ct/kWh (network fees, levies)
+CONF_EPEX_TAX_PERCENT = "epex_tax_percent"  # Tax percentage (e.g. 21% VAT in Belgium)
+CONF_EPEX_EXPORT_RATE = "epex_export_rate"  # Fixed feed-in rate in ct/kWh (0 = wholesale)
+EPEX_API_BASE_URL = "https://epexpredictor.batzill.com"
+EPEX_REGIONS = {
+    "DE": "Germany",
+    "AT": "Austria",
+    "BE": "Belgium",
+    "NL": "Netherlands",
+    "SE1": "Sweden (Zone 1)",
+    "SE2": "Sweden (Zone 2)",
+    "SE3": "Sweden (Zone 3)",
+    "SE4": "Sweden (Zone 4)",
+    "DK1": "Denmark (Zone 1)",
+    "DK2": "Denmark (Zone 2)",
+}
 
 # NZ Electricity provider configuration
 CONF_NZ_RETAILER = "nz_retailer"
