@@ -2400,7 +2400,7 @@ class FlowPowerPriceSensor(CoordinatorEntity, SensorEntity):
 
         if self._is_happy_hour():
             # Happy Hour rate
-            return FLOW_POWER_EXPORT_RATES.get(state, 0.45)
+            return FLOW_POWER_EXPORT_RATES.get(state, 0.0)
         else:
             # Outside Happy Hour - no export credit
             return 0.0
@@ -2470,7 +2470,7 @@ class FlowPowerPriceSensor(CoordinatorEntity, SensorEntity):
         else:
             # Export price attributes
             attributes["is_happy_hour"] = self._is_happy_hour()
-            attributes["happy_hour_rate"] = FLOW_POWER_EXPORT_RATES.get(state, 0.45)
+            attributes["happy_hour_rate"] = FLOW_POWER_EXPORT_RATES.get(state, 0.0)
 
         return attributes
 

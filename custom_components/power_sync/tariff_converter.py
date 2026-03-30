@@ -1238,6 +1238,7 @@ FLOW_POWER_EXPORT_RATES = {
     "QLD1": 0.45,   # 45c/kWh
     "SA1": 0.45,    # 45c/kWh
     "VIC1": 0.35,   # 35c/kWh
+    "TAS1": 0.00,   # No Happy Hour in Tasmania
 }
 
 # Happy Hour periods (5:30pm to 7:30pm)
@@ -1273,7 +1274,7 @@ def apply_flow_power_export(
         return tariff
 
     # Get the happy hour export rate for this state
-    export_rate = FLOW_POWER_EXPORT_RATES.get(state, 0.45)  # Default to 45c if unknown state
+    export_rate = FLOW_POWER_EXPORT_RATES.get(state, 0.0)  # Default to 0c for unknown regions
 
     _LOGGER.info(
         "Applying Flow Power export rates for %s: %.0fc during Happy Hour, 0c otherwise",

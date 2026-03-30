@@ -1541,7 +1541,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if not state:
             return export_prices
 
-        happy_rate = FLOW_POWER_EXPORT_RATES.get(state, 0.45)
+        happy_rate = FLOW_POWER_EXPORT_RATES.get(state, 0.0)
         happy_start = 17 * 60 + 30  # 17:30
         happy_end = 19 * 60 + 30    # 19:30
         interval = self._config.interval_minutes

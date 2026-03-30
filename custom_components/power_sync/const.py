@@ -665,6 +665,7 @@ FLOW_POWER_EXPORT_RATES = {
     "QLD1": 0.45,   # 45c/kWh
     "SA1": 0.45,    # 45c/kWh
     "VIC1": 0.35,   # 35c/kWh
+    "TAS1": 0.00,   # No Happy Hour in Tasmania
 }
 
 # Flow Power Happy Hour periods (5:30pm to 7:30pm)
@@ -695,6 +696,27 @@ FLOW_POWER_MARKET_AVG = 8.0       # Market TWAP average (c/kWh) — fallback onl
 FLOW_POWER_BENCHMARK = 1.7       # BPEA - benchmark customer performance (c/kWh)
 FLOW_POWER_PEA_OFFSET = 9.7      # Combined: MARKET_AVG + BENCHMARK (c/kWh)
 FLOW_POWER_DEFAULT_BASE_RATE = 34.0  # Default Flow Power base rate (c/kWh)
+
+# Flow Power Portal configuration
+CONF_FLOWPOWER_EMAIL = "flowpower_email"
+CONF_FLOWPOWER_PASSWORD = "flowpower_password"
+UPDATE_INTERVAL_FLOWPOWER = 1800  # 30 minutes
+
+# Portal account sensors — (sensor_type, name, data_key, unit, icon, source_label)
+FLOW_POWER_PORTAL_SENSORS = [
+    ("fp_account_pea", "Flow Power PEA (Actual)", "pea_actual", "c/kWh", "mdi:account-cash", "portal"),
+    ("fp_account_pea_30d", "Flow Power PEA 30-Day", "pea_30_days", "c/kWh", "mdi:calendar-month", "portal"),
+    ("fp_account_bpea", "Flow Power BPEA (Benchmark)", "bpea", "c/kWh", "mdi:target", "portal"),
+    ("fp_account_cpea", "Flow Power CPEA (Customer)", "cpea", "c/kWh", "mdi:account-arrow-right", "calculated"),
+    ("fp_account_pea_import", "Flow Power PEA Import", "pea_actual_import", "c/kWh", "mdi:import", "portal"),
+    ("fp_account_lwap", "Flow Power LWAP", "lwap", "c/kWh", "mdi:scale-balance", "portal"),
+    ("fp_account_lwap_actual", "Flow Power LWAP (Actual)", "lwap_actual", "c/kWh", "mdi:scale-balance", "portal"),
+    ("fp_account_twap", "Flow Power TWAP (Portal)", "twap", "c/kWh", "mdi:chart-timeline-variant", "portal"),
+    ("fp_account_avg_rrp", "Flow Power Avg Spot Price", "avg_rrp", "c/kWh", "mdi:lightning-bolt", "portal"),
+    ("fp_account_dlf", "Flow Power DLF (Site Losses)", "site_losses_dlf", None, "mdi:transmission-tower", "portal"),
+    ("fp_account_avg_usage", "Flow Power Avg Demand", "avg_usage_kw", "kW", "mdi:flash-outline", "portal"),
+    ("fp_account_max_usage", "Flow Power Max Demand", "max_usage_kw", "kW", "mdi:flash-alert", "portal"),
+]
 
 # Default Amber comparison markup by region (c/kWh)
 # Approximate retailer margin + hedging costs
