@@ -3906,14 +3906,208 @@ class OctopusPriceCoordinator(DataUpdateCoordinator):
 
         return expanded
 
+    def _read_from_octopus_energy_integration(self) -> dict[str, Any] | None:
+        """Try to read rates from the BottlecapDave/HomeAssistant-OctopusEnergy integration.
+
+        When the octopus_energy integration is installed, read import and export rates
+        directly from its coordinators instead of making our own API calls.
+
+        Returns Amber-compatible format dict, or None if integration not available.
+        """
+        from datetime import timezone
+
+        oe_data = self.hass.data.get("octopus_energy")
+        if not oe_data or not isinstance(oe_data, dict):
+            return None
+
+        now = datetime.now(timezone.utc)
+        import_rates_raw: list[dict] = []
+        export_rates_raw: list[dict] = []
+        import_tariff = None
+        export_tariff = None
+
+        for account_id, account_data in oe_data.items():
+            if not isinstance(account_data, dict):
+                continue
+
+            # Get account info to find meter points
+            account_result = account_data.get("ACCOUNT")
+            if not account_result:
+                continue
+
+            account_info = getattr(account_result, "account", None)
+            if not account_info or not isinstance(account_info, dict):
+                continue
+
+            # Iterate electricity meter points
+            meter_points = account_info.get("electricity_meter_points", [])
+            for mp in meter_points:
+                if not isinstance(mp, dict):
+                    continue
+
+                mpan = mp.get("mpan", "")
+                meters = mp.get("meters", [])
+                if not meters:
+                    continue
+
+                serial = meters[0].get("serial_number", "") if isinstance(meters[0], dict) else ""
+                is_export = meters[0].get("is_export", False) if isinstance(meters[0], dict) else False
+
+                # Get rates from coordinator
+                rates_key = f"ELECTRICITY_RATES_{mpan}_{serial}"
+                rates_result = account_data.get(rates_key)
+                if not rates_result:
+                    continue
+
+                rates = getattr(rates_result, "rates", None) or getattr(rates_result, "original_rates", None)
+                if not rates or not isinstance(rates, list):
+                    continue
+
+                # Get tariff code from active agreement
+                agreements = mp.get("agreements", [])
+                tariff_code = None
+                for agreement in agreements:
+                    if isinstance(agreement, dict):
+                        tariff_code = agreement.get("tariff_code")
+                        if tariff_code:
+                            break
+
+                if is_export:
+                    export_rates_raw = rates
+                    export_tariff = tariff_code
+                else:
+                    import_rates_raw = rates
+                    import_tariff = tariff_code
+
+        if not import_rates_raw:
+            return None
+
+        # Convert octopus_energy rate format to our Amber-compatible format
+        current_prices: list[dict] = []
+        forecast_prices: list[dict] = []
+        export_forecast: list[dict] = []
+
+        for rate in import_rates_raw:
+            start = rate.get("start") or rate.get("valid_from")
+            end = rate.get("end") or rate.get("valid_to")
+            price_pence = rate.get("value_inc_vat", 0)
+
+            if not start or not end:
+                continue
+
+            # Normalize to datetime objects
+            if isinstance(start, str):
+                start = datetime.fromisoformat(start.replace("Z", "+00:00"))
+            if isinstance(end, str):
+                end = datetime.fromisoformat(end.replace("Z", "+00:00"))
+
+            if start <= now < end:
+                interval_type = "CurrentInterval"
+            elif end <= now:
+                interval_type = "ActualInterval"
+            else:
+                interval_type = "ForecastInterval"
+
+            amber_entry = {
+                "nemTime": end.isoformat(),
+                "perKwh": price_pence,  # pence/kWh maps to cents
+                "channelType": "general",
+                "type": interval_type,
+                "duration": 30,
+                "valid_from": start.isoformat(),
+                "valid_to": end.isoformat(),
+            }
+
+            if interval_type == "CurrentInterval":
+                current_prices.append(amber_entry)
+            forecast_prices.append(amber_entry)
+
+        for rate in export_rates_raw:
+            start = rate.get("start") or rate.get("valid_from")
+            end = rate.get("end") or rate.get("valid_to")
+            price_pence = rate.get("value_inc_vat", 0)
+
+            if not start or not end:
+                continue
+
+            if isinstance(start, str):
+                start = datetime.fromisoformat(start.replace("Z", "+00:00"))
+            if isinstance(end, str):
+                end = datetime.fromisoformat(end.replace("Z", "+00:00"))
+
+            if start <= now < end:
+                interval_type = "CurrentInterval"
+            elif end <= now:
+                interval_type = "ActualInterval"
+            else:
+                interval_type = "ForecastInterval"
+
+            amber_entry = {
+                "nemTime": end.isoformat(),
+                "perKwh": -price_pence,  # Negative = you get paid (Amber convention)
+                "channelType": "feedIn",
+                "type": interval_type,
+                "duration": 30,
+                "valid_from": start.isoformat(),
+                "valid_to": end.isoformat(),
+            }
+
+            if interval_type == "CurrentInterval":
+                current_prices.append(amber_entry)
+            export_forecast.append(amber_entry)
+
+        combined_forecast = forecast_prices + export_forecast
+
+        current_import = next(
+            (p["perKwh"] for p in current_prices if p["channelType"] == "general"),
+            None,
+        )
+        current_export = next(
+            (p["perKwh"] for p in current_prices if p["channelType"] == "feedIn"),
+            None,
+        )
+
+        _LOGGER.info(
+            "🐙 Using octopus_energy integration data: "
+            "current_import=%.2fp/kWh, current_export=%.2fp/kWh, "
+            "periods=%d (import=%d, export=%d), "
+            "import_tariff=%s, export_tariff=%s",
+            current_import or 0,
+            -(current_export or 0),
+            len(combined_forecast),
+            len(forecast_prices),
+            len(export_forecast),
+            import_tariff or "unknown",
+            export_tariff or "none",
+        )
+
+        return {
+            "current": current_prices,
+            "forecast": combined_forecast,
+            "export_rates": export_forecast,
+            "last_update": dt_util.utcnow(),
+            "source": "octopus_energy_integration",
+            "product_code": self.product_code,
+            "tariff_code": import_tariff or self.tariff_code,
+            "gsp_region": self.gsp_region,
+        }
+
     async def _async_update_data(self) -> dict[str, Any]:
-        """Fetch data from Octopus API and convert to Amber-compatible format.
+        """Fetch data from Octopus Energy integration or API, in Amber-compatible format.
+
+        Prefers the octopus_energy integration (BottlecapDave) when installed
+        to avoid double API calls and get the correct export tariff automatically.
 
         Returns:
             dict with 'current', 'forecast', 'export_rates', and 'last_update'
             in Amber-compatible format for use with tariff conversion.
         """
         try:
+            # Try reading from octopus_energy integration first
+            integration_data = self._read_from_octopus_energy_integration()
+            if integration_data:
+                return integration_data
+
             from datetime import timezone
 
             now = datetime.now(timezone.utc)
