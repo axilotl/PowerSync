@@ -438,8 +438,11 @@ OCTOPUS_PRODUCT_CODES = {
 # Octopus export product codes
 OCTOPUS_EXPORT_PRODUCT_CODES = {
     "agile": "AGILE-OUTGOING-19-05-13",  # Agile Outgoing for dynamic export
+    "go": "OUTGOING-VAR-24-10-26",  # Outgoing Octopus (standard variable flat rate)
+    "intelligent_go": "OUTGOING-VAR-24-10-26",  # Outgoing Octopus (standard variable flat rate)
     "flux": "FLUX-EXPORT-23-02-14",  # Flux export tariff
     "intelligent_flux": "INTELLI-FLUX-EXPORT-23-07-14",  # Intelligent Flux export
+    "tracker": "OUTGOING-VAR-24-10-26",  # Outgoing Octopus (standard variable flat rate)
 }
 
 # UK Grid Supply Points (GSP) - Octopus regional pricing

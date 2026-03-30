@@ -11920,6 +11920,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         octopus_export_product_code = entry.data.get(CONF_OCTOPUS_EXPORT_PRODUCT_CODE)
         octopus_export_tariff_code = entry.data.get(CONF_OCTOPUS_EXPORT_TARIFF_CODE)
 
+        # Fallback: derive export codes from product key if not stored (existing installs)
+        if not octopus_export_product_code:
+            octopus_product_key = entry.data.get(CONF_OCTOPUS_PRODUCT, "")
+            fallback_export_code = OCTOPUS_EXPORT_PRODUCT_CODES.get(octopus_product_key)
+            if fallback_export_code:
+                octopus_export_product_code = fallback_export_code
+                octopus_export_tariff_code = f"E-1R-{fallback_export_code}-{octopus_region}"
+                _LOGGER.info(
+                    "Using default export tariff for %s: %s",
+                    octopus_product_key, octopus_export_product_code,
+                )
+
         if octopus_product_code and octopus_tariff_code:
             octopus_coordinator = OctopusPriceCoordinator(
                 hass,
@@ -12779,7 +12791,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         Later stages will re-sync if the actual price differs from forecast.
         """
         # Skip if no price coordinator available (AEMO spike-only mode without pricing)
-        if not amber_coordinator and not aemo_sensor_coordinator:
+        if not amber_coordinator and not aemo_sensor_coordinator and not octopus_coordinator:
             _LOGGER.debug("TOU sync skipped - no price coordinator available (AEMO spike-only mode)")
             return
 
@@ -12812,7 +12824,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             check_name: Label for logging (e.g., "35s check", "60s final")
         """
         # Skip if no price coordinator available (AEMO spike-only mode without pricing)
-        if not amber_coordinator and not aemo_sensor_coordinator:
+        if not amber_coordinator and not aemo_sensor_coordinator and not octopus_coordinator:
             _LOGGER.debug("TOU sync skipped - no price coordinator available (AEMO spike-only mode)")
             return
 
@@ -18677,10 +18689,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.info("Skipping initial TOU sync - auto-sync disabled")
     elif settled_prices_only:
         _LOGGER.info("Skipping initial TOU sync - settled prices only mode (will sync at :35/:60)")
-    elif amber_coordinator or aemo_sensor_coordinator:
+    elif amber_coordinator or aemo_sensor_coordinator or octopus_coordinator:
         _LOGGER.info("Performing initial TOU sync")
         await handle_sync_initial_forecast()
-    elif not amber_coordinator and not aemo_sensor_coordinator:
+    elif not amber_coordinator and not aemo_sensor_coordinator and not octopus_coordinator:
         _LOGGER.info("Skipping initial TOU sync - AEMO spike-only mode (no pricing data)")
 
     # STAGE 1: Initial forecast sync at start of each 5-min period (0s)

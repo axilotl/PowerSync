@@ -644,6 +644,10 @@ class SolcastForecaster:
             return forecast
 
         # Fallback: generate simple solar curve
+        _LOGGER.warning(
+            "Solcast forecast not available — using default 5kW bell curve. "
+            "Check that the Solcast Solar integration is installed and has forecast data."
+        )
         return self._generate_default_solar_curve(start_time, n_intervals)
 
     async def _get_solcast_forecast(
@@ -722,6 +726,7 @@ class SolcastForecaster:
         """Extract forecast data from the Solcast Solar integration (solcast_solar domain).
 
         The Solcast Solar integration stores data in various formats depending on version.
+        hass.data["solcast_solar"] is typically a dict of {entry_id: coordinator}.
         """
         try:
             # The integration may store a coordinator or direct data
@@ -729,44 +734,109 @@ class SolcastForecaster:
 
             # Check if it's a coordinator with data attribute
             if hasattr(solcast_data, 'data') and solcast_data.data:
-                data = solcast_data.data
-            elif isinstance(solcast_data, dict):
-                data = solcast_data
-            else:
-                # Try to find coordinator in the data structure
-                for key, value in (solcast_data.items() if hasattr(solcast_data, 'items') else []):
+                result = self._try_extract_forecast(solcast_data.data, start_time, n_intervals)
+                if result:
+                    return result
+
+            # If it's a dict, it could be either:
+            # 1. A forecast data dict (has keys like 'detailedForecast', 'forecasts', etc.)
+            # 2. A dict of {entry_id: coordinator} (Solcast Solar v4+ pattern)
+            if isinstance(solcast_data, dict):
+                # First try as direct forecast data
+                result = self._try_extract_forecast(solcast_data, start_time, n_intervals)
+                if result:
+                    return result
+
+                # Not forecast data — iterate values looking for coordinators or nested dicts
+                for value in solcast_data.values():
                     if hasattr(value, 'data') and value.data:
-                        data = value.data
-                        break
-                    if isinstance(value, dict) and ('forecasts' in value or 'detailedForecast' in value):
-                        data = value
-                        break
-                else:
-                    return None
+                        result = self._try_extract_forecast(value.data, start_time, n_intervals)
+                        if result:
+                            return result
+                    # Also check the coordinator's solcast attribute (Solcast Solar v4+)
+                    if hasattr(value, 'solcast'):
+                        solcast_api = value.solcast
+                        # Try get_forecast_list() method if available
+                        if hasattr(solcast_api, 'get_forecast_list'):
+                            try:
+                                forecast_list = solcast_api.get_forecast_list()
+                                if forecast_list:
+                                    parsed = self._parse_detailed_forecast(
+                                        forecast_list, start_time, n_intervals
+                                    )
+                                    if parsed and any(v > 0 for v in parsed):
+                                        return parsed
+                            except Exception:
+                                pass
+                        # Try detailedForecast attribute
+                        if hasattr(solcast_api, 'detailedForecast'):
+                            detailed = solcast_api.detailedForecast
+                            if detailed and isinstance(detailed, list):
+                                parsed = self._parse_detailed_forecast(
+                                    detailed, start_time, n_intervals
+                                )
+                                if parsed and any(v > 0 for v in parsed):
+                                    return parsed
+                    if isinstance(value, dict):
+                        result = self._try_extract_forecast(value, start_time, n_intervals)
+                        if result:
+                            return result
 
-            # Try various forecast formats used by solcast_solar
-            # Format 1: detailedForecast (list of period dicts with pv_estimate)
-            detailed = data.get('detailedForecast') if isinstance(data, dict) else None
-            if detailed and isinstance(detailed, list) and len(detailed) > 0:
-                return self._parse_detailed_forecast(detailed, start_time, n_intervals)
-
-            # Format 2: forecasts (raw API response format)
-            forecasts = data.get('forecasts') if isinstance(data, dict) else None
-            if forecasts and isinstance(forecasts, list) and len(forecasts) > 0:
-                return self._parse_solcast_data(forecasts, start_time, n_intervals)
-
-            # Format 3: forecast_today / forecast_tomorrow
-            forecast_today = data.get('forecast_today', []) if isinstance(data, dict) else []
-            forecast_tomorrow = data.get('forecast_tomorrow', []) if isinstance(data, dict) else []
-            combined = forecast_today + forecast_tomorrow
-            if combined:
-                return self._parse_solcast_data(combined, start_time, n_intervals)
+            # Non-dict, non-coordinator: try to iterate as generic iterable
+            if hasattr(solcast_data, 'items'):
+                for key, value in solcast_data.items():
+                    if hasattr(value, 'data') and value.data:
+                        result = self._try_extract_forecast(value.data, start_time, n_intervals)
+                        if result:
+                            return result
 
             return None
 
         except Exception as e:
             _LOGGER.debug(f"Could not extract from Solcast Solar integration: {e}")
             return None
+
+    def _try_extract_forecast(
+        self,
+        data: Any,
+        start_time: datetime,
+        n_intervals: int,
+    ) -> list[float] | None:
+        """Try to extract forecast from a data dict using known formats."""
+        if not isinstance(data, dict):
+            return None
+
+        # Format 1: detailedForecast (list of period dicts with pv_estimate)
+        detailed = data.get('detailedForecast')
+        if detailed and isinstance(detailed, list) and len(detailed) > 0:
+            parsed = self._parse_detailed_forecast(detailed, start_time, n_intervals)
+            if parsed and any(v > 0 for v in parsed):
+                return parsed
+
+        # Format 2: forecasts (raw API response format)
+        forecasts = data.get('forecasts')
+        if forecasts and isinstance(forecasts, list) and len(forecasts) > 0:
+            parsed = self._parse_solcast_data(forecasts, start_time, n_intervals)
+            if parsed and any(v > 0 for v in parsed):
+                return parsed
+
+        # Format 3: forecast_today / forecast_tomorrow
+        forecast_today = data.get('forecast_today', [])
+        forecast_tomorrow = data.get('forecast_tomorrow', [])
+        combined = (forecast_today or []) + (forecast_tomorrow or [])
+        if combined:
+            parsed = self._parse_solcast_data(combined, start_time, n_intervals)
+            if parsed and any(v > 0 for v in parsed):
+                return parsed
+
+        # Format 4: hourly_forecast (processed Solcast HA format)
+        hourly = data.get('hourly_forecast')
+        if hourly and isinstance(hourly, list) and len(hourly) > 0:
+            parsed = self._parse_hourly_forecast(hourly, start_time, n_intervals)
+            if parsed and any(v > 0 for v in parsed):
+                return parsed
+
+        return None
 
     def _parse_detailed_forecast(
         self,
