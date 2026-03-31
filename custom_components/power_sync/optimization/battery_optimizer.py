@@ -79,6 +79,7 @@ class BatteryOptimizer:
         max_discharge_w: float = 5000,
         efficiency: float = DEFAULT_EFFICIENCY,
         backup_reserve: float = 0.20,
+        hardware_reserve: float = 0.0,
         interval_minutes: int = 5,
         horizon_hours: int = 48,
     ):
@@ -87,6 +88,7 @@ class BatteryOptimizer:
         self.max_discharge_w = max_discharge_w
         self.efficiency = efficiency
         self.backup_reserve = backup_reserve
+        self.hardware_reserve = hardware_reserve
         self.interval_minutes = interval_minutes
         self.horizon_hours = horizon_hours
 
@@ -118,6 +120,10 @@ class BatteryOptimizer:
             self.efficiency = efficiency
         if backup_reserve is not None:
             self.backup_reserve = backup_reserve
+
+    def update_hardware_reserve(self, hardware_reserve: float) -> None:
+        """Update hardware reserve (from manufacturer's app setting)."""
+        self.hardware_reserve = hardware_reserve
 
     def optimize(
         self,
@@ -715,11 +721,14 @@ class BatteryOptimizer:
                 and import_kw > threshold_kw
             ):
                 # Battery idle while home draws from grid — hold SOC.
-                # But if SOC is at the optimizer backup reserve, show
-                # self_consumption instead: the executor overrides IDLE
-                # to SC at the reserve floor anyway, and the schedule
-                # chart should match what actually executes.
-                if soc <= self.backup_reserve + 0.01:
+                # But if SOC is at the optimizer reserve AND there's
+                # headroom to the hardware reserve, show self_consumption:
+                # the battery can still serve load naturally down to the
+                # hardware floor. If hardware = optimizer reserve, IDLE is
+                # correct — the battery genuinely can't discharge further.
+                at_reserve = soc <= self.backup_reserve + 0.01
+                has_headroom = self.hardware_reserve < self.backup_reserve - 0.01
+                if at_reserve and has_headroom:
                     action = "self_consumption"
                 else:
                     action = "idle"

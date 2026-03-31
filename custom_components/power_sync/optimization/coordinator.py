@@ -246,12 +246,16 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         await self._auto_detect_battery_specs()
 
         # Initialize built-in optimizer
+        # Hardware reserve: captured at startup from the battery's actual setting.
+        # Falls back to 0 if not yet known (will be updated on first poll).
+        hw_reserve_pct = (self._startup_backup_reserve or 0) / 100
         self._optimizer = BatteryOptimizer(
             capacity_wh=self._config.battery_capacity_wh,
             max_charge_w=self._config.max_charge_w,
             max_discharge_w=self._config.max_discharge_w,
             efficiency=0.92,
             backup_reserve=self._config.backup_reserve,
+            hardware_reserve=hw_reserve_pct,
             interval_minutes=self._config.interval_minutes,
             horizon_hours=self._config.horizon_hours,
         )
@@ -481,6 +485,8 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         if startup_reserve is not None:
                             self._startup_backup_reserve = startup_reserve
                             _LOGGER.info("Optimizer startup: captured user backup reserve: %d%%", startup_reserve)
+                            if self._optimizer:
+                                self._optimizer.update_hardware_reserve(startup_reserve / 100)
                             # Persist it so it survives restarts
                             if self._entry:
                                 new_opts = {**self._entry.options, "_user_backup_reserve": startup_reserve}
@@ -900,21 +906,24 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
                 effective_action = "self_consumption"
 
-            # When SOC is at or below the optimizer backup reserve, don't IDLE.
-            # IDLE raises backup_reserve to hold at current SOC, which blocks the
-            # battery from naturally discharging to the hardware reserve (set in
-            # the manufacturer's app). Self-consumption lets the battery serve
-            # home load down to the hardware floor — the user expects the
-            # optimizer reserve to be the LP's discharge floor, not a hard stop.
+            # When SOC is at the optimizer backup reserve AND the hardware
+            # reserve is lower, override IDLE → self_consumption. This lets the
+            # battery serve home load from optimizer reserve down to hardware
+            # reserve naturally. But if hardware = optimizer reserve, IDLE is
+            # correct — the battery genuinely can't discharge further.
             if effective_action == "idle":
                 try:
                     soc_now, _ = await self._get_battery_state()
-                    if soc_now <= self._config.backup_reserve + 0.01:
+                    hw_reserve = (self._startup_backup_reserve or 0) / 100  # int% → float
+                    opt_reserve = self._config.backup_reserve
+                    has_headroom = hw_reserve < opt_reserve - 0.01
+                    if soc_now <= opt_reserve + 0.01 and has_headroom:
                         _LOGGER.debug(
                             "Optimizer: Overriding IDLE → self_consumption — "
                             "SOC %.1f%% at optimizer reserve %.0f%%, "
-                            "letting battery serve load to hardware reserve",
-                            soc_now * 100, self._config.backup_reserve * 100,
+                            "hardware reserve %.0f%% (%.0f%% headroom)",
+                            soc_now * 100, opt_reserve * 100,
+                            hw_reserve * 100, (opt_reserve - hw_reserve) * 100,
                         )
                         effective_action = "self_consumption"
                 except Exception:
