@@ -4335,7 +4335,7 @@ class OctopusSavingSessionCoordinator(DataUpdateCoordinator):
             hass: HomeAssistant instance
             client: OctopusSavingSessionsClient (direct mode) or None
             entity_id: Bottlecap Dave event entity ID (entity mode) or None
-            auto_join: Auto-join available sessions (direct mode only)
+            auto_join: Auto-join available sessions (direct API or Dave's integration)
             octopoints_per_penny: Conversion rate (default 8)
         """
         super().__init__(
@@ -4375,9 +4375,37 @@ class OctopusSavingSessionCoordinator(DataUpdateCoordinator):
                 _LOGGER.error("Error fetching saving sessions from API: %s", err)
 
         elif self._entity_id:
-            # Bottlecap Dave entity mode
+            # Bottlecap Dave entity mode — reads from octopus_energy event entity
             state = self.hass.states.get(self._entity_id)
             if state:
+                # Auto-join available sessions via Dave's service
+                if self._auto_join:
+                    available = state.attributes.get("available_events", [])
+                    for ev in available:
+                        try:
+                            code = ev.get("code", "")
+                            if not code:
+                                continue
+                            _LOGGER.info(
+                                "🐙 Auto-joining saving session via octopus_energy: %s "
+                                "(octopoints=%s/kWh)",
+                                code, ev.get("octopoints_per_kwh", "?"),
+                            )
+                            await self.hass.services.async_call(
+                                "octopus_energy",
+                                "join_octoplus_saving_session_event",
+                                {"event_code": code},
+                                target={"entity_id": self._entity_id},
+                                blocking=True,
+                            )
+                            _LOGGER.info(
+                                "✅ Joined saving session %s via octopus_energy", code,
+                            )
+                        except Exception as err:
+                            _LOGGER.error(
+                                "Failed to auto-join saving session %s: %s", code, err,
+                            )
+
                 # Parse joined_events from entity attributes
                 for ev in state.attributes.get("joined_events", []):
                     try:
