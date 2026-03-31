@@ -1,0 +1,62 @@
+name: Create Release on Version Bump
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'custom_components/power_sync/manifest.json'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get version from manifest
+        id: version
+        run: |
+          VERSION=$(python3 -c "import json; print(json.load(open('custom_components/power_sync/manifest.json'))['version'])")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Detected version: $VERSION"
+
+      - name: Check if tag already exists
+        id: check_tag
+        run: |
+          if git rev-parse "${{ steps.version.outputs.version }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Generate release notes from commits
+        if: steps.check_tag.outputs.exists == 'false'
+        id: notes
+        run: |
+          # Find the previous tag
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          if [ -n "$PREV_TAG" ]; then
+            COMMITS=$(git log --pretty=format:"- %s" "$PREV_TAG"..HEAD -- custom_components/ | grep -v "Bump version")
+          else
+            COMMITS=$(git log --pretty=format:"- %s" -20 -- custom_components/ | grep -v "Bump version")
+          fi
+
+          # Write to file to preserve newlines
+          cat > /tmp/release_notes.md << 'HEADER'
+          ## What's Changed
+          HEADER
+          echo "$COMMITS" >> /tmp/release_notes.md
+
+      - name: Create tag and release
+        if: steps.check_tag.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          git tag "$VERSION"
+          git push origin "$VERSION"
+          gh release create "$VERSION" \
+            --title "v$VERSION" \
+            --notes-file /tmp/release_notes.md
+          echo "Created release v$VERSION"
