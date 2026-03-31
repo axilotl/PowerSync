@@ -921,8 +921,9 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     or self._entry.options.get(CONF_BATTERY_CURTAILMENT_ENABLED, False)
                     or self._entry.options.get(CONF_SIGENERGY_DC_CURTAILMENT_ENABLED, False)
                 )
-                if _curtailment_on and export_prices:
-                    _current_export = export_prices[0] if export_prices else 0
+                _ep = self._last_export_prices
+                if _curtailment_on and _ep:
+                    _current_export = _ep[0] if _ep else 0
                     if _current_export < 0.01:  # < 1c/kWh
                         _LOGGER.info(
                             "Optimizer: Overriding %s → self_consumption — "
