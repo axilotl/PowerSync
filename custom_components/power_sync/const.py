@@ -1033,6 +1033,7 @@ INVERTER_BRANDS = {
     "enphase": "Enphase",
     "zeversolar": "Zeversolar",
     "sigenergy": "Sigenergy",
+    "solax": "Solax",
 }
 
 # Fronius models (SunSpec Modbus)

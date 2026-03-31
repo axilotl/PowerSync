@@ -20,6 +20,7 @@ INVERTER_BRANDS = {
     "zeversolar": "Zeversolar",
     "sigenergy": "Sigenergy",
     "foxess": "FoxESS",
+    "solax": "Solax",
 }
 
 # Fronius models (SunSpec Modbus)
@@ -224,6 +225,7 @@ def get_inverter_controller(
     enphase_zero_export_profile: Optional[str] = None,
     enphase_is_installer: bool = False,
     max_export_limit_kw: Optional[float] = None,
+    hass=None,
 ) -> Optional[InverterController]:
     """Factory function to get the appropriate inverter controller.
 
@@ -349,6 +351,16 @@ def get_inverter_controller(
             port=port,
             slave_id=slave_id,
             model=model,
+        )
+
+    if brand_lower == "solax":
+        from .solax import SolaxController
+        return SolaxController(
+            host=host,
+            port=port,
+            slave_id=slave_id,
+            model=model,
+            hass=hass,
         )
 
     _LOGGER.error(f"Unsupported inverter brand: {brand}")

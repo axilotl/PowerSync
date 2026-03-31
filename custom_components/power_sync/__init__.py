@@ -3625,6 +3625,7 @@ class InverterStatusView(HomeAssistantView):
                 enphase_zero_export_profile=enphase_zero_export_profile,
                 enphase_is_installer=enphase_is_installer,
                 max_export_limit_kw=entry.data.get(CONF_SIGENERGY_EXPORT_LIMIT_KW),
+                hass=hass,
             )
 
             if not controller:
@@ -12702,6 +12703,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 enphase_zero_export_profile=enphase_zero_export_profile,
                 enphase_is_installer=enphase_is_installer,
                 max_export_limit_kw=entry.data.get(CONF_SIGENERGY_EXPORT_LIMIT_KW),
+                hass=hass,
             )
 
             if not controller:
@@ -12737,7 +12739,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 # Use load-following curtailment for supported brands
                 # Limit = home load + battery charge rate (so we don't export but still charge battery)
                 home_load_w = None
-                if inverter_brand in ("zeversolar", "sigenergy", "sungrow", "enphase", "foxess", "huawei", "goodwe"):
+                if inverter_brand in ("zeversolar", "sigenergy", "sungrow", "enphase", "foxess", "huawei", "goodwe", "solax"):
                     live_status = await get_live_status()
                     if live_status and live_status.get("load_power"):
                         home_load_w = int(live_status.get("load_power", 0))
@@ -17973,7 +17975,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     home_load_w = 0
             else:
                 # Load-following mode - get home load for dynamic limiting
-                if inverter_brand in ("zeversolar", "sigenergy", "sungrow", "enphase", "foxess", "huawei", "goodwe"):
+                if inverter_brand in ("zeversolar", "sigenergy", "sungrow", "enphase", "foxess", "huawei", "goodwe", "solax"):
                     live_status = await get_live_status()
                     if live_status and live_status.get("load_power"):
                         home_load_w = int(live_status.get("load_power", 0))
@@ -18868,7 +18870,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             inverter_host = entry.options.get(CONF_INVERTER_HOST, entry.data.get(CONF_INVERTER_HOST))
 
             # Only brands with load-following curtail() support
-            if inverter_brand not in ("zeversolar", "sigenergy", "sungrow", "enphase", "foxess", "huawei", "goodwe"):
+            if inverter_brand not in ("zeversolar", "sigenergy", "sungrow", "enphase", "foxess", "huawei", "goodwe", "solax"):
                 return
 
             if not inverter_host:
