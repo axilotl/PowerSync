@@ -1309,12 +1309,18 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _apply_export_boost(
         self,
         export_prices: list[float],
+        import_prices: list[float] | None = None,
     ) -> list[float]:
         """Apply export boost to LP export prices during configured window.
 
         Increases export prices by offset and applies a minimum floor so the LP
         is more willing to discharge during the boost window. Mirrors the Tesla
         tariff pipeline logic but operates on flat 5-min price arrays.
+
+        Anti-arbitrage guard: caps boosted prices so the LP never sees profitable
+        grid→battery→grid arbitrage that doesn't exist at real export prices.
+        Without this, the LP may import from grid to charge the battery for later
+        export at the inflated boosted price — a net loss at real prices.
         """
         if not self._entry:
             return export_prices
@@ -1349,11 +1355,24 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except (ValueError, IndexError):
             return export_prices
 
+        # Anti-arbitrage cap: the boosted export price must not create phantom
+        # arbitrage where the LP charges from grid to export at inflated prices.
+        # Cap = max(real_export, cheapest_import / round_trip_efficiency²)
+        # This allows discharge of existing/solar charge at boosted prices
+        # but prevents grid-charge-then-export from appearing profitable.
+        eff = 0.92  # round-trip efficiency (matches optimizer default)
+        arbitrage_cap = None
+        if import_prices:
+            min_import = min(p for p in import_prices if p > 0.001) if any(p > 0.001 for p in import_prices) else 0
+            if min_import > 0:
+                arbitrage_cap = min_import / (eff * eff)
+
         start_min = sh * 60 + sm
         end_min = eh * 60 + em
         interval = self._config.interval_minutes
         now = dt_util.now()
         boosted = 0
+        capped = 0
 
         result = list(export_prices)
         for t in range(len(result)):
@@ -1367,14 +1386,26 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 in_window = start_min <= minutes_of_day < end_min
 
             if in_window and result[t] >= threshold:
-                boosted_price = result[t] + offset
-                result[t] = max(boosted_price, min_price)
+                real_price = result[t]
+                boosted_price = max(real_price + offset, min_price)
+
+                # Apply anti-arbitrage cap: never boost above the point where
+                # grid→battery→grid appears profitable
+                if arbitrage_cap is not None and boosted_price > arbitrage_cap:
+                    # Allow up to the break-even point, but never below real price
+                    boosted_price = max(real_price, arbitrage_cap)
+                    capped += 1
+
+                result[t] = boosted_price
                 boosted += 1
 
         if boosted:
+            cap_msg = f", {capped} capped by anti-arbitrage" if capped else ""
             _LOGGER.debug(
-                "Export boost: boosted %d intervals (offset=%.1fc, min=%.1fc, window=%s-%s)",
+                "Export boost: boosted %d intervals (offset=%.1fc, min=%.1fc, "
+                "window=%s-%s, arb_cap=%.1fc%s)",
                 boosted, offset * 100, min_price * 100, boost_start, boost_end,
+                (arbitrage_cap or 0) * 100, cap_msg,
             )
 
         return result
@@ -2253,7 +2284,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         self._last_display_export_prices = list(export_prices[:actual_price_intervals])
 
                         # Apply export boost, saving session overlay, and chip mode to LP prices
-                        export_prices = self._apply_export_boost(export_prices)
+                        export_prices = self._apply_export_boost(export_prices, import_prices)
                         import_prices, export_prices = self._apply_saving_session_prices(import_prices, export_prices)
                         export_prices = self._apply_chip_mode(export_prices)
 
