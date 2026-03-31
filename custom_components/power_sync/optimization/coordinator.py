@@ -1389,11 +1389,14 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 real_price = result[t]
                 boosted_price = max(real_price + offset, min_price)
 
-                # Apply anti-arbitrage cap: never boost above the point where
-                # grid→battery→grid appears profitable
-                if arbitrage_cap is not None and boosted_price > arbitrage_cap:
-                    # Allow up to the break-even point, but never below real price
-                    boosted_price = max(real_price, arbitrage_cap)
+                # Anti-arbitrage cap: only restrict the boost when it would
+                # create PHANTOM arbitrage that doesn't exist at real prices.
+                # If real_price >= arb_cap, real arbitrage is already profitable
+                # so the full boost is safe (no phantom incentive to grid-charge).
+                if (arbitrage_cap is not None
+                        and real_price < arbitrage_cap
+                        and boosted_price > arbitrage_cap):
+                    boosted_price = arbitrage_cap
                     capped += 1
 
                 result[t] = boosted_price
