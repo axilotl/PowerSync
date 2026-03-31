@@ -1,10 +1,10 @@
 {
   "domain": "power_sync",
   "name": "PowerSync",
+  "after_dependencies": ["lovelace", "recorder", "tesla_fleet"],
   "codeowners": ["@benboller"],
   "config_flow": true,
   "dependencies": ["frontend", "http"],
-  "after_dependencies": ["tesla_fleet", "lovelace", "recorder"],
   "documentation": "https://github.com/bolagnaise/PowerSync",
   "integration_type": "hub",
   "iot_class": "cloud_polling",
