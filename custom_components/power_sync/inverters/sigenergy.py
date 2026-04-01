@@ -1099,11 +1099,17 @@ class SigenergyController(InverterController):
             if not power_result:
                 _LOGGER.warning(f"Failed to set active power target to {-power_kw} kW, falling back to export limit only")
 
-            # 4. Set grid export limit as ceiling
-            rate_result = await self.set_export_limit(power_kw)
+            # 4. Set grid export limit directly (bypass safety cap for force discharge)
+            # The safety cap reads REG_GRID_EXPORT_LIMIT which creates a circular
+            # dependency — force discharge needs to write a high value, but the cap
+            # clamps it to whatever was previously written (often a low curtailment value).
+            scaled_value = int(power_kw * self.GAIN_POWER)
+            values = self._from_unsigned32(scaled_value)
+            rate_result = await self._write_holding_registers(self.REG_GRID_EXPORT_LIMIT, values)
             if not rate_result:
                 _LOGGER.error(f"Failed to set grid export limit to {power_kw} kW")
                 return False
+            _LOGGER.info(f"Sigenergy grid export limit set to {power_kw} kW (direct, bypassed safety cap)")
 
             _LOGGER.info(f"Sigenergy FORCE DISCHARGE active — target {power_kw} kW, export limit {power_kw} kW")
             return True
