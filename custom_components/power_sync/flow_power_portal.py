@@ -449,24 +449,31 @@ class FlowPowerPortalClient:
             "gst_multiplier": user_obj.get("GST"),
         }
 
-    async def _keep_alive(self) -> None:
-        """Send keepalive to maintain session (every 5 minutes)."""
+    async def _keep_alive(self) -> bool:
+        """Send keepalive to maintain session (every 5 minutes).
+
+        Returns True if keepalive succeeded (cookies may have been refreshed
+        and should be persisted). False if throttled, failed, or expired.
+        """
         now = time_mod.time()
         if now - self._last_keepalive < 290:
-            return
+            return False
         try:
             async with self._session.post(
                 f"{FLOWPOWER_BASE_URL}/Account/KeepAlive",
                 timeout=aiohttp.ClientTimeout(total=10),
             ) as resp:
                 body = await resp.text()
-                if body.strip() == "Success":
+                if "Success" in body:
                     self._last_keepalive = now
+                    return True
                 else:
                     _LOGGER.warning("Flow Power: KeepAlive returned: %s", body)
                     self._authenticated = False
+                    return False
         except Exception as e:
             _LOGGER.error("Flow Power: KeepAlive failed: %s", e)
+            return False
 
     def export_session_cookies(self) -> list[dict[str, str]]:
         """Export session cookies for persistent storage."""
@@ -477,7 +484,14 @@ class FlowPowerPortalClient:
                 "value": cookie.value,
                 "domain": cookie["domain"] or "",
                 "path": cookie["path"] or "/",
+                "secure": cookie["secure"] or "",
+                "httponly": cookie["httponly"] or "",
             })
+        _LOGGER.info(
+            "Flow Power: Exported %d session cookies: %s",
+            len(cookies),
+            ", ".join(f"{c['name']}@{c['domain']}" for c in cookies),
+        )
         return cookies
 
     def import_session_cookies(self, cookies: list[dict[str, str]]) -> None:
@@ -490,12 +504,21 @@ class FlowPowerPortalClient:
             morsel[c["name"]] = c["value"]
             morsel[c["name"]]["domain"] = c.get("domain", "")
             morsel[c["name"]]["path"] = c.get("path", "/")
+            if c.get("secure"):
+                morsel[c["name"]]["secure"] = True
+            if c.get("httponly"):
+                morsel[c["name"]]["httponly"] = True
             domain = c.get("domain", "").lstrip(".")
             if not domain:
                 domain = "flowpower.kwatch.com.au"
             self._session.cookie_jar.update_cookies(
                 morsel, URL(f"https://{domain}/")
             )
+        _LOGGER.info(
+            "Flow Power: Imported %d session cookies: %s",
+            len(cookies),
+            ", ".join(f"{c.get('name','?')}@{c.get('domain','?')}" for c in cookies),
+        )
 
     async def restore_session(self) -> bool:
         """Try to restore a session from imported cookies."""
@@ -505,7 +528,7 @@ class FlowPowerPortalClient:
                 timeout=aiohttp.ClientTimeout(total=15),
             ) as resp:
                 body = await resp.text()
-                if body.strip() == "Success":
+                if "Success" in body:
                     self._authenticated = True
                     self._last_keepalive = time_mod.time()
                     _LOGGER.info("Flow Power: Session restored via KeepAlive")
