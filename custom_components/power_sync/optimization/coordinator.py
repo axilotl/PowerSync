@@ -2488,13 +2488,15 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
             sell = sell_rates.get(matched_period)
             if sell is None:
+                # Global FiT (ALL key) is the correct fallback for unmatched periods
+                sell = sell_rates.get("ALL")
+            if sell is None:
                 for fallback in ("OFF_PEAK", "PARTIAL_PEAK", "SHOULDER"):
                     if fallback in sell_rates:
                         sell = sell_rates[fallback]
                         break
-                if sell is None:
-                    defined = sorted(v for v in sell_rates.values() if isinstance(v, (int, float)))
-                    sell = defined[len(defined) // 2] if defined else 0.05
+            if sell is None:
+                sell = 0.0  # No sell rate configured — default to 0 (no export value)
 
             # Store actual tariff rates for display before LP adjustment
             display_import.append(buy)
