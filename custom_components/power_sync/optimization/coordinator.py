@@ -2525,10 +2525,13 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # At 0.001 the import cost exceeded the terminal benefit
             # (0.001 * eff / cap), causing the LP to avoid charging
             # during genuinely free windows.
+            # Only apply epsilon to BUY prices (free charging windows need
+            # non-zero cost to avoid LP degeneracy). SELL prices at 0 must
+            # stay 0 so the LP's zero-export guard (0.01 cost) activates.
+            # Setting sell to 1e-6 bypasses the guard and causes the LP to
+            # export at negligible revenue — a net loss for the user.
             if buy < 1e-6:
                 buy = 1e-6
-            if sell < 1e-6:
-                sell = 1e-6
 
             import_prices.append(buy)
             export_prices.append(sell)
