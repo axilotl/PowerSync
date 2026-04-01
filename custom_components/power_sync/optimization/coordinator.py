@@ -497,15 +497,23 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 except Exception as e:
                     _LOGGER.debug("Could not read startup backup reserve: %s", e)
 
-            # Skip startup mode change if monitoring mode is active
-            from ..const import CONF_MONITORING_MODE
+            # Skip startup mode change if monitoring mode or force mode is active
+            from ..const import CONF_MONITORING_MODE, DOMAIN as _STARTUP_DOMAIN
             _monitoring = (
                 self._entry and self._entry.options.get(
                     CONF_MONITORING_MODE, self._entry.data.get(CONF_MONITORING_MODE, False)
                 )
             )
+            # Check if force charge/discharge is active (persisted across restart)
+            _entry_data = self.hass.data.get(_STARTUP_DOMAIN, {}).get(self.entry_id, {})
+            _force_active = (
+                _entry_data.get("force_charge_state", {}).get("active", False)
+                or _entry_data.get("force_discharge_state", {}).get("active", False)
+            )
             if _monitoring:
                 _LOGGER.info("Optimizer startup: monitoring mode active — skipping self-consumption mode set")
+            elif _force_active:
+                _LOGGER.info("Optimizer startup: force mode active — skipping self-consumption mode set")
             else:
                 try:
                     if hasattr(battery, "set_self_consumption_mode"):
@@ -520,6 +528,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.energy_coordinator
             and hasattr(self.energy_coordinator, "restore_work_mode_from_idle")
             and not _monitoring
+            and not _force_active
         ):
             try:
                 await self.energy_coordinator.restore_work_mode_from_idle()
