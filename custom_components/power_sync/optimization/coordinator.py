@@ -3302,7 +3302,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # Debug: log SOC range for API response
             soc_vals = api_response.get("soc", [])
             if soc_vals:
-                _LOGGER.debug(
+                _LOGGER.info(
                     "Schedule API: %d points, SOC range %.2f-%.2f (first=%.4f, last=%.4f)",
                     len(soc_vals), min(soc_vals), max(soc_vals),
                     soc_vals[0], soc_vals[-1],
