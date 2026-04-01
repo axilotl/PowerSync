@@ -3388,7 +3388,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     action_ranges
                     and action_ranges[-1]["action"] == ad["action"]
                 ):
-                    # Extend the current range
+                    # Extend the current range — update end SOC
                     action_ranges[-1]["end_time"] = interval_end
                     action_ranges[-1]["soc"] = ad["soc"]
                     if ad["power_w"]:
@@ -3396,13 +3396,18 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         power_vals.append(ad["power_w"])
                         action_ranges[-1]["power_w"] = max(power_vals)
                 else:
-                    # Start a new range
+                    # Start a new range — soc is the START of this period
+                    # (previous range's end SOC, or current battery SOC for first)
+                    start_soc = ad["soc"]
+                    if action_ranges:
+                        # Use previous range's end SOC as this range's start
+                        start_soc = action_ranges[-1]["soc"]
                     action_ranges.append({
                         "action": ad["action"],
                         "timestamp": ad["timestamp"],
                         "end_time": interval_end,
                         "power_w": ad["power_w"],
-                        "soc": ad["soc"],
+                        "soc": start_soc,
                         "_powers": [ad["power_w"]] if ad["power_w"] else [],
                     })
             # Clean up internal _powers list before sending
