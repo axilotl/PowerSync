@@ -497,18 +497,29 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 except Exception as e:
                     _LOGGER.debug("Could not read startup backup reserve: %s", e)
 
-            try:
-                if hasattr(battery, "set_self_consumption_mode"):
-                    await battery.set_self_consumption_mode()
-                    _LOGGER.info("Optimizer startup: set self-consumption mode (battery serves load)")
-            except Exception as e:
-                _LOGGER.warning("Failed to set self-consumption on startup: %s", e)
+            # Skip startup mode change if monitoring mode is active
+            from ..const import CONF_MONITORING_MODE
+            _monitoring = (
+                self._entry and self._entry.options.get(
+                    CONF_MONITORING_MODE, self._entry.data.get(CONF_MONITORING_MODE, False)
+                )
+            )
+            if _monitoring:
+                _LOGGER.info("Optimizer startup: monitoring mode active — skipping self-consumption mode set")
+            else:
+                try:
+                    if hasattr(battery, "set_self_consumption_mode"):
+                        await battery.set_self_consumption_mode()
+                        _LOGGER.info("Optimizer startup: set self-consumption mode (battery serves load)")
+                except Exception as e:
+                    _LOGGER.warning("Failed to set self-consumption on startup: %s", e)
 
         # FoxESS/Sungrow/Sigenergy: also ensure normal work mode (exit any
         # leftover IDLE hold mode from a previous HA restart)
         if (
             self.energy_coordinator
             and hasattr(self.energy_coordinator, "restore_work_mode_from_idle")
+            and not _monitoring
         ):
             try:
                 await self.energy_coordinator.restore_work_mode_from_idle()
