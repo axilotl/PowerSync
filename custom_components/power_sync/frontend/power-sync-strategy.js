@@ -548,11 +548,11 @@ class PowerSyncStrategy {
 
     // --- Center Column: LP Forecast Summary ---
     if (hasE('lp_solar_forecast')) {
-      center.push(_lpForecastSummary(e));
+      center.push(_lpForecastSummary(e, has));
     }
 
     // --- Center Column: LP Price Chart (48h) ---
-    if (hasE('lp_solar_forecast')) {
+    if (hasE('lp_import_price_forecast')) {
       center.push(_lpPriceChart(e));
     }
 
@@ -1057,16 +1057,18 @@ function _touSchedule(e) {
   };
 }
 
-function _lpForecastSummary(e) {
-  return {
-    type: 'horizontal-stack',
-    cards: [
-      { type: 'entity', entity: e('lp_solar_forecast'), name: 'Solar Forecast', icon: 'mdi:solar-power-variant' },
-      { type: 'entity', entity: e('lp_load_forecast'), name: 'Load Forecast', icon: 'mdi:home-lightning-bolt' },
-      { type: 'entity', entity: e('lp_import_price_forecast'), name: 'Import Price Avg', icon: 'mdi:cash-clock' },
-      { type: 'entity', entity: e('lp_export_price_forecast'), name: 'Export Price Avg', icon: 'mdi:cash-clock' },
-    ],
-  };
+function _lpForecastSummary(e, has) {
+  const cards = [
+    { type: 'entity', entity: e('lp_solar_forecast'), name: 'Solar Forecast', icon: 'mdi:solar-power-variant' },
+    { type: 'entity', entity: e('lp_load_forecast'), name: 'Load Forecast', icon: 'mdi:home-lightning-bolt' },
+  ];
+  if (has(e('lp_import_price_forecast'))) {
+    cards.push({ type: 'entity', entity: e('lp_import_price_forecast'), name: 'Import Price Avg', icon: 'mdi:cash-clock' });
+  }
+  if (has(e('lp_export_price_forecast'))) {
+    cards.push({ type: 'entity', entity: e('lp_export_price_forecast'), name: 'Export Price Avg', icon: 'mdi:cash-clock' });
+  }
+  return { type: 'horizontal-stack', cards };
 }
 
 function _lpSolarLoadChart(e) {
