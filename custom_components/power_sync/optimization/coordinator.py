@@ -3299,6 +3299,15 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 api_response["import_price"] = display_import[:n_sched]
             if display_export:
                 api_response["export_price"] = display_export[:n_sched]
+            # Debug: log SOC range for API response
+            soc_vals = api_response.get("soc", [])
+            if soc_vals:
+                _LOGGER.debug(
+                    "Schedule API: %d points, SOC range %.2f-%.2f (first=%.4f, last=%.4f)",
+                    len(soc_vals), min(soc_vals), max(soc_vals),
+                    soc_vals[0], soc_vals[-1],
+                )
+
             data["schedule"] = api_response
 
             # Add EV charging power overlay from the same source the LP uses
