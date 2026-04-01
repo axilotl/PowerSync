@@ -3259,6 +3259,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "max_discharge_w": self._config.max_discharge_w,
                 "battery_specs_source": self._battery_specs_source,
                 "backup_reserve": self._config.backup_reserve,
+                "hardware_backup_reserve": (self._startup_backup_reserve or 0) / 100,
                 "interval_minutes": self._config.interval_minutes,
                 "horizon_hours": self._config.horizon_hours,
             },

@@ -19655,6 +19655,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
             _LOGGER.info(f"Smart Optimization cost function: {saved_cost_function}, interval: {saved_interval_minutes}min, backup_reserve: {saved_backup_reserve:.0%}")
 
+            # Load hardware backup reserve (user-configured restore target)
+            from .const import CONF_HARDWARE_BACKUP_RESERVE
+            hw_reserve_pct = entry.options.get(
+                CONF_HARDWARE_BACKUP_RESERVE,
+                entry.data.get(CONF_HARDWARE_BACKUP_RESERVE)
+            )
+            if hw_reserve_pct is not None:
+                if hw_reserve_pct > 1:
+                    hw_reserve_int = int(hw_reserve_pct)
+                else:
+                    hw_reserve_int = int(hw_reserve_pct * 100)
+                optimization_coordinator._startup_backup_reserve = hw_reserve_int
+                if optimization_coordinator._optimizer:
+                    optimization_coordinator._optimizer.update_hardware_reserve(hw_reserve_int / 100)
+                _LOGGER.info(f"Hardware backup reserve set from config: {hw_reserve_int}%%")
+
             # Wire saving session coordinator to optimizer for price overlay
             if saving_session_coordinator:
                 optimization_coordinator._saving_session_coordinator = saving_session_coordinator
@@ -20090,6 +20106,20 @@ class OptimizationSettingsView(HomeAssistantView):
                     reserve = reserve / 100.0
                 new_data[CONF_OPTIMIZATION_BACKUP_RESERVE] = reserve
                 changes.append(f"Set backup reserve to {int(reserve * 100)}%")
+
+            if "hardware_backup_reserve" in settings:
+                from .const import CONF_HARDWARE_BACKUP_RESERVE
+                hw_reserve = settings["hardware_backup_reserve"]
+                if hw_reserve > 1:
+                    hw_reserve = hw_reserve / 100.0
+                new_data[CONF_HARDWARE_BACKUP_RESERVE] = hw_reserve
+                changes.append(f"Set hardware backup reserve to {int(hw_reserve * 100)}%")
+                # Also update the optimizer's startup reserve so force mode
+                # restores to this value instead of the Tesla API value
+                opt_coord = self._hass.data.get(DOMAIN, {}).get(config_entry.entry_id, {}).get("optimization_coordinator")
+                if opt_coord:
+                    opt_coord._startup_backup_reserve = int(hw_reserve * 100)
+                    _LOGGER.info("Updated startup backup reserve to %d%%", int(hw_reserve * 100))
 
             # Update the config entry (both data and options)
             self._hass.config_entries.async_update_entry(config_entry, data=new_data, options=new_options)

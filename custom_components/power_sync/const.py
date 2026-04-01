@@ -1312,6 +1312,7 @@ OPTIMIZATION_PROVIDERS = {
 CONF_OPTIMIZATION_ENABLED = "optimization_enabled"
 CONF_OPTIMIZATION_COST_FUNCTION = "optimization_cost_function"
 CONF_OPTIMIZATION_BACKUP_RESERVE = "optimization_backup_reserve"
+CONF_HARDWARE_BACKUP_RESERVE = "hardware_backup_reserve"
 CONF_OPTIMIZATION_INTERVAL = "optimization_interval"
 CONF_OPTIMIZATION_HORIZON = "optimization_horizon"
 CONF_OPTIMIZATION_EV_INTEGRATION = "optimization_ev_integration"
