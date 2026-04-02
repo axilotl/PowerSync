@@ -127,11 +127,15 @@ class FoxESSRegisterMap:
 
     def get_work_mode_names(self) -> dict[int, str]:
         """Return model-specific work mode value→name mapping."""
-        return {
+        names = {
             self.work_mode_self_use: "Self Use",
             self.work_mode_feed_in: "Feed-in First",
             self.work_mode_backup: "Backup",
         }
+        # H3-Pro/Smart (1-based) has Peak Shaving as mode 4
+        if self.work_mode_self_use == 1:
+            names[4] = "Peak Shaving"
+        return names
 
 
 # Register maps for each model family
@@ -749,13 +753,15 @@ class FoxESSController(InverterController):
 
     # ---- Battery control methods ----
 
-    async def set_work_mode(self, mode: int) -> bool:
+    async def set_work_mode(self, mode: int, _from_force: bool = False) -> bool:
         """Set FoxESS work mode.
 
         Args:
             mode: Model-specific work mode register value.
                   H1/H3/KH (reg 41000): 0=Self Use, 1=Feed-in, 2=Backup
-                  H3-Pro/Smart (reg 49203): 1=Self Use, 2=Feed-in, 3=Backup
+                  H3-Pro/Smart (reg 49203): 1=Self Use, 2=Feed-in, 3=Backup, 4=Peak Shaving
+            _from_force: Internal flag — skip remote control clear when called
+                        from force_charge/force_discharge (they write it next).
         """
         if not self._register_map or not self._register_map.work_mode:
             _LOGGER.error("Work mode register not available for model %s", self._model_family.value)
@@ -763,6 +769,12 @@ class FoxESSController(InverterController):
 
         wm_names = self._register_map.get_work_mode_names()
         _LOGGER.info("FoxESS setting work mode to %d (%s)", mode, wm_names.get(mode, f"Unknown ({mode})"))
+
+        # Clear any active remote control so the mode change takes immediate
+        # effect. Without this, force charge/discharge continues until the
+        # remote timeout even after the user changes mode.
+        if not _from_force and self._register_map.remote_enable:
+            await self._write_holding_register(self._register_map.remote_enable, 0)
 
         return await self._write_holding_register(self._register_map.work_mode, mode)
 
@@ -848,10 +860,12 @@ class FoxESSController(InverterController):
             if ms_raw:
                 self._original_min_soc = ms_raw[0]
 
-        # Set work mode to Backup before enabling remote control — the inverter
-        # requires a compatible work mode for remote control to take effect
-        if reg.work_mode and reg.supports_work_mode_rw:
-            await self.set_work_mode(reg.work_mode_backup)
+        # H3-Pro/Smart: remote control works without mode change.
+        # Changing mode causes post-timeout corruption (mode stays as
+        # Backup instead of reverting). H1/H3/KH need the mode change.
+        is_pro_smart = self._model_family in (FoxESSModelFamily.H3_PRO, FoxESSModelFamily.H3_SMART)
+        if not is_pro_smart and reg.work_mode and reg.supports_work_mode_rw:
+            await self.set_work_mode(reg.work_mode_backup, _from_force=True)
 
         timeout_seconds = max(duration_minutes * 60, 600)
         power_val = -int(abs(power_w))
@@ -876,10 +890,12 @@ class FoxESSController(InverterController):
             if ms_raw:
                 self._original_min_soc = ms_raw[0]
 
-        # Set work mode to Feed-in before enabling remote control — the inverter
-        # requires a compatible work mode for remote control to take effect
-        if reg.work_mode and reg.supports_work_mode_rw:
-            await self.set_work_mode(reg.work_mode_feed_in)
+        # H3-Pro/Smart: remote control works without mode change.
+        # Changing mode causes post-timeout corruption (mode stays as
+        # Feed-in instead of reverting). H1/H3/KH need the mode change.
+        is_pro_smart = self._model_family in (FoxESSModelFamily.H3_PRO, FoxESSModelFamily.H3_SMART)
+        if not is_pro_smart and reg.work_mode and reg.supports_work_mode_rw:
+            await self.set_work_mode(reg.work_mode_feed_in, _from_force=True)
 
         timeout_seconds = max(duration_minutes * 60, 600)
         power_val = int(abs(power_w))
