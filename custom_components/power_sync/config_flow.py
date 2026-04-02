@@ -299,7 +299,6 @@ CONF_NETWORK_TARIFF_COMBINED = "network_tariff_combined"
 
 _LOGGER = logging.getLogger(__name__)
 
-
 async def validate_amber_token(hass: HomeAssistant, api_token: str) -> dict[str, Any]:
     """Validate the Amber API token."""
     session = async_get_clientsession(hass)
@@ -330,7 +329,6 @@ async def validate_amber_token(hass: HomeAssistant, api_token: str) -> dict[str,
         _LOGGER.exception("Unexpected error validating Amber token: %s", err)
         return {"success": False, "error": "unknown"}
 
-
 async def validate_localvolts_credentials(
     hass: HomeAssistant, api_key: str, partner_id: str, nmi: str
 ) -> dict[str, Any]:
@@ -342,7 +340,6 @@ async def validate_localvolts_credentials(
         return await client.validate_credentials(nmi)
     except Exception:
         return {"success": False, "error": "cannot_connect"}
-
 
 async def validate_teslemetry_token(
     hass: HomeAssistant, api_token: str
@@ -390,7 +387,6 @@ async def validate_teslemetry_token(
         _LOGGER.exception("Unexpected error validating Teslemetry token: %s", err)
         return {"success": False, "error": "unknown"}
 
-
 async def validate_fleet_api_token(
     hass: HomeAssistant, api_token: str
 ) -> dict[str, Any]:
@@ -436,7 +432,6 @@ async def validate_fleet_api_token(
     except Exception as err:
         _LOGGER.exception("Unexpected error validating Fleet API token: %s", err)
         return {"success": False, "error": "unknown"}
-
 
 async def validate_sigenergy_credentials(
     hass: HomeAssistant,
@@ -487,7 +482,6 @@ async def validate_sigenergy_credentials(
         _LOGGER.exception("Unexpected error validating Sigenergy credentials: %s", err)
         return {"success": False, "error": "unknown"}
 
-
 async def test_sungrow_connection(
     hass: HomeAssistant,
     host: str,
@@ -524,7 +518,6 @@ async def test_sungrow_connection(
     except Exception as err:
         _LOGGER.error("Sungrow connection test failed: %s", err)
         return {"success": False, "error": "cannot_connect"}
-
 
 async def test_foxess_connection(
     hass: HomeAssistant,
@@ -565,7 +558,6 @@ async def test_foxess_connection(
         _LOGGER.error("FoxESS connection test failed: %s", err)
         return {"success": False, "error": "cannot_connect"}
 
-
 async def test_goodwe_connection(
     hass: HomeAssistant,
     host: str,
@@ -589,7 +581,6 @@ async def test_goodwe_connection(
     except Exception as err:
         _LOGGER.error("GoodWe connection test failed: %s", err)
         return {"success": False, "error": str(err)}
-
 
 class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for PowerSync."""
@@ -624,46 +615,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         # Optimization provider selection (for Tesla/Sigenergy)
         self._optimization_provider: str = OPT_PROVIDER_NATIVE
         self._ml_options: dict[str, Any] = {}  # Smart Optimization options
-        # Step history for back navigation
-        self._step_history: list[str] = []
-
-    def _push_step(self, step_id: str) -> None:
-        """Record current step in history for back navigation."""
-        # Avoid duplicates when re-showing the same step (e.g. validation errors)
-        if not self._step_history or self._step_history[-1] != step_id:
-            self._step_history.append(step_id)
-
-    async def _go_back(self) -> FlowResult:
-        """Navigate to the previous step."""
-        if self._step_history:
-            prev = self._step_history.pop()
-            handler = getattr(self, f"async_step_{prev}", None)
-            if handler:
-                return await handler()
-        # Fallback to first step
-        return await self.async_step_user()
-
-    async def _check_back(self, user_input: dict[str, Any] | None) -> FlowResult | None:
-        """Check if user requested back navigation. Returns FlowResult if going back, None otherwise."""
-        if user_input and user_input.get("go_back", False):
-            return await self._go_back()
-        return None
-
-    def _add_back_button(self, schema_dict: dict) -> dict:
-        """Add a go_back checkbox to a schema dict (inserted at the top)."""
-        if self._step_history:
-            new_dict = {vol.Optional("go_back", default=False): bool}
-            new_dict.update(schema_dict)
-            return new_dict
-        return schema_dict
-
-    def _schema_with_back(self, schema: vol.Schema) -> vol.Schema:
-        """Wrap a vol.Schema to include a go_back checkbox if history exists."""
-        if self._step_history:
-            new_dict = {vol.Optional("go_back", default=False): bool}
-            new_dict.update(schema.schema)
-            return vol.Schema(new_dict)
-        return schema
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -681,9 +632,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> FlowResult:
         """Handle provider selection - first step in setup."""
         if user_input is not None:
-            back = await self._check_back(user_input)
-            if back:
-                return back
             provider = user_input.get(CONF_ELECTRICITY_PROVIDER, "amber")
             self._selected_electricity_provider = provider
 
@@ -730,14 +678,11 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 self._aemo_only_mode = False
                 return await self.async_step_amber()
 
-        self._push_step("provider_selection")
-
-
         return self.async_show_form(
             step_id="provider_selection",
-            data_schema=self._schema_with_back(vol.Schema({
+            data_schema=vol.Schema({
                 vol.Required(CONF_ELECTRICITY_PROVIDER, default="amber"): vol.In(ELECTRICITY_PROVIDERS),
-            })),
+            }),
             description_placeholders={
                 "amber_desc": "Full price sync with Amber Electric API",
                 "flow_power_desc": "Flow Power with AEMO wholesale or Amber pricing",
@@ -756,14 +701,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
 
-
-            back = await self._check_back(user_input)
-
-
-            if back:
-
-
-                return back
             # Parse combined tariff selection (format: "distributor:code")
             combined = user_input.get(CONF_NETWORK_TARIFF_COMBINED, "energex:6900")
             if ":" in combined:
@@ -791,18 +728,15 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             # Route to v2 tariff step
             return await self.async_step_flow_power_tariff()
 
-        self._push_step("flow_power_setup")
-
-
         return self.async_show_form(
             step_id="flow_power_setup",
-            data_schema=self._schema_with_back(vol.Schema({
+            data_schema=vol.Schema({
                 vol.Required(CONF_FLOW_POWER_STATE, default="QLD1"): vol.In(FLOW_POWER_STATES),
                 vol.Required(CONF_NETWORK_TARIFF_COMBINED, default="energex:6900"): vol.In(ALL_NETWORK_TARIFFS),
                 vol.Required(CONF_FLOW_POWER_BASE_RATE, default=FLOW_POWER_DEFAULT_BASE_RATE): vol.All(
                     vol.Coerce(float), vol.Range(min=0.0, max=100.0)
                 ),
-            })),
+            }),
             errors=errors,
         )
 
@@ -818,14 +752,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
 
-
-            back = await self._check_back(user_input)
-
-
-            if back:
-
-
-                return back
             skip = user_input.pop("skip_tariff", False)
 
             if not skip:
@@ -879,12 +805,9 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             first_code = list(tariff_options.keys())[0] if tariff_options else ""
             schema[vol.Optional(CONF_FP_TARIFF_CODE, default=first_code)] = vol.In(tariff_options)
 
-        self._push_step("flow_power_tariff")
-
-
         return self.async_show_form(
             step_id="flow_power_tariff",
-            data_schema=self._schema_with_back(vol.Schema(schema)),
+            data_schema=vol.Schema(schema),
             errors=errors,
         )
 
@@ -893,9 +816,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> FlowResult:
         """Offer optional Flow Power portal login."""
         if user_input is not None:
-            back = await self._check_back(user_input)
-            if back:
-                return back
 
             if user_input.get("connect_portal", False):
                 return await self.async_step_flow_power_portal_login()
@@ -903,12 +823,11 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             # Skip portal — continue to battery setup
             return await self._route_to_battery_setup()
 
-        self._push_step("flow_power_portal")
         return self.async_show_form(
             step_id="flow_power_portal",
-            data_schema=self._schema_with_back(vol.Schema({
+            data_schema=vol.Schema({
                 vol.Optional("connect_portal", default=False): bool,
-            })),
+            }),
         )
 
     async def async_step_flow_power_portal_login(
@@ -920,9 +839,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            back = await self._check_back(user_input)
-            if back:
-                return back
 
             email = user_input.get(CONF_FLOWPOWER_EMAIL, "")
             password = user_input.get(CONF_FLOWPOWER_PASSWORD, "")
@@ -942,13 +858,12 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             else:
                 errors["base"] = "invalid_credentials"
 
-        self._push_step("flow_power_portal_login")
         return self.async_show_form(
             step_id="flow_power_portal_login",
-            data_schema=self._schema_with_back(vol.Schema({
+            data_schema=vol.Schema({
                 vol.Required(CONF_FLOWPOWER_EMAIL): str,
                 vol.Required(CONF_FLOWPOWER_PASSWORD): str,
-            })),
+            }),
             errors=errors,
         )
 
@@ -961,9 +876,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            back = await self._check_back(user_input)
-            if back:
-                return back
 
             code = user_input.get("mfa_code", "")
             if code and hasattr(self, "_fp_client"):
@@ -981,12 +893,11 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             else:
                 errors["base"] = "invalid_mfa_code"
 
-        self._push_step("flow_power_portal_mfa")
         return self.async_show_form(
             step_id="flow_power_portal_mfa",
-            data_schema=self._schema_with_back(vol.Schema({
+            data_schema=vol.Schema({
                 vol.Required("mfa_code"): str,
-            })),
+            }),
             errors=errors,
             description_placeholders={
                 "description": "Enter the SMS verification code sent to your phone"
@@ -1014,14 +925,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
 
-
-            back = await self._check_back(user_input)
-
-
-            if back:
-
-
-                return back
             # Build tariff code from product + region
             product_key = user_input.get(CONF_OCTOPUS_PRODUCT, "agile")
             region = user_input.get(CONF_OCTOPUS_REGION, "C")
@@ -1087,12 +990,9 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             vol.Required(CONF_OCTOPUS_REGION, default="C"): vol.In(OCTOPUS_GSP_REGIONS),
         })
 
-        self._push_step("octopus")
-
-
         return self.async_show_form(
             step_id="octopus",
-            data_schema=self._schema_with_back(data_schema),
+            data_schema=data_schema,
             errors=errors,
             description_placeholders={
                 "octopus_url": "https://octopus.energy/smart/agile/",
@@ -1107,14 +1007,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
 
-
-            back = await self._check_back(user_input)
-
-
-            if back:
-
-
-                return back
             if user_input.get(CONF_OCTOPUS_SAVING_SESSIONS_ENABLED):
                 source = user_input.get(CONF_OCTOPUS_SAVING_SESSIONS_SOURCE, "direct")
 
@@ -1178,12 +1070,9 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             vol.Optional(CONF_OCTOPUS_SAVING_SESSIONS_AUTO_JOIN, default=True): bool,
         })
 
-        self._push_step("octopus_saving_sessions")
-
-
         return self.async_show_form(
             step_id="octopus_saving_sessions",
-            data_schema=self._schema_with_back(data_schema),
+            data_schema=data_schema,
             errors=errors,
         )
 
@@ -1195,14 +1084,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
 
-
-            back = await self._check_back(user_input)
-
-
-            if back:
-
-
-                return back
             # Validate Amber API token
             validation_result = await validate_amber_token(
                 self.hass, user_input[CONF_AMBER_API_TOKEN]
@@ -1222,12 +1103,9 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             }
         )
 
-        self._push_step("amber")
-
-
         return self.async_show_form(
             step_id="amber",
-            data_schema=self._schema_with_back(data_schema),
+            data_schema=data_schema,
             errors=errors,
             description_placeholders={
                 "amber_url": "https://app.amber.com.au/developers",
@@ -1241,9 +1119,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            back = await self._check_back(user_input)
-            if back:
-                return back
 
             region = user_input.get(CONF_EPEX_REGION, "DE")
             surcharge = user_input.get(CONF_EPEX_SURCHARGE, 0.0)
@@ -1286,11 +1161,9 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             vol.Optional(CONF_EPEX_EXPORT_RATE, default=0.0): vol.Coerce(float),
         })
 
-        self._push_step("epex")
-
         return self.async_show_form(
             step_id="epex",
-            data_schema=self._schema_with_back(data_schema),
+            data_schema=data_schema,
             errors=errors,
         )
 
@@ -1302,14 +1175,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
 
-
-            back = await self._check_back(user_input)
-
-
-            if back:
-
-
-                return back
             validation = await validate_localvolts_credentials(
                 self.hass,
                 user_input[CONF_LOCALVOLTS_API_KEY],
@@ -1332,12 +1197,9 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             }
         )
 
-        self._push_step("localvolts")
-
-
         return self.async_show_form(
             step_id="localvolts",
-            data_schema=self._schema_with_back(data_schema),
+            data_schema=data_schema,
             errors=errors,
         )
 
@@ -1350,14 +1212,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
 
-
-            back = await self._check_back(user_input)
-
-
-            if back:
-
-
-                return back
             # Store Amber settings in _amber_data
             self._amber_data[CONF_SPIKE_PROTECTION_ENABLED] = user_input.get(CONF_SPIKE_PROTECTION_ENABLED, False)
             self._amber_data[CONF_SETTLED_PRICES_ONLY] = user_input.get(CONF_SETTLED_PRICES_ONLY, False)
@@ -1487,12 +1341,9 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         data_schema = vol.Schema(schema_dict)
 
-        self._push_step("amber_settings")
-
-
         return self.async_show_form(
             step_id="amber_settings",
-            data_schema=self._schema_with_back(data_schema),
+            data_schema=data_schema,
         )
 
     async def async_step_battery_system(
@@ -1501,24 +1352,16 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Let user choose battery system - Tesla or Sigenergy (first step)."""
         if user_input is not None:
 
-            back = await self._check_back(user_input)
-
-            if back:
-
-                return back
             self._selected_battery_system = user_input.get(CONF_BATTERY_SYSTEM, BATTERY_SYSTEM_TESLA)
 
             # All battery systems can choose between native optimization and Smart Optimization
             return await self.async_step_optimization_provider()
 
-        self._push_step("battery_system")
-
-
         return self.async_show_form(
             step_id="battery_system",
-            data_schema=self._schema_with_back(vol.Schema({
+            data_schema=vol.Schema({
                 vol.Required(CONF_BATTERY_SYSTEM, default=BATTERY_SYSTEM_TESLA): vol.In(BATTERY_SYSTEMS),
-            })),
+            }),
             description_placeholders={
                 "tesla_desc": "Tesla Powerwall with Fleet API or Teslemetry",
                 "sigenergy_desc": "Sigenergy via Cloud API + optional Modbus curtailment",
@@ -1535,14 +1378,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
 
-
-            back = await self._check_back(user_input)
-
-
-            if back:
-
-
-                return back
             provider = user_input.get(CONF_OPTIMIZATION_PROVIDER, OPT_PROVIDER_NATIVE)
             self._optimization_provider = provider
 
@@ -1563,14 +1398,11 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             OPT_PROVIDER_POWERSYNC: "Smart Optimization (Built-in LP)",
         }
 
-        self._push_step("optimization_provider")
-
-
         return self.async_show_form(
             step_id="optimization_provider",
-            data_schema=self._schema_with_back(vol.Schema({
+            data_schema=vol.Schema({
                 vol.Required(CONF_OPTIMIZATION_PROVIDER, default=OPT_PROVIDER_POWERSYNC): vol.In(providers),
-            })),
+            }),
             errors=errors,
             description_placeholders={
                 "battery_name": native_name,
@@ -1583,11 +1415,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Configure Smart Optimization options - backup reserve."""
         if user_input is not None:
 
-            back = await self._check_back(user_input)
-
-            if back:
-
-                return back
             self._ml_options = {
                 CONF_OPTIMIZATION_COST_FUNCTION: COST_FUNCTION_COST,
                 CONF_OPTIMIZATION_BACKUP_RESERVE: user_input.get(
@@ -1597,17 +1424,14 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             # Proceed to electricity provider selection
             return await self.async_step_provider_selection()
 
-        self._push_step("ml_options")
-
-
         return self.async_show_form(
             step_id="ml_options",
-            data_schema=self._schema_with_back(vol.Schema({
+            data_schema=vol.Schema({
                 vol.Required(
                     CONF_OPTIMIZATION_BACKUP_RESERVE,
                     default=int(DEFAULT_OPTIMIZATION_BACKUP_RESERVE * 100)
                 ): vol.All(vol.Coerce(int), vol.Range(min=0, max=100)),
-            })),
+            }),
             description_placeholders={},
         )
 
@@ -1625,14 +1449,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
 
-
-            back = await self._check_back(user_input)
-
-
-            if back:
-
-
-                return back
             username = user_input.get(CONF_SIGENERGY_USERNAME, "").strip()
             plain_password = user_input.get(CONF_SIGENERGY_PASSWORD, "").strip()
             pass_enc = user_input.get(CONF_SIGENERGY_PASS_ENC, "").strip()
@@ -1673,17 +1489,14 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 else:
                     errors["base"] = validation_result.get("error", "unknown")
 
-        self._push_step("sigenergy_credentials")
-
-
         return self.async_show_form(
             step_id="sigenergy_credentials",
-            data_schema=self._schema_with_back(vol.Schema({
+            data_schema=vol.Schema({
                 vol.Required(CONF_SIGENERGY_USERNAME): str,
                 vol.Required(CONF_SIGENERGY_PASSWORD): TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD)),
                 vol.Optional(CONF_SIGENERGY_DEVICE_ID, default=""): str,
                 vol.Optional(CONF_SIGENERGY_PASS_ENC): TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD)),
-            })),
+            }),
             errors=errors,
             description_placeholders={
                 "credentials_help": "Enter your Sigenergy account password. Device ID is from browser dev tools.",
@@ -1698,14 +1511,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
 
-
-            back = await self._check_back(user_input)
-
-
-            if back:
-
-
-                return back
             station_id = user_input.get(CONF_SIGENERGY_STATION_ID)
             if station_id:
                 # Strip any whitespace
@@ -1725,13 +1530,12 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         # If no stations found via API, show manual entry form
         if not station_options:
-            self._push_step("sigenergy_station")
 
             return self.async_show_form(
                 step_id="sigenergy_station",
-                data_schema=self._schema_with_back(vol.Schema({
+                data_schema=vol.Schema({
                     vol.Required(CONF_SIGENERGY_STATION_ID): str,
-                })),
+                }),
                 errors=errors,
                 description_placeholders={
                     "station_help": "Station list unavailable. Enter your Station ID manually. "
@@ -1755,14 +1559,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
 
-
-            back = await self._check_back(user_input)
-
-
-            if back:
-
-
-                return back
             modbus_host = user_input.get(CONF_SIGENERGY_MODBUS_HOST, "").strip()
             if not modbus_host:
                 errors["base"] = "modbus_host_required"
@@ -1777,12 +1573,9 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 # Go to optional DC curtailment configuration
                 return await self.async_step_sigenergy_dc_curtailment()
 
-        self._push_step("sigenergy_modbus")
-
-
         return self.async_show_form(
             step_id="sigenergy_modbus",
-            data_schema=self._schema_with_back(vol.Schema({
+            data_schema=vol.Schema({
                 vol.Required(CONF_SIGENERGY_MODBUS_HOST): str,
                 vol.Optional(
                     CONF_SIGENERGY_MODBUS_PORT,
@@ -1792,7 +1585,7 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     CONF_SIGENERGY_MODBUS_SLAVE_ID,
                     default=DEFAULT_SIGENERGY_MODBUS_SLAVE_ID,
                 ): int,
-            })),
+            }),
             errors=errors,
         )
 
@@ -1804,14 +1597,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
 
-
-            back = await self._check_back(user_input)
-
-
-            if back:
-
-
-                return back
             dc_enabled = user_input.get(CONF_SIGENERGY_DC_CURTAILMENT_ENABLED, False)
             self._sigenergy_data[CONF_SIGENERGY_DC_CURTAILMENT_ENABLED] = dc_enabled
             export_limit = user_input.get(CONF_SIGENERGY_EXPORT_LIMIT_KW)
@@ -1819,12 +1604,9 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 self._sigenergy_data[CONF_SIGENERGY_EXPORT_LIMIT_KW] = export_limit
             return await self.async_step_curtailment_setup()
 
-        self._push_step("sigenergy_dc_curtailment")
-
-
         return self.async_show_form(
             step_id="sigenergy_dc_curtailment",
-            data_schema=self._schema_with_back(vol.Schema({
+            data_schema=vol.Schema({
                 vol.Optional(
                     CONF_SIGENERGY_DC_CURTAILMENT_ENABLED,
                     default=False,
@@ -1832,7 +1614,7 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Optional(
                     CONF_SIGENERGY_EXPORT_LIMIT_KW,
                 ): vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
-            })),
+            }),
             errors=errors,
         )
 
@@ -1885,14 +1667,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
 
-
-            back = await self._check_back(user_input)
-
-
-            if back:
-
-
-                return back
             host = user_input.get(CONF_SUNGROW_HOST, "").strip()
             port = user_input.get(CONF_SUNGROW_PORT, DEFAULT_SUNGROW_PORT)
             slave_id = user_input.get(CONF_SUNGROW_SLAVE_ID, DEFAULT_SUNGROW_SLAVE_ID)
@@ -1920,16 +1694,13 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 else:
                     errors["base"] = "cannot_connect"
 
-        self._push_step("sungrow")
-
-
         return self.async_show_form(
             step_id="sungrow",
-            data_schema=self._schema_with_back(vol.Schema({
+            data_schema=vol.Schema({
                 vol.Required(CONF_SUNGROW_HOST): str,
                 vol.Optional(CONF_SUNGROW_PORT, default=DEFAULT_SUNGROW_PORT): int,
                 vol.Optional(CONF_SUNGROW_SLAVE_ID, default=DEFAULT_SUNGROW_SLAVE_ID): int,
-            })),
+            }),
             errors=errors,
         )
 
@@ -1941,14 +1712,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
 
-
-            back = await self._check_back(user_input)
-
-
-            if back:
-
-
-                return back
             host2 = user_input.get(CONF_SUNGROW_HOST_2, "").strip()
             if not host2:
                 # User left it blank — skip secondary
@@ -1973,16 +1736,13 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             else:
                 errors["base"] = "cannot_connect"
 
-        self._push_step("sungrow_secondary")
-
-
         return self.async_show_form(
             step_id="sungrow_secondary",
-            data_schema=self._schema_with_back(vol.Schema({
+            data_schema=vol.Schema({
                 vol.Optional(CONF_SUNGROW_HOST_2, default=""): str,
                 vol.Optional(CONF_SUNGROW_PORT_2, default=DEFAULT_SUNGROW_PORT): int,
                 vol.Optional(CONF_SUNGROW_SLAVE_ID_2, default=DEFAULT_SUNGROW_SLAVE_ID): int,
-            })),
+            }),
             errors=errors,
         )
 
@@ -2035,28 +1795,20 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Choose FoxESS connection type: TCP or Serial."""
         if user_input is not None:
 
-            back = await self._check_back(user_input)
-
-            if back:
-
-                return back
             conn_type = user_input.get(CONF_FOXESS_CONNECTION_TYPE, FOXESS_CONNECTION_TCP)
             if conn_type == FOXESS_CONNECTION_SERIAL:
                 return await self.async_step_foxess_serial()
             else:
                 return await self.async_step_foxess_tcp()
 
-        self._push_step("foxess_connection")
-
-
         return self.async_show_form(
             step_id="foxess_connection",
-            data_schema=self._schema_with_back(vol.Schema({
+            data_schema=vol.Schema({
                 vol.Required(CONF_FOXESS_CONNECTION_TYPE, default=FOXESS_CONNECTION_TCP): vol.In({
                     FOXESS_CONNECTION_TCP: "Modbus TCP (LAN/Wi-Fi)",
                     FOXESS_CONNECTION_SERIAL: "RS485 Serial",
                 }),
-            })),
+            }),
         )
 
     async def async_step_foxess_tcp(
@@ -2067,14 +1819,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
 
-
-            back = await self._check_back(user_input)
-
-
-            if back:
-
-
-                return back
             host = user_input.get(CONF_FOXESS_HOST, "").strip()
             port = user_input.get(CONF_FOXESS_PORT, DEFAULT_FOXESS_PORT)
             slave_id = user_input.get(CONF_FOXESS_SLAVE_ID, DEFAULT_FOXESS_SLAVE_ID)
@@ -2110,16 +1854,13 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 else:
                     errors["base"] = "foxess_tcp_failed"
 
-        self._push_step("foxess_tcp")
-
-
         return self.async_show_form(
             step_id="foxess_tcp",
-            data_schema=self._schema_with_back(vol.Schema({
+            data_schema=vol.Schema({
                 vol.Required(CONF_FOXESS_HOST): str,
                 vol.Optional(CONF_FOXESS_PORT, default=DEFAULT_FOXESS_PORT): int,
                 vol.Optional(CONF_FOXESS_SLAVE_ID, default=DEFAULT_FOXESS_SLAVE_ID): int,
-            })),
+            }),
             errors=errors,
         )
 
@@ -2131,14 +1872,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
 
-
-            back = await self._check_back(user_input)
-
-
-            if back:
-
-
-                return back
             serial_port = user_input.get(CONF_FOXESS_SERIAL_PORT, "").strip()
             baudrate = user_input.get(CONF_FOXESS_SERIAL_BAUDRATE, DEFAULT_FOXESS_SERIAL_BAUDRATE)
             slave_id = user_input.get(CONF_FOXESS_SLAVE_ID, DEFAULT_FOXESS_SLAVE_ID)
@@ -2176,16 +1909,13 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 else:
                     errors["base"] = "cannot_connect"
 
-        self._push_step("foxess_serial")
-
-
         return self.async_show_form(
             step_id="foxess_serial",
-            data_schema=self._schema_with_back(vol.Schema({
+            data_schema=vol.Schema({
                 vol.Required(CONF_FOXESS_SERIAL_PORT, default="/dev/ttyUSB0"): str,
                 vol.Optional(CONF_FOXESS_SERIAL_BAUDRATE, default=DEFAULT_FOXESS_SERIAL_BAUDRATE): int,
                 vol.Optional(CONF_FOXESS_SLAVE_ID, default=DEFAULT_FOXESS_SLAVE_ID): int,
-            })),
+            }),
             errors=errors,
         )
 
@@ -2199,11 +1929,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """
         if user_input is not None:
 
-            back = await self._check_back(user_input)
-
-            if back:
-
-                return back
             selected = user_input.get(CONF_FOXESS_MODEL_FAMILY, FOXESS_MODEL_H3_PRO)
             self._foxess_data[CONF_FOXESS_MODEL_FAMILY] = selected
             _LOGGER.info("FoxESS model confirmed by user: %s", selected)
@@ -2211,17 +1936,14 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         detected = self._foxess_data.get(CONF_FOXESS_MODEL_FAMILY, FOXESS_MODEL_H3_PRO)
 
-        self._push_step("foxess_model")
-
-
         return self.async_show_form(
             step_id="foxess_model",
-            data_schema=self._schema_with_back(vol.Schema({
+            data_schema=vol.Schema({
                 vol.Required(CONF_FOXESS_MODEL_FAMILY, default=detected): vol.In({
                     FOXESS_MODEL_H3_SMART: "H3 Smart (Native WiFi Modbus)",
                     FOXESS_MODEL_H3_PRO: "H3-Pro",
                 }),
-            })),
+            }),
         )
 
     async def async_step_foxess_cloud(
@@ -2232,14 +1954,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
 
-
-            back = await self._check_back(user_input)
-
-
-            if back:
-
-
-                return back
             # Cloud is optional — store if provided, skip if empty
             api_key = user_input.get(CONF_FOXESS_CLOUD_API_KEY, "").strip()
             if api_key:
@@ -2267,15 +1981,12 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 # Blank API key — skip cloud setup
                 return await self.async_step_curtailment_setup()
 
-        self._push_step("foxess_cloud")
-
-
         return self.async_show_form(
             step_id="foxess_cloud",
-            data_schema=self._schema_with_back(vol.Schema({
+            data_schema=vol.Schema({
                 vol.Optional(CONF_FOXESS_CLOUD_API_KEY, default=""): TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD)),
                 vol.Optional(CONF_FOXESS_CLOUD_DEVICE_SN, default=""): str,
-            })),
+            }),
             errors=errors,
         )
 
@@ -2323,14 +2034,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
 
-
-            back = await self._check_back(user_input)
-
-
-            if back:
-
-
-                return back
             host = user_input.get(CONF_GOODWE_HOST, "").strip()
             protocol = user_input.get(CONF_GOODWE_PROTOCOL, "udp")
             port = user_input.get(
@@ -2363,19 +2066,16 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 else:
                     errors["base"] = "goodwe_connect_failed"
 
-        self._push_step("goodwe_connection")
-
-
         return self.async_show_form(
             step_id="goodwe_connection",
-            data_schema=self._schema_with_back(vol.Schema({
+            data_schema=vol.Schema({
                 vol.Required(CONF_GOODWE_HOST): str,
                 vol.Required(CONF_GOODWE_PROTOCOL, default="udp"): vol.In({
                     "udp": "UDP (WiFi dongle, port 8899)",
                     "tcp": "TCP (LAN dongle, port 502)",
                 }),
                 vol.Required(CONF_GOODWE_PORT, default=DEFAULT_GOODWE_PORT_UDP): int,
-            })),
+            }),
             errors=errors,
         )
 
@@ -2445,11 +2145,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         # Tesla Fleet is available - let user choose
         if user_input is not None:
 
-            back = await self._check_back(user_input)
-
-            if back:
-
-                return back
             self._selected_provider = user_input[CONF_TESLA_API_PROVIDER]
 
             if self._selected_provider == TESLA_PROVIDER_FLEET_API:
@@ -2467,16 +2162,15 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 else:
                     # Fleet API validation failed - show error
                     errors = {"base": validation_result.get("error", "unknown")}
-                    self._push_step("tesla_provider")
 
                     return self.async_show_form(
                         step_id="tesla_provider",
-                        data_schema=self._schema_with_back(vol.Schema({
+                        data_schema=vol.Schema({
                             vol.Required(CONF_TESLA_API_PROVIDER, default=TESLA_PROVIDER_TESLEMETRY): vol.In({
                                 TESLA_PROVIDER_FLEET_API: "Tesla Fleet API (Free - uses existing Tesla Fleet integration)",
                                 TESLA_PROVIDER_TESLEMETRY: "Teslemetry (~$4/month - proxy service)",
                             }),
-                        })),
+                        }),
                         errors=errors,
                     )
             else:
@@ -2506,14 +2200,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
 
-
-            back = await self._check_back(user_input)
-
-
-            if back:
-
-
-                return back
             teslemetry_token = user_input.get(CONF_TESLEMETRY_API_TOKEN, "").strip()
 
             if teslemetry_token:
@@ -2536,12 +2222,9 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             }
         )
 
-        self._push_step("teslemetry")
-
-
         return self.async_show_form(
             step_id="teslemetry",
-            data_schema=self._schema_with_back(data_schema),
+            data_schema=data_schema,
             errors=errors,
             description_placeholders={
                 "teslemetry_url": "https://teslemetry.com",
@@ -2556,14 +2239,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
 
-
-            back = await self._check_back(user_input)
-
-
-            if back:
-
-
-                return back
             # Validate AEMO region is selected if enabled
             aemo_enabled = user_input.get(CONF_AEMO_SPIKE_ENABLED, False)
 
@@ -2636,12 +2311,9 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             }
         )
 
-        self._push_step("aemo_config")
-
-
         return self.async_show_form(
             step_id="aemo_config",
-            data_schema=self._schema_with_back(data_schema),
+            data_schema=data_schema,
             errors=errors,
             description_placeholders={
                 "threshold_hint": "Default: $3,000/MWh. GloBird spike exports use $3,000/MWh. Adjust only if your plan specifies a different threshold.",
@@ -2660,14 +2332,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
 
-
-            back = await self._check_back(user_input)
-
-
-            if back:
-
-
-                return back
             skip_tariff = user_input.get("skip_tariff", False)
 
             if skip_tariff:
@@ -2711,12 +2375,9 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             }
         )
 
-        self._push_step("custom_tariff")
-
-
         return self.async_show_form(
             step_id="custom_tariff",
-            data_schema=self._schema_with_back(data_schema),
+            data_schema=data_schema,
             errors=errors,
             description_placeholders={
                 "info": "Configure your electricity tariff. All rates in cents/kWh.\nFor TOU, you'll add time periods in the next step.",
@@ -2737,14 +2398,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
 
-
-            back = await self._check_back(user_input)
-
-
-            if back:
-
-
-                return back
             try:
                 start_hour = int(user_input.get("period_start", "15:00").split(":")[0])
                 end_hour = int(user_input.get("period_end", "21:00").split(":")[0])
@@ -2811,12 +2464,9 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             }
         )
 
-        self._push_step("tariff_period")
-
-
         return self.async_show_form(
             step_id="tariff_period",
-            data_schema=self._schema_with_back(data_schema),
+            data_schema=data_schema,
             errors=errors,
             description_placeholders={
                 "period_info": added_desc if added_desc else "Add your first tariff period. Remaining hours will be off-peak.",
@@ -2983,11 +2633,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Handle NZ retailer selection."""
         if user_input is not None:
 
-            back = await self._check_back(user_input)
-
-            if back:
-
-                return back
             retailer = user_input.get(CONF_NZ_RETAILER, "nz_custom")
             zone = user_input.get(CONF_NZ_DISTRIBUTION_ZONE, "other")
 
@@ -3021,15 +2666,12 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
             return await self.async_step_nz_rates()
 
-        self._push_step("nz_retailer")
-
-
         return self.async_show_form(
             step_id="nz_retailer",
-            data_schema=self._schema_with_back(vol.Schema({
+            data_schema=vol.Schema({
                 vol.Required(CONF_NZ_RETAILER, default="octopus_nz"): vol.In(NZ_RETAILERS),
                 vol.Required(CONF_NZ_DISTRIBUTION_ZONE, default="vector"): vol.In(NZ_DISTRIBUTION_ZONES),
-            })),
+            }),
         )
 
     async def async_step_nz_rates(
@@ -3040,14 +2682,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
 
-
-            back = await self._check_back(user_input)
-
-
-            if back:
-
-
-                return back
             peak_rate = user_input.get(CONF_NZ_PEAK_RATE, 40.0)
             shoulder_rate = user_input.get(CONF_NZ_SHOULDER_RATE, 25.0)
             offpeak_rate = user_input.get(CONF_NZ_OFFPEAK_RATE, 15.0)
@@ -3137,12 +2771,9 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         defaults = getattr(self, "_nz_defaults", {})
 
-        self._push_step("nz_rates")
-
-
         return self.async_show_form(
             step_id="nz_rates",
-            data_schema=self._schema_with_back(vol.Schema({
+            data_schema=vol.Schema({
                 vol.Required(CONF_NZ_PEAK_RATE, default=defaults.get(CONF_NZ_PEAK_RATE, 40.0)): vol.All(
                     vol.Coerce(float), vol.Range(min=0, max=200)
                 ),
@@ -3161,7 +2792,7 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required(CONF_NZ_DAILY_SUPPLY, default=defaults.get(CONF_NZ_DAILY_SUPPLY, 200.0)): vol.All(
                     vol.Coerce(float), vol.Range(min=0, max=1000)
                 ),
-            })),
+            }),
             errors=errors,
         )
 
@@ -3179,14 +2810,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
 
-
-            back = await self._check_back(user_input)
-
-
-            if back:
-
-
-                return back
             # Handle Amber site selection (only if we have Amber sites)
             amber_site_id = None
             if has_amber_sites:
@@ -3300,12 +2923,9 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         data_schema = vol.Schema(data_schema_dict)
 
-        self._push_step("site_selection")
-
-
         return self.async_show_form(
             step_id="site_selection",
-            data_schema=self._schema_with_back(data_schema),
+            data_schema=data_schema,
             errors=errors,
         )
 
@@ -3320,14 +2940,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
 
-
-            back = await self._check_back(user_input)
-
-
-            if back:
-
-
-                return back
             # Store curtailment settings
             self._curtailment_data = {
                 CONF_BATTERY_CURTAILMENT_ENABLED: user_input.get(CONF_BATTERY_CURTAILMENT_ENABLED, False),
@@ -3344,12 +2956,9 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         # Get default from site_data if already set
         default_curtailment = self._site_data.get(CONF_BATTERY_CURTAILMENT_ENABLED, False)
 
-        self._push_step("curtailment_setup")
-
-
         return self.async_show_form(
             step_id="curtailment_setup",
-            data_schema=self._schema_with_back(vol.Schema({
+            data_schema=vol.Schema({
                 vol.Optional(
                     CONF_BATTERY_CURTAILMENT_ENABLED,
                     default=default_curtailment,
@@ -3358,7 +2967,7 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     CONF_AC_INVERTER_CURTAILMENT_ENABLED,
                     default=False,
                 ): bool,
-            })),
+            }),
         )
 
     async def async_step_weather_setup(
@@ -3367,11 +2976,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Handle weather and solar forecast configuration during initial setup."""
         if user_input is not None:
 
-            back = await self._check_back(user_input)
-
-            if back:
-
-                return back
             # Store weather and Solcast settings in curtailment_data
             if not hasattr(self, '_curtailment_data'):
                 self._curtailment_data = {}
@@ -3384,12 +2988,9 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             # Go to demand charges
             return await self.async_step_demand_charges()
 
-        self._push_step("weather_setup")
-
-
         return self.async_show_form(
             step_id="weather_setup",
-            data_schema=self._schema_with_back(vol.Schema({
+            data_schema=vol.Schema({
                 vol.Optional(
                     CONF_WEATHER_LOCATION,
                     default="",
@@ -3410,7 +3011,7 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     CONF_SOLCAST_RESOURCE_ID,
                     default="",
                 ): str,
-            })),
+            }),
         )
 
     async def async_step_inverter_brand_setup(
@@ -3419,25 +3020,17 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Handle inverter brand selection during initial setup."""
         if user_input is not None:
 
-            back = await self._check_back(user_input)
-
-            if back:
-
-                return back
             self._inverter_brand = user_input.get(CONF_INVERTER_BRAND, "sungrow")
             return await self.async_step_inverter_config_setup()
 
-        self._push_step("inverter_brand_setup")
-
-
         return self.async_show_form(
             step_id="inverter_brand_setup",
-            data_schema=self._schema_with_back(vol.Schema({
+            data_schema=vol.Schema({
                 vol.Required(
                     CONF_INVERTER_BRAND,
                     default="sungrow",
                 ): vol.In(INVERTER_BRANDS),
-            })),
+            }),
         )
 
     async def async_step_inverter_config_setup(
@@ -3448,14 +3041,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
 
-
-            back = await self._check_back(user_input)
-
-
-            if back:
-
-
-                return back
             # Store inverter configuration
             inverter_brand = getattr(self, '_inverter_brand', "sungrow")
             inverter_host = user_input.get(CONF_INVERTER_HOST, "")
@@ -3571,12 +3156,9 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             default=DEFAULT_INVERTER_RESTORE_SOC,
         )] = vol.All(vol.Coerce(int), vol.Range(min=0, max=100))
 
-        self._push_step("inverter_config_setup")
-
-
         return self.async_show_form(
             step_id="inverter_config_setup",
-            data_schema=self._schema_with_back(vol.Schema(schema_dict)),
+            data_schema=vol.Schema(schema_dict),
             errors=errors,
             description_placeholders={
                 "brand": brand.title(),
@@ -3589,11 +3171,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Handle optional demand charge configuration (minimal implementation)."""
         if user_input is not None:
 
-            back = await self._check_back(user_input)
-
-            if back:
-
-                return back
             # Store demand charge configuration
             self._demand_data = {}
 
@@ -3651,12 +3228,9 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         data_schema = vol.Schema(schema_dict)
 
-        self._push_step("demand_charges")
-
-
         return self.async_show_form(
             step_id="demand_charges",
-            data_schema=self._schema_with_back(data_schema),
+            data_schema=data_schema,
             description_placeholders={
                 "example_rate": "10.0",
                 "example_time": "14:00",
@@ -3669,11 +3243,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Handle EV charging configuration during initial setup."""
         if user_input is not None:
 
-            back = await self._check_back(user_input)
-
-            if back:
-
-                return back
             # Store EV data for potential zaptec_cloud step
             self._ev_data = dict(user_input)
 
@@ -3683,12 +3252,9 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
             return self._create_final_entry_from_ev(user_input)
 
-        self._push_step("ev_charging_setup")
-
-
         return self.async_show_form(
             step_id="ev_charging_setup",
-            data_schema=self._schema_with_back(vol.Schema({
+            data_schema=vol.Schema({
                 vol.Optional(
                     CONF_EV_CHARGING_ENABLED,
                     default=False,
@@ -3726,7 +3292,7 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Optional(CONF_GENERIC_CHARGER_AMPS_ENTITY, default=""): str,
                 vol.Optional(CONF_GENERIC_CHARGER_STATUS_ENTITY, default=""): str,
                 vol.Optional(CONF_GENERIC_CHARGER_SOC_ENTITY, default=""): str,
-            })),
+            }),
         )
 
     def _create_final_entry_from_ev(
@@ -3839,14 +3405,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
 
-
-            back = await self._check_back(user_input)
-
-
-            if back:
-
-
-                return back
             username = user_input.get(CONF_ZAPTEC_USERNAME, "")
             password = user_input.get(CONF_ZAPTEC_PASSWORD, "")
 
@@ -3883,15 +3441,12 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             else:
                 errors["base"] = "zaptec_missing_credentials"
 
-        self._push_step("zaptec_cloud")
-
-
         return self.async_show_form(
             step_id="zaptec_cloud",
-            data_schema=self._schema_with_back(vol.Schema({
+            data_schema=vol.Schema({
                 vol.Required(CONF_ZAPTEC_USERNAME): str,
                 vol.Required(CONF_ZAPTEC_PASSWORD): TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD)),
-            })),
+            }),
             errors=errors,
         )
 
@@ -3902,7 +3457,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> PowerSyncOptionsFlow:
         """Get the options flow for this handler."""
         return PowerSyncOptionsFlow()
-
 
 class PowerSyncOptionsFlow(config_entries.OptionsFlow):
     """Handle options flow for PowerSync."""
