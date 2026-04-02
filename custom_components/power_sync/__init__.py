@@ -20029,6 +20029,8 @@ class OptimizationSettingsView(HomeAssistantView):
                 "max_charge_w": opt_coordinator._config.max_charge_w,
                 "max_discharge_w": opt_coordinator._config.max_discharge_w,
                 "backup_reserve": round(opt_coordinator._config.backup_reserve * 100),
+                "hardware_backup_reserve": opt_coordinator._startup_backup_reserve if opt_coordinator._startup_backup_reserve is not None else 0,
+                "battery_specs_source": opt_coordinator._battery_specs_source,
                 "interval_minutes": opt_coordinator._config.interval_minutes,
                 "horizon_hours": opt_coordinator._config.horizon_hours,
             }
