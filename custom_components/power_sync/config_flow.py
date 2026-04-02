@@ -274,6 +274,7 @@ from .const import (
     FOXESS_CONNECTION_SERIAL,
     FOXESS_MODEL_H3_PRO,
     FOXESS_MODEL_H3_SMART,
+    FOXESS_MODEL_FAMILIES,
     # GoodWe battery system configuration
     CONF_GOODWE_HOST,
     CONF_GOODWE_PORT,
@@ -1939,10 +1940,7 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="foxess_model",
             data_schema=vol.Schema({
-                vol.Required(CONF_FOXESS_MODEL_FAMILY, default=detected): vol.In({
-                    FOXESS_MODEL_H3_SMART: "H3 Smart (Native WiFi Modbus)",
-                    FOXESS_MODEL_H3_PRO: "H3-Pro",
-                }),
+                vol.Required(CONF_FOXESS_MODEL_FAMILY, default=detected): vol.In(FOXESS_MODEL_FAMILIES),
             }),
         )
 
