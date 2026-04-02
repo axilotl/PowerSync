@@ -125,35 +125,41 @@ def compute_avg_daily_tariff(
         return None
 
 
-def get_tariff_codes_for_network(network_display: str) -> list[str]:
-    """Return available tariff codes for a DNSP display name.
+def get_tariff_codes_for_network(network_display: str) -> dict[str, str]:
+    """Return available tariff codes with names for a DNSP display name.
 
     Imports the appropriate aemo_to_tariff module and reads its ``tariffs``
-    dict to discover valid tariff codes.
+    dict to discover valid tariff codes and their descriptive names.
 
     Args:
         network_display: Display name (e.g. "SAPN", "Energex").
 
     Returns:
-        List of tariff code strings, or empty list on error.
+        Dict of {tariff_code: display_name}, or empty dict on error.
     """
     from .const import NETWORK_MODULE_NAME
 
     module_name = NETWORK_MODULE_NAME.get(network_display)
     if not module_name:
         _LOGGER.warning("No module mapping for network: %s", network_display)
-        return []
+        return {}
 
     try:
         mod = importlib.import_module(f"aemo_to_tariff.{module_name}")
         tariffs = getattr(mod, "tariffs", {})
-        return list(tariffs.keys())
+        result = {}
+        for code, data in tariffs.items():
+            if isinstance(data, dict) and "name" in data:
+                result[str(code)] = f"{code} — {data['name']}"
+            else:
+                result[str(code)] = str(code)
+        return result
     except Exception as err:
         _LOGGER.warning(
             "Failed to load tariff codes for %s (module=%s): %s",
             network_display, module_name, err,
         )
-        return []
+        return {}
 
 
 def get_networks_for_region(region: str) -> list[str]:

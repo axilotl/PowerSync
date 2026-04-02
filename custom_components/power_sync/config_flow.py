@@ -792,10 +792,9 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if networks:
             from .tariff_utils import get_tariff_codes_for_network
             first_network = networks[0]
-            codes = await self.hass.async_add_executor_job(
+            tariff_options = await self.hass.async_add_executor_job(
                 get_tariff_codes_for_network, first_network
             )
-            tariff_options = {c: c for c in codes}
 
         schema = {
             vol.Optional("skip_tariff", default=False): bool,
@@ -5058,7 +5057,7 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 get_tariff_codes_for_network, current_fp_network
             )
             if codes:
-                tariff_code_options = {c: c for c in codes}
+                tariff_code_options = codes
 
         # Default Amber markup for region
         default_markup = DEFAULT_FP_AMBER_MARKUP.get(current_region, 4.0)
