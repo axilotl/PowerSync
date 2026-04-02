@@ -890,10 +890,34 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     or (force_type == "charge" and action.action == "charge")
                 )
                 if lp_matches_force:
+                    # Extend the expiry timer so the force mode doesn't expire
+                    # between optimizer cycles (avoids restore→re-issue gap).
+                    from ..const import DOMAIN as _EXT_DOMAIN
+                    _ext_data = self.hass.data.get(_EXT_DOMAIN, {}).get(self.entry_id, {})
+                    _ext_state = _ext_data.get(
+                        "force_discharge_state" if force_type == "discharge" else "force_charge_state", {}
+                    )
+                    if _ext_state.get("cancel_expiry_timer"):
+                        _ext_state["cancel_expiry_timer"]()  # Cancel old timer
+                    new_expiry = dt_util.utcnow() + timedelta(minutes=self._config.interval_minutes + 5)
+                    _ext_state["expires_at"] = new_expiry
+
+                    async def _auto_restore_extended(_now):
+                        if _ext_state.get("active"):
+                            _LOGGER.info("⏰ Force %s expired (extended timer), auto-restoring", force_type)
+                            from ..const import DOMAIN as _SVC_DOMAIN
+                            await self.hass.services.async_call(
+                                _SVC_DOMAIN, "restore_normal", {}, blocking=True,
+                            )
+
+                    from homeassistant.helpers.event import async_track_point_in_utc_time
+                    _ext_state["cancel_expiry_timer"] = async_track_point_in_utc_time(
+                        self.hass, _auto_restore_extended, new_expiry,
+                    )
                     _LOGGER.debug(
                         "Optimizer: force %s active (optimizer) — LP still wants %s, "
-                        "keeping force mode",
-                        force_type, action.action,
+                        "extended expiry to %s",
+                        force_type, action.action, new_expiry.isoformat(),
                     )
                     return
 
