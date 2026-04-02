@@ -15814,9 +15814,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                                 site_state["saved_backup_reserve"] = api_reserve
                             else:
                                 site_state["saved_backup_reserve"] = 0
-                            _LOGGER.info("Site %s: saved operation mode: %s, backup reserve: %s%% (api=%s%%, pre_idle=%s%%, prev=%s%%)",
+                            _LOGGER.info("Site %s: saved operation mode: %s, backup reserve: %s%% (api=%s%%, pre_idle=%s%%, startup=%s%%)",
                                          site_id, site_state["saved_operation_mode"],
-                                         site_state["saved_backup_reserve"], api_reserve, pre_idle, prev_saved)
+                                         site_state["saved_backup_reserve"], api_reserve, pre_idle, startup_reserve)
 
                             components = site_info.get("components", {})
                             saved_export_rule = components.get("customer_preferred_export_rule")
@@ -16539,9 +16539,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                                 site_state["saved_backup_reserve"] = api_reserve
                             else:
                                 site_state["saved_backup_reserve"] = 0
-                            _LOGGER.info("Site %s: saved operation mode: %s, backup reserve: %s%% (api=%s%%, pre_idle=%s%%, prev=%s%%)",
+                            _LOGGER.info("Site %s: saved operation mode: %s, backup reserve: %s%% (api=%s%%, pre_idle=%s%%, startup=%s%%)",
                                          site_id, site_state["saved_operation_mode"],
-                                         site_state["saved_backup_reserve"], api_reserve, pre_idle, prev_saved)
+                                         site_state["saved_backup_reserve"], api_reserve, pre_idle, startup_reserve)
 
                             if not site_state.get("saved_tariff"):
                                 site_tariff = site_info.get("tariff_content_v2") or site_info.get("tariff_content")
