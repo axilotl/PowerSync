@@ -1143,7 +1143,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 # stale/forecast data but SOC has already dropped past the
                 # reserve, the battery would drain to 0%.
                 soc_now, _ = await self._get_battery_state()
-                if soc_now <= self._config.backup_reserve + 0.01:
+                if soc_now <= self._config.backup_reserve + 0.05:
                     _LOGGER.warning(
                         "Optimizer: Skipping %s — SOC %.1f%% at/below backup "
                         "reserve %.0f%%, switching to self_consumption",
