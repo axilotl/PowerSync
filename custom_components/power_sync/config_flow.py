@@ -726,8 +726,8 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._amber_data = {}
             self._aemo_only_mode = False
 
-            # Route to v2 tariff step
-            return await self.async_step_flow_power_tariff()
+            # Route directly to battery setup (skip tariff/portal steps)
+            return await self._route_to_battery_setup()
 
         return self.async_show_form(
             step_id="flow_power_setup",
@@ -739,169 +739,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 ),
             }),
             errors=errors,
-        )
-
-    async def async_step_flow_power_tariff(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Handle Flow Power v2 tariff configuration (optional).
-
-        Collects DNSP network and tariff code for the corrected PEA formula.
-        Users can skip this to use the legacy formula.
-        """
-        errors: dict[str, str] = {}
-
-        if user_input is not None:
-
-            skip = user_input.pop("skip_tariff", False)
-
-            if not skip:
-                fp_network = user_input.get(CONF_FP_NETWORK)
-                fp_tariff_code = user_input.get(CONF_FP_TARIFF_CODE)
-
-                if fp_network and fp_tariff_code:
-                    # Validate by test-calling the tariff lookup
-                    from .tariff_utils import get_network_tariff_rate
-                    from .const import NETWORK_API_NAME
-                    import datetime as _dt
-
-                    api_name = NETWORK_API_NAME.get(fp_network, fp_network.lower())
-                    now_aest = _dt.datetime.now(tz=_dt.timezone(_dt.timedelta(hours=10)))
-                    test_rate = await self.hass.async_add_executor_job(
-                        get_network_tariff_rate, now_aest, api_name, fp_tariff_code
-                    )
-                    if test_rate is None:
-                        errors["base"] = "invalid_tariff"
-                    else:
-                        self._flow_power_data[CONF_FP_NETWORK] = fp_network
-                        self._flow_power_data[CONF_FP_TARIFF_CODE] = fp_tariff_code
-                else:
-                    errors["base"] = "invalid_tariff"
-
-            if not errors:
-                # Offer optional portal login before battery setup
-                return await self.async_step_flow_power_portal()
-
-        # Build network options based on selected region
-        selected_region = self._flow_power_data.get(CONF_FLOW_POWER_STATE, "QLD1")
-        networks = REGION_NETWORKS.get(selected_region, [])
-        network_options = {n: n for n in networks}
-
-        # Build tariff code options — start with first network
-        tariff_options = {}
-        if networks:
-            from .tariff_utils import get_tariff_codes_for_network
-            first_network = networks[0]
-            tariff_options = await self.hass.async_add_executor_job(
-                get_tariff_codes_for_network, first_network
-            )
-
-        schema = {
-            vol.Optional("skip_tariff", default=False): bool,
-        }
-        if network_options:
-            schema[vol.Optional(CONF_FP_NETWORK, default=networks[0])] = vol.In(network_options)
-        if tariff_options:
-            first_code = list(tariff_options.keys())[0] if tariff_options else ""
-            schema[vol.Optional(CONF_FP_TARIFF_CODE, default=first_code)] = vol.In(tariff_options)
-
-        return self.async_show_form(
-            step_id="flow_power_tariff",
-            data_schema=vol.Schema(schema),
-            errors=errors,
-        )
-
-    async def async_step_flow_power_portal(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Offer optional Flow Power portal login."""
-        if user_input is not None:
-
-            if user_input.get("connect_portal", False):
-                return await self.async_step_flow_power_portal_login()
-
-            # Skip portal — continue to battery setup
-            return await self._route_to_battery_setup()
-
-        return self.async_show_form(
-            step_id="flow_power_portal",
-            data_schema=vol.Schema({
-                vol.Optional("connect_portal", default=False): bool,
-            }),
-        )
-
-    async def async_step_flow_power_portal_login(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Collect Flow Power portal email and password."""
-        from .const import CONF_FLOWPOWER_EMAIL, CONF_FLOWPOWER_PASSWORD
-
-        errors: dict[str, str] = {}
-
-        if user_input is not None:
-
-            email = user_input.get(CONF_FLOWPOWER_EMAIL, "")
-            password = user_input.get(CONF_FLOWPOWER_PASSWORD, "")
-            if email and password:
-                try:
-                    from .flow_power_portal import FlowPowerPortalClient
-                    self._fp_client = FlowPowerPortalClient()
-                    result = await self._fp_client.authenticate(email, password)
-                    if result.get("status") == "mfa_required":
-                        self._fp_email = email
-                        self._fp_password = password
-                        return await self.async_step_flow_power_portal_mfa()
-                except ValueError:
-                    errors["base"] = "invalid_credentials"
-                except Exception:
-                    errors["base"] = "cannot_connect"
-            else:
-                errors["base"] = "invalid_credentials"
-
-        return self.async_show_form(
-            step_id="flow_power_portal_login",
-            data_schema=vol.Schema({
-                vol.Required(CONF_FLOWPOWER_EMAIL): str,
-                vol.Required(CONF_FLOWPOWER_PASSWORD): str,
-            }),
-            errors=errors,
-        )
-
-    async def async_step_flow_power_portal_mfa(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Collect SMS MFA verification code."""
-        from .const import CONF_FLOWPOWER_EMAIL, CONF_FLOWPOWER_PASSWORD
-
-        errors: dict[str, str] = {}
-
-        if user_input is not None:
-
-            code = user_input.get("mfa_code", "")
-            if code and hasattr(self, "_fp_client"):
-                success = await self._fp_client.verify_mfa(code)
-                if success:
-                    # Store credentials for session persistence
-                    self._flow_power_data[CONF_FLOWPOWER_EMAIL] = self._fp_email
-                    self._flow_power_data[CONF_FLOWPOWER_PASSWORD] = self._fp_password
-                    # Stash authenticated client for coordinator to pick up
-                    self.hass.data.setdefault(DOMAIN, {})
-                    self.hass.data[DOMAIN]["_pending_fp_client"] = self._fp_client
-                    return await self._route_to_battery_setup()
-                else:
-                    errors["base"] = "invalid_mfa_code"
-            else:
-                errors["base"] = "invalid_mfa_code"
-
-        return self.async_show_form(
-            step_id="flow_power_portal_mfa",
-            data_schema=vol.Schema({
-                vol.Required("mfa_code"): str,
-            }),
-            errors=errors,
-            description_placeholders={
-                "description": "Enter the SMS verification code sent to your phone"
-            },
         )
 
     async def _route_to_battery_setup(self) -> FlowResult:
@@ -916,6 +753,69 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return await self.async_step_goodwe_connection()
         else:
             return await self.async_step_tesla_provider()
+
+    def _create_final_entry(self) -> FlowResult:
+        """Create final config entry after battery connection is established.
+
+        Merges all collected data and creates the entry. Fine-tuning
+        (curtailment, weather, demand charges, EV, inverter config, etc.)
+        is done via the options flow or mobile app.
+        """
+        data = {
+            **self._amber_data,
+            **self._teslemetry_data,
+            **self._site_data,
+            **self._aemo_data,
+            **self._flow_power_data,
+            **self._octopus_data,
+            **self._localvolts_data,
+            **self._epex_data,
+            **getattr(self, '_sigenergy_data', {}),
+            **getattr(self, '_sungrow_data', {}),
+            **getattr(self, '_foxess_data', {}),
+            **getattr(self, '_goodwe_data', {}),
+            CONF_ELECTRICITY_PROVIDER: self._selected_electricity_provider,
+        }
+
+        # Set battery system type
+        if self._selected_battery_system:
+            data[CONF_BATTERY_SYSTEM] = self._selected_battery_system
+
+        # Include custom tariff data if configured
+        if self._custom_tariff_data:
+            data["initial_custom_tariff"] = self._custom_tariff_data
+
+        # Include NZ config if set
+        if hasattr(self, '_nz_config'):
+            data.update(self._nz_config)
+
+        # Include optimization provider selection
+        data[CONF_OPTIMIZATION_PROVIDER] = self._optimization_provider
+        if self._optimization_provider == OPT_PROVIDER_POWERSYNC and self._ml_options:
+            data.update(self._ml_options)
+
+        # Set appropriate title based on battery system and provider
+        battery_label = {
+            BATTERY_SYSTEM_SIGENERGY: "Sigenergy",
+            BATTERY_SYSTEM_SUNGROW: "Sungrow",
+            BATTERY_SYSTEM_FOXESS: "FoxESS",
+            BATTERY_SYSTEM_GOODWE: "GoodWe",
+        }.get(self._selected_battery_system, "")
+
+        if battery_label:
+            title = f"PowerSync - {battery_label}"
+        elif self._aemo_only_mode:
+            title = "PowerSync Globird"
+        elif self._selected_electricity_provider == "flow_power":
+            title = "PowerSync Flow Power"
+        elif self._selected_electricity_provider == "localvolts":
+            title = "PowerSync Localvolts"
+        elif self._selected_electricity_provider == "octopus":
+            title = "PowerSync Octopus"
+        else:
+            title = "PowerSync Amber"
+
+        return self.async_create_entry(title=title, data=data)
 
     async def async_step_octopus(
         self, user_input: dict[str, Any] | None = None
@@ -981,8 +881,8 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     product_code, tariff_code, region
                 )
 
-                # Route to saving sessions step
-                return await self.async_step_octopus_saving_sessions()
+                # Route directly to battery setup (skip saving sessions)
+                return await self._route_to_battery_setup()
 
         # Build form schema
         data_schema = vol.Schema({
@@ -997,83 +897,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             description_placeholders={
                 "octopus_url": "https://octopus.energy/smart/agile/",
             },
-        )
-
-    async def async_step_octopus_saving_sessions(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Configure Octopus Saving Sessions."""
-        errors: dict[str, str] = {}
-
-        if user_input is not None:
-
-            if user_input.get(CONF_OCTOPUS_SAVING_SESSIONS_ENABLED):
-                source = user_input.get(CONF_OCTOPUS_SAVING_SESSIONS_SOURCE, "direct")
-
-                if source == "direct":
-                    api_key = user_input.get(CONF_OCTOPUS_API_KEY, "")
-                    account = user_input.get(CONF_OCTOPUS_ACCOUNT_NUMBER, "")
-                    if not api_key or not account:
-                        errors["base"] = "missing_credentials"
-                    else:
-                        # Validate API key + account number via GraphQL auth
-                        try:
-                            from .octopus_sessions import OctopusSavingSessionsClient
-                            session = async_get_clientsession(self.hass)
-                            client = OctopusSavingSessionsClient(session, api_key, account)
-                            authed = await client.authenticate()
-                            if not authed:
-                                errors["base"] = "invalid_auth"
-                        except Exception:
-                            errors["base"] = "cannot_connect"
-
-                # Store config and continue
-                if not errors:
-                    if not hasattr(self, "_octopus_data"):
-                        self._octopus_data = {}
-                    self._octopus_data.update({
-                        CONF_OCTOPUS_SAVING_SESSIONS_ENABLED: True,
-                        CONF_OCTOPUS_SAVING_SESSIONS_SOURCE: source,
-                        CONF_OCTOPUS_API_KEY: user_input.get(CONF_OCTOPUS_API_KEY, ""),
-                        CONF_OCTOPUS_ACCOUNT_NUMBER: user_input.get(CONF_OCTOPUS_ACCOUNT_NUMBER, ""),
-                        CONF_OCTOPUS_SAVING_SESSIONS_ENTITY: user_input.get(CONF_OCTOPUS_SAVING_SESSIONS_ENTITY, ""),
-                        CONF_OCTOPUS_SAVING_SESSIONS_AUTO_JOIN: user_input.get(CONF_OCTOPUS_SAVING_SESSIONS_AUTO_JOIN, True),
-                    })
-            else:
-                # Skip saving sessions
-                if not hasattr(self, "_octopus_data"):
-                    self._octopus_data = {}
-                self._octopus_data[CONF_OCTOPUS_SAVING_SESSIONS_ENABLED] = False
-
-            if not errors:
-                # Route to battery system step
-                if self._selected_battery_system == BATTERY_SYSTEM_SIGENERGY:
-                    return await self.async_step_sigenergy_credentials()
-                elif self._selected_battery_system == BATTERY_SYSTEM_SUNGROW:
-                    return await self.async_step_sungrow()
-                elif self._selected_battery_system == BATTERY_SYSTEM_FOXESS:
-                    return await self.async_step_foxess_connection()
-                elif self._selected_battery_system == BATTERY_SYSTEM_GOODWE:
-                    return await self.async_step_goodwe_connection()
-                else:
-                    return await self.async_step_tesla_provider()
-
-        data_schema = vol.Schema({
-            vol.Optional(CONF_OCTOPUS_SAVING_SESSIONS_ENABLED, default=False): bool,
-            vol.Optional(CONF_OCTOPUS_SAVING_SESSIONS_SOURCE, default="direct"): vol.In({
-                "direct": "Direct (Octopus API key)",
-                "entity": "Bottlecap Dave integration",
-            }),
-            vol.Optional(CONF_OCTOPUS_API_KEY, default=""): str,
-            vol.Optional(CONF_OCTOPUS_ACCOUNT_NUMBER, default=""): str,
-            vol.Optional(CONF_OCTOPUS_SAVING_SESSIONS_ENTITY, default=""): str,
-            vol.Optional(CONF_OCTOPUS_SAVING_SESSIONS_AUTO_JOIN, default=True): bool,
-        })
-
-        return self.async_show_form(
-            step_id="octopus_saving_sessions",
-            data_schema=data_schema,
-            errors=errors,
         )
 
     async def async_step_amber(
@@ -1092,8 +915,21 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if validation_result["success"]:
                 self._amber_data = user_input
                 self._amber_sites = validation_result.get("sites", [])
-                # Go to Amber settings (export boost, etc.) before Tesla provider
-                return await self.async_step_amber_settings()
+                # Auto-select Amber site for non-Tesla batteries
+                if self._selected_battery_system != BATTERY_SYSTEM_TESLA and self._amber_sites:
+                    active_sites = [s for s in self._amber_sites if s.get("status") == "active"]
+                    if active_sites:
+                        amber_site_id = active_sites[0]["id"]
+                    else:
+                        amber_site_id = self._amber_sites[0]["id"]
+                    self._site_data = {
+                        CONF_AMBER_SITE_ID: amber_site_id,
+                        CONF_AUTO_SYNC_ENABLED: True,
+                        CONF_AMBER_FORECAST_TYPE: "predicted",
+                    }
+                    _LOGGER.info(f"Auto-selected Amber site: {amber_site_id}")
+                # Route directly to battery setup (skip amber_settings)
+                return await self._route_to_battery_setup()
             else:
                 errors["base"] = validation_result.get("error", "unknown")
 
@@ -1152,7 +988,8 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     region, surcharge, tax_percent, export_rate,
                 )
 
-                return await self.async_step_amber_settings()
+                # Route directly to battery setup (skip amber_settings)
+                return await self._route_to_battery_setup()
 
         data_schema = vol.Schema({
             vol.Required(CONF_EPEX_REGION, default="DE"): vol.In(EPEX_REGIONS),
@@ -1183,7 +1020,8 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             )
             if validation["success"]:
                 self._localvolts_data = user_input
-                return await self.async_step_amber_settings()
+                # Route directly to battery setup (skip amber_settings)
+                return await self._route_to_battery_setup()
             else:
                 errors["base"] = validation.get("error", "cannot_connect")
 
@@ -1201,149 +1039,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="localvolts",
             data_schema=data_schema,
             errors=errors,
-        )
-
-    async def async_step_amber_settings(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Handle Amber-specific settings (export boost, spike protection, etc.) during initial setup."""
-        # Check if Tesla is selected (force mode toggle only applies to Tesla)
-        is_tesla = self._selected_battery_system == BATTERY_SYSTEM_TESLA
-
-        if user_input is not None:
-
-            # Store Amber settings in _amber_data
-            self._amber_data[CONF_SPIKE_PROTECTION_ENABLED] = user_input.get(CONF_SPIKE_PROTECTION_ENABLED, False)
-            self._amber_data[CONF_SETTLED_PRICES_ONLY] = user_input.get(CONF_SETTLED_PRICES_ONLY, False)
-            self._amber_data[CONF_FORECAST_DISCREPANCY_ALERT] = user_input.get(CONF_FORECAST_DISCREPANCY_ALERT, False)
-            self._amber_data[CONF_FORECAST_DISCREPANCY_THRESHOLD] = user_input.get(CONF_FORECAST_DISCREPANCY_THRESHOLD, DEFAULT_FORECAST_DISCREPANCY_THRESHOLD)
-            # Force tariff mode toggle only applies to Tesla
-            if is_tesla:
-                self._amber_data[CONF_FORCE_TARIFF_MODE_TOGGLE] = user_input.get(CONF_FORCE_TARIFF_MODE_TOGGLE, False)
-            else:
-                self._amber_data[CONF_FORCE_TARIFF_MODE_TOGGLE] = False
-            self._amber_data[CONF_EXPORT_BOOST_ENABLED] = user_input.get(CONF_EXPORT_BOOST_ENABLED, False)
-            self._amber_data[CONF_EXPORT_PRICE_OFFSET] = user_input.get(CONF_EXPORT_PRICE_OFFSET, 0.0)
-            self._amber_data[CONF_EXPORT_MIN_PRICE] = user_input.get(CONF_EXPORT_MIN_PRICE, 0.0)
-            self._amber_data[CONF_EXPORT_BOOST_START] = user_input.get(CONF_EXPORT_BOOST_START, DEFAULT_EXPORT_BOOST_START)
-            self._amber_data[CONF_EXPORT_BOOST_END] = user_input.get(CONF_EXPORT_BOOST_END, DEFAULT_EXPORT_BOOST_END)
-            self._amber_data[CONF_EXPORT_BOOST_THRESHOLD] = user_input.get(CONF_EXPORT_BOOST_THRESHOLD, DEFAULT_EXPORT_BOOST_THRESHOLD)
-            # Chip Mode settings (inverse of export boost)
-            self._amber_data[CONF_CHIP_MODE_ENABLED] = user_input.get(CONF_CHIP_MODE_ENABLED, False)
-            self._amber_data[CONF_CHIP_MODE_START] = user_input.get(CONF_CHIP_MODE_START, DEFAULT_CHIP_MODE_START)
-            self._amber_data[CONF_CHIP_MODE_END] = user_input.get(CONF_CHIP_MODE_END, DEFAULT_CHIP_MODE_END)
-            self._amber_data[CONF_CHIP_MODE_THRESHOLD] = user_input.get(CONF_CHIP_MODE_THRESHOLD, DEFAULT_CHIP_MODE_THRESHOLD)
-
-            # Route based on battery system selection
-            if self._selected_battery_system == BATTERY_SYSTEM_SIGENERGY:
-                # Auto-select Amber site for Sigenergy (they don't go through Tesla site selection)
-                if self._amber_sites:
-                    # Prefer active site, fall back to first site
-                    active_sites = [s for s in self._amber_sites if s.get("status") == "active"]
-                    if active_sites:
-                        amber_site_id = active_sites[0]["id"]
-                    else:
-                        amber_site_id = self._amber_sites[0]["id"]
-                    # Store in _site_data for consistency with Tesla flow
-                    self._site_data = {
-                        CONF_AMBER_SITE_ID: amber_site_id,
-                        CONF_AUTO_SYNC_ENABLED: True,
-                        CONF_AMBER_FORECAST_TYPE: "predicted",
-                    }
-                    _LOGGER.info(f"Auto-selected Amber site for Sigenergy: {amber_site_id}")
-                return await self.async_step_sigenergy_credentials()
-            elif self._selected_battery_system == BATTERY_SYSTEM_SUNGROW:
-                # Auto-select Amber site for Sungrow (they don't go through Tesla site selection)
-                if self._amber_sites:
-                    # Prefer active site, fall back to first site
-                    active_sites = [s for s in self._amber_sites if s.get("status") == "active"]
-                    if active_sites:
-                        amber_site_id = active_sites[0]["id"]
-                    else:
-                        amber_site_id = self._amber_sites[0]["id"]
-                    # Store in _site_data for consistency with Tesla flow
-                    self._site_data = {
-                        CONF_AMBER_SITE_ID: amber_site_id,
-                        CONF_AUTO_SYNC_ENABLED: True,
-                        CONF_AMBER_FORECAST_TYPE: "predicted",
-                    }
-                    _LOGGER.info(f"Auto-selected Amber site for Sungrow: {amber_site_id}")
-                return await self.async_step_sungrow()
-            elif self._selected_battery_system == BATTERY_SYSTEM_FOXESS:
-                # Auto-select Amber site for FoxESS
-                if self._amber_sites:
-                    active_sites = [s for s in self._amber_sites if s.get("status") == "active"]
-                    if active_sites:
-                        amber_site_id = active_sites[0]["id"]
-                    else:
-                        amber_site_id = self._amber_sites[0]["id"]
-                    self._site_data = {
-                        CONF_AMBER_SITE_ID: amber_site_id,
-                        CONF_AUTO_SYNC_ENABLED: True,
-                        CONF_AMBER_FORECAST_TYPE: "predicted",
-                    }
-                    _LOGGER.info(f"Auto-selected Amber site for FoxESS: {amber_site_id}")
-                return await self.async_step_foxess_connection()
-            elif self._selected_battery_system == BATTERY_SYSTEM_GOODWE:
-                # Auto-select Amber site for GoodWe
-                if self._amber_sites:
-                    active_sites = [s for s in self._amber_sites if s.get("status") == "active"]
-                    if active_sites:
-                        amber_site_id = active_sites[0]["id"]
-                    else:
-                        amber_site_id = self._amber_sites[0]["id"]
-                    self._site_data = {
-                        CONF_AMBER_SITE_ID: amber_site_id,
-                        CONF_AUTO_SYNC_ENABLED: True,
-                        CONF_AMBER_FORECAST_TYPE: "predicted",
-                    }
-                    _LOGGER.info(f"Auto-selected Amber site for GoodWe: {amber_site_id}")
-                return await self.async_step_goodwe_connection()
-            else:
-                return await self.async_step_tesla_provider()
-
-        # Build schema - force mode toggle only shown for Tesla
-        schema_dict = {
-            # Spike and price protection settings
-            vol.Optional(CONF_SPIKE_PROTECTION_ENABLED, default=False): bool,
-            vol.Optional(CONF_SETTLED_PRICES_ONLY, default=False): bool,
-            # Forecast discrepancy alert (notifies when predicted differs from conservative)
-            vol.Optional(CONF_FORECAST_DISCREPANCY_ALERT, default=False): bool,
-            vol.Optional(CONF_FORECAST_DISCREPANCY_THRESHOLD, default=DEFAULT_FORECAST_DISCREPANCY_THRESHOLD): vol.Coerce(float),
-        }
-
-        # Only show force mode toggle for Tesla (it's a Tesla-specific feature)
-        if is_tesla:
-            schema_dict[vol.Optional(CONF_FORCE_TARIFF_MODE_TOGGLE, default=False)] = bool
-
-        # Export boost settings
-        schema_dict.update({
-            vol.Optional(CONF_EXPORT_BOOST_ENABLED, default=False): bool,
-            vol.Optional(CONF_EXPORT_PRICE_OFFSET, default=0.0): vol.All(
-                vol.Coerce(float), vol.Range(min=0.0, max=50.0)
-            ),
-            vol.Optional(CONF_EXPORT_MIN_PRICE, default=0.0): vol.All(
-                vol.Coerce(float), vol.Range(min=0.0, max=100.0)
-            ),
-            vol.Optional(CONF_EXPORT_BOOST_START, default=DEFAULT_EXPORT_BOOST_START): str,
-            vol.Optional(CONF_EXPORT_BOOST_END, default=DEFAULT_EXPORT_BOOST_END): str,
-            vol.Optional(CONF_EXPORT_BOOST_THRESHOLD, default=DEFAULT_EXPORT_BOOST_THRESHOLD): vol.All(
-                vol.Coerce(float), vol.Range(min=0.0, max=50.0)
-            ),
-            # Chip Mode settings (inverse of export boost - suppress exports unless above threshold)
-            vol.Optional(CONF_CHIP_MODE_ENABLED, default=False): bool,
-            vol.Optional(CONF_CHIP_MODE_START, default=DEFAULT_CHIP_MODE_START): str,
-            vol.Optional(CONF_CHIP_MODE_END, default=DEFAULT_CHIP_MODE_END): str,
-            vol.Optional(CONF_CHIP_MODE_THRESHOLD, default=DEFAULT_CHIP_MODE_THRESHOLD): vol.All(
-                vol.Coerce(float), vol.Range(min=0.0, max=200.0)
-            ),
-        })
-
-        data_schema = vol.Schema(schema_dict)
-
-        return self.async_show_form(
-            step_id="amber_settings",
-            data_schema=data_schema,
         )
 
     async def async_step_battery_system(
@@ -1570,8 +1265,8 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 self._sigenergy_data[CONF_SIGENERGY_MODBUS_SLAVE_ID] = user_input.get(
                     CONF_SIGENERGY_MODBUS_SLAVE_ID, DEFAULT_SIGENERGY_MODBUS_SLAVE_ID
                 )
-                # Go to optional DC curtailment configuration
-                return await self.async_step_sigenergy_dc_curtailment()
+                # Go directly to creating the entry (skip dc_curtailment)
+                return self._create_final_entry()
 
         return self.async_show_form(
             step_id="sigenergy_modbus",
@@ -1587,76 +1282,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 ): int,
             }),
             errors=errors,
-        )
-
-    async def async_step_sigenergy_dc_curtailment(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Configure Sigenergy DC solar curtailment (optional)."""
-        errors: dict[str, str] = {}
-
-        if user_input is not None:
-
-            dc_enabled = user_input.get(CONF_SIGENERGY_DC_CURTAILMENT_ENABLED, False)
-            self._sigenergy_data[CONF_SIGENERGY_DC_CURTAILMENT_ENABLED] = dc_enabled
-            export_limit = user_input.get(CONF_SIGENERGY_EXPORT_LIMIT_KW)
-            if export_limit is not None:
-                self._sigenergy_data[CONF_SIGENERGY_EXPORT_LIMIT_KW] = export_limit
-            return await self.async_step_curtailment_setup()
-
-        return self.async_show_form(
-            step_id="sigenergy_dc_curtailment",
-            data_schema=vol.Schema({
-                vol.Optional(
-                    CONF_SIGENERGY_DC_CURTAILMENT_ENABLED,
-                    default=False,
-                ): bool,
-                vol.Optional(
-                    CONF_SIGENERGY_EXPORT_LIMIT_KW,
-                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
-            }),
-            errors=errors,
-        )
-
-    async def async_step_finish_sigenergy(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Finish Sigenergy setup and create config entry."""
-        # Build final data for Sigenergy
-        final_data = {
-            CONF_BATTERY_SYSTEM: BATTERY_SYSTEM_SIGENERGY,
-            CONF_AUTO_SYNC_ENABLED: True,
-            **self._amber_data,
-            **self._site_data,  # Include Amber site ID for NEM region auto-detection
-            **self._flow_power_data,
-            **self._octopus_data,  # Include Octopus Energy UK configuration
-            **self._localvolts_data,
-            **self._epex_data,
-            **self._sigenergy_data,
-            **self._aemo_data,  # Include AEMO configuration
-            **getattr(self, '_demand_data', {}),
-        }
-
-        # Add electricity provider if set
-        if self._selected_electricity_provider:
-            final_data[CONF_ELECTRICITY_PROVIDER] = self._selected_electricity_provider
-
-        # Include custom tariff data if configured (will be moved to automation_store on setup)
-        if self._custom_tariff_data:
-            final_data["initial_custom_tariff"] = self._custom_tariff_data
-
-        # Include optimization provider selection
-        final_data[CONF_OPTIMIZATION_PROVIDER] = self._optimization_provider
-        if self._optimization_provider == OPT_PROVIDER_POWERSYNC and self._ml_options:
-            final_data.update(self._ml_options)
-
-        # Generate title based on station ID
-        station_id = self._sigenergy_data.get(CONF_SIGENERGY_STATION_ID, "Unknown")
-        title = f"PowerSync - Sigenergy ({station_id})"
-
-        return self.async_create_entry(
-            title=title,
-            data=final_data,
         )
 
     async def async_step_sungrow(
@@ -1690,7 +1315,8 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         test_result.get("battery_soc", 0),
                         test_result.get("battery_soh", 0),
                     )
-                    return await self.async_step_sungrow_secondary()
+                    # Go directly to creating the entry (skip secondary)
+                    return self._create_final_entry()
                 else:
                     errors["base"] = "cannot_connect"
 
@@ -1702,89 +1328,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Optional(CONF_SUNGROW_SLAVE_ID, default=DEFAULT_SUNGROW_SLAVE_ID): int,
             }),
             errors=errors,
-        )
-
-    async def async_step_sungrow_secondary(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Optional: configure a second Sungrow inverter."""
-        errors: dict[str, str] = {}
-
-        if user_input is not None:
-
-            host2 = user_input.get(CONF_SUNGROW_HOST_2, "").strip()
-            if not host2:
-                # User left it blank — skip secondary
-                return await self.async_step_curtailment_setup()
-
-            port2 = user_input.get(CONF_SUNGROW_PORT_2, DEFAULT_SUNGROW_PORT)
-            slave_id2 = user_input.get(CONF_SUNGROW_SLAVE_ID_2, DEFAULT_SUNGROW_SLAVE_ID)
-
-            # Test connection to secondary inverter
-            test_result = await test_sungrow_connection(self.hass, host2, port2, slave_id2)
-
-            if test_result["success"]:
-                self._sungrow_data[CONF_SUNGROW_HOST_2] = host2
-                self._sungrow_data[CONF_SUNGROW_PORT_2] = port2
-                self._sungrow_data[CONF_SUNGROW_SLAVE_ID_2] = slave_id2
-                _LOGGER.info(
-                    "Secondary Sungrow connection successful: host=%s, SOC=%.1f%%",
-                    host2,
-                    test_result.get("battery_soc", 0),
-                )
-                return await self.async_step_curtailment_setup()
-            else:
-                errors["base"] = "cannot_connect"
-
-        return self.async_show_form(
-            step_id="sungrow_secondary",
-            data_schema=vol.Schema({
-                vol.Optional(CONF_SUNGROW_HOST_2, default=""): str,
-                vol.Optional(CONF_SUNGROW_PORT_2, default=DEFAULT_SUNGROW_PORT): int,
-                vol.Optional(CONF_SUNGROW_SLAVE_ID_2, default=DEFAULT_SUNGROW_SLAVE_ID): int,
-            }),
-            errors=errors,
-        )
-
-    async def async_step_finish_sungrow(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Finish Sungrow setup and create config entry."""
-        # Build final data for Sungrow
-        final_data = {
-            CONF_BATTERY_SYSTEM: BATTERY_SYSTEM_SUNGROW,
-            CONF_AUTO_SYNC_ENABLED: True,
-            **self._amber_data,
-            **self._site_data,  # Include Amber site ID for NEM region auto-detection
-            **self._flow_power_data,
-            **self._octopus_data,  # Include Octopus Energy UK configuration
-            **self._localvolts_data,
-            **self._epex_data,
-            **self._sungrow_data,
-            **self._aemo_data,  # Include AEMO configuration
-            **getattr(self, '_demand_data', {}),
-        }
-
-        # Add electricity provider if set
-        if self._selected_electricity_provider:
-            final_data[CONF_ELECTRICITY_PROVIDER] = self._selected_electricity_provider
-
-        # Include custom tariff data if configured (will be moved to automation_store on setup)
-        if self._custom_tariff_data:
-            final_data["initial_custom_tariff"] = self._custom_tariff_data
-
-        # Include optimization provider selection
-        final_data[CONF_OPTIMIZATION_PROVIDER] = self._optimization_provider
-        if self._optimization_provider == OPT_PROVIDER_POWERSYNC and self._ml_options:
-            final_data.update(self._ml_options)
-
-        # Generate title based on host
-        host = self._sungrow_data.get(CONF_SUNGROW_HOST, "Unknown")
-        title = f"PowerSync - Sungrow ({host})"
-
-        return self.async_create_entry(
-            title=title,
-            data=final_data,
         )
 
     # ---- FoxESS Config Flow Steps ----
@@ -1967,7 +1510,7 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     if success:
                         self._foxess_data[CONF_FOXESS_CLOUD_API_KEY] = api_key
                         self._foxess_data[CONF_FOXESS_CLOUD_DEVICE_SN] = device_sn
-                        return await self.async_step_curtailment_setup()
+                        return self._create_final_entry()
                     else:
                         _LOGGER.warning("FoxESS Cloud connection test failed: %s", message)
                         errors["base"] = "foxess_cloud_auth_failed"
@@ -1976,7 +1519,7 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     errors["base"] = "foxess_cloud_connection_error"
             else:
                 # Blank API key — skip cloud setup
-                return await self.async_step_curtailment_setup()
+                return self._create_final_entry()
 
         return self.async_show_form(
             step_id="foxess_cloud",
@@ -1985,42 +1528,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Optional(CONF_FOXESS_CLOUD_DEVICE_SN, default=""): str,
             }),
             errors=errors,
-        )
-
-    async def async_step_finish_foxess(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Finish FoxESS setup and create config entry."""
-        final_data = {
-            CONF_BATTERY_SYSTEM: BATTERY_SYSTEM_FOXESS,
-            CONF_AUTO_SYNC_ENABLED: True,
-            **self._amber_data,
-            **self._site_data,
-            **self._flow_power_data,
-            **self._octopus_data,
-            **self._localvolts_data,
-            **self._epex_data,
-            **self._foxess_data,
-            **self._aemo_data,
-            **getattr(self, '_demand_data', {}),
-        }
-
-        if self._selected_electricity_provider:
-            final_data[CONF_ELECTRICITY_PROVIDER] = self._selected_electricity_provider
-
-        if self._custom_tariff_data:
-            final_data["initial_custom_tariff"] = self._custom_tariff_data
-
-        final_data[CONF_OPTIMIZATION_PROVIDER] = self._optimization_provider
-        if self._optimization_provider == OPT_PROVIDER_POWERSYNC and self._ml_options:
-            final_data.update(self._ml_options)
-
-        model_family = self._foxess_data.get(CONF_FOXESS_MODEL_FAMILY, "unknown")
-        title = f"PowerSync - FoxESS ({model_family})"
-
-        return self.async_create_entry(
-            title=title,
-            data=final_data,
         )
 
     async def async_step_goodwe_connection(
@@ -2059,7 +1566,7 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             result.get("serial_number"),
                             result.get("rated_power"),
                         )
-                        return await self.async_step_curtailment_setup()
+                        return self._create_final_entry()
                 else:
                     errors["base"] = "goodwe_connect_failed"
 
@@ -2074,41 +1581,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required(CONF_GOODWE_PORT, default=DEFAULT_GOODWE_PORT_UDP): int,
             }),
             errors=errors,
-        )
-
-    async def async_step_finish_goodwe(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Finish GoodWe setup and create config entry."""
-        final_data = {
-            CONF_BATTERY_SYSTEM: BATTERY_SYSTEM_GOODWE,
-            CONF_AUTO_SYNC_ENABLED: True,
-            **self._amber_data,
-            **self._site_data,
-            **self._flow_power_data,
-            **self._octopus_data,
-            **self._localvolts_data,
-            **self._epex_data,
-            **self._goodwe_data,
-            **self._aemo_data,
-            **getattr(self, '_demand_data', {}),
-        }
-
-        if self._selected_electricity_provider:
-            final_data[CONF_ELECTRICITY_PROVIDER] = self._selected_electricity_provider
-
-        if self._custom_tariff_data:
-            final_data["initial_custom_tariff"] = self._custom_tariff_data
-
-        final_data[CONF_OPTIMIZATION_PROVIDER] = self._optimization_provider
-        if self._optimization_provider == OPT_PROVIDER_POWERSYNC and self._ml_options:
-            final_data.update(self._ml_options)
-
-        title = "PowerSync - GoodWe"
-
-        return self.async_create_entry(
-            title=title,
-            data=final_data,
         )
 
     async def async_step_tesla_provider(
@@ -2253,43 +1725,14 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         ),
                     }
 
-                    # For Globird/AEMO VPP users with non-Tesla batteries, offer custom tariff
-                    # Tesla users don't need custom tariff - rates come from the Tesla tariff API
-                    if (self._selected_electricity_provider in ("globird", "aemo_vpp", "other")
-                            and self._selected_battery_system != BATTERY_SYSTEM_TESLA):
-                        return await self.async_step_custom_tariff()
-
-                    # Route based on battery system selection
-                    if self._selected_battery_system == BATTERY_SYSTEM_SIGENERGY:
-                        return await self.async_step_sigenergy_credentials()
-                    elif self._selected_battery_system == BATTERY_SYSTEM_SUNGROW:
-                        return await self.async_step_sungrow()
-                    elif self._selected_battery_system == BATTERY_SYSTEM_FOXESS:
-                        return await self.async_step_foxess_connection()
-                    elif self._selected_battery_system == BATTERY_SYSTEM_GOODWE:
-                        return await self.async_step_goodwe_connection()
-                    else:
-                        return await self.async_step_tesla_provider()
+                    # Route directly to battery setup (skip custom_tariff)
+                    return await self._route_to_battery_setup()
             else:
                 # AEMO disabled
                 self._aemo_data = {CONF_AEMO_SPIKE_ENABLED: False}
 
-                # For Globird/AEMO VPP with non-Tesla batteries, offer custom tariff
-                # Tesla users don't need it - rates come from the Tesla tariff API
-                if (self._selected_electricity_provider in ("globird", "aemo_vpp", "other")
-                        and self._selected_battery_system != BATTERY_SYSTEM_TESLA):
-                    return await self.async_step_custom_tariff()
-
-                if self._selected_battery_system == BATTERY_SYSTEM_SIGENERGY:
-                    return await self.async_step_sigenergy_credentials()
-                elif self._selected_battery_system == BATTERY_SYSTEM_SUNGROW:
-                    return await self.async_step_sungrow()
-                elif self._selected_battery_system == BATTERY_SYSTEM_FOXESS:
-                    return await self.async_step_foxess_connection()
-                elif self._selected_battery_system == BATTERY_SYSTEM_GOODWE:
-                    return await self.async_step_goodwe_connection()
-                else:
-                    return await self.async_step_tesla_provider()
+                # Route directly to battery setup
+                return await self._route_to_battery_setup()
 
         # Build region choices
         region_choices = {"": "Select Region..."}
@@ -2317,158 +1760,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             },
         )
 
-    async def async_step_custom_tariff(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Configure custom tariff for non-Amber users — step 1: basic setup.
-
-        Collects plan name, tariff type, off-peak rate, and FIT rate.
-        For TOU tariffs, proceeds to the period builder to add time blocks.
-        """
-        errors: dict[str, str] = {}
-
-        if user_input is not None:
-
-            skip_tariff = user_input.get("skip_tariff", False)
-
-            if skip_tariff:
-                self._custom_tariff_data = {}
-                return await self._route_after_tariff()
-
-            tariff_type = user_input.get("tariff_type", "tou")
-            self._tariff_plan_name = user_input.get("plan_name", "")
-            self._tariff_offpeak_rate = user_input.get("offpeak_rate", 15) / 100
-            self._tariff_fit_rate = user_input.get("fit_rate", 5) / 100
-
-            if tariff_type == "flat":
-                flat_rate = user_input.get("flat_rate", 30) / 100
-                self._custom_tariff_data = self._build_tariff_from_periods(
-                    [{"name": "ALL", "start": 0, "end": 24, "days": "all_days",
-                      "import_rate": flat_rate, "export_rate": self._tariff_fit_rate}],
-                )
-                return await self._route_after_tariff()
-
-            # TOU — start the period builder
-            self._tariff_periods = []
-            return await self.async_step_tariff_period()
-
-        data_schema = vol.Schema(
-            {
-                vol.Optional("skip_tariff", default=False): bool,
-                vol.Optional("plan_name", default=""): str,
-                vol.Required("tariff_type", default="tou"): vol.In({
-                    "flat": "Flat Rate (single rate all day)",
-                    "tou": "Time of Use (multiple periods)",
-                }),
-                vol.Optional("flat_rate", default=30): vol.All(
-                    vol.Coerce(float), vol.Range(min=0, max=200)
-                ),
-                vol.Required("offpeak_rate", default=15): vol.All(
-                    vol.Coerce(float), vol.Range(min=0, max=200)
-                ),
-                vol.Required("fit_rate", default=5): vol.All(
-                    vol.Coerce(float), vol.Range(min=0, max=100)
-                ),
-            }
-        )
-
-        return self.async_show_form(
-            step_id="custom_tariff",
-            data_schema=data_schema,
-            errors=errors,
-            description_placeholders={
-                "info": "Configure your electricity tariff. All rates in cents/kWh.\nFor TOU, you'll add time periods in the next step.",
-                "skip_hint": "Check 'Skip tariff configuration' to use default estimation instead.",
-            },
-        )
-
-    async def async_step_tariff_period(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Add a tariff time period. Loops until user unchecks 'Add another'.
-
-        Each period has: type, start hour, end hour, days, import rate, export rate.
-        This supports tariffs like GloBird Zero Hero where the same period type
-        (e.g. Peak) occurs at multiple times with different export rates.
-        """
-        errors: dict[str, str] = {}
-
-        if user_input is not None:
-
-            try:
-                start_hour = int(user_input.get("period_start", "15:00").split(":")[0])
-                end_hour = int(user_input.get("period_end", "21:00").split(":")[0])
-            except (ValueError, IndexError):
-                start_hour = 15
-                end_hour = 21
-
-            period = {
-                "name": user_input.get("period_type", "PEAK"),
-                "start": start_hour,
-                "end": end_hour,
-                "days": user_input.get("period_days", "weekdays"),
-                "import_rate": user_input.get("import_rate", 45) / 100,
-                "export_rate": user_input.get("export_rate", 5) / 100,
-            }
-            self._tariff_periods.append(period)
-
-            if user_input.get("add_another", False):
-                return await self.async_step_tariff_period()
-
-            # Done adding periods — build the tariff
-            self._custom_tariff_data = self._build_tariff_from_periods(
-                self._tariff_periods,
-            )
-            return await self._route_after_tariff()
-
-        hour_options = {f"{h:02d}:00": f"{h:02d}:00" for h in range(24)}
-        day_options = {
-            "weekdays": "Weekdays only (Mon-Fri)",
-            "all_days": "All days (Mon-Sun)",
-        }
-        period_types = {
-            "PEAK": "Peak",
-            "SHOULDER": "Shoulder",
-            "OFF_PEAK": "Off-Peak",
-            "SUPER_OFF_PEAK": "Super Off-Peak",
-        }
-
-        # Show what's been added so far
-        count = len(self._tariff_periods)
-        added_desc = ""
-        if count > 0:
-            lines = []
-            for i, p in enumerate(self._tariff_periods, 1):
-                label = {"PEAK": "Peak", "SHOULDER": "Shoulder", "OFF_PEAK": "Off-Peak",
-                         "SUPER_OFF_PEAK": "Super Off-Peak"}.get(p["name"], p["name"])
-                lines.append(f"{i}. {label} {p['start']:02d}:00-{p['end']:02d}:00 "
-                             f"({p['import_rate']*100:.0f}c import, {p['export_rate']*100:.0f}c export)")
-            added_desc = "Periods added:\n" + "\n".join(lines)
-
-        data_schema = vol.Schema(
-            {
-                vol.Required("period_type", default="PEAK"): vol.In(period_types),
-                vol.Required("period_start", default="15:00"): vol.In(hour_options),
-                vol.Required("period_end", default="21:00"): vol.In(hour_options),
-                vol.Optional("period_days", default="all_days"): vol.In(day_options),
-                vol.Required("import_rate", default=45): vol.All(
-                    vol.Coerce(float), vol.Range(min=0, max=200)
-                ),
-                vol.Required("export_rate", default=5): vol.All(
-                    vol.Coerce(float), vol.Range(min=0, max=200)
-                ),
-                vol.Optional("add_another", default=True): bool,
-            }
-        )
-
-        return self.async_show_form(
-            step_id="tariff_period",
-            data_schema=data_schema,
-            errors=errors,
-            description_placeholders={
-                "period_info": added_desc if added_desc else "Add your first tariff period. Remaining hours will be off-peak.",
-            },
-        )
 
     def _build_tariff_from_periods(self, periods: list[dict]) -> dict:
         """Build a Tesla-format tariff from a list of user-defined time periods.
@@ -2611,19 +1902,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             },
         }
 
-    async def _route_after_tariff(self) -> FlowResult:
-        """Route to battery-specific setup after tariff configuration."""
-        if self._selected_battery_system == BATTERY_SYSTEM_SIGENERGY:
-            return await self.async_step_sigenergy_credentials()
-        elif self._selected_battery_system == BATTERY_SYSTEM_SUNGROW:
-            return await self.async_step_sungrow()
-        elif self._selected_battery_system == BATTERY_SYSTEM_FOXESS:
-            return await self.async_step_foxess_connection()
-        elif self._selected_battery_system == BATTERY_SYSTEM_GOODWE:
-            return await self.async_step_goodwe_connection()
-        else:
-            return await self.async_step_tesla_provider()
-
     async def async_step_nz_retailer(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
@@ -2633,35 +1911,14 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             retailer = user_input.get(CONF_NZ_RETAILER, "nz_custom")
             zone = user_input.get(CONF_NZ_DISTRIBUTION_ZONE, "other")
 
-            self._nz_retailer = retailer
-            self._nz_zone = zone
+            # Store NZ config (retailer + zone) for options flow to pick up later
+            self._nz_config = {
+                CONF_NZ_RETAILER: retailer,
+                CONF_NZ_DISTRIBUTION_ZONE: zone,
+            }
 
-            # Load template defaults for pre-filling rates
-            from .tariff_templates import get_nz_template
-            template = get_nz_template(retailer)
-
-            if template:
-                charges = template.get("energy_charges", {}).get("All Year", {})
-                sell_charges = template.get("sell_tariff", {}).get("energy_charges", {}).get("All Year", {})
-                self._nz_defaults = {
-                    CONF_NZ_PEAK_RATE: charges.get("PEAK", 0.40) * 100,
-                    CONF_NZ_SHOULDER_RATE: charges.get("SHOULDER", 0.25) * 100,
-                    CONF_NZ_OFFPEAK_RATE: charges.get("OFF_PEAK", charges.get("SUPER_OFF_PEAK", 0.15)) * 100,
-                    CONF_NZ_PEAK_EXPORT: sell_charges.get("PEAK", sell_charges.get("ALL", 0.08)) * 100,
-                    CONF_NZ_OFFPEAK_EXPORT: sell_charges.get("OFF_PEAK", sell_charges.get("ALL", 0.08)) * 100,
-                    CONF_NZ_DAILY_SUPPLY: 200.0,  # 200 NZD c/day default
-                }
-            else:
-                self._nz_defaults = {
-                    CONF_NZ_PEAK_RATE: 40.0,
-                    CONF_NZ_SHOULDER_RATE: 25.0,
-                    CONF_NZ_OFFPEAK_RATE: 15.0,
-                    CONF_NZ_PEAK_EXPORT: 8.0,
-                    CONF_NZ_OFFPEAK_EXPORT: 8.0,
-                    CONF_NZ_DAILY_SUPPLY: 200.0,
-                }
-
-            return await self.async_step_nz_rates()
+            # Route directly to battery setup (skip nz_rates — rates configured via options flow)
+            return await self._route_to_battery_setup()
 
         return self.async_show_form(
             step_id="nz_retailer",
@@ -2669,128 +1926,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required(CONF_NZ_RETAILER, default="octopus_nz"): vol.In(NZ_RETAILERS),
                 vol.Required(CONF_NZ_DISTRIBUTION_ZONE, default="vector"): vol.In(NZ_DISTRIBUTION_ZONES),
             }),
-        )
-
-    async def async_step_nz_rates(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Handle NZ rate entry (pre-filled from retailer template)."""
-        errors: dict[str, str] = {}
-
-        if user_input is not None:
-
-            peak_rate = user_input.get(CONF_NZ_PEAK_RATE, 40.0)
-            shoulder_rate = user_input.get(CONF_NZ_SHOULDER_RATE, 25.0)
-            offpeak_rate = user_input.get(CONF_NZ_OFFPEAK_RATE, 15.0)
-            peak_export = user_input.get(CONF_NZ_PEAK_EXPORT, 8.0)
-            offpeak_export = user_input.get(CONF_NZ_OFFPEAK_EXPORT, 8.0)
-
-            # Load TOU periods from the selected retailer template
-            from .tariff_templates import get_nz_template, NZ_WEEKDAY_PEAK, NZ_WEEKDAY_SHOULDER, NZ_WEEKEND_SHOULDER, NZ_OFFPEAK_OVERNIGHT
-            template = get_nz_template(getattr(self, "_nz_retailer", "nz_custom"))
-
-            if template:
-                tou_periods = template["seasons"]["All Year"]["tou_periods"]
-            else:
-                # Fallback to standard NZ TOU periods
-                tou_periods = {
-                    "PEAK": NZ_WEEKDAY_PEAK,
-                    "SHOULDER": [*NZ_WEEKDAY_SHOULDER, *NZ_WEEKEND_SHOULDER],
-                    "OFF_PEAK": NZ_OFFPEAK_OVERNIGHT,
-                }
-
-            # Determine retailer name
-            retailer_name = NZ_RETAILERS.get(
-                getattr(self, "_nz_retailer", "nz_custom"), "Custom NZ Provider"
-            )
-
-            # Build energy charges from user input (convert cents to $/kWh)
-            energy_charges = {}
-            sell_charges = {}
-            for period_name in tou_periods:
-                if period_name == "PEAK":
-                    energy_charges[period_name] = peak_rate / 100
-                    sell_charges[period_name] = peak_export / 100
-                elif period_name == "SHOULDER":
-                    energy_charges[period_name] = shoulder_rate / 100
-                    sell_charges[period_name] = (peak_export + offpeak_export) / 200  # Average for shoulder export
-                elif period_name == "SUPER_OFF_PEAK":
-                    energy_charges[period_name] = offpeak_rate / 100
-                    sell_charges[period_name] = offpeak_export / 100
-                else:  # OFF_PEAK
-                    energy_charges[period_name] = offpeak_rate / 100
-                    sell_charges[period_name] = offpeak_export / 100
-
-            # Build custom tariff in Tesla format
-            self._custom_tariff_data = {
-                "name": f"{retailer_name} TOU",
-                "utility": retailer_name,
-                "seasons": {
-                    "All Year": {
-                        "fromMonth": 1,
-                        "toMonth": 12,
-                        "tou_periods": tou_periods,
-                    }
-                },
-                "energy_charges": {
-                    "All Year": energy_charges,
-                },
-                "sell_tariff": {
-                    "energy_charges": {
-                        "All Year": sell_charges,
-                    }
-                },
-            }
-
-            # Store NZ-specific config data
-            self._nz_config = {
-                CONF_NZ_RETAILER: getattr(self, "_nz_retailer", "nz_custom"),
-                CONF_NZ_DISTRIBUTION_ZONE: getattr(self, "_nz_zone", "other"),
-                CONF_NZ_PEAK_RATE: peak_rate,
-                CONF_NZ_SHOULDER_RATE: shoulder_rate,
-                CONF_NZ_OFFPEAK_RATE: offpeak_rate,
-                CONF_NZ_PEAK_EXPORT: peak_export,
-                CONF_NZ_OFFPEAK_EXPORT: offpeak_export,
-                CONF_NZ_DAILY_SUPPLY: user_input.get(CONF_NZ_DAILY_SUPPLY, 200.0),
-            }
-
-            # Route to battery-specific setup
-            if self._selected_battery_system == BATTERY_SYSTEM_SIGENERGY:
-                return await self.async_step_sigenergy_credentials()
-            elif self._selected_battery_system == BATTERY_SYSTEM_SUNGROW:
-                return await self.async_step_sungrow()
-            elif self._selected_battery_system == BATTERY_SYSTEM_FOXESS:
-                return await self.async_step_foxess_connection()
-            elif self._selected_battery_system == BATTERY_SYSTEM_GOODWE:
-                return await self.async_step_goodwe_connection()
-            else:
-                return await self.async_step_tesla_provider()
-
-        defaults = getattr(self, "_nz_defaults", {})
-
-        return self.async_show_form(
-            step_id="nz_rates",
-            data_schema=vol.Schema({
-                vol.Required(CONF_NZ_PEAK_RATE, default=defaults.get(CONF_NZ_PEAK_RATE, 40.0)): vol.All(
-                    vol.Coerce(float), vol.Range(min=0, max=200)
-                ),
-                vol.Required(CONF_NZ_SHOULDER_RATE, default=defaults.get(CONF_NZ_SHOULDER_RATE, 25.0)): vol.All(
-                    vol.Coerce(float), vol.Range(min=0, max=200)
-                ),
-                vol.Required(CONF_NZ_OFFPEAK_RATE, default=defaults.get(CONF_NZ_OFFPEAK_RATE, 15.0)): vol.All(
-                    vol.Coerce(float), vol.Range(min=0, max=200)
-                ),
-                vol.Required(CONF_NZ_PEAK_EXPORT, default=defaults.get(CONF_NZ_PEAK_EXPORT, 8.0)): vol.All(
-                    vol.Coerce(float), vol.Range(min=0, max=100)
-                ),
-                vol.Required(CONF_NZ_OFFPEAK_EXPORT, default=defaults.get(CONF_NZ_OFFPEAK_EXPORT, 8.0)): vol.All(
-                    vol.Coerce(float), vol.Range(min=0, max=100)
-                ),
-                vol.Required(CONF_NZ_DAILY_SUPPLY, default=defaults.get(CONF_NZ_DAILY_SUPPLY, 200.0)): vol.All(
-                    vol.Coerce(float), vol.Range(min=0, max=1000)
-                ),
-            }),
-            errors=errors,
         )
 
     async def async_step_site_selection(
@@ -2840,8 +1975,8 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 self._site_data[CONF_AUTO_SYNC_ENABLED] = False
             # For Flow Power, these settings are already in _flow_power_data
 
-            # Go to curtailment setup (for AC inverter configuration)
-            return await self.async_step_curtailment_setup()
+            # Go directly to creating the entry (skip curtailment/weather/demand/EV steps)
+            return self._create_final_entry()
 
         data_schema_dict: dict[vol.Marker, Any] = {}
 
@@ -2923,527 +2058,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="site_selection",
             data_schema=data_schema,
-            errors=errors,
-        )
-
-    async def async_step_curtailment_setup(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Handle curtailment configuration during initial setup."""
-        # Sungrow has built-in curtailment — skip this step
-        # Sigenergy users may have AC-coupled inverters (e.g. Enphase) that need curtailment
-        if self._selected_battery_system == BATTERY_SYSTEM_SUNGROW:
-            return await self.async_step_weather_setup()
-
-        if user_input is not None:
-
-            # Store curtailment settings
-            self._curtailment_data = {
-                CONF_BATTERY_CURTAILMENT_ENABLED: user_input.get(CONF_BATTERY_CURTAILMENT_ENABLED, False),
-                CONF_AC_INVERTER_CURTAILMENT_ENABLED: user_input.get(CONF_AC_INVERTER_CURTAILMENT_ENABLED, False),
-            }
-
-            # If AC inverter curtailment enabled, go to inverter brand selection
-            if user_input.get(CONF_AC_INVERTER_CURTAILMENT_ENABLED, False):
-                return await self.async_step_inverter_brand_setup()
-
-            # Otherwise, go to weather setup
-            return await self.async_step_weather_setup()
-
-        # Get default from site_data if already set
-        default_curtailment = self._site_data.get(CONF_BATTERY_CURTAILMENT_ENABLED, False)
-
-        return self.async_show_form(
-            step_id="curtailment_setup",
-            data_schema=vol.Schema({
-                vol.Optional(
-                    CONF_BATTERY_CURTAILMENT_ENABLED,
-                    default=default_curtailment,
-                ): bool,
-                vol.Optional(
-                    CONF_AC_INVERTER_CURTAILMENT_ENABLED,
-                    default=False,
-                ): bool,
-            }),
-        )
-
-    async def async_step_weather_setup(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Handle weather and solar forecast configuration during initial setup."""
-        if user_input is not None:
-
-            # Store weather and Solcast settings in curtailment_data
-            if not hasattr(self, '_curtailment_data'):
-                self._curtailment_data = {}
-            self._curtailment_data[CONF_WEATHER_LOCATION] = user_input.get(CONF_WEATHER_LOCATION, "")
-            self._curtailment_data[CONF_OPENWEATHERMAP_API_KEY] = user_input.get(CONF_OPENWEATHERMAP_API_KEY, "")
-            self._curtailment_data[CONF_SOLCAST_ENABLED] = user_input.get(CONF_SOLCAST_ENABLED, False)
-            self._curtailment_data[CONF_SOLCAST_API_KEY] = user_input.get(CONF_SOLCAST_API_KEY, "")
-            self._curtailment_data[CONF_SOLCAST_RESOURCE_ID] = user_input.get(CONF_SOLCAST_RESOURCE_ID, "")
-
-            # Go to demand charges
-            return await self.async_step_demand_charges()
-
-        return self.async_show_form(
-            step_id="weather_setup",
-            data_schema=vol.Schema({
-                vol.Optional(
-                    CONF_WEATHER_LOCATION,
-                    default="",
-                ): str,
-                vol.Optional(
-                    CONF_OPENWEATHERMAP_API_KEY,
-                    default="",
-                ): str,
-                vol.Optional(
-                    CONF_SOLCAST_ENABLED,
-                    default=False,
-                ): bool,
-                vol.Optional(
-                    CONF_SOLCAST_API_KEY,
-                    default="",
-                ): TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD)),
-                vol.Optional(
-                    CONF_SOLCAST_RESOURCE_ID,
-                    default="",
-                ): str,
-            }),
-        )
-
-    async def async_step_inverter_brand_setup(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Handle inverter brand selection during initial setup."""
-        if user_input is not None:
-
-            self._inverter_brand = user_input.get(CONF_INVERTER_BRAND, "sungrow")
-            return await self.async_step_inverter_config_setup()
-
-        return self.async_show_form(
-            step_id="inverter_brand_setup",
-            data_schema=vol.Schema({
-                vol.Required(
-                    CONF_INVERTER_BRAND,
-                    default="sungrow",
-                ): vol.In(INVERTER_BRANDS),
-            }),
-        )
-
-    async def async_step_inverter_config_setup(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Handle inverter configuration during initial setup."""
-        errors = {}
-
-        if user_input is not None:
-
-            # Store inverter configuration
-            inverter_brand = getattr(self, '_inverter_brand', "sungrow")
-            inverter_host = user_input.get(CONF_INVERTER_HOST, "")
-            inverter_port = user_input.get(CONF_INVERTER_PORT, DEFAULT_INVERTER_PORT)
-            inverter_slave_id = user_input.get(CONF_INVERTER_SLAVE_ID, DEFAULT_INVERTER_SLAVE_ID)
-
-            # Validate: if battery is Sungrow and AC inverter is also Sungrow,
-            # check for IP/port/slave_id conflicts
-            if (
-                self._selected_battery_system == BATTERY_SYSTEM_SUNGROW
-                and inverter_brand == "sungrow"
-                and self._sungrow_data
-            ):
-                sungrow_host = self._sungrow_data.get(CONF_SUNGROW_HOST, "")
-                sungrow_port = self._sungrow_data.get(CONF_SUNGROW_PORT, DEFAULT_SUNGROW_PORT)
-                sungrow_slave_id = self._sungrow_data.get(CONF_SUNGROW_SLAVE_ID, DEFAULT_SUNGROW_SLAVE_ID)
-
-                # Same host, port, AND slave ID = conflict
-                if (
-                    inverter_host == sungrow_host
-                    and inverter_port == sungrow_port
-                    and inverter_slave_id == sungrow_slave_id
-                ):
-                    errors["base"] = "sungrow_modbus_conflict"
-
-            if not errors:
-                self._inverter_data = {
-                    CONF_INVERTER_BRAND: inverter_brand,
-                    CONF_INVERTER_MODEL: user_input.get(CONF_INVERTER_MODEL),
-                    CONF_INVERTER_HOST: inverter_host,
-                    CONF_INVERTER_PORT: inverter_port,
-                }
-
-                # Only include slave ID for Modbus brands (not Enphase/Zeversolar which use HTTP)
-                if inverter_brand not in ("enphase", "zeversolar"):
-                    self._inverter_data[CONF_INVERTER_SLAVE_ID] = inverter_slave_id
-                else:
-                    self._inverter_data[CONF_INVERTER_SLAVE_ID] = 1
-
-                # Include JWT token, Enlighten credentials, and grid profiles for Enphase
-                if inverter_brand == "enphase":
-                    self._inverter_data[CONF_INVERTER_TOKEN] = user_input.get(CONF_INVERTER_TOKEN, "")
-                    self._inverter_data[CONF_ENPHASE_USERNAME] = user_input.get(CONF_ENPHASE_USERNAME, "")
-                    self._inverter_data[CONF_ENPHASE_PASSWORD] = user_input.get(CONF_ENPHASE_PASSWORD, "")
-                    self._inverter_data[CONF_ENPHASE_SERIAL] = user_input.get(CONF_ENPHASE_SERIAL, "")
-                    # Grid profile names for profile switching fallback
-                    self._inverter_data[CONF_ENPHASE_NORMAL_PROFILE] = user_input.get(CONF_ENPHASE_NORMAL_PROFILE, "")
-                    self._inverter_data[CONF_ENPHASE_ZERO_EXPORT_PROFILE] = user_input.get(CONF_ENPHASE_ZERO_EXPORT_PROFILE, "")
-                    # Installer mode for grid profile access
-                    self._inverter_data[CONF_ENPHASE_IS_INSTALLER] = user_input.get(CONF_ENPHASE_IS_INSTALLER, False)
-
-                # Fronius-specific: load following mode
-                if inverter_brand == "fronius":
-                    self._inverter_data[CONF_FRONIUS_LOAD_FOLLOWING] = user_input.get(
-                        CONF_FRONIUS_LOAD_FOLLOWING, False
-                    )
-
-                # Restore SOC threshold
-                self._inverter_data[CONF_INVERTER_RESTORE_SOC] = user_input.get(
-                    CONF_INVERTER_RESTORE_SOC, DEFAULT_INVERTER_RESTORE_SOC
-                )
-
-                return await self.async_step_weather_setup()
-
-        # Get brand-specific models and defaults
-        # Pass battery system to filter out conflicting models (e.g., SH-series when battery is Sungrow)
-        brand = getattr(self, '_inverter_brand', "sungrow")
-        models = get_models_for_brand(brand, self._selected_battery_system)
-        defaults = get_brand_defaults(brand)
-
-        # Build brand-specific schema
-        schema_dict: dict[vol.Marker, Any] = {
-            vol.Required(
-                CONF_INVERTER_MODEL,
-                default=next(iter(models.keys())) if models else "",
-            ): vol.In(models),
-            vol.Required(
-                CONF_INVERTER_HOST,
-                default="",
-            ): str,
-            vol.Required(
-                CONF_INVERTER_PORT,
-                default=defaults["port"],
-            ): vol.All(vol.Coerce(int), vol.Range(min=1, max=65535)),
-        }
-
-        # Only show Slave ID for Modbus brands
-        if brand not in ("enphase", "zeversolar"):
-            schema_dict[vol.Required(
-                CONF_INVERTER_SLAVE_ID,
-                default=defaults["slave_id"],
-            )] = vol.All(vol.Coerce(int), vol.Range(min=1, max=247))
-
-        # Show JWT token, Enlighten credentials, and grid profiles for Enphase
-        if brand == "enphase":
-            schema_dict[vol.Optional(CONF_INVERTER_TOKEN, default="")] = TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD))
-            schema_dict[vol.Optional(CONF_ENPHASE_USERNAME, default="")] = str
-            schema_dict[vol.Optional(CONF_ENPHASE_PASSWORD, default="")] = TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD))
-            schema_dict[vol.Optional(CONF_ENPHASE_SERIAL, default="")] = str
-            # Grid profile names for profile switching fallback (when DPEL/DER unavailable)
-            schema_dict[vol.Optional(CONF_ENPHASE_NORMAL_PROFILE, default="")] = str
-            schema_dict[vol.Optional(CONF_ENPHASE_ZERO_EXPORT_PROFILE, default="")] = str
-            # Installer mode for accessing grid profile switching
-            schema_dict[vol.Optional(CONF_ENPHASE_IS_INSTALLER, default=False)] = bool
-
-        # Fronius load following mode
-        if brand == "fronius":
-            schema_dict[vol.Optional(CONF_FRONIUS_LOAD_FOLLOWING, default=False)] = bool
-
-        # Restore SOC threshold for all brands
-        schema_dict[vol.Optional(
-            CONF_INVERTER_RESTORE_SOC,
-            default=DEFAULT_INVERTER_RESTORE_SOC,
-        )] = vol.All(vol.Coerce(int), vol.Range(min=0, max=100))
-
-        return self.async_show_form(
-            step_id="inverter_config_setup",
-            data_schema=vol.Schema(schema_dict),
-            errors=errors,
-            description_placeholders={
-                "brand": brand.title(),
-            },
-        )
-
-    async def async_step_demand_charges(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Handle optional demand charge configuration (minimal implementation)."""
-        if user_input is not None:
-
-            # Store demand charge configuration
-            self._demand_data = {}
-
-            # Add demand charge configuration if enabled
-            if user_input.get(CONF_DEMAND_CHARGE_ENABLED, False):
-                self._demand_data.update({
-                    CONF_DEMAND_CHARGE_ENABLED: True,
-                    CONF_DEMAND_CHARGE_RATE: user_input[CONF_DEMAND_CHARGE_RATE],
-                    CONF_DEMAND_CHARGE_START_TIME: user_input[CONF_DEMAND_CHARGE_START_TIME],
-                    CONF_DEMAND_CHARGE_END_TIME: user_input[CONF_DEMAND_CHARGE_END_TIME],
-                    CONF_DEMAND_CHARGE_DAYS: user_input[CONF_DEMAND_CHARGE_DAYS],
-                    CONF_DEMAND_CHARGE_BILLING_DAY: user_input[CONF_DEMAND_CHARGE_BILLING_DAY],
-                    CONF_DEMAND_CHARGE_APPLY_TO: user_input[CONF_DEMAND_CHARGE_APPLY_TO],
-                    CONF_DEMAND_ARTIFICIAL_PRICE: user_input.get(CONF_DEMAND_ARTIFICIAL_PRICE, False),
-                    CONF_DEMAND_ALLOW_GRID_CHARGING: user_input.get(CONF_DEMAND_ALLOW_GRID_CHARGING, False),
-                })
-            else:
-                self._demand_data[CONF_DEMAND_CHARGE_ENABLED] = False
-
-            # Add supply charges (always include, even if 0)
-            self._demand_data[CONF_DAILY_SUPPLY_CHARGE] = user_input.get(CONF_DAILY_SUPPLY_CHARGE, 0.0)
-            self._demand_data[CONF_MONTHLY_SUPPLY_CHARGE] = user_input.get(CONF_MONTHLY_SUPPLY_CHARGE, 0.0)
-
-            # All battery systems proceed to EV charging setup
-            return await self.async_step_ev_charging_setup()
-
-        # Build the form schema
-        schema_dict = {
-            vol.Optional(CONF_DEMAND_CHARGE_ENABLED, default=False): bool,
-            vol.Optional(CONF_DEMAND_CHARGE_RATE, default=10.0): vol.All(
-                vol.Coerce(float), vol.Range(min=0.0, max=100.0)
-            ),
-            vol.Optional(CONF_DEMAND_CHARGE_START_TIME, default="14:00"): str,
-            vol.Optional(CONF_DEMAND_CHARGE_END_TIME, default="20:00"): str,
-            vol.Optional(CONF_DEMAND_CHARGE_DAYS, default="All Days"): vol.In(
-                ["All Days", "Weekdays Only", "Weekends Only"]
-            ),
-            vol.Optional(CONF_DEMAND_CHARGE_BILLING_DAY, default=1): vol.All(
-                vol.Coerce(int), vol.Range(min=1, max=31)
-            ),
-            vol.Optional(CONF_DEMAND_CHARGE_APPLY_TO, default="Buy Only"): vol.In(
-                ["Buy Only", "Sell Only", "Both"]
-            ),
-        }
-
-        # Only show artificial price increase for Tesla (Tesla-specific TOU feature)
-        if self._selected_battery_system == BATTERY_SYSTEM_TESLA:
-            schema_dict[vol.Optional(CONF_DEMAND_ARTIFICIAL_PRICE, default=False)] = bool
-
-        schema_dict.update({
-            vol.Optional(CONF_DEMAND_ALLOW_GRID_CHARGING, default=False): bool,
-            vol.Optional(CONF_DAILY_SUPPLY_CHARGE, default=0.0): vol.Coerce(float),
-            vol.Optional(CONF_MONTHLY_SUPPLY_CHARGE, default=0.0): vol.Coerce(float),
-        })
-
-        data_schema = vol.Schema(schema_dict)
-
-        return self.async_show_form(
-            step_id="demand_charges",
-            data_schema=data_schema,
-            description_placeholders={
-                "example_rate": "10.0",
-                "example_time": "14:00",
-            },
-        )
-
-    async def async_step_ev_charging_setup(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Handle EV charging configuration during initial setup."""
-        if user_input is not None:
-
-            # Store EV data for potential zaptec_cloud step
-            self._ev_data = dict(user_input)
-
-            # If Zaptec standalone is enabled, go to credentials step
-            if user_input.get(CONF_ZAPTEC_STANDALONE_ENABLED, False):
-                return await self.async_step_zaptec_cloud()
-
-            return self._create_final_entry_from_ev(user_input)
-
-        return self.async_show_form(
-            step_id="ev_charging_setup",
-            data_schema=vol.Schema({
-                vol.Optional(
-                    CONF_EV_CHARGING_ENABLED,
-                    default=False,
-                ): bool,
-                vol.Optional(
-                    CONF_EV_PROVIDER,
-                    default=EV_PROVIDER_FLEET_API,
-                ): vol.In(EV_PROVIDERS),
-                vol.Optional(
-                    CONF_TESLA_BLE_ENTITY_PREFIX,
-                    default=DEFAULT_TESLA_BLE_ENTITY_PREFIX,
-                ): str,
-                vol.Optional(
-                    CONF_OCPP_ENABLED,
-                    default=False,
-                ): bool,
-                vol.Optional(
-                    CONF_OCPP_PORT,
-                    default=DEFAULT_OCPP_PORT,
-                ): vol.All(vol.Coerce(int), vol.Range(min=1, max=65535)),
-                vol.Optional(
-                    CONF_ZAPTEC_CHARGER_ENTITY,
-                    default="",
-                ): str,
-                vol.Optional(
-                    CONF_ZAPTEC_INSTALLATION_ID,
-                    default="",
-                ): str,
-                vol.Optional(
-                    CONF_ZAPTEC_STANDALONE_ENABLED,
-                    default=False,
-                ): bool,
-                vol.Optional(CONF_GENERIC_CHARGER_ENABLED, default=False): bool,
-                vol.Optional(CONF_GENERIC_CHARGER_SWITCH_ENTITY, default=""): str,
-                vol.Optional(CONF_GENERIC_CHARGER_AMPS_ENTITY, default=""): str,
-                vol.Optional(CONF_GENERIC_CHARGER_STATUS_ENTITY, default=""): str,
-                vol.Optional(CONF_GENERIC_CHARGER_SOC_ENTITY, default=""): str,
-            }),
-        )
-
-    def _create_final_entry_from_ev(
-        self, ev_input: dict[str, Any]
-    ) -> FlowResult:
-        """Create final config entry from EV charging step data."""
-        # Combine all data — include battery-specific data for all systems
-        data = {
-            **self._amber_data,
-            **self._teslemetry_data,
-            **self._site_data,
-            **self._aemo_data,
-            **self._flow_power_data,
-            **self._octopus_data,
-            **self._localvolts_data,
-            **self._epex_data,
-            **getattr(self, '_curtailment_data', {}),
-            **getattr(self, '_inverter_data', {}),
-            **getattr(self, '_demand_data', {}),
-            **getattr(self, '_sigenergy_data', {}),
-            **getattr(self, '_sungrow_data', {}),
-            **getattr(self, '_foxess_data', {}),
-            **getattr(self, '_goodwe_data', {}),
-            CONF_ELECTRICITY_PROVIDER: self._selected_electricity_provider,
-        }
-
-        # Set battery system type
-        if self._selected_battery_system:
-            data[CONF_BATTERY_SYSTEM] = self._selected_battery_system
-
-        # Include custom tariff data if configured
-        if self._custom_tariff_data:
-            data["initial_custom_tariff"] = self._custom_tariff_data
-
-        # Include optimization provider selection (for Tesla)
-        data[CONF_OPTIMIZATION_PROVIDER] = self._optimization_provider
-        if self._optimization_provider == OPT_PROVIDER_POWERSYNC and self._ml_options:
-            data.update(self._ml_options)
-
-        # Add EV settings
-        data[CONF_EV_CHARGING_ENABLED] = ev_input.get(CONF_EV_CHARGING_ENABLED, False)
-        data[CONF_EV_PROVIDER] = ev_input.get(CONF_EV_PROVIDER, EV_PROVIDER_FLEET_API)
-        data[CONF_TESLA_BLE_ENTITY_PREFIX] = ev_input.get(
-            CONF_TESLA_BLE_ENTITY_PREFIX, DEFAULT_TESLA_BLE_ENTITY_PREFIX
-        )
-
-        # Add OCPP settings
-        data[CONF_OCPP_ENABLED] = ev_input.get(CONF_OCPP_ENABLED, False)
-        data[CONF_OCPP_PORT] = ev_input.get(CONF_OCPP_PORT, DEFAULT_OCPP_PORT)
-
-        # Add Zaptec settings
-        zaptec_entity = ev_input.get(CONF_ZAPTEC_CHARGER_ENTITY, "")
-        if zaptec_entity:
-            data[CONF_ZAPTEC_CHARGER_ENTITY] = zaptec_entity
-        data[CONF_ZAPTEC_INSTALLATION_ID] = ev_input.get(
-            CONF_ZAPTEC_INSTALLATION_ID, ""
-        )
-
-        # Add Zaptec standalone settings (from _ev_data or zaptec_cloud step)
-        data[CONF_ZAPTEC_STANDALONE_ENABLED] = ev_input.get(
-            CONF_ZAPTEC_STANDALONE_ENABLED, False
-        )
-        for key in (CONF_ZAPTEC_USERNAME, CONF_ZAPTEC_PASSWORD,
-                     CONF_ZAPTEC_CHARGER_ID, CONF_ZAPTEC_INSTALLATION_ID_CLOUD):
-            if key in ev_input:
-                data[key] = ev_input[key]
-
-        # Add Generic charger settings
-        data[CONF_GENERIC_CHARGER_ENABLED] = ev_input.get(CONF_GENERIC_CHARGER_ENABLED, False)
-        switch_entity = ev_input.get(CONF_GENERIC_CHARGER_SWITCH_ENTITY, "")
-        if switch_entity:
-            data[CONF_GENERIC_CHARGER_SWITCH_ENTITY] = switch_entity
-        amps_entity = ev_input.get(CONF_GENERIC_CHARGER_AMPS_ENTITY, "")
-        if amps_entity:
-            data[CONF_GENERIC_CHARGER_AMPS_ENTITY] = amps_entity
-        status_entity = ev_input.get(CONF_GENERIC_CHARGER_STATUS_ENTITY, "")
-        if status_entity:
-            data[CONF_GENERIC_CHARGER_STATUS_ENTITY] = status_entity
-        soc_entity = ev_input.get(CONF_GENERIC_CHARGER_SOC_ENTITY, "")
-        if soc_entity:
-            data[CONF_GENERIC_CHARGER_SOC_ENTITY] = soc_entity
-
-        # Set appropriate title based on battery system and provider
-        battery_label = {
-            BATTERY_SYSTEM_SIGENERGY: "Sigenergy",
-            BATTERY_SYSTEM_SUNGROW: "Sungrow",
-            BATTERY_SYSTEM_FOXESS: "FoxESS",
-            BATTERY_SYSTEM_GOODWE: "GoodWe",
-        }.get(self._selected_battery_system, "")
-
-        if battery_label:
-            title = f"PowerSync - {battery_label}"
-        elif self._aemo_only_mode:
-            title = "PowerSync Globird"
-        elif self._selected_electricity_provider == "flow_power":
-            title = "PowerSync Flow Power"
-        elif self._selected_electricity_provider == "localvolts":
-            title = "PowerSync Localvolts"
-        elif self._selected_electricity_provider == "octopus":
-            title = "PowerSync Octopus"
-        else:
-            title = "PowerSync Amber"
-        return self.async_create_entry(title=title, data=data)
-
-    async def async_step_zaptec_cloud(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Handle Zaptec Cloud API credentials during initial setup."""
-        errors = {}
-
-        if user_input is not None:
-
-            username = user_input.get(CONF_ZAPTEC_USERNAME, "")
-            password = user_input.get(CONF_ZAPTEC_PASSWORD, "")
-
-            if username and password:
-                # Validate credentials
-                from .zaptec_api import ZaptecCloudClient
-                client = ZaptecCloudClient(username, password)
-                try:
-                    success, message = await client.test_connection()
-                    if success:
-                        # Auto-discover chargers and installations
-                        chargers = await client.get_chargers()
-                        installations = await client.get_installations()
-
-                        ev_data = getattr(self, '_ev_data', {})
-                        ev_data[CONF_ZAPTEC_USERNAME] = username
-                        ev_data[CONF_ZAPTEC_PASSWORD] = password
-
-                        # Store first charger/installation IDs
-                        if chargers:
-                            ev_data[CONF_ZAPTEC_CHARGER_ID] = chargers[0].get("Id", "")
-                        if installations:
-                            ev_data[CONF_ZAPTEC_INSTALLATION_ID_CLOUD] = installations[0].get("Id", "")
-
-                        return self._create_final_entry_from_ev(ev_data)
-                    else:
-                        errors["base"] = "zaptec_auth_failed"
-                        _LOGGER.error("Zaptec Cloud auth failed: %s", message)
-                except Exception as e:
-                    errors["base"] = "zaptec_auth_failed"
-                    _LOGGER.error("Zaptec Cloud connection error: %s", e)
-                finally:
-                    await client.close()
-            else:
-                errors["base"] = "zaptec_missing_credentials"
-
-        return self.async_show_form(
-            step_id="zaptec_cloud",
-            data_schema=vol.Schema({
-                vol.Required(CONF_ZAPTEC_USERNAME): str,
-                vol.Required(CONF_ZAPTEC_PASSWORD): TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD)),
-            }),
             errors=errors,
         )
 
