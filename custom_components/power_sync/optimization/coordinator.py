@@ -474,28 +474,43 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if battery:
             # Restore persisted user backup reserve (survives restarts).
             # If not persisted, capture from the battery API.
-            persisted_reserve = self._entry.options.get("_user_backup_reserve") if self._entry else None
-            if persisted_reserve is not None:
-                self._startup_backup_reserve = int(persisted_reserve)
-                _LOGGER.info("Optimizer startup: restored persisted user backup reserve: %d%%", self._startup_backup_reserve)
+            # Priority: 1) CONF_HARDWARE_BACKUP_RESERVE (user-explicit setting)
+            #           2) _user_backup_reserve (persisted from Tesla API)
+            #           3) Tesla API on first boot
+            from ..const import CONF_HARDWARE_BACKUP_RESERVE
+            hw_config = None
+            if self._entry:
+                hw_config = self._entry.options.get(
+                    CONF_HARDWARE_BACKUP_RESERVE,
+                    self._entry.data.get(CONF_HARDWARE_BACKUP_RESERVE)
+                )
+            if hw_config is not None:
+                hw_val = int(hw_config * 100) if hw_config <= 1 else int(hw_config)
+                self._startup_backup_reserve = hw_val
+                _LOGGER.info("Optimizer startup: using hardware backup reserve from config: %d%%", hw_val)
             else:
-                try:
-                    if hasattr(battery, "get_backup_reserve"):
-                        startup_reserve = await battery.get_backup_reserve()
-                        if startup_reserve is not None:
-                            self._startup_backup_reserve = startup_reserve
-                            _LOGGER.info("Optimizer startup: captured user backup reserve: %d%%", startup_reserve)
-                            if self._optimizer:
-                                self._optimizer.update_hardware_reserve(startup_reserve / 100)
-                            # Persist it so it survives restarts
-                            if self._entry:
-                                new_opts = {**self._entry.options, "_user_backup_reserve": startup_reserve}
-                                from ..const import DOMAIN as _DOM
-                                _ed = self.hass.data.get(_DOM, {}).get(self.entry_id, {})
-                                _ed["_skip_reload"] = True
-                                self.hass.config_entries.async_update_entry(self._entry, options=new_opts)
-                except Exception as e:
-                    _LOGGER.debug("Could not read startup backup reserve: %s", e)
+                persisted_reserve = self._entry.options.get("_user_backup_reserve") if self._entry else None
+                if persisted_reserve is not None:
+                    self._startup_backup_reserve = int(persisted_reserve)
+                    _LOGGER.info("Optimizer startup: restored persisted user backup reserve: %d%%", self._startup_backup_reserve)
+                else:
+                    try:
+                        if hasattr(battery, "get_backup_reserve"):
+                            startup_reserve = await battery.get_backup_reserve()
+                            if startup_reserve is not None:
+                                self._startup_backup_reserve = startup_reserve
+                                _LOGGER.info("Optimizer startup: captured user backup reserve: %d%%", startup_reserve)
+                                if self._optimizer:
+                                    self._optimizer.update_hardware_reserve(startup_reserve / 100)
+                                # Persist it so it survives restarts
+                                if self._entry:
+                                    new_opts = {**self._entry.options, "_user_backup_reserve": startup_reserve}
+                                    from ..const import DOMAIN as _DOM
+                                    _ed = self.hass.data.get(_DOM, {}).get(self.entry_id, {})
+                                    _ed["_skip_reload"] = True
+                                    self.hass.config_entries.async_update_entry(self._entry, options=new_opts)
+                    except Exception as e:
+                        _LOGGER.debug("Could not read startup backup reserve: %s", e)
 
             # Skip startup mode change if monitoring mode or force mode is active
             from ..const import CONF_MONITORING_MODE, DOMAIN as _STARTUP_DOMAIN
