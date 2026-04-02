@@ -2010,7 +2010,19 @@ class AEMOPriceCoordinator(DataUpdateCoordinator):
     Fetches data directly from AEMO NEMWeb - no external integration required.
     The data is converted to Amber-compatible format so the existing tariff
     converter can be reused.
+
+    Uses adaptive polling to catch new dispatch files quickly:
+      WAIT       (>10 s until boundary)  -> 45 s intervals, skip NEMWEB fetch
+      PRE-ACTIVE (-10 s ... +15 s)       -> 5 s intervals, fetch NEMWEB
+      ACTIVE     (>15 s past boundary)   -> 1 s intervals, fetch NEMWEB
     """
+
+    # Adaptive polling thresholds (seconds relative to the next 5-minute boundary)
+    _WAIT_INTERVAL = 45       # Poll interval while well away from the boundary (s)
+    _PRE_ACTIVE_WINDOW = 10   # Start gentle polling this many seconds before boundary
+    _PRE_ACTIVE_INTERVAL = 5  # Poll interval in the pre-active window (s)
+    _ACTIVE_WINDOW = 15       # Switch to rapid polling this many seconds after boundary
+    _ACTIVE_INTERVAL = 1      # Poll interval during active file search (s)
 
     def __init__(
         self,
@@ -2030,26 +2042,161 @@ class AEMOPriceCoordinator(DataUpdateCoordinator):
         self.region = region
         self._client = AEMOAPIClient(session)
 
+        # Adaptive polling state
+        self._next_boundary: datetime | None = None
+        self._polling_mode: str = "active"  # Start active to get first data fast
+
         super().__init__(
             hass,
             _LOGGER,
             name=f"{DOMAIN}_aemo",
-            update_interval=timedelta(minutes=5),  # Match AEMO update frequency
+            # Start with 1s interval; adaptive logic will adjust after first data
+            update_interval=timedelta(seconds=self._ACTIVE_INTERVAL),
         )
 
+    # ------------------------------------------------------------------
+    # Adaptive polling helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _parse_aemo_timestamp(timestamp_str: str) -> datetime | None:
+        """Parse AEMO dispatch timestamp (always AEST UTC+10) to naive local datetime."""
+        if not timestamp_str or "/" not in timestamp_str:
+            return None
+        try:
+            from datetime import timezone as _tz, timedelta as _td
+            aest = _tz(_td(hours=10))
+            dt_naive = datetime.strptime(timestamp_str, "%Y/%m/%d %H:%M:%S")
+            dt_aest = dt_naive.replace(tzinfo=aest)
+            return dt_aest.astimezone().replace(tzinfo=None)
+        except (ValueError, TypeError) as e:
+            _LOGGER.debug("Failed to parse dispatch timestamp '%s': %s", timestamp_str, e)
+            return None
+
+    @staticmethod
+    def _calc_next_boundary() -> datetime:
+        """Return the next 5-minute wall-clock boundary from now (naive local)."""
+        now = datetime.now()
+        next_min = ((now.minute // 5) + 1) * 5
+        if next_min >= 60:
+            return now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+        return now.replace(minute=next_min, second=0, microsecond=0)
+
+    def _adjust_poll_interval(self) -> bool:
+        """Set update_interval based on proximity to the next dispatch boundary.
+
+        Returns True when we should actually hit NEMWEB this cycle, False when
+        we should serve cached data and wait for the boundary.
+        """
+        if self._next_boundary is None:
+            # No boundary known yet - poll now to get first data
+            return True
+
+        now = datetime.now()
+        secs = (self._next_boundary - now).total_seconds()
+
+        if secs > self._PRE_ACTIVE_WINDOW:
+            # WAIT mode - too early to expect a new file
+            if self._polling_mode != "wait":
+                self._polling_mode = "wait"
+                _LOGGER.info(
+                    "AEMO: WAIT mode - next boundary %s in %ds",
+                    self._next_boundary.strftime("%H:%M:%S"),
+                    int(secs),
+                )
+            self.update_interval = timedelta(seconds=self._WAIT_INTERVAL)
+            return False
+
+        if secs > -self._ACTIVE_WINDOW:
+            # PRE-ACTIVE mode - gently start checking
+            if self._polling_mode != "pre-active":
+                self._polling_mode = "pre-active"
+                _LOGGER.info("AEMO: PRE-ACTIVE mode (5 s intervals)")
+            self.update_interval = timedelta(seconds=self._PRE_ACTIVE_INTERVAL)
+            return True
+
+        # ACTIVE mode - new file could appear any second
+        if self._polling_mode != "active":
+            self._polling_mode = "active"
+            _LOGGER.info("AEMO: ACTIVE mode (1 s intervals) - searching for new dispatch file")
+        self.update_interval = timedelta(seconds=self._ACTIVE_INTERVAL)
+        return True
+
+    # ------------------------------------------------------------------
+    # Main update loop
+    # ------------------------------------------------------------------
+
     async def _async_update_data(self) -> dict[str, Any]:
-        """Fetch data from AEMO API and convert to Amber-compatible format.
+        """Fetch data from AEMO API using adaptive polling.
+
+        Polling strategy:
+        - After receiving a new dispatch file: enter WAIT mode until just
+          before the next 5-minute boundary (45 s check interval).
+        - 10 s before the boundary: switch to PRE-ACTIVE (5 s interval).
+        - 15 s after the boundary: switch to ACTIVE (1 s interval) and poll
+          NEMWEB aggressively until a new file appears.
+        - On new file: immediately return to WAIT mode.
 
         Returns:
             dict with 'current', 'forecast', and 'last_update' in Amber-compatible format
         """
-        try:
-            # Fetch current price (5-min dispatch price)
-            current_price_data = await self._client.get_region_price(self.region)
+        # Decide whether to hit NEMWEB this cycle
+        should_fetch = self._adjust_poll_interval()
 
-            # Fetch forecast (pre-dispatch prices)
-            # Request 96 periods (48 hours) to ensure full coverage for rolling 24h window
-            forecast = await self._client.get_price_forecast(self.region, periods=96)
+        if not should_fetch:
+            # WAIT mode - return existing data unchanged
+            if self.data:
+                return self.data
+            # No data yet - fall through to fetch
+            should_fetch = True
+
+        try:
+            # Fetch current price (5-min dispatch price) with file metadata
+            current_prices_all, is_new_dispatch, dispatch_file = (
+                await self._client.get_current_prices_with_file()
+            )
+
+            current_price_data = None
+            if current_prices_all:
+                current_price_data = current_prices_all.get(self.region)
+
+            # Handle adaptive boundary tracking
+            if is_new_dispatch and current_price_data:
+                timestamp = current_price_data.get("timestamp")
+                if timestamp:
+                    period_dt = self._parse_aemo_timestamp(timestamp)
+                    if period_dt:
+                        self._next_boundary = self._calc_next_boundary()
+                        _LOGGER.info(
+                            "AEMO: New dispatch - next boundary %s",
+                            self._next_boundary.strftime("%H:%M:%S"),
+                        )
+            elif not is_new_dispatch and self._next_boundary is None and current_price_data:
+                # First run - file already cached but we still need a boundary
+                timestamp = current_price_data.get("timestamp")
+                if timestamp:
+                    period_dt = self._parse_aemo_timestamp(timestamp)
+                    if period_dt:
+                        candidate = self._calc_next_boundary()
+                        secs_until = (candidate - datetime.now()).total_seconds()
+                        if secs_until > -self._ACTIVE_WINDOW:
+                            self._next_boundary = candidate
+                            _LOGGER.info(
+                                "AEMO: Boundary initialised from cached dispatch: "
+                                "next=%s (in %.0fs)",
+                                self._next_boundary.strftime("%H:%M:%S"),
+                                secs_until,
+                            )
+
+            # Only fetch forecast when we got a new dispatch file (predispatch
+            # updates every ~30 min, no point hammering it every second in ACTIVE)
+            forecast = None
+            if is_new_dispatch:
+                forecast = await self._client.get_price_forecast(self.region, periods=96)
+
+            # If no new forecast, preserve existing
+            if not forecast and self.data:
+                forecast = self.data.get("forecast")
 
             if not forecast:
                 raise UpdateFailed(f"Failed to fetch AEMO forecast for {self.region}")
@@ -2079,10 +2226,11 @@ class AEMOPriceCoordinator(DataUpdateCoordinator):
                 },
             ]
 
-            _LOGGER.info(
-                "AEMO API data for %s: current=%.2fc/kWh (%s), forecast_periods=%d",
-                self.region, current_price_cents, price_source, len(forecast) // 2
-            )
+            if is_new_dispatch:
+                _LOGGER.info(
+                    "AEMO API data for %s: current=%.2fc/kWh (%s), forecast_periods=%d",
+                    self.region, current_price_cents, price_source, len(forecast) // 2
+                )
 
             return {
                 "current": current_prices,

@@ -61,6 +61,7 @@ class AEMOAPIClient:
         """
         self._session = session
         self._last_dispatch_file: str | None = None
+        self._dispatch_cache: dict[str, dict[str, dict[str, Any]]] = {}  # filename -> parsed prices
         _LOGGER.info("AEMOAPIClient initialized")
 
     async def _get_session(self) -> aiohttp.ClientSession:
@@ -72,15 +73,26 @@ class AEMOAPIClient:
     async def get_current_prices(self) -> dict[str, dict[str, Any]] | None:
         """Get current 5-minute dispatch prices for all NEM regions.
 
-        Fetches from NEMWEB dispatch ZIP files (primary) with JSON API fallback.
+        Thin wrapper around get_current_prices_with_file for callers that
+        don't need to know whether the data is fresh or cached.
+        """
+        prices, _is_new, _file = await self.get_current_prices_with_file()
+        return prices
+
+    async def get_current_prices_with_file(
+        self,
+    ) -> tuple[dict[str, dict[str, Any]] | None, bool, str]:
+        """Fetch current dispatch prices, reporting whether a new file was found.
+
+        Uses NEMWEB dispatch ZIP files for faster updates.  The parsed result
+        is cached by filename so repeated calls within the same 5-minute
+        dispatch period never re-download or re-parse the ZIP.
 
         Returns:
-            dict: Price data for all regions or None on error
-            Example: {
-                'NSW1': {'price': 72.06, 'timestamp': '2025-11-08T21:00:00', 'status': 'FIRM'},
-                'QLD1': {'price': 69.89, 'timestamp': '2025-11-08T21:00:00', 'status': 'FIRM'},
-                ...
-            }
+            (prices, is_new_file, filename)
+            prices       - dict mapping region code to price data, or None on error
+            is_new_file  - True when the file on NEMWEB changed since last call
+            filename     - the filename that was used (empty string on error)
         """
         try:
             session = await self._get_session()
@@ -96,15 +108,16 @@ class AEMOAPIClient:
             files = re.findall(r"PUBLIC_DISPATCHIS_\d{12}_\d+\.zip", index_html)
             if not files:
                 _LOGGER.warning("No dispatch files found in NEMWEB directory, using JSON fallback")
-                return await self._get_current_prices_json_fallback()
+                return await self._get_current_prices_json_fallback(), False, ""
 
             latest_file = sorted(files)[-1]
 
-            # Skip re-download if we already processed this file
-            if latest_file == self._last_dispatch_file:
-                _LOGGER.debug("NEMWEB dispatch file unchanged: %s", latest_file)
+            # Return cached parse result if the file hasn't changed
+            if latest_file in self._dispatch_cache:
+                _LOGGER.debug("Dispatch file unchanged: %s", latest_file)
+                return self._dispatch_cache[latest_file], False, latest_file
 
-            # Step 3: Download the ZIP
+            # Step 3: Download the ZIP (new file)
             file_url = f"{self.DISPATCH_URL}{latest_file}"
             async with session.get(
                 file_url, headers=self.HEADERS, timeout=aiohttp.ClientTimeout(total=30)
@@ -116,16 +129,18 @@ class AEMOAPIClient:
             prices = self._parse_dispatch_zip(zip_content)
             if not prices:
                 _LOGGER.warning("No prices parsed from NEMWEB dispatch ZIP, using JSON fallback")
-                return await self._get_current_prices_json_fallback()
+                return await self._get_current_prices_json_fallback(), False, ""
 
+            # Cache the result and evict any previous entry (only keep latest)
+            self._dispatch_cache = {latest_file: prices}
             self._last_dispatch_file = latest_file
             _LOGGER.info("NEMWEB dispatch: %s -> %d regions", latest_file, len(prices))
             _LOGGER.debug("NEMWEB dispatch data: %s", prices)
-            return prices
+            return prices, True, latest_file
 
         except Exception as err:
             _LOGGER.warning("NEMWEB dispatch fetch failed (%s), using JSON fallback", err)
-            return await self._get_current_prices_json_fallback()
+            return await self._get_current_prices_json_fallback(), False, ""
 
     def _parse_dispatch_zip(self, content: bytes) -> dict[str, dict[str, Any]] | None:
         """Parse a NEMWEB DispatchIS ZIP file to extract current prices.
