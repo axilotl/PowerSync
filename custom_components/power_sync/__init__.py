@@ -9651,6 +9651,115 @@ class ChargingBoostView(HomeAssistantView):
             }, status=500)
 
 
+class OCPPChargersView(HomeAssistantView):
+    """HTTP view to get OCPP charger status for mobile app."""
+
+    url = "/api/power_sync/ev/ocpp_chargers"
+    name = "api:power_sync:ev:ocpp_chargers"
+    requires_auth = True
+
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+        self._hass = hass
+        self._entry = entry
+
+    async def get(self, request):
+        """Get OCPP charger list and status."""
+        import re
+
+        chargers = []
+        all_states = self._hass.states.async_all()
+
+        # Detect OCPP chargers from the HACS OCPP integration entities
+        # The integration creates entities like:
+        #   sensor.<charger_id>_status, sensor.<charger_id>_current_power
+        #   switch.<charger_id>_availability, switch.<charger_id>_charge_control
+        charger_ids = set()
+        for state in all_states:
+            eid = state.entity_id
+            # Match OCPP integration entities (e.g. sensor.my_charger_status)
+            if re.match(r"(sensor|switch|number)\.\w+_(status|availability|charge_control|current_power|energy_meter)", eid, re.IGNORECASE):
+                # Check if this entity belongs to the OCPP integration
+                entity_reg = self._hass.helpers.entity_registry.async_get(self._hass) if hasattr(self._hass.helpers, 'entity_registry') else None
+                if entity_reg:
+                    entry = entity_reg.async_get(eid)
+                    if entry and entry.platform == "ocpp":
+                        # Extract charger ID prefix (everything before the last _suffix)
+                        parts = eid.split(".")[-1].rsplit("_", 1)
+                        if len(parts) >= 1:
+                            charger_ids.add(parts[0])
+
+        # Also check for OCPP chargers via the automation store
+        entry_data = self._hass.data.get(DOMAIN, {}).get(self._entry.entry_id, {})
+        ocpp_enabled = self._entry.options.get(
+            CONF_OCPP_ENABLED,
+            self._entry.data.get(CONF_OCPP_ENABLED, False)
+        )
+
+        # Build charger list from detected entities
+        for idx, cid in enumerate(sorted(charger_ids)):
+            status_entity = f"sensor.{cid}_status"
+            power_entity = f"sensor.{cid}_current_power"
+            energy_entity = f"sensor.{cid}_energy_meter"
+
+            status_state = self._hass.states.get(status_entity)
+            power_state = self._hass.states.get(power_entity)
+            energy_state = self._hass.states.get(energy_entity)
+
+            status = status_state.state if status_state and status_state.state not in ("unavailable", "unknown") else "Unavailable"
+            power_kw = 0.0
+            energy_kwh = 0.0
+
+            if power_state and power_state.state not in ("unavailable", "unknown"):
+                try:
+                    power_kw = float(power_state.state) / 1000  # W to kW
+                except (ValueError, TypeError):
+                    pass
+
+            if energy_state and energy_state.state not in ("unavailable", "unknown"):
+                try:
+                    energy_kwh = float(energy_state.state)
+                except (ValueError, TypeError):
+                    pass
+
+            is_connected = status.lower() not in ("unavailable", "disconnected", "")
+            is_charging = status.lower() in ("charging",)
+
+            chargers.append({
+                "id": idx + 1,
+                "user_id": 1,
+                "charger_id": cid,
+                "vendor": "",
+                "model": "",
+                "serial_number": "",
+                "firmware_version": "",
+                "is_connected": is_connected,
+                "status": status,
+                "current_power_kw": round(power_kw, 2),
+                "energy_kwh": round(energy_kwh, 2),
+            })
+
+        # If no chargers detected from entities but OCPP is enabled, show a placeholder
+        if not chargers and ocpp_enabled:
+            chargers.append({
+                "id": 1,
+                "user_id": 1,
+                "charger_id": "ocpp_charger",
+                "vendor": "",
+                "model": "OCPP Charger",
+                "serial_number": "",
+                "firmware_version": "",
+                "is_connected": False,
+                "status": "Waiting for connection",
+                "current_power_kw": 0,
+                "energy_kwh": 0,
+            })
+
+        return web.json_response({
+            "success": True,
+            "chargers": chargers,
+        })
+
+
 class EVWidgetDataView(HomeAssistantView):
     """API endpoint for EV widget data (home screen widgets).
 
@@ -18407,6 +18516,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.http.register_view(SurplusForecastView(hass))
     hass.http.register_view(ChargingBoostView(hass, entry))
     hass.http.register_view(EVWidgetDataView(hass, entry))
+    hass.http.register_view(OCPPChargersView(hass, entry))
     hass.http.register_view(PriceRecommendationView(hass, entry))
     hass.http.register_view(AutoScheduleSettingsView(hass, entry))
     hass.http.register_view(AutoScheduleStatusView(hass, entry))
