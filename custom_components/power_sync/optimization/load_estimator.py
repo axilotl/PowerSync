@@ -465,9 +465,11 @@ class LoadEstimator:
         pattern: dict[tuple[int, int, int], list[float]] = defaultdict(list)
 
         for timestamp, value in history:
-            dow = timestamp.weekday()
-            hour = timestamp.hour
-            half_hour = 0 if timestamp.minute < 30 else 1
+            # Convert UTC timestamps to local time for correct time-of-day matching
+            local_ts = dt_util.as_local(timestamp) if timestamp.tzinfo else timestamp
+            dow = local_ts.weekday()
+            hour = local_ts.hour
+            half_hour = 0 if local_ts.minute < 30 else 1
             key = (dow, hour, half_hour)
             pattern[key].append(value)
 
