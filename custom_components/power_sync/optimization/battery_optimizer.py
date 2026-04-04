@@ -712,12 +712,16 @@ class BatteryOptimizer:
             import_kw = grid_import[t]
             export_kw = grid_export[t]
 
-            # Update SOC
-            soc += (charge_kw * eff - discharge_kw / eff) * dt / cap
+            # Update SOC — override charge rate during free electricity
+            # so the SOC projection matches the forced max charge action
+            effective_charge_kw = charge_kw
+            if import_prices is not None and import_prices[t] <= 0.001 and soc < 0.99:
+                effective_charge_kw = max(charge_kw, self.max_charge_kw)
+            soc += (effective_charge_kw * eff - discharge_kw / eff) * dt / cap
             soc = max(self.backup_reserve, min(1.0, soc))
 
             # Determine action
-            if import_prices is not None and import_prices[t] <= 0.001 and soc < 0.99 and charge_kw > 0:
+            if import_prices is not None and import_prices[t] <= 0.001 and soc < 0.99 and (charge_kw > 0 or effective_charge_kw > 0):
                 # Free electricity and battery not full — always force charge
                 # to maximize free grid intake (don't oscillate with SC)
                 action = "charge"
