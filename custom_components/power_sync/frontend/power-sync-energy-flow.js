@@ -1096,7 +1096,9 @@
     const state = String(entityState.state || '').trim().toLowerCase();
     if (!state || ['unknown', 'unavailable', 'none', 'null'].includes(state)) return false;
     if (['on', 'home', 'present', 'true', 'occupied', 'detected'].includes(state)) return true;
-    if (['off', 'not_home', 'away', 'false', 'clear', 'idle'].includes(state)) return false;
+    // EV charging states that indicate vehicle is present (plugged in)
+    if (['charging', 'complete', 'connected', 'stopped', 'ready', 'waiting', 'paused', 'full'].includes(state)) return true;
+    if (['off', 'not_home', 'away', 'false', 'clear', 'idle', 'disconnected', 'no_vehicle', 'unplugged'].includes(state)) return false;
     const numeric = Number(state);
     if (Number.isFinite(numeric)) return numeric > 0;
     return true;

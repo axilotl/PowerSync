@@ -1011,14 +1011,34 @@ function _teslaStyleFlow(e, hass) {
     if (hass.states[evBattery]) {
       config.entities.ev_battery = evBattery;
     }
-    // Auto-detect BLE charge flap as EV presence (shows car even when idle)
-    for (const candidate of [
-      'binary_sensor.teslable_charge_flap',
-      'binary_sensor.tesla_ble_charge_flap',
-    ]) {
-      if (hass.states[candidate]) {
-        config.entities.ev_presence = candidate;
-        break;
+    // Auto-detect EV presence sensor (shows car even when idle/not charging)
+    // Searches: Tesla BLE charge flap, Teslemetry BT charging state,
+    // Tesla Fleet charge cable/charging state, Wallbox/Easee/OCPP status
+    if (!config.entities.ev_presence) {
+      const evPresenceCandidates = Object.keys(hass.states).filter(eid => {
+        // Tesla BLE charge flap (binary_sensor.*_charge_flap)
+        if (eid.startsWith('binary_sensor.') && eid.endsWith('_charge_flap')) return true;
+        // Tesla Fleet / Teslemetry charge cable (binary_sensor.*_charge_cable)
+        if (eid.startsWith('binary_sensor.') && eid.endsWith('_charge_cable')) return true;
+        // Wallbox connected sensor
+        if (eid.startsWith('binary_sensor.') && eid.includes('wallbox') && eid.includes('plugged')) return true;
+        // Easee cable locked (indicates plugged in)
+        if (eid.startsWith('binary_sensor.') && eid.includes('easee') && eid.includes('cable_locked')) return true;
+        return false;
+      });
+      if (evPresenceCandidates.length > 0) {
+        config.entities.ev_presence = evPresenceCandidates[0];
+      } else {
+        // Fallback: use any *_charging_state sensor as pseudo-presence
+        // States like "Charging", "Complete", "Connected", "Stopped" = present
+        // "Disconnected", "unknown", "unavailable" = absent
+        const chargingStateSensor = Object.keys(hass.states).find(eid =>
+          eid.startsWith('sensor.') && eid.endsWith('_charging_state') &&
+          !eid.includes('power_sync')
+        );
+        if (chargingStateSensor) {
+          config.entities.ev_presence = chargingStateSensor;
+        }
       }
     }
   }
