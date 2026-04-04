@@ -14343,6 +14343,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         if not tariff:
             _LOGGER.error("Failed to convert prices to Tesla tariff")
+            hass.async_create_task(_notify_api_error(hass, "TOU Sync Failed", "Could not convert prices to Tesla tariff format"))
             return
 
         # Apply Flow Power export rates and network tariff if configured
@@ -15744,7 +15745,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.services.async_register(DOMAIN, SERVICE_SYNC_TOU, handle_sync_tou)
     hass.services.async_register(DOMAIN, SERVICE_SYNC_NOW, handle_sync_now)
 
-    # ======================================================================
+    
+async def _notify_api_error(hass, title: str, message: str) -> None:
+    """Send push notification for API errors."""
+    try:
+        from .automations.actions import _send_expo_push
+        await _send_expo_push(hass, f"⚠️ {title}", message)
+    except Exception:
+        pass  # Don't let notification failures cascade
+
+
+# ======================================================================
     # FORCE DISCHARGE AND RESTORE NORMAL SERVICES
     # ======================================================================
 
@@ -16069,6 +16080,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             except Exception as e:
                 force_discharge_state["active"] = False
                 _LOGGER.error(f"Error in Sigenergy force discharge: {e}", exc_info=True)
+                hass.async_create_task(_notify_api_error(hass, "Force Discharge Failed", "Sigenergy Modbus communication error"))
                 return
 
         # Check if this is a FoxESS system
@@ -16117,6 +16129,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             except Exception as e:
                 force_discharge_state["active"] = False
                 _LOGGER.error(f"Error in FoxESS force discharge: {e}", exc_info=True)
+                hass.async_create_task(_notify_api_error(hass, "Force Discharge Failed", "FoxESS Modbus communication error"))
                 return
 
         # Check if this is a GoodWe system
@@ -16165,6 +16178,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             except Exception as e:
                 force_discharge_state["active"] = False
                 _LOGGER.error(f"Error in GoodWe force discharge: {e}", exc_info=True)
+                hass.async_create_task(_notify_api_error(hass, "Force Discharge Failed", "GoodWe communication error"))
                 return
 
         # Check if this is a Sungrow system
@@ -16214,6 +16228,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             except Exception as e:
                 force_discharge_state["active"] = False
                 _LOGGER.error(f"Error in Sungrow force discharge: {e}", exc_info=True)
+                hass.async_create_task(_notify_api_error(hass, "Force Discharge Failed", "Sungrow Modbus communication error"))
                 return
 
         try:
@@ -16447,6 +16462,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             else:
                 force_discharge_state["active"] = False
                 _LOGGER.error("Failed to upload discharge tariff to one or more gateways")
+                hass.async_create_task(_notify_api_error(hass, "Force Discharge Failed", "Could not upload discharge tariff to Tesla"))
 
         except Exception as e:
             force_discharge_state["active"] = False
@@ -16760,6 +16776,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             except Exception as e:
                 force_charge_state["active"] = False
                 _LOGGER.error(f"Error in Sigenergy force charge: {e}", exc_info=True)
+                hass.async_create_task(_notify_api_error(hass, "Force Charge Failed", "Sigenergy Modbus communication error"))
                 return
 
         # Check if this is a FoxESS system
@@ -16817,6 +16834,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             except Exception as e:
                 force_charge_state["active"] = False
                 _LOGGER.error(f"Error in FoxESS force charge: {e}", exc_info=True)
+                hass.async_create_task(_notify_api_error(hass, "Force Charge Failed", "FoxESS Modbus communication error"))
                 return
 
         # Check if this is a GoodWe system
@@ -16874,6 +16892,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             except Exception as e:
                 force_charge_state["active"] = False
                 _LOGGER.error(f"Error in GoodWe force charge: {e}", exc_info=True)
+                hass.async_create_task(_notify_api_error(hass, "Force Charge Failed", "GoodWe communication error"))
                 return
 
         # Check if this is a Sungrow system
@@ -16932,6 +16951,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             except Exception as e:
                 force_charge_state["active"] = False
                 _LOGGER.error(f"Error in Sungrow force charge: {e}", exc_info=True)
+                hass.async_create_task(_notify_api_error(hass, "Force Charge Failed", "Sungrow Modbus communication error"))
                 return
 
         try:
@@ -17151,6 +17171,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             else:
                 force_charge_state["active"] = False
                 _LOGGER.error("Failed to upload charge tariff to one or more gateways")
+                hass.async_create_task(_notify_api_error(hass, "Force Charge Failed", "Could not upload charge tariff to Tesla"))
 
         except Exception as e:
             force_charge_state["active"] = False
@@ -18171,6 +18192,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         else:
                             text = await response.text()
                             _LOGGER.error("Failed to set Tesla backup reserve for site %s: %s - %s", site_id, response.status, text)
+                            hass.async_create_task(_notify_api_error(hass, "Force Charge Failed", "Could not set backup reserve — Tesla API error"))
 
             except Exception as e:
                 _LOGGER.error(f"Error setting Tesla backup reserve: {e}", exc_info=True)
@@ -18239,6 +18261,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     else:
                         text = await response.text()
                         _LOGGER.error("Failed to set operation mode for site %s: %s - %s", site_id, response.status, text)
+                        hass.async_create_task(_notify_api_error(hass, "Mode Change Failed", "Could not change Tesla operation mode — API error"))
 
         except Exception as e:
             _LOGGER.error(f"Error setting operation mode: {e}", exc_info=True)
