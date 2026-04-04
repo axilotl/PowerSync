@@ -11586,6 +11586,15 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     return True
 
 
+async def _notify_api_error(hass, title: str, message: str) -> None:
+    """Send push notification for API errors."""
+    try:
+        from .automations.actions import _send_expo_push
+        await _send_expo_push(hass, f"⚠️ {title}", message)
+    except Exception:
+        pass  # Don't let notification failures cascade
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up PowerSync from a config entry."""
     _LOGGER.info("=" * 60)
@@ -15745,17 +15754,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.services.async_register(DOMAIN, SERVICE_SYNC_TOU, handle_sync_tou)
     hass.services.async_register(DOMAIN, SERVICE_SYNC_NOW, handle_sync_now)
 
-    
-async def _notify_api_error(hass, title: str, message: str) -> None:
-    """Send push notification for API errors."""
-    try:
-        from .automations.actions import _send_expo_push
-        await _send_expo_push(hass, f"⚠️ {title}", message)
-    except Exception:
-        pass  # Don't let notification failures cascade
-
-
-# ======================================================================
+    # ======================================================================
     # FORCE DISCHARGE AND RESTORE NORMAL SERVICES
     # ======================================================================
 
