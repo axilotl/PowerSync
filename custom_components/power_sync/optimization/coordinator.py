@@ -3503,6 +3503,9 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 from ..const import CONF_OPTIMIZATION_ENABLED
                 new_options = dict(self._entry.options)
                 new_options[CONF_OPTIMIZATION_ENABLED] = enabled
+                # Prevent reload from API-driven options update
+                from ..const import DOMAIN as _SKIP_DOM
+                self.hass.data.get(_SKIP_DOM, {}).get(self.entry_id, {})["_skip_reload"] = True
                 self.hass.config_entries.async_update_entry(self._entry, options=new_options)
 
         # Handle cost function
@@ -3515,6 +3518,9 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     from ..const import CONF_OPTIMIZATION_COST_FUNCTION
                     new_data = dict(self._entry.data)
                     new_data[CONF_OPTIMIZATION_COST_FUNCTION] = settings["cost_function"]
+                    # Prevent reload from API-driven options update
+                    from ..const import DOMAIN as _SKIP_DOM
+                    self.hass.data.get(_SKIP_DOM, {}).get(self.entry_id, {})["_skip_reload"] = True
                     self.hass.config_entries.async_update_entry(self._entry, data=new_data)
             except ValueError as e:
                 response["success"] = False
@@ -3557,6 +3563,9 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     new_options[CONF_OPTIMIZATION_MAX_CHARGE_W] = int(settings["max_charge_w"])
                 if "max_discharge_w" in settings:
                     new_options[CONF_OPTIMIZATION_MAX_DISCHARGE_W] = int(settings["max_discharge_w"])
+                # Prevent reload from API-driven options update
+                from ..const import DOMAIN as _SKIP_DOM
+                self.hass.data.get(_SKIP_DOM, {}).get(self.entry_id, {})["_skip_reload"] = True
                 self.hass.config_entries.async_update_entry(self._entry, options=new_options)
 
             # Mark as manual when user explicitly sets battery specs
@@ -3577,6 +3586,9 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 from ..const import CONF_HARDWARE_BACKUP_RESERVE
                 new_data = dict(self._entry.data)
                 new_data[CONF_HARDWARE_BACKUP_RESERVE] = hw_reserve
+                # Prevent reload from API-driven options update
+                from ..const import DOMAIN as _SKIP_DOM
+                self.hass.data.get(_SKIP_DOM, {}).get(self.entry_id, {})["_skip_reload"] = True
                 self.hass.config_entries.async_update_entry(self._entry, data=new_data)
             response["changes"].append(f"hardware_backup_reserve: {hw_int}%")
 
@@ -3588,6 +3600,9 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 from ..const import CONF_OPTIMIZATION_EV_INTEGRATION
                 new_options = dict(self._entry.options)
                 new_options[CONF_OPTIMIZATION_EV_INTEGRATION] = ev_enabled
+                # Prevent reload from API-driven options update
+                from ..const import DOMAIN as _SKIP_DOM
+                self.hass.data.get(_SKIP_DOM, {}).get(self.entry_id, {})["_skip_reload"] = True
                 self.hass.config_entries.async_update_entry(self._entry, options=new_options)
                 response["changes"].append(f"ev_integration: {ev_enabled}")
 
