@@ -19781,6 +19781,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     optimization_coordinator._optimizer.update_hardware_reserve(hw_reserve_int / 100)
                 _LOGGER.info(f"Hardware backup reserve set from config: {hw_reserve_int}%%")
 
+                # Set restore target on Sigenergy controller so restore_normal
+                # writes the correct backup reserve after force discharge
+                if sigenergy_coordinator and hasattr(sigenergy_coordinator, '_controller'):
+                    ctrl = sigenergy_coordinator._controller
+                    if hasattr(ctrl, '_restore_backup_reserve_pct'):
+                        ctrl._restore_backup_reserve_pct = hw_reserve_int
+                        _LOGGER.info("Sigenergy controller restore backup reserve set to %d%%", hw_reserve_int)
+
             # Wire saving session coordinator to optimizer for price overlay
             if saving_session_coordinator:
                 optimization_coordinator._saving_session_coordinator = saving_session_coordinator

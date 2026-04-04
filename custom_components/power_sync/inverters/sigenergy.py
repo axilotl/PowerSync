@@ -143,6 +143,7 @@ class SigenergyController(InverterController):
         self._original_pv_limit: Optional[int] = None  # Store original limit for restore
         self._use_inverter_registers: Optional[bool] = None  # None=unknown, True=inverter, False=plant
         self._configured_max_export_limit_kw = max_export_limit_kw
+        self._restore_backup_reserve_pct: Optional[int] = None  # Set by optimizer for restore_normal
         # For AC Charger setups: AC Charger is slave 1, inverter is slave 2
         # Use user-configured slave_id for inverter registers instead of hardcoded default
         # This allows users with AC Chargers to specify slave 2 and have it work correctly
@@ -1175,6 +1176,16 @@ class SigenergyController(InverterController):
 
             # 3. Restore ESS max limits to rated values
             await self._restore_ess_max_limits_to_rated()
+
+            # 4. Restore backup reserve if a target is set
+            # Sigenergy firmware may reset backup SOC when Remote EMS mode
+            # is toggled. Write it back to ensure the user's setting persists.
+            if self._restore_backup_reserve_pct is not None:
+                await self.set_backup_reserve(self._restore_backup_reserve_pct)
+                _LOGGER.info(
+                    "Sigenergy backup reserve restored to %d%%",
+                    self._restore_backup_reserve_pct,
+                )
 
             _LOGGER.info("Sigenergy restored to self-consumption (Remote EMS mode 2, export limit restored)")
             return True
