@@ -984,7 +984,7 @@ function _teslaStyleFlow(e, hass) {
     dynamic_background: true,
     language: 'en',
     grid_invert: false,
-    battery_invert: false,
+    battery_invert: true,
     ev_hide_when_idle: false,
     ev_min_w: 50,
     thresholds: { solar_min_w: 50, grid_min_w: 50, battery_min_w: 50 },
