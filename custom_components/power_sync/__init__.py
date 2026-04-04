@@ -16093,13 +16093,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     _LOGGER.error("Force discharge: FoxESS coordinator not available")
                     return
 
-                discharge_result = await foxess_coord.force_discharge(duration)
+                power_w = call.data.get("power_w", 0)
+                discharge_result = await foxess_coord.force_discharge(duration, power_w=power_w)
 
                 if discharge_result:
                     force_discharge_state["active"] = True
                     force_discharge_state["source"] = source
                     force_discharge_state["expires_at"] = dt_util.utcnow() + timedelta(minutes=duration)
-                    _LOGGER.info(f"FoxESS FORCE DISCHARGE ACTIVE for {duration} minutes")
+                    _LOGGER.info(f"FoxESS FORCE DISCHARGE ACTIVE for {duration} minutes (power_w={power_w})")
 
                     async_dispatcher_send(hass, f"{DOMAIN}_force_discharge_state", {
                         "active": True,
@@ -16142,13 +16143,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     _LOGGER.error("Force discharge: GoodWe coordinator not available")
                     return
 
-                discharge_result = await goodwe_coord.force_discharge(duration)
+                power_w = call.data.get("power_w", 0)
+                discharge_result = await goodwe_coord.force_discharge(duration, power_w=power_w)
 
                 if discharge_result:
                     force_discharge_state["active"] = True
                     force_discharge_state["source"] = source
                     force_discharge_state["expires_at"] = dt_util.utcnow() + timedelta(minutes=duration)
-                    _LOGGER.info(f"GoodWe FORCE DISCHARGE ACTIVE for {duration} minutes")
+                    _LOGGER.info(f"GoodWe FORCE DISCHARGE ACTIVE for {duration} minutes (power_w={power_w})")
 
                     async_dispatcher_send(hass, f"{DOMAIN}_force_discharge_state", {
                         "active": True,
@@ -16798,13 +16800,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     force_discharge_state["active"] = False
                     force_discharge_state["expires_at"] = None
 
-                charge_result = await foxess_coord.force_charge(duration)
+                power_w = call.data.get("power_w", 0)
+                charge_result = await foxess_coord.force_charge(duration, power_w=power_w)
 
                 if charge_result:
                     force_charge_state["active"] = True
                     force_charge_state["source"] = source
                     force_charge_state["expires_at"] = dt_util.utcnow() + timedelta(minutes=duration)
-                    _LOGGER.info(f"FoxESS FORCE CHARGE ACTIVE for {duration} minutes")
+                    _LOGGER.info(f"FoxESS FORCE CHARGE ACTIVE for {duration} minutes (power_w={power_w})")
 
                     async_dispatcher_send(hass, f"{DOMAIN}_force_charge_state", {
                         "active": True,
@@ -16856,13 +16859,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     force_discharge_state["active"] = False
                     force_discharge_state["expires_at"] = None
 
-                charge_result = await goodwe_coord.force_charge(duration)
+                power_w = call.data.get("power_w", 0)
+                charge_result = await goodwe_coord.force_charge(duration, power_w=power_w)
 
                 if charge_result:
                     force_charge_state["active"] = True
                     force_charge_state["source"] = source
                     force_charge_state["expires_at"] = dt_util.utcnow() + timedelta(minutes=duration)
-                    _LOGGER.info(f"GoodWe FORCE CHARGE ACTIVE for {duration} minutes")
+                    _LOGGER.info(f"GoodWe FORCE CHARGE ACTIVE for {duration} minutes (power_w={power_w})")
 
                     async_dispatcher_send(hass, f"{DOMAIN}_force_charge_state", {
                         "active": True,

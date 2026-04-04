@@ -915,6 +915,10 @@ async def _execute_single_action(
         return await _action_start_ev_charging_dynamic(hass, config_entry, params, context)
     elif action_type == "stop_ev_charging_dynamic":
         return await _action_stop_ev_charging_dynamic(hass, config_entry, params)
+    elif action_type == "enable_optimizer":
+        return await _action_enable_optimizer(hass, config_entry)
+    elif action_type == "disable_optimizer":
+        return await _action_disable_optimizer(hass, config_entry)
     else:
         _LOGGER.warning(f"Unknown action type: {action_type}")
         return False
@@ -1072,10 +1076,14 @@ async def _action_force_discharge(
     from ..const import DOMAIN, SERVICE_FORCE_DISCHARGE
 
     try:
+        service_data: Dict[str, Any] = {"duration": duration}
+        power_w = params.get("power_w")
+        if power_w is not None:
+            service_data["power_w"] = int(power_w)
         await hass.services.async_call(
             DOMAIN,
             SERVICE_FORCE_DISCHARGE,
-            {"duration": duration},
+            service_data,
             blocking=True,
         )
         return True
@@ -1117,15 +1125,72 @@ async def _action_force_charge(
     from ..const import DOMAIN, SERVICE_FORCE_CHARGE
 
     try:
+        service_data: Dict[str, Any] = {"duration": duration}
+        power_w = params.get("power_w")
+        if power_w is not None:
+            service_data["power_w"] = int(power_w)
         await hass.services.async_call(
             DOMAIN,
             SERVICE_FORCE_CHARGE,
-            {"duration": duration},
+            service_data,
             blocking=True,
         )
         return True
     except Exception as e:
         _LOGGER.error(f"Failed to activate force charge: {e}")
+        return False
+
+
+async def _action_enable_optimizer(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+) -> bool:
+    """Enable the LP optimizer via config entry options."""
+    from ..const import DOMAIN, CONF_OPTIMIZATION_ENABLED, CONF_OPTIMIZATION_PROVIDER, OPT_PROVIDER_POWERSYNC
+
+    try:
+        new_data = dict(config_entry.data)
+        new_options = dict(config_entry.options)
+        was_enabled = new_options.get(CONF_OPTIMIZATION_ENABLED, False)
+        if was_enabled:
+            _LOGGER.info("enable_optimizer: optimizer already enabled")
+            return True
+        new_data[CONF_OPTIMIZATION_PROVIDER] = OPT_PROVIDER_POWERSYNC
+        new_options[CONF_OPTIMIZATION_ENABLED] = True
+        hass.config_entries.async_update_entry(config_entry, data=new_data, options=new_options)
+        _LOGGER.info("Optimizer enabled via automation action")
+        return True
+    except Exception as e:
+        _LOGGER.error(f"Failed to enable optimizer: {e}")
+        return False
+
+
+async def _action_disable_optimizer(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+) -> bool:
+    """Disable the LP optimizer and restore normal battery operation."""
+    from ..const import DOMAIN, CONF_OPTIMIZATION_ENABLED, CONF_OPTIMIZATION_PROVIDER, OPT_PROVIDER_NATIVE, SERVICE_RESTORE_NORMAL
+
+    try:
+        new_data = dict(config_entry.data)
+        new_options = dict(config_entry.options)
+        was_enabled = new_options.get(CONF_OPTIMIZATION_ENABLED, True)
+        if not was_enabled:
+            _LOGGER.info("disable_optimizer: optimizer already disabled")
+            return True
+        new_data[CONF_OPTIMIZATION_PROVIDER] = OPT_PROVIDER_NATIVE
+        new_options[CONF_OPTIMIZATION_ENABLED] = False
+        hass.config_entries.async_update_entry(config_entry, data=new_data, options=new_options)
+        _LOGGER.info("Optimizer disabled via automation action")
+        # Restore normal battery operation so the battery isn't stuck in a forced mode
+        try:
+            await hass.services.async_call(DOMAIN, SERVICE_RESTORE_NORMAL, {}, blocking=True)
+        except Exception as restore_err:
+            _LOGGER.warning(f"disable_optimizer: restore_normal failed (non-fatal): {restore_err}")
+        return True
+    except Exception as e:
+        _LOGGER.error(f"Failed to disable optimizer: {e}")
         return False
 
 

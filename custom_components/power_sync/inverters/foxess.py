@@ -44,6 +44,10 @@ GAIN_ENERGY = 10        # kWh × 0.1 (energy totals)
 # Remote control re-send interval (seconds) — for future periodic resend if needed
 REMOTE_CONTROL_RESEND_INTERVAL = 480  # 8 minutes
 
+# Remote control enable bitfield values (register 46001 / 44000)
+REMOTE_CONTROL_AC = 0x0001        # Target inverter AC output
+REMOTE_CONTROL_GRID = 0x0009      # Target grid meter (CT) — auto-adjusts for load + PV
+
 
 class FoxESSModelFamily(Enum):
     """FoxESS inverter model families."""
@@ -790,8 +794,15 @@ class FoxESSController(InverterController):
         max_attempts = 2
         for attempt in range(1, max_attempts + 1):
             # Enable remote control
+            # H3-Pro/H3-Smart: use grid/CT target (0x0009) so the power setpoint
+            # targets the grid meter — the inverter auto-adjusts for PV and load.
+            # H1/H3/KH: use AC output target (0x0001) — untested with grid target.
             if reg.remote_enable:
-                await self._write_holding_register(reg.remote_enable, 1)
+                if self._model_family in (FoxESSModelFamily.H3_PRO, FoxESSModelFamily.H3_SMART):
+                    enable_val = REMOTE_CONTROL_GRID
+                else:
+                    enable_val = REMOTE_CONTROL_AC
+                await self._write_holding_register(reg.remote_enable, enable_val)
                 if reg.remote_timeout:
                     await self._write_holding_register(reg.remote_timeout, timeout_seconds)
 
@@ -818,7 +829,7 @@ class FoxESSController(InverterController):
             if reg.remote_enable:
                 await asyncio.sleep(0.5)
                 verify = await self._read_holding_registers(reg.remote_enable, 1)
-                if verify and verify[0] == 1:
+                if verify and verify[0] == enable_val:
                     _LOGGER.info(
                         "FoxESS %s activated for %d minutes (timeout %ds)%s",
                         label, duration_minutes, timeout_seconds,
