@@ -626,6 +626,19 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if self._battery_specs_source == "default":
                 await self._auto_detect_battery_specs()
 
+            # Skip optimization if battery specs haven't been configured
+            # Users must either let auto-detect succeed or set specs manually
+            if self._battery_specs_source == "default":
+                _LOGGER.warning(
+                    "Optimizer: battery specs not configured (using defaults: %.1f kWh, "
+                    "%.1f kW charge, %.1f kW discharge). Configure battery specs in the "
+                    "PowerSync app under Optimizer Settings before optimization can run.",
+                    self._config.battery_capacity_wh / 1000,
+                    self._config.max_charge_w / 1000,
+                    self._config.max_discharge_w / 1000,
+                )
+                return
+
             # Collect forecast data
             prices = await self._get_price_forecast()
             solar = await self._get_solar_forecast()
