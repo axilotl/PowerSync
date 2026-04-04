@@ -4018,6 +4018,258 @@ class SungrowSettingsView(HomeAssistantView):
             )
 
 
+class SigenergySettingsView(HomeAssistantView):
+    """HTTP view to get/set Sigenergy battery settings for mobile app Controls."""
+
+    url = "/api/power_sync/sigenergy_settings"
+    name = "api:power_sync:sigenergy_settings"
+    requires_auth = True
+
+    def __init__(self, hass: HomeAssistant):
+        """Initialize the view."""
+        self._hass = hass
+
+    async def get(self, request: web.Request) -> web.Response:
+        """Handle GET request for Sigenergy settings."""
+        _LOGGER.info("Sigenergy settings HTTP GET request")
+
+        entry = None
+        for config_entry in self._hass.config_entries.async_entries(DOMAIN):
+            entry = config_entry
+            break
+
+        if not entry:
+            return web.json_response(
+                {"success": False, "error": "PowerSync not configured"},
+                status=503
+            )
+
+        is_sigenergy = bool(entry.data.get(CONF_SIGENERGY_STATION_ID))
+        if not is_sigenergy:
+            return web.json_response(
+                {
+                    "success": False,
+                    "error": "Not a Sigenergy battery system",
+                    "reason": "not_sigenergy"
+                },
+                status=200
+            )
+
+        try:
+            entry_data = self._hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+            sigenergy_coordinator = entry_data.get("sigenergy_coordinator")
+
+            if not sigenergy_coordinator or not sigenergy_coordinator.data:
+                return web.json_response(
+                    {"success": False, "error": "Sigenergy data not available"},
+                    status=503
+                )
+
+            data = sigenergy_coordinator.data
+            controller = sigenergy_coordinator._controller
+
+            # Read current charge/discharge limits and backup reserve from Modbus
+            charge_limit_kw = None
+            discharge_limit_kw = None
+            backup_reserve = None
+            export_limit_kw = None
+
+            try:
+                if await controller.connect():
+                    # Read charge rate limit (U32, gain 1000, kW)
+                    charge_regs = await controller._read_holding_registers(
+                        controller.REG_ESS_MAX_CHARGE_LIMIT, 2
+                    )
+                    if charge_regs and len(charge_regs) >= 2:
+                        raw = controller._to_unsigned32(charge_regs[0], charge_regs[1])
+                        if 0 < raw < controller.EXPORT_LIMIT_UNLIMITED:
+                            charge_limit_kw = round(raw / controller.GAIN_POWER, 2)
+
+                    # Read discharge rate limit (U32, gain 1000, kW)
+                    discharge_regs = await controller._read_holding_registers(
+                        controller.REG_ESS_MAX_DISCHARGE_LIMIT, 2
+                    )
+                    if discharge_regs and len(discharge_regs) >= 2:
+                        raw = controller._to_unsigned32(discharge_regs[0], discharge_regs[1])
+                        if 0 < raw < controller.EXPORT_LIMIT_UNLIMITED:
+                            discharge_limit_kw = round(raw / controller.GAIN_POWER, 2)
+
+                    # Read backup reserve
+                    backup_reserve = await controller.get_backup_reserve()
+
+                    # Read grid export limit (U32, gain 1000, kW)
+                    export_regs = await controller._read_holding_registers(
+                        controller.REG_GRID_EXPORT_LIMIT, 2
+                    )
+                    if export_regs and len(export_regs) >= 2:
+                        raw = controller._to_unsigned32(export_regs[0], export_regs[1])
+                        if raw < controller.EXPORT_LIMIT_UNLIMITED:
+                            export_limit_kw = round(raw / controller.GAIN_POWER, 2)
+
+                    # Read EMS work mode (U16)
+                    ems_regs = await controller._read_input_registers(
+                        controller.REG_EMS_WORK_MODE, 1
+                    )
+                    ems_work_mode = ems_regs[0] if ems_regs else None
+            except Exception as reg_err:
+                _LOGGER.warning("Failed to read Sigenergy registers: %s", reg_err)
+
+            # Determine if curtailment is active
+            curtailment_state = entry_data.get("sigenergy_curtailment_state", "normal")
+
+            result = {
+                "success": True,
+                "battery_soc": data.get("battery_level"),
+                "battery_soh": data.get("battery_soh"),
+                "battery_power": data.get("battery_power"),
+                "solar_power": data.get("solar_power"),
+                "grid_power": data.get("grid_power"),
+                "load_power": data.get("load_power"),
+                "charge_rate_limit_kw": charge_limit_kw,
+                "discharge_rate_limit_kw": discharge_limit_kw,
+                "export_limit_kw": export_limit_kw,
+                "backup_reserve": backup_reserve,
+                "ems_work_mode": data.get("ems_work_mode"),
+                "solar_curtailment_enabled": curtailment_state == "curtailed",
+            }
+
+            _LOGGER.info(
+                "Sigenergy settings: SOC=%.1f%%, charge=%.1fkW, discharge=%.1fkW, backup=%s%%",
+                data.get("battery_level", 0),
+                charge_limit_kw if charge_limit_kw is not None else 0,
+                discharge_limit_kw if discharge_limit_kw is not None else 0,
+                backup_reserve if backup_reserve is not None else "?",
+            )
+            return web.json_response(result)
+
+        except Exception as e:
+            _LOGGER.error(f"Error fetching Sigenergy settings: {e}", exc_info=True)
+            return web.json_response(
+                {"success": False, "error": str(e)},
+                status=500
+            )
+
+    async def post(self, request: web.Request) -> web.Response:
+        """Handle POST request to update Sigenergy settings."""
+        _LOGGER.info("Sigenergy settings POST request")
+
+        entry = None
+        for config_entry in self._hass.config_entries.async_entries(DOMAIN):
+            entry = config_entry
+            break
+
+        if not entry:
+            return web.json_response(
+                {"success": False, "error": "PowerSync not configured"},
+                status=503
+            )
+
+        is_sigenergy = bool(entry.data.get(CONF_SIGENERGY_STATION_ID))
+        if not is_sigenergy:
+            return web.json_response(
+                {"success": False, "error": "Not a Sigenergy battery system"},
+                status=400
+            )
+
+        try:
+            body = await _parse_json_request(request)
+
+            entry_data = self._hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+            sigenergy_coordinator = entry_data.get("sigenergy_coordinator")
+
+            if not sigenergy_coordinator:
+                return web.json_response(
+                    {"success": False, "error": "Sigenergy coordinator not available"},
+                    status=503
+                )
+
+            controller = sigenergy_coordinator._controller
+            results = {}
+
+            if "backup_reserve" in body:
+                try:
+                    val = int(body["backup_reserve"])
+                    if not (0 <= val <= 100):
+                        return web.json_response(
+                            {"success": False, "error": "backup_reserve must be 0-100"},
+                            status=400
+                        )
+                    success = await controller.set_backup_reserve(val)
+                except (ValueError, TypeError):
+                    return web.json_response(
+                        {"success": False, "error": "Invalid backup_reserve value"},
+                        status=400
+                    )
+                results["backup_reserve"] = success
+
+            if "charge_rate_limit_kw" in body:
+                try:
+                    val = float(body["charge_rate_limit_kw"])
+                    if not (0.0 <= val <= 100.0):
+                        return web.json_response(
+                            {"success": False, "error": "charge_rate_limit_kw must be 0-100"},
+                            status=400
+                        )
+                    success = await controller.set_charge_rate_limit(val)
+                except (ValueError, TypeError):
+                    return web.json_response(
+                        {"success": False, "error": "Invalid charge_rate_limit_kw value"},
+                        status=400
+                    )
+                results["charge_rate_limit_kw"] = success
+
+            if "discharge_rate_limit_kw" in body:
+                try:
+                    val = float(body["discharge_rate_limit_kw"])
+                    if not (0.0 <= val <= 100.0):
+                        return web.json_response(
+                            {"success": False, "error": "discharge_rate_limit_kw must be 0-100"},
+                            status=400
+                        )
+                    success = await controller.set_discharge_rate_limit(val)
+                except (ValueError, TypeError):
+                    return web.json_response(
+                        {"success": False, "error": "Invalid discharge_rate_limit_kw value"},
+                        status=400
+                    )
+                results["discharge_rate_limit_kw"] = success
+
+            if "export_limit_kw" in body:
+                export_limit = body["export_limit_kw"]
+                if export_limit is None:
+                    success = await controller.restore_export_limit()
+                else:
+                    try:
+                        val = float(export_limit)
+                        if not (0.0 <= val <= 1000.0):
+                            return web.json_response(
+                                {"success": False, "error": "export_limit_kw must be 0-1000"},
+                                status=400
+                            )
+                        success = await controller.set_export_limit(val)
+                    except (ValueError, TypeError):
+                        return web.json_response(
+                            {"success": False, "error": "Invalid export_limit_kw value"},
+                            status=400
+                        )
+                results["export_limit_kw"] = success
+
+            # Trigger coordinator refresh to get updated values
+            await sigenergy_coordinator.async_request_refresh()
+
+            return web.json_response({
+                "success": True,
+                "results": results,
+            })
+
+        except Exception as e:
+            _LOGGER.error(f"Error updating Sigenergy settings: {e}", exc_info=True)
+            return web.json_response(
+                {"success": False, "error": str(e)},
+                status=500
+            )
+
+
 class FoxESSSettingsView(HomeAssistantView):
     """HTTP view to get/set FoxESS battery settings for mobile app Controls."""
 
@@ -9758,6 +10010,116 @@ class OCPPChargersView(HomeAssistantView):
             "success": True,
             "chargers": chargers,
         })
+
+
+class OCPPChargerStartView(HomeAssistantView):
+    """HTTP view to start charging on an OCPP charger."""
+
+    url = "/api/power_sync/ev/ocpp_chargers/start"
+    name = "api:power_sync:ev:ocpp_chargers:start"
+    requires_auth = True
+
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+        self._hass = hass
+        self._entry = entry
+
+    async def post(self, request: web.Request) -> web.Response:
+        """Start charging on an OCPP charger.
+
+        Body:
+            charger_id: The charger ID prefix (e.g. 'my_charger')
+        """
+        try:
+            data = await request.json()
+            charger_id = data.get("charger_id")
+            if not charger_id:
+                return web.json_response(
+                    {"success": False, "error": "charger_id is required"},
+                    status=400,
+                )
+
+            entity_id = f"switch.{charger_id}_charge_control"
+            state = self._hass.states.get(entity_id)
+            if state is None:
+                return web.json_response(
+                    {"success": False, "error": f"Entity {entity_id} not found"},
+                    status=404,
+                )
+
+            await self._hass.services.async_call(
+                "switch",
+                "turn_on",
+                {"entity_id": entity_id},
+                blocking=True,
+            )
+
+            _LOGGER.info("OCPP charger %s: start charging via %s", charger_id, entity_id)
+            return web.json_response({
+                "success": True,
+                "message": f"Charging started on {charger_id}",
+            })
+
+        except Exception as e:
+            _LOGGER.error("Error starting OCPP charger: %s", e, exc_info=True)
+            return web.json_response(
+                {"success": False, "error": str(e)},
+                status=500,
+            )
+
+
+class OCPPChargerStopView(HomeAssistantView):
+    """HTTP view to stop charging on an OCPP charger."""
+
+    url = "/api/power_sync/ev/ocpp_chargers/stop"
+    name = "api:power_sync:ev:ocpp_chargers:stop"
+    requires_auth = True
+
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+        self._hass = hass
+        self._entry = entry
+
+    async def post(self, request: web.Request) -> web.Response:
+        """Stop charging on an OCPP charger.
+
+        Body:
+            charger_id: The charger ID prefix (e.g. 'my_charger')
+        """
+        try:
+            data = await request.json()
+            charger_id = data.get("charger_id")
+            if not charger_id:
+                return web.json_response(
+                    {"success": False, "error": "charger_id is required"},
+                    status=400,
+                )
+
+            entity_id = f"switch.{charger_id}_charge_control"
+            state = self._hass.states.get(entity_id)
+            if state is None:
+                return web.json_response(
+                    {"success": False, "error": f"Entity {entity_id} not found"},
+                    status=404,
+                )
+
+            await self._hass.services.async_call(
+                "switch",
+                "turn_off",
+                {"entity_id": entity_id},
+                blocking=True,
+            )
+
+            _LOGGER.info("OCPP charger %s: stop charging via %s", charger_id, entity_id)
+            return web.json_response({
+                "success": True,
+                "message": f"Charging stopped on {charger_id}",
+            })
+
+        except Exception as e:
+            _LOGGER.error("Error stopping OCPP charger: %s", e, exc_info=True)
+            return web.json_response(
+                {"success": False, "error": str(e)},
+                status=500,
+            )
 
 
 class EVWidgetDataView(HomeAssistantView):
@@ -18359,6 +18721,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.http.register_view(SigenergyTariffView(hass))
     _LOGGER.info("📊 Sigenergy tariff HTTP endpoint registered at /api/power_sync/sigenergy_tariff")
 
+    # Register HTTP endpoint for Sigenergy settings (for mobile app Controls)
+    hass.http.register_view(SigenergySettingsView(hass))
+    _LOGGER.info("Sigenergy settings HTTP endpoint registered at /api/power_sync/sigenergy_settings")
+
     # Register HTTP endpoint for Sungrow settings (for mobile app Controls)
     hass.http.register_view(SungrowSettingsView(hass))
     _LOGGER.info("⚙️ Sungrow settings HTTP endpoint registered at /api/power_sync/sungrow_settings")
@@ -18517,6 +18883,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.http.register_view(ChargingBoostView(hass, entry))
     hass.http.register_view(EVWidgetDataView(hass, entry))
     hass.http.register_view(OCPPChargersView(hass, entry))
+    hass.http.register_view(OCPPChargerStartView(hass, entry))
+    hass.http.register_view(OCPPChargerStopView(hass, entry))
     hass.http.register_view(PriceRecommendationView(hass, entry))
     hass.http.register_view(AutoScheduleSettingsView(hass, entry))
     hass.http.register_view(AutoScheduleStatusView(hass, entry))
