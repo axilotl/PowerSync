@@ -101,6 +101,12 @@ from .const import (
     SENSOR_TYPE_AMBER_USAGE_YESTERDAY_SAVINGS,
     SENSOR_TYPE_AMBER_USAGE_MONTH_COST,
     SENSOR_TYPE_AMBER_USAGE_MONTH_SAVINGS,
+    SENSOR_TYPE_EV_POWER,
+    SENSOR_TYPE_EV_BATTERY_LEVEL,
+    SENSOR_TYPE_PV_DC_POWER,
+    SENSOR_TYPE_PV_AC_POWER,
+    CONF_EV_CHARGING_ENABLED,
+    CONF_BATTERY_SYSTEM,
     BATTERY_MODE_STATE_NORMAL,
     BATTERY_MODE_STATE_FORCE_CHARGE,
     BATTERY_MODE_STATE_FORCE_DISCHARGE,
@@ -467,6 +473,52 @@ DUAL_SUNGROW_SENSORS: tuple[PowerSyncSensorEntityDescription, ...] = (
     ),
 )
 
+EV_SENSORS: tuple[PowerSyncSensorEntityDescription, ...] = (
+    PowerSyncSensorEntityDescription(
+        key=SENSOR_TYPE_EV_POWER,
+        name="EV Power",
+        native_unit_of_measurement=UnitOfPower.KILO_WATT,
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=2,
+        icon="mdi:ev-station",
+        value_fn=lambda data: data.get("ev_power_kw") if data else None,
+    ),
+    PowerSyncSensorEntityDescription(
+        key=SENSOR_TYPE_EV_BATTERY_LEVEL,
+        name="EV Battery Level",
+        native_unit_of_measurement=PERCENTAGE,
+        device_class=SensorDeviceClass.BATTERY,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=0,
+        icon="mdi:car-electric",
+        value_fn=lambda data: data.get("ev_soc") if data else None,
+    ),
+)
+
+SIGENERGY_SENSORS: tuple[PowerSyncSensorEntityDescription, ...] = (
+    PowerSyncSensorEntityDescription(
+        key=SENSOR_TYPE_PV_DC_POWER,
+        name="PV DC Power",
+        native_unit_of_measurement=UnitOfPower.KILO_WATT,
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=3,
+        icon="mdi:solar-panel",
+        value_fn=lambda data: (data.get("solar_power", 0) - data.get("third_party_pv_power_kw", 0)) if data else None,
+    ),
+    PowerSyncSensorEntityDescription(
+        key=SENSOR_TYPE_PV_AC_POWER,
+        name="PV AC Power",
+        native_unit_of_measurement=UnitOfPower.KILO_WATT,
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=3,
+        icon="mdi:solar-panel-large",
+        value_fn=lambda data: data.get("third_party_pv_power_kw") if data else None,
+    ),
+)
+
 OPTIMIZER_ACTION_SENSORS: tuple[PowerSyncSensorEntityDescription, ...] = (
     PowerSyncSensorEntityDescription(
         key=SENSOR_TYPE_OPTIMIZATION_STATUS,
@@ -809,6 +861,42 @@ async def async_setup_entry(
                 )
             )
         _LOGGER.info("Dual Sungrow per-inverter SOC sensors added")
+
+    # Add Sigenergy-specific PV sensors (DC-coupled and AC-coupled/Smart Port)
+    if is_sigenergy and energy_coordinator:
+        for description in SIGENERGY_SENSORS:
+            entities.append(
+                TeslaEnergySensor(
+                    coordinator=energy_coordinator,
+                    description=description,
+                    entry=entry,
+                )
+            )
+        _LOGGER.info("Sigenergy PV sensors added (DC and AC-coupled)")
+
+    # Add EV sensors if EV charging is configured (Tesla, OCPP, or Zaptec)
+    ev_enabled = entry.options.get(
+        CONF_EV_CHARGING_ENABLED,
+        entry.data.get(CONF_EV_CHARGING_ENABLED, False),
+    )
+    ocpp_enabled = entry.options.get("ocpp_enabled", entry.data.get("ocpp_enabled", False))
+    zaptec_entity = entry.options.get(
+        "zaptec_charger_entity", entry.data.get("zaptec_charger_entity", "")
+    )
+    zaptec_standalone = entry.options.get(
+        "zaptec_standalone_enabled", entry.data.get("zaptec_standalone_enabled", False)
+    )
+    has_ev = ev_enabled or ocpp_enabled or bool(zaptec_entity) or zaptec_standalone
+    if has_ev:
+        for description in EV_SENSORS:
+            entities.append(
+                EVStatusSensor(
+                    hass=hass,
+                    entry=entry,
+                    description=description,
+                )
+            )
+        _LOGGER.info("EV sensors added (power and battery level)")
 
     # Add demand charge sensors if enabled and coordinator exists
     if demand_charge_coordinator and demand_charge_coordinator.enabled:
@@ -2979,6 +3067,108 @@ class BatteryHealthSensor(SensorEntity):
             attributes["state_of_health_percent"] = self._soh_percent
 
         return attributes
+
+
+class EVStatusSensor(SensorEntity):
+    """Polling sensor for EV charging power and SOC.
+
+    Reads EV data from Tesla vehicle sensors (Fleet API / BLE) and
+    Wall Connector data. Updates every 30 seconds.
+    """
+
+    entity_description: PowerSyncSensorEntityDescription
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: ConfigEntry,
+        description: PowerSyncSensorEntityDescription,
+    ) -> None:
+        """Initialize the sensor."""
+        self.hass = hass
+        self._entry = entry
+        self.entity_description = description
+        self._attr_unique_id = f"{entry.entry_id}_{description.key}"
+        self._attr_has_entity_name = True
+        self._attr_suggested_object_id = f"power_sync_{description.key}"
+        self._ev_data: dict | None = None
+        self._unsub_timer = None
+
+    @property
+    def device_info(self):
+        """Return device info to link to the PowerSync device."""
+        return {
+            "identifiers": {(DOMAIN, self._entry.entry_id)},
+        }
+
+    async def async_added_to_hass(self) -> None:
+        """Start polling when added to hass."""
+        await super().async_added_to_hass()
+        # Also listen to energy coordinator updates for faster refresh
+        entry_data = self.hass.data.get(DOMAIN, {}).get(self._entry.entry_id, {})
+        tesla_coordinator = entry_data.get("tesla_coordinator")
+        if tesla_coordinator:
+            self._unsub_coordinator = tesla_coordinator.async_add_listener(
+                self._handle_coordinator_update
+            )
+        else:
+            self._unsub_coordinator = None
+        # Poll on a 30s timer for non-Tesla sources
+        self._unsub_timer = async_track_time_interval(
+            self.hass, self._async_update_ev, timedelta(seconds=30)
+        )
+        # Initial fetch
+        await self._async_update_ev()
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Stop polling when removed."""
+        if self._unsub_timer:
+            self._unsub_timer()
+        if hasattr(self, '_unsub_coordinator') and self._unsub_coordinator:
+            self._unsub_coordinator()
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Handle energy coordinator update — refresh EV data from Tesla coordinator."""
+        entry_data = self.hass.data.get(DOMAIN, {}).get(self._entry.entry_id, {})
+        tesla_coordinator = entry_data.get("tesla_coordinator")
+        if tesla_coordinator and tesla_coordinator.data:
+            coord_data = tesla_coordinator.data
+            ev_power = coord_data.get("ev_power", 0)
+            # Merge coordinator data with polled data
+            if self._ev_data is None:
+                self._ev_data = {}
+            if ev_power > 0 or self._ev_data.get("ev_power_kw", 0) <= 0:
+                self._ev_data["ev_power_kw"] = ev_power
+        self.async_write_ha_state()
+
+    async def _async_update_ev(self, _now=None) -> None:
+        """Poll EV status from vehicle sensors."""
+        from . import _get_ev_vehicle_status
+        try:
+            self._ev_data = _get_ev_vehicle_status(self.hass, self._entry)
+            # Supplement with Tesla coordinator Wall Connector data
+            entry_data = self.hass.data.get(DOMAIN, {}).get(self._entry.entry_id, {})
+            tesla_coordinator = entry_data.get("tesla_coordinator")
+            if tesla_coordinator and tesla_coordinator.data:
+                wc_power = tesla_coordinator.data.get("ev_power", 0)
+                if wc_power > 0 and self._ev_data.get("ev_power_kw", 0) <= 0:
+                    self._ev_data["ev_power_kw"] = wc_power
+        except Exception:
+            _LOGGER.debug("Error polling EV status", exc_info=True)
+        self.async_write_ha_state()
+
+    @property
+    def native_value(self) -> Any:
+        """Return the state of the sensor."""
+        if self.entity_description.value_fn:
+            return self.entity_description.value_fn(self._ev_data)
+        return None
+
+    @property
+    def available(self) -> bool:
+        """Return True if sensor data is available."""
+        return self._ev_data is not None
 
 
 class BatteryModeSensor(SensorEntity):

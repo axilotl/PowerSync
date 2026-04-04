@@ -1412,6 +1412,12 @@ CONF_ZAPTEC_INSTALLATION_ID_CLOUD = "zaptec_installation_id_cloud"  # API instal
 # EV sensor types
 SENSOR_TYPE_EV_CHARGING_STATUS = "ev_charging_status"
 SENSOR_TYPE_EV_NEXT_CHARGE_WINDOW = "ev_next_charge_window"
+SENSOR_TYPE_EV_POWER = "ev_power"
+SENSOR_TYPE_EV_BATTERY_LEVEL = "ev_battery_level"
+
+# Sigenergy-specific PV sensor types
+SENSOR_TYPE_PV_DC_POWER = "pv_dc_power"
+SENSOR_TYPE_PV_AC_POWER = "pv_ac_power"
 
 # Amber Usage API sensors (actual metered cost data)
 SENSOR_TYPE_AMBER_USAGE_YESTERDAY_COST = "amber_usage_yesterday_cost"
