@@ -460,8 +460,8 @@ class PowerSyncStrategy {
     // and let HA show "custom element not found" if truly missing.
     const requiredCards = [
       { element: 'button-card', name: 'button-card', hacs: 'button-card' },
-      { element: 'apexcharts-card', name: 'apexcharts-card', hacs: 'apexcharts-card' },
-      { element: 'power-flow-card-plus', name: 'power-flow-card-plus', hacs: 'power-flow-card-plus' },
+      { element: 'apexcharts-card', name: 'apexcharts-card', hacs: 'apexcharts-card', optional: true },
+      { element: 'power-flow-card-plus', name: 'power-flow-card-plus', hacs: 'power-flow-card-plus', optional: true },
     ];
 
     // Check if resource is registered in Lovelace (works even before element loads)
@@ -486,8 +486,8 @@ class PowerSyncStrategy {
     }
 
     const missing = requiredCards.filter(c => !loaded[c.element] && !c.optional);
-    // Always generate cards — HA handles missing custom elements gracefully
-    const hasApex = true;
+    // Use detected state for optional cards; always generate required cards
+    const hasApex = loaded['apexcharts-card'] || false;
     const hasButton = true;
     const hasFlowCard = true;
     // Built-in energy flow card is always available (power-sync-energy-flow.js)
