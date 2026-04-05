@@ -586,6 +586,11 @@ def _get_ev_vehicles_status(hass, entry) -> list:
                 if state.state.lower() in connected_states:
                     is_connected = True
 
+            # Check charge_cable / charge_flap binary sensors
+            if entity.domain == "binary_sensor" and ("charge_cable" in eid or "charge_flap" in eid):
+                if state.state == "on":
+                    is_connected = True
+
             if not entity.entity_id.startswith("sensor."):
                 continue
 
@@ -10323,12 +10328,30 @@ class EVWidgetDataView(HomeAssistantView):
 
                 vehicle_name = params.get("vehicle_name", vehicle_id[:8] if len(vehicle_id) > 8 else vehicle_id)
 
-                # Determine connected status from actual charging or WC data,
-                # not just session activity (session stays active when car drives away)
+                # Determine connected status from actual charging, WC data,
+                # or charge_cable/charge_flap binary sensors
                 is_connected = actually_charging
                 if not is_connected and actual_ev_power_kw is not None:
                     # Tesla WC: check if wall connector reports a vehicle
                     is_connected = actual_ev_power_kw > 0.05
+                if not is_connected:
+                    # Check Tesla WC state from coordinator (state 4 = connected)
+                    if tesla_coordinator and tesla_coordinator.data:
+                        wc_data = tesla_coordinator.data.get("wall_connectors_raw")
+                        if isinstance(wc_data, list):
+                            for wc in wc_data:
+                                if wc.get("wall_connector_state") in (2, 4, 6, 7, 11):
+                                    is_connected = True
+                                    break
+                if not is_connected:
+                    # Check charge_cable / charge_flap binary sensors
+                    for pattern in ("charge_cable", "charge_flap"):
+                        for state_obj in self._hass.states.async_all("binary_sensor"):
+                            if pattern in state_obj.entity_id and state_obj.state == "on":
+                                is_connected = True
+                                break
+                        if is_connected:
+                            break
                 if not is_connected:
                     # Check HA wall_connector vehicle sensors
                     for wc_state in self._hass.states.async_all("sensor"):
@@ -10421,35 +10444,34 @@ class EVWidgetDataView(HomeAssistantView):
                         "is_charging": True,
                     }]
 
-            # Only add if no other source already covers this charging
-            # Check for any connected/active vehicle (not just ones with power > 0)
-            # to avoid duplicates when a dynamic session is at 0A (starting/paused)
-            already_covered = any(
-                w.get("is_connected") or (w["is_charging"] and w["current_power_kw"] > 0)
-                for w in widget_data
-            )
-            if not already_covered:
-                for tv in tesla_vehicles:
-                    tv_power_kw = tv["ev_power_kw"]
-                    tv_soc = tv["ev_soc"]
-                    if tv_power_kw > 0.05:
-                        if surplus_kw >= tv_power_kw * 0.8:
-                            tv_source = "solar"
-                        else:
-                            tv_source = "grid"
+            # Add Tesla vehicles that are connected or charging
+            # Skip vehicles already represented in widget_data (by name) to avoid duplicates
+            existing_names = {w["vehicle_name"].lower() for w in widget_data}
+            for tv in tesla_vehicles:
+                if tv["vehicle_name"].lower() in existing_names:
+                    continue
+                if not tv["is_connected"] and not tv["is_charging"]:
+                    continue  # Skip vehicles not plugged in
+                tv_power_kw = tv["ev_power_kw"]
+                tv_soc = tv["ev_soc"]
+                if tv_power_kw > 0.05:
+                    if surplus_kw >= tv_power_kw * 0.8:
+                        tv_source = "solar"
                     else:
-                        tv_source = "idle"
-                    widget_data.append({
-                        "vehicle_name": tv["vehicle_name"],
-                        "is_charging": tv["is_charging"],
-                        "is_connected": tv["is_connected"],
-                        "current_soc": tv_soc if tv_soc is not None else 0,
-                        "target_soc": 80,
-                        "current_power_kw": round(tv_power_kw, 2),
-                        "source": tv_source,
-                        "eta_minutes": None,
-                        "surplus_kw": round(surplus_kw, 2),
-                    })
+                        tv_source = "grid"
+                else:
+                    tv_source = "idle"
+                widget_data.append({
+                    "vehicle_name": tv["vehicle_name"],
+                    "is_charging": tv["is_charging"],
+                    "is_connected": tv["is_connected"],
+                    "current_soc": tv_soc if tv_soc is not None else 0,
+                    "target_soc": 80,
+                    "current_power_kw": round(tv_power_kw, 2),
+                    "source": tv_source,
+                    "eta_minutes": None,
+                    "surplus_kw": round(surplus_kw, 2),
+                })
 
             # Check BYD vehicles
             if BYD_INTEGRATION in self._hass.config_entries.async_domains():
