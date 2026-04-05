@@ -11581,11 +11581,15 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     # resource before lovelace has loaded can wipe the entire resources list)
     from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
 
-    async def _on_ha_started(event):
+    async def _on_ha_started(event=None):
         await _ensure_lovelace_resource(hass)
         await _ensure_powersync_dashboard(hass)
 
-    hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _on_ha_started)
+    if hass.is_running:
+        # HA already started (integration reloaded or late setup) — run now
+        hass.async_create_task(_on_ha_started())
+    else:
+        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _on_ha_started)
 
     return True
 
