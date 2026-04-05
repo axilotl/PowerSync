@@ -150,6 +150,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         # Cached forecast data (populated each optimization run)
         self._last_solar_forecast: list[float] | None = None    # kW values
+        self._has_solar_forecast: bool = False  # True if real Solcast data, False if zeros
         self._last_load_forecast: list[float] | None = None     # kW values
         self._last_import_prices: list[float] | None = None     # $/kWh values (LP-adjusted)
         self._last_export_prices: list[float] | None = None     # $/kWh values (LP-adjusted)
@@ -752,6 +753,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._last_update_time = dt_util.now()
 
             # Store forecast data for LP forecast sensors
+            self._has_solar_forecast = solar_forecast is not None and any(v > 0 for v in (solar_forecast or []))
             self._last_solar_forecast = solar_forecast
             self._last_load_forecast = load_forecast
             self._last_import_prices = import_prices
@@ -2642,6 +2644,17 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         return (import_prices, export_prices)
 
+    def _get_warnings(self) -> list[dict[str, str]]:
+        """Get active warnings for the optimizer."""
+        warnings = []
+        if not self._has_solar_forecast:
+            warnings.append({
+                "type": "no_solar_forecast",
+                "title": "No Solar Forecast",
+                "message": "Solcast Solar is not configured. The optimizer is making decisions based on price only, without knowing when solar will be available. Install the Solcast Solar integration for optimal scheduling.",
+            })
+        return warnings
+
     async def _get_solar_forecast(self) -> list[float] | None:
         """Get solar forecast for optimizer."""
         if self._solar_forecaster:
@@ -3334,6 +3347,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "vpp_enabled": False,
                 "built_in_optimizer": True,
             },
+            "warnings": self._get_warnings(),
         }
 
         # Add daily cost breakdown (actual + predicted remaining)
