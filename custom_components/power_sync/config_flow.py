@@ -1637,7 +1637,7 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         data_schema=vol.Schema({
                             vol.Required(CONF_TESLA_API_PROVIDER, default=TESLA_PROVIDER_TESLEMETRY): vol.In({
                                 TESLA_PROVIDER_FLEET_API: "Tesla Fleet API (Free - uses existing Tesla Fleet integration)",
-                                TESLA_PROVIDER_TESLEMETRY: "Teslemetry (~$4/month - proxy service)",
+                                TESLA_PROVIDER_TESLEMETRY: "Teslemetry (~$4/month - easier setup, recommended)",
                             }),
                         }),
                         errors=errors,
@@ -1647,13 +1647,13 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 _LOGGER.info("User selected Teslemetry")
                 return await self.async_step_teslemetry()
 
-        # Show provider selection form
+        # Show provider selection form — default to Teslemetry (recommended/easier)
         return self.async_show_form(
             step_id="tesla_provider",
             data_schema=vol.Schema({
-                vol.Required(CONF_TESLA_API_PROVIDER, default=TESLA_PROVIDER_FLEET_API): vol.In({
+                vol.Required(CONF_TESLA_API_PROVIDER, default=TESLA_PROVIDER_TESLEMETRY): vol.In({
                     TESLA_PROVIDER_FLEET_API: "Tesla Fleet API (Free - uses existing Tesla Fleet integration)",
-                    TESLA_PROVIDER_TESLEMETRY: "Teslemetry (~$4/month - proxy service)",
+                    TESLA_PROVIDER_TESLEMETRY: "Teslemetry (~$4/month - easier setup, recommended)",
                 }),
             }),
             description_placeholders={
