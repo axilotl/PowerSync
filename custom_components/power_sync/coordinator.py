@@ -3830,6 +3830,46 @@ class SolcastForecastCoordinator(DataUpdateCoordinator):
         except Exception:
             return None
 
+    def _restore_from_ha_state(self) -> dict[str, Any] | None:
+        """Restore forecast from HA's last known sensor state.
+
+        HA restores entity states from the recorder on startup, so even after
+        a restart the sensor's previous value is available in hass.states.
+        This is the last-resort fallback when both in-memory cache and
+        persistent storage are empty (e.g. first deploy of caching feature).
+        """
+        try:
+            # Try multiple possible entity IDs for the solar forecast sensor
+            for entity_id in [
+                "sensor.power_sync_solcast_today_forecast",
+                "sensor.power_sync_solar_forecast_today",
+            ]:
+                state = self.hass.states.get(entity_id)
+                if state and state.state not in ("unavailable", "unknown", None, "", "0", "0.0"):
+                    today_kwh = float(state.state)
+                    if today_kwh > 0:
+                        _LOGGER.info(
+                            f"Restored solar forecast from HA state: "
+                            f"{entity_id}={today_kwh:.1f}kWh"
+                        )
+                        return {
+                            "available": True,
+                            "today_forecast_kwh": today_kwh,
+                            "today_remaining_kwh": 0,
+                            "today_total_kwh": today_kwh,
+                            "tomorrow_total_kwh": 0,
+                            "today_peak_kw": None,
+                            "tomorrow_peak_kw": None,
+                            "current_estimate_kw": None,
+                            "forecasts": None,
+                            "forecast_periods": 0,
+                            "last_update": dt_util.utcnow(),
+                            "source": "ha_state_restored",
+                        }
+        except (ValueError, TypeError):
+            pass
+        return None
+
     def _can_make_api_call(self) -> bool:
         """Check if we can make another API call without exceeding the daily limit."""
         today_str = dt_util.now().strftime("%Y-%m-%d")
@@ -3918,6 +3958,14 @@ class SolcastForecastCoordinator(DataUpdateCoordinator):
                     f"API calls today: {self._api_calls_today}/{self.DAILY_API_LIMIT}"
                 )
                 return restored
+            # Last resort: read last known sensor state from HA
+            restored = self._restore_from_ha_state()
+            if restored:
+                _LOGGER.info(
+                    f"Solcast API rate limited - restored forecast from HA sensor state. "
+                    f"API calls today: {self._api_calls_today}/{self.DAILY_API_LIMIT}"
+                )
+                return restored
             _LOGGER.warning(
                 f"Solcast API rate limited and no cached forecast available. "
                 f"API calls today: {self._api_calls_today}/{self.DAILY_API_LIMIT}"
@@ -3939,6 +3987,9 @@ class SolcastForecastCoordinator(DataUpdateCoordinator):
             restored = await self._restore_forecast_cache()
             if restored:
                 return restored
+            restored = self._restore_from_ha_state()
+            if restored:
+                return restored
             return self.data or {"available": False}
 
         try:
@@ -3953,7 +4004,19 @@ class SolcastForecastCoordinator(DataUpdateCoordinator):
                 forecasts = await self._fetch_forecast_for_resource(self._resource_ids[0])
                 if not forecasts:
                     _LOGGER.warning("No forecasts from Solcast API")
-                    return self.data or {"available": False}
+                    if self.data and self.data.get("today_forecast_kwh", 0) > 0:
+                        return self.data
+                    # Try persistent cache (survives restarts)
+                    restored = await self._restore_forecast_cache()
+                    if restored:
+                        _LOGGER.info("Restored solar forecast from persistent cache after API failure")
+                        return restored
+                    # Last resort: read last known sensor state from HA
+                    restored = self._restore_from_ha_state()
+                    if restored:
+                        _LOGGER.info("Restored solar forecast from HA sensor state after API failure")
+                        return restored
+                    return {"available": False}
 
                 # NOTE: We intentionally skip estimated_actuals to save API calls
                 # With 10 calls/day limit and split arrays, we need to conserve budget
