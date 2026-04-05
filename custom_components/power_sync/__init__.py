@@ -11471,12 +11471,20 @@ async def _ensure_lovelace_resource(hass: HomeAssistant) -> None:
             existing = [r for r in all_items if base_path in r.get("url", "")]
 
             if existing:
+                # Update the first match, remove any duplicates
+                updated_first = False
                 for r in existing:
-                    if r.get("url") != url:
-                        await res_collection.async_update_item(r["id"], {"url": url})
-                        _LOGGER.info("PowerSync resource updated (cache-bust): %s", base_path)
+                    if not updated_first:
+                        if r.get("url") != url:
+                            await res_collection.async_update_item(r["id"], {"url": url})
+                            _LOGGER.info("PowerSync resource updated (cache-bust): %s", base_path)
+                        else:
+                            _LOGGER.debug("PowerSync resource already current: %s", base_path)
+                        updated_first = True
                     else:
-                        _LOGGER.debug("PowerSync resource already current: %s", base_path)
+                        # Remove duplicate entry
+                        await res_collection.async_delete_item(r["id"])
+                        _LOGGER.info("PowerSync removed duplicate resource: %s", r.get("url"))
             else:
                 await res_collection.async_create_item({
                     "res_type": "module",

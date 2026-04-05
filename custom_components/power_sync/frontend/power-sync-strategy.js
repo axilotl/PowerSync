@@ -1657,4 +1657,6 @@ function _flowPower(e) {
 
 // ─── Registration ────────────────────────────────────────────
 
-customElements.define('ll-strategy-dashboard-power-sync-strategy', PowerSyncStrategy);
+if (!customElements.get('ll-strategy-dashboard-power-sync-strategy')) {
+  customElements.define('ll-strategy-dashboard-power-sync-strategy', PowerSyncStrategy);
+}
