@@ -3473,6 +3473,7 @@ class SolcastForecastCoordinator(DataUpdateCoordinator):
         self._api_calls_today = 0
         self._api_calls_date: str | None = None
         self._rate_limit_store = Store(hass, 1, f"{DOMAIN}_solcast_rate_limit")
+        self._forecast_store = Store(hass, 1, f"{DOMAIN}_solcast_forecast_cache")
 
         # Calculate update interval based on number of resources
         # Each resource requires 1 API call per update
@@ -3784,6 +3785,59 @@ class SolcastForecastCoordinator(DataUpdateCoordinator):
         except Exception:
             pass
 
+    async def _save_forecast_cache(self, data: dict[str, Any]) -> None:
+        """Persist last good forecast data to survive restarts."""
+        try:
+            # Store the computed result (not raw forecasts — those are too large)
+            cache = {
+                "date": dt_util.now().strftime("%Y-%m-%d"),
+                "today_forecast_kwh": data.get("today_forecast_kwh"),
+                "today_remaining_kwh": data.get("today_remaining_kwh"),
+                "today_total_kwh": data.get("today_total_kwh"),
+                "tomorrow_total_kwh": data.get("tomorrow_total_kwh"),
+                "today_peak_kw": data.get("today_peak_kw"),
+                "tomorrow_peak_kw": data.get("tomorrow_peak_kw"),
+                "source": data.get("source"),
+            }
+            await self._forecast_store.async_save(cache)
+        except Exception:
+            pass
+
+    async def _restore_forecast_cache(self) -> dict[str, Any] | None:
+        """Restore last good forecast data from persistent storage."""
+        try:
+            cache = await self._forecast_store.async_load()
+            if cache and cache.get("date") == dt_util.now().strftime("%Y-%m-%d"):
+                _LOGGER.info(
+                    f"Restored cached solar forecast: "
+                    f"today={cache.get('today_forecast_kwh')}kWh"
+                )
+                return {
+                    "available": True,
+                    "today_forecast_kwh": cache.get("today_forecast_kwh", 0),
+                    "today_remaining_kwh": cache.get("today_remaining_kwh", 0),
+                    "today_total_kwh": cache.get("today_total_kwh", 0),
+                    "tomorrow_total_kwh": cache.get("tomorrow_total_kwh", 0),
+                    "today_peak_kw": cache.get("today_peak_kw"),
+                    "tomorrow_peak_kw": cache.get("tomorrow_peak_kw"),
+                    "current_estimate_kw": None,
+                    "forecasts": None,
+                    "forecast_periods": 0,
+                    "last_update": dt_util.utcnow(),
+                    "source": f"{cache.get('source', 'cache')}_restored",
+                }
+            return None
+        except Exception:
+            return None
+
+    def _can_make_api_call(self) -> bool:
+        """Check if we can make another API call without exceeding the daily limit."""
+        today_str = dt_util.now().strftime("%Y-%m-%d")
+        if self._api_calls_date != today_str:
+            # New day — would be reset in _track_api_call
+            return True
+        return self._api_calls_today < self.DAILY_API_LIMIT
+
     def _track_api_call(self) -> None:
         """Track API call for rate limit awareness."""
         today_str = dt_util.now().strftime("%Y-%m-%d")
@@ -3794,6 +3848,13 @@ class SolcastForecastCoordinator(DataUpdateCoordinator):
             self._rate_limited = False
 
         self._api_calls_today += 1
+
+        if self._api_calls_today >= self.DAILY_API_LIMIT:
+            self._rate_limited = True
+            _LOGGER.warning(
+                f"Solcast API daily limit reached ({self._api_calls_today}/{self.DAILY_API_LIMIT}). "
+                f"Using cached data until tomorrow."
+            )
 
         # Persist to survive restarts
         self.hass.async_create_task(
@@ -3825,17 +3886,38 @@ class SolcastForecastCoordinator(DataUpdateCoordinator):
         # This avoids doubling API calls if user has both integrations
         solcast_data = await self._try_read_from_solcast_integration()
         if solcast_data:
+            # Guard: if the integration reports 0 but we have cached non-zero data,
+            # the integration is likely rate-limited — use cached data instead.
+            # Today's total forecast should never drop to 0 mid-day.
+            new_kwh = solcast_data.get("today_forecast_kwh", 0)
+            cached_kwh = self.data.get("today_forecast_kwh", 0) if self.data else 0
+            if new_kwh == 0 and cached_kwh > 0:
+                _LOGGER.info(
+                    f"Solcast HA integration reported 0kWh but cached forecast is "
+                    f"{cached_kwh:.1f}kWh — likely rate-limited, using cached data"
+                )
+                return self.data
             _LOGGER.debug("Using data from Solcast HA integration (no API calls needed)")
+            # Persist good data so it survives restarts
+            self.hass.async_create_task(self._save_forecast_cache(solcast_data))
             return solcast_data
 
         # Check if we're rate limited — use cached forecast data
         if self._rate_limited:
-            if self.data and self.data.get("forecasts"):
+            if self.data and self.data.get("today_forecast_kwh", 0) > 0:
                 _LOGGER.debug(
                     f"Solcast API rate limited - using cached forecast data. "
                     f"API calls today: {self._api_calls_today}/{self.DAILY_API_LIMIT}"
                 )
                 return self.data
+            # No in-memory cache — try persistent storage (survives restarts)
+            restored = await self._restore_forecast_cache()
+            if restored:
+                _LOGGER.info(
+                    f"Solcast API rate limited - restored forecast from storage. "
+                    f"API calls today: {self._api_calls_today}/{self.DAILY_API_LIMIT}"
+                )
+                return restored
             _LOGGER.warning(
                 f"Solcast API rate limited and no cached forecast available. "
                 f"API calls today: {self._api_calls_today}/{self.DAILY_API_LIMIT}"
@@ -3843,10 +3925,24 @@ class SolcastForecastCoordinator(DataUpdateCoordinator):
             return self.data or {"available": False}
 
         # Solcast integration not available - make our own API calls
+        # Hard guard: refuse to make API calls if daily limit already reached
+        n_resources = len(self._resource_ids)
+        if self._api_calls_today + n_resources > self.DAILY_API_LIMIT:
+            _LOGGER.warning(
+                f"Solcast API: skipping fetch — would exceed daily limit "
+                f"({self._api_calls_today} + {n_resources} > {self.DAILY_API_LIMIT}). "
+                f"Using cached data."
+            )
+            self._rate_limited = True
+            if self.data and self.data.get("today_forecast_kwh", 0) > 0:
+                return self.data
+            restored = await self._restore_forecast_cache()
+            if restored:
+                return restored
+            return self.data or {"available": False}
+
         try:
             async with asyncio.timeout(60):  # Longer timeout for multiple API calls
-                # Track that we're making API calls
-                n_resources = len(self._resource_ids)
                 _LOGGER.info(
                     f"Fetching Solcast forecast for {n_resources} resource(s). "
                     f"API calls today: {self._api_calls_today}/{self.DAILY_API_LIMIT}"
@@ -3867,6 +3963,11 @@ class SolcastForecastCoordinator(DataUpdateCoordinator):
                 # If multiple resources, fetch and combine
                 if len(self._resource_ids) > 1:
                     for resource_id in self._resource_ids[1:]:
+                        if not self._can_make_api_call():
+                            _LOGGER.warning(
+                                f"Solcast API daily limit reached — skipping resource {resource_id[:8]}..."
+                            )
+                            break
                         self._track_api_call()
                         additional_forecasts = await self._fetch_forecast_for_resource(resource_id)
                         if additional_forecasts:
@@ -3968,7 +4069,7 @@ class SolcastForecastCoordinator(DataUpdateCoordinator):
                         f"remaining={today_remaining:.1f}kWh, Tomorrow={tomorrow_total:.1f}kWh"
                     )
 
-            return {
+            result = {
                 "available": True,
                 "today_forecast_kwh": round(today_forecast, 2),  # Full day (actuals + forecast)
                 "today_remaining_kwh": round(today_remaining, 2),  # Remaining from now
@@ -3982,6 +4083,9 @@ class SolcastForecastCoordinator(DataUpdateCoordinator):
                 "last_update": dt_util.utcnow(),
                 "source": "api",
             }
+            # Persist good forecast data so it survives restarts
+            self.hass.async_create_task(self._save_forecast_cache(result))
+            return result
 
         except asyncio.TimeoutError as err:
             raise UpdateFailed("Timeout fetching Solcast forecast") from err
