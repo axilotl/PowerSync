@@ -1051,6 +1051,38 @@ function _teslaStyleFlow(e, hass) {
         }
       }
     }
+    // Derive EV name from Tesla/Teslemetry vehicle entity prefix
+    // e.g. binary_sensor.tessy_charge_cable → "Tessy"
+    // e.g. sensor.tessy_charging → "Tessy"
+    if (!config.ev_label) {
+      const evNameEntity = config.entities.ev_presence ||
+        Object.keys(hass.states).find(eid =>
+          eid.startsWith('sensor.') && eid.endsWith('_charging') &&
+          !eid.includes('power_sync')
+        );
+      if (evNameEntity) {
+        // Try friendly_name from the device first (e.g. "Tessy")
+        const friendlyName = hass.states[evNameEntity]?.attributes?.friendly_name || '';
+        // Extract prefix from entity_id: binary_sensor.tessy_charge_cable → tessy
+        const entitySuffix = evNameEntity.split('.')[1] || '';
+        const suffixes = ['_charge_flap', '_charge_cable', '_charging_state', '_charging',
+          '_charger', '_plugged_in', '_cable_locked'];
+        let prefix = '';
+        for (const s of suffixes) {
+          if (entitySuffix.endsWith(s)) {
+            prefix = entitySuffix.slice(0, -s.length);
+            break;
+          }
+        }
+        if (prefix) {
+          // Capitalize: tessy → Tessy, my_car → My Car
+          config.ev_label = prefix.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+        } else if (friendlyName && !friendlyName.toLowerCase().includes('ev power')) {
+          // Use friendly_name if it's not the generic PowerSync sensor name
+          config.ev_label = friendlyName.replace(/\s*(charge|charging|cable|flap|state).*$/i, '').trim();
+        }
+      }
+    }
   }
 
   // Add PV array detail if available (FoxESS, GoodWe)
