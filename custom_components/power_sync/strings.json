@@ -434,15 +434,15 @@
           "weather_location": "Weather Location",
           "openweathermap_api_key": "OpenWeatherMap API Key",
           "solcast_enabled": "Enable Solcast Solar Forecast",
-          "solcast_api_key": "Solcast API Key (optional if using Solcast HA integration)",
-          "solcast_resource_id": "Solcast Resource ID(s) (optional if using Solcast HA integration)"
+          "solcast_api_key": "Solcast API Key (leave blank if using Solcast HA integration)",
+          "solcast_resource_id": "Solcast Resource ID(s) (leave blank if using Solcast HA integration)"
         },
         "data_description": {
           "weather_location": "Your suburb or city name (e.g., 'Berowra' or 'Melbourne'). For duplicate names, use full state (e.g., 'Berowra, New South Wales'). You can also use a postcode (e.g., '2081') or lat,lon coordinates (e.g., '-33.62,151.15'). Leave blank to auto-detect from timezone.",
           "openweathermap_api_key": "Free API key from openweathermap.org for weather-based automations (sunny/cloudy triggers). Leave blank to disable weather triggers.",
           "solcast_enabled": "Enable solar production forecasting. If the Solcast HA integration is installed, PowerSync will automatically read from its sensors (no API calls). Otherwise, enter your API key below.",
-          "solcast_api_key": "Your Solcast API key from toolkit.solcast.com.au. **Leave blank if you have the Solcast HA integration installed** - PowerSync will use its sensors automatically.",
-          "solcast_resource_id": "Your rooftop site Resource ID(s). For split arrays, enter comma-separated IDs (e.g., abc123,def456). **Leave blank if using Solcast HA integration.**"
+          "solcast_api_key": "Only needed if you do NOT have the Solcast HA integration installed. If you have the Solcast integration in HA, leave this blank — PowerSync reads from its sensors automatically.",
+          "solcast_resource_id": "Only needed if you do NOT have the Solcast HA integration installed. For split arrays, enter comma-separated IDs (e.g., abc123,def456). If you have the Solcast integration in HA, leave this blank."
         }
       },
       "demand_charges": {
@@ -1137,15 +1137,15 @@
           "weather_location": "Weather Location",
           "openweathermap_api_key": "OpenWeatherMap API Key",
           "solcast_enabled": "Enable Solcast Solar Forecast",
-          "solcast_api_key": "Solcast API Key (optional if using Solcast HA integration)",
-          "solcast_resource_id": "Solcast Resource ID(s) (optional if using Solcast HA integration)"
+          "solcast_api_key": "Solcast API Key (leave blank if using Solcast HA integration)",
+          "solcast_resource_id": "Solcast Resource ID(s) (leave blank if using Solcast HA integration)"
         },
         "data_description": {
           "weather_location": "Your suburb or city name (e.g., 'Berowra' or 'Melbourne'). For duplicate names, use full state (e.g., 'Berowra, New South Wales'). You can also use a postcode (e.g., '2081') or lat,lon coordinates (e.g., '-33.62,151.15'). Leave blank to auto-detect from timezone.",
           "openweathermap_api_key": "Free API key from openweathermap.org for weather-based automations (sunny/cloudy triggers). Leave blank to disable weather triggers.",
           "solcast_enabled": "Enable solar production forecasting. If the Solcast HA integration is installed, PowerSync will automatically read from its sensors (no API calls).",
-          "solcast_api_key": "Your Solcast API key from toolkit.solcast.com.au. **Leave blank if you have the Solcast HA integration installed.**",
-          "solcast_resource_id": "Your rooftop site Resource ID(s). For split arrays, enter comma-separated IDs (e.g., abc123,def456). **Leave blank if using Solcast HA integration.**"
+          "solcast_api_key": "Only needed if you do NOT have the Solcast HA integration installed. If you have the Solcast integration in HA, leave this blank — PowerSync reads from its sensors automatically.",
+          "solcast_resource_id": "Only needed if you do NOT have the Solcast HA integration installed. For split arrays, enter comma-separated IDs (e.g., abc123,def456). If you have the Solcast integration in HA, leave this blank."
         }
       }
     }
