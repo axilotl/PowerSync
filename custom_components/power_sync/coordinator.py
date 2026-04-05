@@ -3802,7 +3802,6 @@ class SolcastForecastCoordinator(DataUpdateCoordinator):
     async def _save_forecast_cache(self, data: dict[str, Any]) -> None:
         """Persist last good forecast data to survive restarts."""
         try:
-            # Store the computed result (not raw forecasts — those are too large)
             cache = {
                 "date": dt_util.now().strftime("%Y-%m-%d"),
                 "today_forecast_kwh": data.get("today_forecast_kwh"),
@@ -3812,6 +3811,7 @@ class SolcastForecastCoordinator(DataUpdateCoordinator):
                 "today_peak_kw": data.get("today_peak_kw"),
                 "tomorrow_peak_kw": data.get("tomorrow_peak_kw"),
                 "source": data.get("source"),
+                "forecasts": data.get("forecasts"),
             }
             await self._forecast_store.async_save(cache)
         except Exception:
@@ -3822,9 +3822,12 @@ class SolcastForecastCoordinator(DataUpdateCoordinator):
         try:
             cache = await self._forecast_store.async_load()
             if cache and cache.get("date") == dt_util.now().strftime("%Y-%m-%d"):
+                forecasts = cache.get("forecasts")
+                n_periods = len(forecasts) if forecasts else 0
                 _LOGGER.info(
                     f"Restored cached solar forecast: "
-                    f"today={cache.get('today_forecast_kwh')}kWh"
+                    f"today={cache.get('today_forecast_kwh')}kWh, "
+                    f"{n_periods} forecast periods"
                 )
                 return {
                     "available": True,
@@ -3835,8 +3838,8 @@ class SolcastForecastCoordinator(DataUpdateCoordinator):
                     "today_peak_kw": cache.get("today_peak_kw"),
                     "tomorrow_peak_kw": cache.get("tomorrow_peak_kw"),
                     "current_estimate_kw": None,
-                    "forecasts": None,
-                    "forecast_periods": 0,
+                    "forecasts": forecasts,
+                    "forecast_periods": n_periods,
                     "last_update": dt_util.utcnow(),
                     "source": f"{cache.get('source', 'cache')}_restored",
                 }
