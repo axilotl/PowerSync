@@ -643,7 +643,7 @@ class PowerSyncStrategy {
       left.push(_flowPower(e));
     }
 
-    // --- Left Column: Missing dependency warning ---
+    // --- Left Column: Missing dependency warnings ---
     if (missing.length > 0) {
       left.push({
         type: 'markdown',
@@ -651,6 +651,16 @@ class PowerSyncStrategy {
           '**Note:** Some dashboard cards are hidden because these HACS frontend dependencies were not detected:\n\n' +
           missing.map(c => `- **${c.name}** — search "${c.hacs}" in HACS Frontend`).join('\n') + '\n\n' +
           'Install them via [HACS](https://hacs.xyz/) and refresh your browser.',
+      });
+    }
+
+    const optionalMissing = requiredCards.filter(c => !loaded[c.element] && c.optional);
+    if (optionalMissing.length > 0) {
+      left.push({
+        type: 'markdown',
+        content:
+          '**Recommended:** Install these optional HACS cards for additional charts:\n\n' +
+          optionalMissing.map(c => `- **${c.name}** — search "${c.hacs}" in HACS Frontend`).join('\n'),
       });
     }
 
