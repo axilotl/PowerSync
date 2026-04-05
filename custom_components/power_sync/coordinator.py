@@ -3689,6 +3689,20 @@ class SolcastForecastCoordinator(DataUpdateCoordinator):
             if response.status == 429:
                 self._rate_limited = True
                 self._last_rate_limit_time = dt_util.now()
+                # Trust the server — our counter may be wrong (e.g. calls from
+                # another session or before counter was persisted)
+                if self._api_calls_today < self.DAILY_API_LIMIT:
+                    _LOGGER.warning(
+                        f"Solcast 429 but counter shows {self._api_calls_today}/{self.DAILY_API_LIMIT} — "
+                        f"syncing counter to server reality"
+                    )
+                    self._api_calls_today = self.DAILY_API_LIMIT
+                    self.hass.async_create_task(
+                        self._rate_limit_store.async_save({
+                            "date": dt_util.now().strftime("%Y-%m-%d"),
+                            "calls": self._api_calls_today,
+                        })
+                    )
                 _LOGGER.warning(
                     f"Solcast API rate limit hit for resource {resource_id[:8]}... "
                     f"(API calls today: {self._api_calls_today}/{self.DAILY_API_LIMIT}). "
@@ -3830,43 +3844,85 @@ class SolcastForecastCoordinator(DataUpdateCoordinator):
         except Exception:
             return None
 
-    def _restore_from_ha_state(self) -> dict[str, Any] | None:
-        """Restore forecast from HA's last known sensor state.
+    async def _restore_from_ha_state(self) -> dict[str, Any] | None:
+        """Restore forecast from HA's last known sensor state or recorder history.
 
-        HA restores entity states from the recorder on startup, so even after
-        a restart the sensor's previous value is available in hass.states.
-        This is the last-resort fallback when both in-memory cache and
-        persistent storage are empty (e.g. first deploy of caching feature).
+        First checks hass.states for a non-zero value (restored from recorder on startup).
+        If that's 0 (from a previous bug), queries the recorder for the last non-zero value
+        from today's history.
         """
+        entity_ids = [
+            "sensor.power_sync_solcast_today_forecast",
+            "sensor.power_sync_solar_forecast_today",
+        ]
+
+        def _make_result(today_kwh: float, source: str) -> dict[str, Any]:
+            return {
+                "available": True,
+                "today_forecast_kwh": today_kwh,
+                "today_remaining_kwh": 0,
+                "today_total_kwh": today_kwh,
+                "tomorrow_total_kwh": 0,
+                "today_peak_kw": None,
+                "tomorrow_peak_kw": None,
+                "current_estimate_kw": None,
+                "forecasts": None,
+                "forecast_periods": 0,
+                "last_update": dt_util.utcnow(),
+                "source": source,
+            }
+
         try:
-            # Try multiple possible entity IDs for the solar forecast sensor
-            for entity_id in [
-                "sensor.power_sync_solcast_today_forecast",
-                "sensor.power_sync_solar_forecast_today",
-            ]:
+            # First: check current state (fast path)
+            for entity_id in entity_ids:
                 state = self.hass.states.get(entity_id)
-                if state and state.state not in ("unavailable", "unknown", None, "", "0", "0.0"):
-                    today_kwh = float(state.state)
-                    if today_kwh > 0:
-                        _LOGGER.info(
-                            f"Restored solar forecast from HA state: "
-                            f"{entity_id}={today_kwh:.1f}kWh"
-                        )
-                        return {
-                            "available": True,
-                            "today_forecast_kwh": today_kwh,
-                            "today_remaining_kwh": 0,
-                            "today_total_kwh": today_kwh,
-                            "tomorrow_total_kwh": 0,
-                            "today_peak_kw": None,
-                            "tomorrow_peak_kw": None,
-                            "current_estimate_kw": None,
-                            "forecasts": None,
-                            "forecast_periods": 0,
-                            "last_update": dt_util.utcnow(),
-                            "source": "ha_state_restored",
-                        }
-        except (ValueError, TypeError):
+                if state and state.state not in ("unavailable", "unknown", None, ""):
+                    try:
+                        today_kwh = float(state.state)
+                        if today_kwh > 0:
+                            _LOGGER.info(
+                                f"Restored solar forecast from HA state: "
+                                f"{entity_id}={today_kwh:.1f}kWh"
+                            )
+                            return _make_result(today_kwh, "ha_state_restored")
+                    except (ValueError, TypeError):
+                        continue
+
+            # Second: query recorder history for last non-zero value today
+            try:
+                from homeassistant.components.recorder import get_instance
+                from homeassistant.components.recorder.history import state_changes_during_period
+
+                now = dt_util.now()
+                start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+                for entity_id in entity_ids:
+                    history = await get_instance(self.hass).async_add_executor_job(
+                        state_changes_during_period,
+                        self.hass,
+                        start,
+                        now,
+                        entity_id,
+                    )
+                    states = history.get(entity_id, [])
+                    # Walk backwards to find last non-zero value
+                    for hist_state in reversed(states):
+                        if hist_state.state in ("unavailable", "unknown", None, ""):
+                            continue
+                        try:
+                            val = float(hist_state.state)
+                            if val > 0:
+                                _LOGGER.info(
+                                    f"Restored solar forecast from recorder history: "
+                                    f"{entity_id}={val:.1f}kWh (from {hist_state.last_changed})"
+                                )
+                                return _make_result(val, "recorder_restored")
+                        except (ValueError, TypeError):
+                            continue
+            except Exception as ex:
+                _LOGGER.debug(f"Could not query recorder for solar forecast: {ex}")
+
+        except Exception:
             pass
         return None
 
@@ -3959,7 +4015,7 @@ class SolcastForecastCoordinator(DataUpdateCoordinator):
                 )
                 return restored
             # Last resort: read last known sensor state from HA
-            restored = self._restore_from_ha_state()
+            restored = await self._restore_from_ha_state()
             if restored:
                 _LOGGER.info(
                     f"Solcast API rate limited - restored forecast from HA sensor state. "
@@ -3987,7 +4043,7 @@ class SolcastForecastCoordinator(DataUpdateCoordinator):
             restored = await self._restore_forecast_cache()
             if restored:
                 return restored
-            restored = self._restore_from_ha_state()
+            restored = await self._restore_from_ha_state()
             if restored:
                 return restored
             return self.data or {"available": False}
@@ -4012,7 +4068,7 @@ class SolcastForecastCoordinator(DataUpdateCoordinator):
                         _LOGGER.info("Restored solar forecast from persistent cache after API failure")
                         return restored
                     # Last resort: read last known sensor state from HA
-                    restored = self._restore_from_ha_state()
+                    restored = await self._restore_from_ha_state()
                     if restored:
                         _LOGGER.info("Restored solar forecast from HA sensor state after API failure")
                         return restored
