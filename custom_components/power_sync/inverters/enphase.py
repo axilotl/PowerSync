@@ -109,6 +109,7 @@ class EnphaseController(InverterController):
         self._profile_switching_supported: Optional[bool] = None
         self._current_profile: Optional[str] = None
         self._token_obtained_at: Optional[datetime] = None
+        self._token_refresh_lock = asyncio.Lock()
         self._enlighten_session_id: Optional[str] = None
         # SSL context will be created lazily on first use to avoid blocking event loop
         self._ssl_context: Optional[ssl.SSLContext] = None
@@ -412,68 +413,69 @@ class EnphaseController(InverterController):
     async def _ensure_token(self, force_refresh: bool = False) -> bool:
         """Ensure we have a valid JWT token, fetching from cloud if needed.
 
+        Uses a lock to prevent concurrent token refresh storms — multiple
+        callers wait for a single refresh instead of each starting their own.
+
         Args:
             force_refresh: If True, force fetching a new token even if current one seems valid
 
         Returns:
             True if we have a valid token
         """
-        # If we have a token and it's not expired, use it (unless force refresh)
+        # Fast path (no lock needed): check if current token is valid
         if self._token and not force_refresh:
-            # Check JWT exp field first (most accurate)
+            import time as _time
             jwt_info = self._decode_jwt_info()
             exp = jwt_info.get("exp")
             if exp:
-                import time as _time
                 remaining = exp - _time.time()
-                if remaining > 3600:  # More than 1 hour until expiry
+                if remaining > 3600:
                     return True
-                if remaining > 0:
-                    _LOGGER.info("JWT token expires in %.0f minutes, refreshing", remaining / 60)
-                else:
-                    _LOGGER.info("JWT token has expired, refreshing")
+                # Token expiring/expired — fall through to refresh (with lock)
             elif self._token_obtained_at:
-                # Fallback to age-based check if no exp field
                 age = datetime.now() - self._token_obtained_at
                 if age < timedelta(hours=self.TOKEN_REFRESH_HOURS):
                     return True
-                _LOGGER.info(f"JWT token is {age.total_seconds()/3600:.1f} hours old, refreshing")
             else:
-                # Token was provided externally - assume it's valid for the first request
-                # If we get a 401, the caller should set force_refresh=True
-                if not self._username or not self._password:
+                # External token with no timestamp — check exp, if expired and
+                # we have credentials, refresh immediately instead of using it
+                if exp and exp < _time.time() and self._username and self._password:
+                    _LOGGER.info("External config token has expired (exp=%d), will fetch fresh token", exp)
+                    # Fall through to refresh
+                elif not self._username or not self._password:
                     _LOGGER.debug("External token provided, no credentials for refresh")
-                    # Update session cookie for /installer/ endpoints
                     self._update_session_cookie()
                     return True
-                # We have credentials but no timestamp - this is the first use of external token
-                # Mark when we started using it so we can track age
-                self._token_obtained_at = datetime.now()
-                token_type = self._get_token_type()
-                _LOGGER.info(f"External token provided (type={token_type}), marked timestamp for age tracking")
-                if token_type == 'owner':
-                    _LOGGER.warning(
-                        "External token is 'owner' type - /installer/ endpoints (AGF profile switching) will NOT work. "
-                        "Need installer-level token for AGF functionality."
-                    )
-                # Update session cookie for /installer/ endpoints
-                self._update_session_cookie()
-                return True
+                else:
+                    self._token_obtained_at = datetime.now()
+                    token_type = self._get_token_type()
+                    _LOGGER.info(f"External token provided (type={token_type}), marked timestamp for age tracking")
+                    self._update_session_cookie()
+                    return True
 
-        # Need to get token from cloud
-        if not self._username or not self._password:
-            _LOGGER.debug("No Enlighten credentials, cannot fetch token")
-            return False
+        # Acquire lock — only one refresh at a time
+        async with self._token_refresh_lock:
+            # Re-check after acquiring lock (another caller may have refreshed)
+            if self._token and not force_refresh and self._token_obtained_at:
+                age = datetime.now() - self._token_obtained_at
+                if age < timedelta(seconds=30):
+                    _LOGGER.debug("Token was just refreshed by another caller, skipping")
+                    return True
 
-        # Get serial from Envoy if not provided
-        serial = self._serial or self._envoy_serial
-        if not serial:
-            _LOGGER.warning("Cannot fetch token: Envoy serial number not known")
-            return False
+            # Need to get token from cloud
+            if not self._username or not self._password:
+                _LOGGER.debug("No Enlighten credentials, cannot fetch token")
+                return False
 
-        _LOGGER.info(f"Fetching new JWT token from Enlighten cloud for Envoy {serial}")
-        token = await self._get_token_from_cloud(serial)
-        return token is not None
+            # Get serial from Envoy if not provided
+            serial = self._serial or self._envoy_serial
+            if not serial:
+                _LOGGER.warning("Cannot fetch token: Envoy serial number not known")
+                return False
+
+            _LOGGER.info(f"Fetching new JWT token from Enlighten cloud for Envoy {serial}")
+            token = await self._get_token_from_cloud(serial)
+            return token is not None
 
     def _create_ssl_context(self) -> ssl.SSLContext:
         """Create SSL context that accepts self-signed certificates.
