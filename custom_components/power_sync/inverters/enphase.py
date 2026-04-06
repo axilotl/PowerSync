@@ -970,11 +970,16 @@ class EnphaseController(InverterController):
                 _LOGGER.debug(f"DPEL succeeded with payload: {payload}")
                 return True, True
 
-            # Check if endpoint is not available (503 Service Unavailable, 404 Not Found)
-            if status in (503, 404):
-                _LOGGER.info(f"DPEL endpoint returned {status} - marking as unavailable (legacy endpoint not supported on this gateway)")
+            # 404 = endpoint doesn't exist on this firmware, permanently skip
+            if status == 404:
+                _LOGGER.info("DPEL endpoint returned 404 - marking as unavailable")
                 self._dpel_available = False
                 return False, False
+
+            # 503 = temporarily unavailable (e.g. gateway overloaded), don't mark permanent
+            if status == 503:
+                _LOGGER.warning("DPEL endpoint returned 503 (temporary) - will retry next call")
+                return False, True
 
             # 400 errors might be payload format issues, continue trying other formats
             if status == 400:
@@ -988,10 +993,13 @@ class EnphaseController(InverterController):
                 self._dpel_available = True
                 _LOGGER.debug(f"DPEL succeeded with PUT payload: {payload}")
                 return True, True
-            if status in (503, 404):
-                _LOGGER.info(f"DPEL endpoint returned {status} - marking as unavailable")
+            if status == 404:
+                _LOGGER.info("DPEL PUT returned 404 - marking as unavailable")
                 self._dpel_available = False
                 return False, False
+            if status == 503:
+                _LOGGER.warning("DPEL PUT returned 503 (temporary)")
+                return False, True
 
         # All attempts failed but endpoint exists - might be config issue
         _LOGGER.warning("All DPEL payload formats failed - endpoint exists but rejected all requests")
@@ -1040,20 +1048,26 @@ class EnphaseController(InverterController):
             self._der_available = True
             return True, True
 
-        if status in (503, 404):
-            _LOGGER.info(f"DER endpoint returned {status} - marking as unavailable")
+        if status == 404:
+            _LOGGER.info("DER POST returned 404 - marking as unavailable")
             self._der_available = False
             return False, False
+        if status == 503:
+            _LOGGER.warning("DER POST returned 503 (temporary)")
+            return False, True
 
         success, status = await self._put(self.ENDPOINT_DER_SETTINGS, current)
         if success:
             self._der_available = True
             return True, True
 
-        if status in (503, 404):
-            _LOGGER.info(f"DER endpoint returned {status} - marking as unavailable")
+        if status == 404:
+            _LOGGER.info("DER PUT returned 404 - marking as unavailable")
             self._der_available = False
             return False, False
+        if status == 503:
+            _LOGGER.warning("DER PUT returned 503 (temporary)")
+            return False, True
 
         return False, True
 
