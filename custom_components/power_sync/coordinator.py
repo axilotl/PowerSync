@@ -3699,7 +3699,7 @@ class SolcastForecastCoordinator(DataUpdateCoordinator):
                     self._api_calls_today = self.DAILY_API_LIMIT
                     self.hass.async_create_task(
                         self._rate_limit_store.async_save({
-                            "date": dt_util.now().strftime("%Y-%m-%d"),
+                            "date": dt_util.utcnow().strftime("%Y-%m-%d"),
                             "calls": self._api_calls_today,
                         })
                     )
@@ -3786,7 +3786,8 @@ class SolcastForecastCoordinator(DataUpdateCoordinator):
         try:
             data = await self._rate_limit_store.async_load()
             if data:
-                today_str = dt_util.now().strftime("%Y-%m-%d")
+                # Solcast resets at UTC midnight
+                today_str = dt_util.utcnow().strftime("%Y-%m-%d")
                 if data.get("date") == today_str:
                     self._api_calls_today = data.get("calls", 0)
                     self._api_calls_date = today_str
@@ -3931,7 +3932,8 @@ class SolcastForecastCoordinator(DataUpdateCoordinator):
 
     def _can_make_api_call(self) -> bool:
         """Check if we can make another API call without exceeding the daily limit."""
-        today_str = dt_util.now().strftime("%Y-%m-%d")
+        # Solcast resets at UTC midnight, so use UTC date
+        today_str = dt_util.utcnow().strftime("%Y-%m-%d")
         if self._api_calls_date != today_str:
             # New day — would be reset in _track_api_call
             return True
@@ -3939,9 +3941,10 @@ class SolcastForecastCoordinator(DataUpdateCoordinator):
 
     def _track_api_call(self) -> None:
         """Track API call for rate limit awareness."""
-        today_str = dt_util.now().strftime("%Y-%m-%d")
+        # Solcast resets at UTC midnight, so use UTC date
+        today_str = dt_util.utcnow().strftime("%Y-%m-%d")
         if self._api_calls_date != today_str:
-            # New day - reset counter
+            # New UTC day - reset counter
             self._api_calls_date = today_str
             self._api_calls_today = 0
             self._rate_limited = False
