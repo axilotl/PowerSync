@@ -175,27 +175,50 @@ class EnphaseController(InverterController):
             return None
 
         try:
+            import re as _re
             # Use a separate session to isolate the Entrez cookies
             async with aiohttp.ClientSession(
                 timeout=aiohttp.ClientTimeout(total=30.0),
                 cookie_jar=aiohttp.CookieJar(unsafe=True),
             ) as entrez_session:
-                # Step 1: Login to Entrez (form-encoded, sets SESSION cookie)
+                # Step 1a: GET the login page to obtain CSRF token
+                _LOGGER.info("Entrez web flow: fetching login page for CSRF token")
+                async with entrez_session.get(
+                    "https://entrez.enphaseenergy.com/login_main_page",
+                ) as page_resp:
+                    page_html = await page_resp.text()
+                    csrf_match = _re.search(r'name="_csrf"\s+value="([^"]+)"', page_html)
+                    if not csrf_match:
+                        _LOGGER.warning("Entrez login page: no CSRF token found")
+                        return None
+                    csrf_token = csrf_match.group(1)
+                    _LOGGER.debug("Entrez CSRF token obtained (len=%d)", len(csrf_token))
+
+                # Step 1b: POST login with CSRF token + credentials
+                login_data = {
+                    "_csrf": csrf_token,
+                    "username": self._username,
+                    "password": self._password,
+                    "authFlow": "entrezSession",
+                    "serialNum": serial,
+                }
                 _LOGGER.info("Entrez web login: POST %s", self.ENTREZ_LOGIN_URL)
                 async with entrez_session.post(
                     self.ENTREZ_LOGIN_URL,
-                    data={"username": self._username, "password": self._password},
+                    data=login_data,
                     allow_redirects=True,
                 ) as login_resp:
-                    # Check if SESSION cookie was set
+                    login_text = await login_resp.text()
                     session_cookies = {c.key: c.value for c in entrez_session.cookie_jar}
                     has_session = "SESSION" in session_cookies
+                    # Check for login failure (page contains login form again)
+                    login_failed = 'action="/login"' in login_text and 'name="_csrf"' in login_text
                     _LOGGER.info(
-                        "Entrez web login response: status=%s, has_session_cookie=%s",
-                        login_resp.status, has_session,
+                        "Entrez web login response: status=%s, has_session_cookie=%s, login_ok=%s",
+                        login_resp.status, has_session, not login_failed,
                     )
-                    if not has_session:
-                        _LOGGER.warning("Entrez web login did not return SESSION cookie")
+                    if not has_session or login_failed:
+                        _LOGGER.warning("Entrez web login failed (credentials rejected or no session)")
                         return None
 
                 # Step 2: GET /entrez_tokens to load the form page
