@@ -287,10 +287,17 @@ class EnphaseController(InverterController):
                         await self._validate_token_locally()
                         return token
                     else:
+                        # Log form fields and links to understand the page structure
+                        import re as _re2
+                        forms = _re2.findall(r'<form[^>]*action="([^"]*)"[^>]*>', text)
+                        inputs = _re2.findall(r'<input[^>]*name="([^"]*)"[^>]*>', text)
+                        selects = _re2.findall(r'<select[^>]*name="([^"]*)"[^>]*>', text)
+                        textareas = _re2.findall(r'<textarea[^>]*', text)
+                        buttons = _re2.findall(r'<button[^>]*>([^<]*)</button>', text)
                         _LOGGER.warning(
-                            "Entrez /entrez_tokens: no JWT found in response (len=%d, type=%s). "
-                            "HTML snippet: %.500s",
-                            len(text), content_type, text[:500],
+                            "Entrez /entrez_tokens: no JWT found (len=%d, type=%s). "
+                            "Page forms: actions=%s, inputs=%s, selects=%s, textareas=%d, buttons=%s",
+                            len(text), content_type, forms, inputs, selects, len(textareas), buttons,
                         )
                         return None
 
