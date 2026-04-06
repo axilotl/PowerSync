@@ -198,35 +198,58 @@ class EnphaseController(InverterController):
                         _LOGGER.warning("Entrez web login did not return SESSION cookie")
                         return None
 
-                # Step 2: Get token from /entrez_tokens
-                _LOGGER.info("Fetching installer token from %s", self.ENTREZ_TOKENS_URL)
-                async with entrez_session.get(
+                # Step 2: GET /entrez_tokens to load the form page
+                # Then POST with serial number to generate the token
+                _LOGGER.info("Fetching installer token from %s (serial=%s)", self.ENTREZ_TOKENS_URL, serial)
+
+                # First try POST with serial (the form submission that generates the token)
+                async with entrez_session.post(
                     self.ENTREZ_TOKENS_URL,
-                    headers={"Accept": "application/json, text/html"},
+                    data={"serial_num": serial},
+                    headers={"Accept": "text/html, application/json"},
                 ) as token_resp:
-                    if token_resp.status != 200:
-                        text = await token_resp.text()
-                        _LOGGER.error(
-                            "Entrez /entrez_tokens failed: status=%s, response=%s",
-                            token_resp.status, text[:300],
-                        )
-                        return None
-
-                    # Response may be JSON with token or HTML page containing token
-                    content_type = token_resp.content_type or ""
                     text = await token_resp.text()
+                    content_type = token_resp.content_type or ""
+                    _LOGGER.debug(
+                        "Entrez /entrez_tokens POST response: status=%s, len=%d, type=%s, first_200=%s",
+                        token_resp.status, len(text), content_type, text[:200],
+                    )
 
+                    if token_resp.status != 200:
+                        # POST failed — try GET (some flows show token directly)
+                        _LOGGER.info("Entrez POST to /entrez_tokens returned %s, trying GET", token_resp.status)
+                        async with entrez_session.get(
+                            self.ENTREZ_TOKENS_URL,
+                            headers={"Accept": "text/html, application/json"},
+                        ) as get_resp:
+                            text = await get_resp.text()
+                            content_type = get_resp.content_type or ""
+                            _LOGGER.debug(
+                                "Entrez /entrez_tokens GET response: status=%s, len=%d, type=%s, first_200=%s",
+                                get_resp.status, len(text), content_type, text[:200],
+                            )
+
+                    # Extract JWT from response (JSON or HTML)
+                    token = None
                     if "application/json" in content_type:
-                        data = await token_resp.json() if hasattr(token_resp, '_body') else json.loads(text)
-                        # JSON response — look for token field
-                        token = data.get("token") or data.get("jwt") or data.get("access_token")
-                        if not token and isinstance(data, str) and len(data) > 100:
-                            token = data  # Response might be the token itself
-                    else:
-                        # HTML response — extract JWT (long base64 string)
+                        try:
+                            data = json.loads(text)
+                            token = data.get("token") or data.get("jwt") or data.get("access_token")
+                        except (json.JSONDecodeError, ValueError):
+                            pass
+
+                    if not token:
+                        # HTML response — extract JWT (eyJ... pattern)
                         import re
                         match = re.search(r'eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+', text)
                         token = match.group(0) if match else None
+
+                    if not token:
+                        # Look for token in textarea, input value, or data attribute
+                        import re
+                        value_match = re.search(r'(?:value|data-token)=["\']([^"\']+)["\']', text)
+                        if value_match and len(value_match.group(1)) > 100:
+                            token = value_match.group(1)
 
                     if token and len(token) > 100:
                         self._token = token
@@ -242,8 +265,9 @@ class EnphaseController(InverterController):
                         return token
                     else:
                         _LOGGER.warning(
-                            "Entrez /entrez_tokens: no JWT found in response (len=%d, type=%s)",
-                            len(text), content_type,
+                            "Entrez /entrez_tokens: no JWT found in response (len=%d, type=%s). "
+                            "HTML snippet: %.500s",
+                            len(text), content_type, text[:500],
                         )
                         return None
 
