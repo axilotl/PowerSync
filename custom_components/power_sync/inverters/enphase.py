@@ -50,6 +50,9 @@ class EnphaseController(InverterController):
     # Enlighten cloud endpoints for token retrieval
     ENLIGHTEN_LOGIN_URL = "https://enlighten.enphaseenergy.com/login/login.json"
     ENLIGHTEN_TOKEN_URL = "https://entrez.enphaseenergy.com/tokens"
+    # Entrez web login (returns installer tokens for installer accounts)
+    ENTREZ_LOGIN_URL = "https://entrez.enphaseenergy.com/login"
+    ENTREZ_TOKENS_URL = "https://entrez.enphaseenergy.com/entrez_tokens"
 
     # Timeout for HTTP operations
     TIMEOUT_SECONDS = 30.0
@@ -159,8 +162,101 @@ class EnphaseController(InverterController):
 
         return None
 
+    async def _get_token_via_entrez(self, serial: str) -> Optional[str]:
+        """Get installer JWT token via Entrez web login flow.
+
+        The Entrez web UI uses a different auth flow that correctly returns
+        installer tokens for installer/DIY accounts. The API /tokens endpoint
+        always returns owner tokens regardless of is_installer flag.
+
+        Flow: POST /login (form-encoded) → SESSION cookie → GET /entrez_tokens
+        """
+        if not self._username or not self._password:
+            return None
+
+        try:
+            # Use a separate session to isolate the Entrez cookies
+            async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=30.0),
+                cookie_jar=aiohttp.CookieJar(unsafe=True),
+            ) as entrez_session:
+                # Step 1: Login to Entrez (form-encoded, sets SESSION cookie)
+                _LOGGER.info("Entrez web login: POST %s", self.ENTREZ_LOGIN_URL)
+                async with entrez_session.post(
+                    self.ENTREZ_LOGIN_URL,
+                    data={"username": self._username, "password": self._password},
+                    allow_redirects=True,
+                ) as login_resp:
+                    # Check if SESSION cookie was set
+                    session_cookies = {c.key: c.value for c in entrez_session.cookie_jar}
+                    has_session = "SESSION" in session_cookies
+                    _LOGGER.info(
+                        "Entrez web login response: status=%s, has_session_cookie=%s",
+                        login_resp.status, has_session,
+                    )
+                    if not has_session:
+                        _LOGGER.warning("Entrez web login did not return SESSION cookie")
+                        return None
+
+                # Step 2: Get token from /entrez_tokens
+                _LOGGER.info("Fetching installer token from %s", self.ENTREZ_TOKENS_URL)
+                async with entrez_session.get(
+                    self.ENTREZ_TOKENS_URL,
+                    headers={"Accept": "application/json, text/html"},
+                ) as token_resp:
+                    if token_resp.status != 200:
+                        text = await token_resp.text()
+                        _LOGGER.error(
+                            "Entrez /entrez_tokens failed: status=%s, response=%s",
+                            token_resp.status, text[:300],
+                        )
+                        return None
+
+                    # Response may be JSON with token or HTML page containing token
+                    content_type = token_resp.content_type or ""
+                    text = await token_resp.text()
+
+                    if "application/json" in content_type:
+                        data = await token_resp.json() if hasattr(token_resp, '_body') else json.loads(text)
+                        # JSON response — look for token field
+                        token = data.get("token") or data.get("jwt") or data.get("access_token")
+                        if not token and isinstance(data, str) and len(data) > 100:
+                            token = data  # Response might be the token itself
+                    else:
+                        # HTML response — extract JWT (long base64 string)
+                        import re
+                        match = re.search(r'eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+', text)
+                        token = match.group(0) if match else None
+
+                    if token and len(token) > 100:
+                        self._token = token
+                        self._token_obtained_at = datetime.now()
+                        token_type = self._get_token_type()
+                        jwt_info = self._decode_jwt_info()
+                        _LOGGER.info(
+                            "Entrez web token received: token_type=%s, jwt_fields=%s, token_len=%d",
+                            token_type, jwt_info, len(token),
+                        )
+                        self._update_session_cookie()
+                        await self._validate_token_locally()
+                        return token
+                    else:
+                        _LOGGER.warning(
+                            "Entrez /entrez_tokens: no JWT found in response (len=%d, type=%s)",
+                            len(text), content_type,
+                        )
+                        return None
+
+        except Exception as e:
+            _LOGGER.error("Entrez web token flow failed: %s", e)
+            return None
+
     async def _get_token_from_cloud(self, serial: str) -> Optional[str]:
         """Get JWT token from Enlighten cloud for the specified Envoy.
+
+        For installer accounts, tries the Entrez web flow first (which
+        correctly returns installer tokens). Falls back to the Enlighten
+        API flow if that fails.
 
         Args:
             serial: Envoy serial number
@@ -168,6 +264,20 @@ class EnphaseController(InverterController):
         Returns:
             JWT token if successful, None otherwise
         """
+        # Installer accounts: try Entrez web flow first (returns installer tokens)
+        if self._is_installer:
+            _LOGGER.info("Installer account — trying Entrez web flow for installer token")
+            token = await self._get_token_via_entrez(serial)
+            if token:
+                token_type = self._get_token_type()
+                if token_type == "installer":
+                    return token
+                _LOGGER.warning(
+                    "Entrez web flow returned %s token (expected installer) — "
+                    "falling back to Enlighten API flow",
+                    token_type,
+                )
+
         if not self._enlighten_session_id:
             session_id = await self._get_enlighten_session()
             if not session_id:
