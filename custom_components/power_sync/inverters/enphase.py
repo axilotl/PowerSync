@@ -176,7 +176,6 @@ class EnphaseController(InverterController):
                 )
 
             # Request token for this Envoy
-            # Include is_installer flag if set - this requests installer-scope token
             token_data = {
                 "session_id": session_id,
                 "serial_num": serial,
@@ -184,13 +183,14 @@ class EnphaseController(InverterController):
             }
 
             # Add installer flag for installer accounts
+            # Entrez API expects string "true", not boolean, and form-encoded data
             if self._is_installer:
-                token_data["is_installer"] = True
+                token_data["is_installer"] = "true"
                 _LOGGER.info("Requesting installer-level token from Enlighten")
 
             async with self._cloud_session.post(
                 self.ENLIGHTEN_TOKEN_URL,
-                json=token_data,
+                data=token_data,
             ) as response:
                 if response.status == 200:
                     token = await response.text()
