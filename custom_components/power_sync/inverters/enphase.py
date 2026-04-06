@@ -221,36 +221,41 @@ class EnphaseController(InverterController):
                         _LOGGER.warning("Entrez web login failed (credentials rejected or no session)")
                         return None
 
-                # Step 2: GET /entrez_tokens to load the form page
-                # Then POST with serial number to generate the token
+                # Step 2: GET /entrez_tokens to load the form and extract its CSRF token
                 _LOGGER.info("Fetching installer token from %s (serial=%s)", self.ENTREZ_TOKENS_URL, serial)
 
-                # First try POST with serial (the form submission that generates the token)
+                async with entrez_session.get(self.ENTREZ_TOKENS_URL) as form_resp:
+                    form_html = await form_resp.text()
+                    if form_resp.status != 200:
+                        _LOGGER.warning("Entrez /entrez_tokens GET returned %s", form_resp.status)
+                        return None
+
+                # Extract CSRF token from the token generation form
+                csrf_match2 = _re.search(r'name="_csrf"\s+value="([^"]+)"', form_html)
+                if not csrf_match2:
+                    _LOGGER.warning("Entrez /entrez_tokens page: no CSRF token found in form")
+                    return None
+                form_csrf = csrf_match2.group(1)
+
+                # Step 3: POST the form to generate the token
+                token_form_data = {
+                    "_csrf": form_csrf,
+                    "serialNum": serial,
+                    "uncommissioned": "false",
+                    "Site": "",
+                }
+                _LOGGER.info("Submitting token generation form (serialNum=%s)", serial)
                 async with entrez_session.post(
                     self.ENTREZ_TOKENS_URL,
-                    data={"serial_num": serial},
+                    data=token_form_data,
                     headers={"Accept": "text/html, application/json"},
                 ) as token_resp:
                     text = await token_resp.text()
                     content_type = token_resp.content_type or ""
                     _LOGGER.debug(
-                        "Entrez /entrez_tokens POST response: status=%s, len=%d, type=%s, first_200=%s",
-                        token_resp.status, len(text), content_type, text[:200],
+                        "Entrez /entrez_tokens form POST response: status=%s, len=%d, type=%s",
+                        token_resp.status, len(text), content_type,
                     )
-
-                    if token_resp.status != 200:
-                        # POST failed — try GET (some flows show token directly)
-                        _LOGGER.info("Entrez POST to /entrez_tokens returned %s, trying GET", token_resp.status)
-                        async with entrez_session.get(
-                            self.ENTREZ_TOKENS_URL,
-                            headers={"Accept": "text/html, application/json"},
-                        ) as get_resp:
-                            text = await get_resp.text()
-                            content_type = get_resp.content_type or ""
-                            _LOGGER.debug(
-                                "Entrez /entrez_tokens GET response: status=%s, len=%d, type=%s, first_200=%s",
-                                get_resp.status, len(text), content_type, text[:200],
-                            )
 
                     # Extract JWT from response (JSON or HTML)
                     token = None
