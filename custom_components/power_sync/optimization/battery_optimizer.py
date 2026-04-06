@@ -740,14 +740,29 @@ class BatteryOptimizer:
                 and import_kw > threshold_kw
             ):
                 # Battery idle while home draws from grid.
-                # The optimizer reserve is for charge/discharge decisions only.
-                # Self-consumption can continue down to the hardware reserve.
-                # Only show IDLE when SOC is well above the optimizer reserve
-                # AND there's meaningful charge to hold (>5% above reserve).
-                # Otherwise show self_consumption — the battery serves load
-                # naturally to the hardware floor.
+                # Only use IDLE when there's a clear profit from holding
+                # battery for a future export window. Otherwise, prefer
+                # self_consumption — the battery naturally serves load,
+                # avoiding expensive grid import.
                 meaningful_hold = soc > self.backup_reserve + 0.05
-                if meaningful_hold:
+                if meaningful_hold and export_prices is not None and import_prices is not None:
+                    # Check if upcoming export prices justify holding battery
+                    # over letting it serve load (avoiding import cost).
+                    # Need: export_price > import_price / efficiency
+                    # (export revenue must exceed the avoided import after losses)
+                    cur_import = import_prices[t]
+                    min_export_premium = cur_import / eff + 0.02  # +2c/kWh buffer
+                    # Look ahead up to 6 hours for a worthwhile export window
+                    lookahead = min(n, t + 6 * 60 // self.interval_minutes)
+                    best_export = max(
+                        (export_prices[k] for k in range(t, lookahead)),
+                        default=0,
+                    )
+                    if best_export >= min_export_premium:
+                        action = "idle"
+                    else:
+                        action = "self_consumption"
+                elif meaningful_hold:
                     action = "idle"
                 else:
                     action = "self_consumption"
