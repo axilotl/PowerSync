@@ -359,13 +359,26 @@ class EnphaseController(InverterController):
         Returns:
             True if we have a valid token
         """
-        # If we have a token and it's not too old, use it (unless force refresh)
+        # If we have a token and it's not expired, use it (unless force refresh)
         if self._token and not force_refresh:
-            if self._token_obtained_at:
+            # Check JWT exp field first (most accurate)
+            jwt_info = self._decode_jwt_info()
+            exp = jwt_info.get("exp")
+            if exp:
+                import time as _time
+                remaining = exp - _time.time()
+                if remaining > 3600:  # More than 1 hour until expiry
+                    return True
+                if remaining > 0:
+                    _LOGGER.info("JWT token expires in %.0f minutes, refreshing", remaining / 60)
+                else:
+                    _LOGGER.info("JWT token has expired, refreshing")
+            elif self._token_obtained_at:
+                # Fallback to age-based check if no exp field
                 age = datetime.now() - self._token_obtained_at
                 if age < timedelta(hours=self.TOKEN_REFRESH_HOURS):
                     return True
-                _LOGGER.info(f"JWT token is {age.total_seconds()/3600:.1f} hours old, refreshing from Enlighten cloud")
+                _LOGGER.info(f"JWT token is {age.total_seconds()/3600:.1f} hours old, refreshing")
             else:
                 # Token was provided externally - assume it's valid for the first request
                 # If we get a 401, the caller should set force_refresh=True
