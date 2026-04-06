@@ -4043,8 +4043,8 @@ class SolcastForecastCoordinator(DataUpdateCoordinator):
                 _LOGGER.warning(
                     f"Solcast API rate limited and no cached forecast available. "
                     f"API calls today: {self._api_calls_today}/{self.DAILY_API_LIMIT}"
-            )
-            return self.data or {"available": False}
+                )
+                return self.data or {"available": False}
 
         # Solcast integration not available - make our own API calls
         # Hard guard: refuse to make API calls if daily limit already reached
