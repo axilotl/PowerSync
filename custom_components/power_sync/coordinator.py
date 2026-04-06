@@ -4004,7 +4004,8 @@ class SolcastForecastCoordinator(DataUpdateCoordinator):
             self.hass.async_create_task(self._save_forecast_cache(solcast_data))
             return solcast_data
 
-        # Check if we're rate limited — use cached forecast data
+        # Check if we're rate limited — but verify with a real API call
+        # on first update after restore (persisted counter may be stale)
         if self._rate_limited:
             if self.data and self.data.get("today_forecast_kwh", 0) > 0:
                 _LOGGER.debug(
@@ -4012,25 +4013,36 @@ class SolcastForecastCoordinator(DataUpdateCoordinator):
                     f"API calls today: {self._api_calls_today}/{self.DAILY_API_LIMIT}"
                 )
                 return self.data
-            # No in-memory cache — try persistent storage (survives restarts)
-            restored = await self._restore_forecast_cache()
-            if restored:
+            # No in-memory data — counter may be stale from a previous timezone
+            # mismatch or old persisted state. Try one verification call.
+            if not getattr(self, "_rate_limit_verified", False):
+                self._rate_limit_verified = True
                 _LOGGER.info(
-                    f"Solcast API rate limited - restored forecast from storage. "
-                    f"API calls today: {self._api_calls_today}/{self.DAILY_API_LIMIT}"
+                    "Solcast rate-limited from restore — verifying with one API call"
                 )
-                return restored
-            # Last resort: read last known sensor state from HA
-            restored = await self._restore_from_ha_state()
-            if restored:
-                _LOGGER.info(
-                    f"Solcast API rate limited - restored forecast from HA sensor state. "
+                # Temporarily clear rate limit so the fetch logic runs
+                self._rate_limited = False
+                self._api_calls_today = 0
+                # Fall through to the fetch logic below
+            else:
+                # Already verified, genuinely rate limited
+                restored = await self._restore_forecast_cache()
+                if restored:
+                    _LOGGER.info(
+                        f"Solcast API rate limited - restored forecast from storage. "
+                        f"API calls today: {self._api_calls_today}/{self.DAILY_API_LIMIT}"
+                    )
+                    return restored
+                restored = await self._restore_from_ha_state()
+                if restored:
+                    _LOGGER.info(
+                        f"Solcast API rate limited - restored forecast from HA sensor state. "
+                        f"API calls today: {self._api_calls_today}/{self.DAILY_API_LIMIT}"
+                    )
+                    return restored
+                _LOGGER.warning(
+                    f"Solcast API rate limited and no cached forecast available. "
                     f"API calls today: {self._api_calls_today}/{self.DAILY_API_LIMIT}"
-                )
-                return restored
-            _LOGGER.warning(
-                f"Solcast API rate limited and no cached forecast available. "
-                f"API calls today: {self._api_calls_today}/{self.DAILY_API_LIMIT}"
             )
             return self.data or {"available": False}
 
