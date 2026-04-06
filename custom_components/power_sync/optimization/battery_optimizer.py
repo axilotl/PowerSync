@@ -486,7 +486,7 @@ class BatteryOptimizer:
         # Build schedule with action mapping
         schedule = self._build_schedule(
             n, grid_import, grid_export, battery_charge, battery_discharge,
-            solar, load, soc_0, import_prices
+            solar, load, soc_0, import_prices, export_prices
         )
 
         # Calculate costs for first 24 hours only (display as daily cost)
@@ -638,7 +638,7 @@ class BatteryOptimizer:
         # Build schedule
         schedule = self._build_schedule(
             n, grid_import, grid_export, battery_charge, battery_discharge,
-            solar, load, soc_0, import_prices
+            solar, load, soc_0, import_prices, export_prices
         )
 
         # Calculate costs for first 24 hours only (display as daily cost)
@@ -674,6 +674,7 @@ class BatteryOptimizer:
         load: list[float],
         soc_0: float,
         import_prices: list[float] | None = None,
+        export_prices: list[float] | None = None,
     ) -> OptimizationSchedule:
         """
         Map LP solution to battery actions.
