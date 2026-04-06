@@ -18323,7 +18323,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                                     if percent == 100:
                                         hass.async_create_task(_tesla_charge_kick("backup_reserve_100"))
                                     break
-                                elif response.status in (429, 500, 502, 503):
+                                elif response.status in (429, 500, 502, 503, 504):
                                     text = await response.text()
                                     _LOGGER.warning(
                                         "Tesla backup reserve attempt %d/3 failed for site %s: %s",
@@ -18412,7 +18412,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                                         hass.data[DOMAIN][entry.entry_id].pop("last_force_toggle_time", None)
                                         _LOGGER.debug("Cleared last_force_toggle_time (user set self_consumption)")
                                 break
-                            elif response.status in (429, 500, 502, 503):
+                            elif response.status in (429, 500, 502, 503, 504):
                                 _LOGGER.warning(
                                     "Tesla operation mode attempt %d/3 failed for site %s: %s",
                                     attempt, site_id, response.status,
