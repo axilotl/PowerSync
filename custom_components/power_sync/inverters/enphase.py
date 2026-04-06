@@ -131,6 +131,7 @@ class EnphaseController(InverterController):
                 "user[password]": self._password,
             }
 
+            _LOGGER.debug("Enlighten login: POST %s (email=%s)", self.ENLIGHTEN_LOGIN_URL, self._username)
             async with self._cloud_session.post(
                 self.ENLIGHTEN_LOGIN_URL,
                 data=login_data,
@@ -138,8 +139,13 @@ class EnphaseController(InverterController):
                 if response.status == 200:
                     result = await response.json()
                     session_id = result.get("session_id")
+                    # Log all response fields (except sensitive ones) for debugging installer vs owner
+                    safe_keys = {k: v for k, v in result.items() if k not in ("session_id",)}
+                    _LOGGER.info(
+                        "Enlighten login response: session_id=%s, fields=%s",
+                        "present" if session_id else "MISSING", safe_keys,
+                    )
                     if session_id:
-                        _LOGGER.info("Successfully authenticated with Enlighten cloud")
                         self._enlighten_session_id = session_id
                         return session_id
                     else:
@@ -188,6 +194,10 @@ class EnphaseController(InverterController):
                 token_data["is_installer"] = "true"
                 _LOGGER.info("Requesting installer-level token from Enlighten")
 
+            _LOGGER.info(
+                "Entrez token request: POST %s (serial=%s, username=%s, is_installer=%s, content_type=form-encoded)",
+                self.ENLIGHTEN_TOKEN_URL, serial, self._username, self._is_installer,
+            )
             async with self._cloud_session.post(
                 self.ENLIGHTEN_TOKEN_URL,
                 data=token_data,
@@ -198,16 +208,19 @@ class EnphaseController(InverterController):
                     if token and len(token) > 100:  # JWT tokens are long
                         self._token = token
                         self._token_obtained_at = datetime.now()
-                        # Log the token type (owner vs installer) for debugging
+                        # Decode and log JWT payload fields for debugging
                         token_type = self._get_token_type()
+                        jwt_info = self._decode_jwt_info()
                         _LOGGER.info(
-                            f"Successfully obtained JWT token from Enlighten for Envoy {serial} "
-                            f"(token_type={token_type}, is_installer_config={self._is_installer})"
+                            "Entrez token received: token_type=%s, is_installer_config=%s, "
+                            "jwt_fields=%s, token_len=%d",
+                            token_type, self._is_installer, jwt_info, len(token),
                         )
-                        if token_type == 'owner':
+                        if token_type == 'owner' and self._is_installer:
                             _LOGGER.warning(
-                                "Token is 'owner' type - /installer/ endpoints will NOT work. "
-                                "The Enlighten account must be a DIY/self-installer account, not a homeowner account."
+                                "Token is 'owner' type but installer was requested — "
+                                "/installer/ endpoints (AGF profile switching) will NOT work. "
+                                "Check that the Enlighten account has installer role."
                             )
                         # Update session cookie for /installer/ endpoints
                         self._update_session_cookie()
@@ -215,10 +228,13 @@ class EnphaseController(InverterController):
                         await self._validate_token_locally()
                         return token
                     else:
-                        _LOGGER.error(f"Invalid token response from Enlighten: {token[:100]}")
+                        _LOGGER.error(f"Invalid token response from Enlighten (len={len(token)}): {token[:100]}")
                 else:
                     text = await response.text()
-                    _LOGGER.error(f"Enlighten token request failed with status {response.status}: {text[:200]}")
+                    _LOGGER.error(
+                        "Entrez token request failed: status=%s, response=%s",
+                        response.status, text[:300],
+                    )
 
         except Exception as e:
             _LOGGER.error(f"Error getting token from Enlighten: {e}")
@@ -329,6 +345,35 @@ class EnphaseController(InverterController):
         except Exception as e:
             _LOGGER.debug(f"Failed to decode JWT token type: {e}")
             return None
+
+    def _decode_jwt_info(self) -> dict:
+        """Decode JWT payload and return non-sensitive fields for logging."""
+        if not self._token:
+            return {}
+        try:
+            parts = self._token.split('.')
+            if len(parts) != 3:
+                return {"error": "not a JWT"}
+            payload_b64 = parts[1]
+            padding = 4 - len(payload_b64) % 4
+            if padding != 4:
+                payload_b64 += '=' * padding
+            payload_json = base64.urlsafe_b64decode(payload_b64)
+            payload = json.loads(payload_json)
+            # Return useful fields, redact sensitive ones
+            safe_fields = {}
+            for key in ("enphaseUser", "aud", "iss", "jti", "username",
+                        "enphase_system_id", "enphase_site_id",
+                        "is_consumer", "is_installer"):
+                if key in payload:
+                    safe_fields[key] = payload[key]
+            if "exp" in payload:
+                safe_fields["exp"] = payload["exp"]
+            if "iat" in payload:
+                safe_fields["iat"] = payload["iat"]
+            return safe_fields
+        except Exception as e:
+            return {"decode_error": str(e)}
 
     def _update_session_cookie(self) -> None:
         """Update the session cookie with the current JWT token.
