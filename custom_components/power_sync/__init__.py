@@ -7254,20 +7254,27 @@ class WeatherSolcastSettingsView(HomeAssistantView):
             return web.json_response({"success": False, "error": "Not configured"}, status=503)
 
         opts = {**entry.data, **entry.options}
-        solcast_enabled = opts.get(CONF_SOLCAST_ENABLED, False)
+        builtin_enabled = opts.get(CONF_SOLCAST_ENABLED, False)
+
+        # Detect external Solcast HA integration (solcast_solar)
+        external_solcast = bool(self._hass.states.get("sensor.solcast_pv_forecast_forecast_today"))
+        solcast_source = "none"
+        if builtin_enabled:
+            solcast_source = "builtin"
+        elif external_solcast:
+            solcast_source = "integration"
+
         _LOGGER.info(
-            "Weather/Solcast GET: solcast_enabled=%s (data=%s, options=%s), api_key=%s, resource_id=%s",
-            solcast_enabled,
-            entry.data.get(CONF_SOLCAST_ENABLED),
-            entry.options.get(CONF_SOLCAST_ENABLED),
+            "Weather/Solcast GET: source=%s, builtin_enabled=%s, external_detected=%s, api_key=%s",
+            solcast_source, builtin_enabled, external_solcast,
             "set" if opts.get(CONF_SOLCAST_API_KEY) else "empty",
-            "set" if opts.get(CONF_SOLCAST_RESOURCE_ID) else "empty",
         )
         return web.json_response({
             "success": True,
             "weather_location": opts.get(CONF_WEATHER_LOCATION, ""),
             "openweathermap_api_key": opts.get(CONF_OPENWEATHERMAP_API_KEY, ""),
-            "solcast_enabled": bool(solcast_enabled),
+            "solcast_enabled": builtin_enabled or external_solcast,
+            "solcast_source": solcast_source,
             "solcast_api_key": opts.get(CONF_SOLCAST_API_KEY, ""),
             "solcast_resource_id": opts.get(CONF_SOLCAST_RESOURCE_ID, ""),
         })
