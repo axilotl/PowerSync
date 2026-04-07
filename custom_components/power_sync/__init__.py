@@ -10417,32 +10417,86 @@ class EVWidgetDataView(HomeAssistantView):
                         "surplus_kw": round(surplus_kw, 2),
                     })
 
-            # Check OCPP chargers
+            # Check OCPP chargers — built-in server
             ocpp_server = entry_data.get("ocpp_server")
             if ocpp_server:
                 try:
                     for cp_id, cp in ocpp_server.charge_points.items():
-                        if hasattr(cp, 'active_transaction') and cp.active_transaction:
-                            meter_w = getattr(cp, 'meter_power_w', 0) or 0
-                            power_kw = meter_w / 1000
-                            if power_kw > 0.05:
-                                if surplus_kw >= power_kw * 0.8:
-                                    ocpp_source = "solar"
-                                else:
-                                    ocpp_source = "grid"
-                                widget_data.append({
-                                    "vehicle_name": f"OCPP {cp_id[:8]}",
-                                    "is_charging": True,
-                                    "is_connected": True,
-                                    "current_soc": 0,
-                                    "target_soc": 80,
-                                    "current_power_kw": round(power_kw, 2),
-                                    "source": ocpp_source,
-                                    "eta_minutes": None,
-                                    "surplus_kw": round(surplus_kw, 2),
-                                })
+                        meter_w = getattr(cp, 'meter_power_w', 0) or 0
+                        power_kw = meter_w / 1000
+                        is_charging = power_kw > 0.05
+                        is_connected = is_charging or (hasattr(cp, 'active_transaction') and cp.active_transaction)
+                        if is_connected or is_charging:
+                            ocpp_source = "solar" if surplus_kw >= power_kw * 0.8 else "grid"
+                            widget_data.append({
+                                "vehicle_name": f"OCPP {cp_id[:8]}",
+                                "is_charging": is_charging,
+                                "is_connected": True,
+                                "current_soc": 0,
+                                "target_soc": 80,
+                                "current_power_kw": round(power_kw, 2),
+                                "source": ocpp_source if is_charging else "idle",
+                                "eta_minutes": None,
+                                "surplus_kw": round(surplus_kw, 2),
+                            })
                 except Exception as e:
-                    _LOGGER.debug(f"Error checking OCPP chargers for widget: {e}")
+                    _LOGGER.debug(f"Error checking built-in OCPP server for widget: {e}")
+
+            # Check HACS OCPP integration entities
+            # Looks for sensor.*_status, sensor.*_current_power from the ocpp platform
+            try:
+                from homeassistant.helpers import entity_registry as er
+                ent_reg = er.async_get(self._hass)
+                ocpp_chargers_found = {}
+                for entity in ent_reg.entities.values():
+                    if entity.platform != "ocpp":
+                        continue
+                    eid = entity.entity_id.lower()
+                    state = self._hass.states.get(entity.entity_id)
+                    if not state or state.state in ("unknown", "unavailable"):
+                        continue
+                    # Extract charger prefix (e.g. "my_charger" from "sensor.my_charger_status")
+                    prefix = None
+                    for suffix in ("_status", "_availability", "_current_power", "_charge_control"):
+                        if eid.endswith(suffix):
+                            prefix = eid.split(".", 1)[1].replace(suffix, "")
+                            break
+                    if not prefix:
+                        continue
+                    if prefix not in ocpp_chargers_found:
+                        ocpp_chargers_found[prefix] = {"name": prefix, "status": None, "power_kw": 0, "connected": False, "charging": False}
+                    charger = ocpp_chargers_found[prefix]
+                    if eid.endswith("_status"):
+                        charger["status"] = state.state.lower()
+                        charger["connected"] = state.state.lower() in ("preparing", "charging", "suspendedevse", "suspendedev", "finishing")
+                        charger["charging"] = state.state.lower() == "charging"
+                    elif eid.endswith("_current_power"):
+                        try:
+                            pwr = float(state.state)
+                            charger["power_kw"] = pwr / 1000 if pwr > 100 else pwr  # W or kW
+                        except (ValueError, TypeError):
+                            pass
+
+                for prefix, charger in ocpp_chargers_found.items():
+                    # Skip if already added from built-in OCPP server
+                    if any(prefix in (w.get("vehicle_name", "").lower()) for w in widget_data):
+                        continue
+                    if charger["connected"] or charger["charging"]:
+                        ocpp_source = "solar" if surplus_kw >= charger["power_kw"] * 0.8 else "grid"
+                        widget_data.append({
+                            "vehicle_name": f"OCPP {charger['name'][:12]}",
+                            "is_charging": charger["charging"],
+                            "is_connected": charger["connected"],
+                            "current_soc": 0,
+                            "target_soc": 80,
+                            "current_power_kw": round(charger["power_kw"], 2),
+                            "source": ocpp_source if charger["charging"] else "idle",
+                            "eta_minutes": None,
+                            "surplus_kw": round(surplus_kw, 2),
+                        })
+                        _LOGGER.debug("EV widget: HACS OCPP charger %s (status=%s, power=%.1fkW)", prefix, charger["status"], charger["power_kw"])
+            except Exception as e:
+                _LOGGER.debug(f"Error checking HACS OCPP integration for widget: {e}")
 
             # Check Tesla EV vehicles — per-vehicle data (power, SOC, connected status)
             tesla_vehicles = _get_ev_vehicles_status(self._hass, self._config_entry)
