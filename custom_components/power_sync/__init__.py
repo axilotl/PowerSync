@@ -6467,16 +6467,13 @@ def get_current_price_from_tariff_schedule(tariff_schedule: dict) -> tuple[float
             defined = sorted(v for v in sell_rates.values() if isinstance(v, (int, float)))
             sell_rate = defined[len(defined) // 2] if defined else 0.08
 
-        # Convert to cents if rates appear to be in $/kWh (< 1.0)
-        if buy_rate < 1.0:
-            buy_price_cents = round(buy_rate * 100, 2)
-        else:
-            buy_price_cents = buy_rate
-
-        if sell_rate < 1.0:
-            sell_price_cents = round(sell_rate * 100, 2)
-        else:
-            sell_price_cents = sell_rate
+        # Rates from Tesla tariff_content are always in $/kWh.
+        # The old heuristic (< 1.0 = $/kWh, >= 1.0 = cents) broke for
+        # high tariff rates like $2/kWh or $5/kWh (treated as 2c or 5c).
+        # Since all paths into this function store rates in $/kWh,
+        # always convert to cents.
+        buy_price_cents = round(buy_rate * 100, 2)
+        sell_price_cents = round(sell_rate * 100, 2)
 
         return (buy_price_cents, sell_price_cents, current_period)
 
