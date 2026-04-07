@@ -40,16 +40,15 @@ jobs:
           # Find the previous tag
           PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
           if [ -n "$PREV_TAG" ]; then
-            COMMITS=$(git log --pretty=format:"- %s" "$PREV_TAG"..HEAD -- custom_components/ | grep -v "Bump version")
+            RANGE="$PREV_TAG..HEAD"
           else
-            COMMITS=$(git log --pretty=format:"- %s" -20 -- custom_components/ | grep -v "Bump version")
+            RANGE="HEAD~20..HEAD"
           fi
 
-          # Write to file to preserve newlines
-          cat > /tmp/release_notes.md << 'HEADER'
-          ## What's Changed
-          HEADER
-          echo "$COMMITS" >> /tmp/release_notes.md
+          # Write release notes with full commit messages (subject + body)
+          echo "## What's Changed" > /tmp/release_notes.md
+          echo "" >> /tmp/release_notes.md
+          git log --pretty=format:"### %s%n%n%b%n---" "$RANGE" -- custom_components/ | grep -v "^### Bump version" | grep -v "^---$" | sed '/^$/N;/^\n$/d' >> /tmp/release_notes.md
 
       - name: Create tag and release
         if: steps.check_tag.outputs.exists == 'false'
