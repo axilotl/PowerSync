@@ -5068,6 +5068,8 @@ class PriceLevelChargingExecutor:
         if charger_type == "generic":
             params["charger_switch_entity"] = opts.get(CONF_GENERIC_CHARGER_SWITCH_ENTITY, "")
             params["charger_amps_entity"] = opts.get(CONF_GENERIC_CHARGER_AMPS_ENTITY, "")
+        elif charger_type == "ocpp":
+            params["ocpp_charger_id"] = opts.get("ocpp_charger_id", "ocpp_charger")
 
         try:
             success = await _action_start_ev_charging_dynamic(
@@ -5727,6 +5729,8 @@ class ScheduledChargingExecutor:
         if charger_type == "generic":
             params["charger_switch_entity"] = opts.get(CONF_GENERIC_CHARGER_SWITCH_ENTITY, "")
             params["charger_amps_entity"] = opts.get(CONF_GENERIC_CHARGER_AMPS_ENTITY, "")
+        elif charger_type == "ocpp":
+            params["ocpp_charger_id"] = opts.get("ocpp_charger_id", "ocpp_charger")
 
         try:
             success = await _action_start_ev_charging_dynamic(
@@ -5997,6 +6001,8 @@ class EVChargingModeCoordinator:
         if charger_type == "generic":
             params["charger_switch_entity"] = opts.get(CONF_GENERIC_CHARGER_SWITCH_ENTITY, "")
             params["charger_amps_entity"] = opts.get(CONF_GENERIC_CHARGER_AMPS_ENTITY, "")
+        elif charger_type == "ocpp":
+            params["ocpp_charger_id"] = opts.get("ocpp_charger_id", "ocpp_charger")
 
         try:
             success = await _action_start_ev_charging_dynamic(

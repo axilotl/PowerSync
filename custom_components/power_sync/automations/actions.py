@@ -1570,6 +1570,38 @@ async def _action_restore_inverter(
 # =============================================================================
 
 
+async def _start_ocpp_charging(hass: HomeAssistant, charger_id: str) -> bool:
+    """Start charging on an OCPP charger via its HA switch entity."""
+    entity_id = f"switch.{charger_id}_charge_control"
+    state = hass.states.get(entity_id)
+    if not state:
+        _LOGGER.error("OCPP start: entity %s not found", entity_id)
+        return False
+    try:
+        await hass.services.async_call("switch", "turn_on", {"entity_id": entity_id}, blocking=True)
+        _LOGGER.info("OCPP charger %s: start charging via %s", charger_id, entity_id)
+        return True
+    except Exception as e:
+        _LOGGER.error("OCPP start charging failed for %s: %s", charger_id, e)
+        return False
+
+
+async def _stop_ocpp_charging(hass: HomeAssistant, charger_id: str) -> bool:
+    """Stop charging on an OCPP charger via its HA switch entity."""
+    entity_id = f"switch.{charger_id}_charge_control"
+    state = hass.states.get(entity_id)
+    if not state:
+        _LOGGER.error("OCPP stop: entity %s not found", entity_id)
+        return False
+    try:
+        await hass.services.async_call("switch", "turn_off", {"entity_id": entity_id}, blocking=True)
+        _LOGGER.info("OCPP charger %s: stop charging via %s", charger_id, entity_id)
+        return True
+    except Exception as e:
+        _LOGGER.error("OCPP stop charging failed for %s: %s", charger_id, e)
+        return False
+
+
 async def _action_start_ev_charging(
     hass: HomeAssistant,
     config_entry: ConfigEntry,
@@ -1577,13 +1609,39 @@ async def _action_start_ev_charging(
     context: Optional[Dict[str, Any]] = None
 ) -> bool:
     """
-    Start EV charging via Tesla Fleet/Teslemetry or Tesla BLE.
+    Start EV charging via Tesla, OCPP, or generic charger.
 
-    Uses BLE if configured as primary or both, falls back to Fleet API.
+    Dispatches based on charger_type parameter. Tesla uses BLE/Fleet API,
+    OCPP uses HA switch entities, generic uses configured switch entity.
 
     Parameters:
         stop_outside_window: If True, schedule charging to stop at end of time window
     """
+    charger_type = params.get("charger_type", "tesla")
+
+    # OCPP charger: use HA switch entity
+    if charger_type == "ocpp":
+        ocpp_charger_id = params.get("ocpp_charger_id")
+        if not ocpp_charger_id:
+            _LOGGER.error("OCPP start: no charger ID configured")
+            return False
+        return await _start_ocpp_charging(hass, ocpp_charger_id)
+
+    # Generic charger: use configured switch entity
+    if charger_type == "generic":
+        switch_entity = params.get("charger_switch_entity")
+        if not switch_entity:
+            _LOGGER.error("Generic charger start: no switch entity configured")
+            return False
+        try:
+            await hass.services.async_call("switch", "turn_on", {"entity_id": switch_entity}, blocking=True)
+            _LOGGER.info("Generic charger started via %s", switch_entity)
+            return True
+        except Exception as e:
+            _LOGGER.error("Generic charger start failed: %s", e)
+            return False
+
+    # Tesla charger: existing logic below
     ev_config = _get_ev_config(config_entry)
     ev_provider = ev_config["ev_provider"]
     vehicle_vin = params.get("vehicle_vin")
@@ -1720,9 +1778,9 @@ async def _action_stop_ev_charging(
     params: Dict[str, Any]
 ) -> bool:
     """
-    Stop EV charging via Tesla Fleet/Teslemetry or Tesla BLE.
+    Stop EV charging via Tesla, OCPP, or generic charger.
 
-    Uses BLE if configured as primary or both, falls back to Fleet API.
+    Dispatches based on charger_type parameter.
     Also cancels any scheduled stop from stop_outside_window.
     """
     entry_id = config_entry.entry_id
@@ -1735,6 +1793,31 @@ async def _action_stop_ev_charging(
             _LOGGER.debug("Cancelled scheduled EV charging stop")
         del _ev_scheduled_stop[entry_id]
 
+    charger_type = params.get("charger_type", "tesla")
+
+    # OCPP charger
+    if charger_type == "ocpp":
+        ocpp_charger_id = params.get("ocpp_charger_id")
+        if not ocpp_charger_id:
+            _LOGGER.error("OCPP stop: no charger ID configured")
+            return False
+        return await _stop_ocpp_charging(hass, ocpp_charger_id)
+
+    # Generic charger
+    if charger_type == "generic":
+        switch_entity = params.get("charger_switch_entity")
+        if not switch_entity:
+            _LOGGER.error("Generic charger stop: no switch entity configured")
+            return False
+        try:
+            await hass.services.async_call("switch", "turn_off", {"entity_id": switch_entity}, blocking=True)
+            _LOGGER.info("Generic charger stopped via %s", switch_entity)
+            return True
+        except Exception as e:
+            _LOGGER.error("Generic charger stop failed: %s", e)
+            return False
+
+    # Tesla charger: existing logic below
     ev_config = _get_ev_config(config_entry)
     ev_provider = ev_config["ev_provider"]
     vehicle_vin = params.get("vehicle_vin")
@@ -1806,7 +1889,13 @@ async def _action_set_ev_charge_limit(
 ) -> bool:
     """
     Set EV charge limit percentage via Tesla Fleet/Teslemetry or Tesla BLE.
+    OCPP and generic chargers don't support charge limits — returns True (no-op).
     """
+    charger_type = params.get("charger_type", "tesla")
+    if charger_type in ("ocpp", "generic"):
+        _LOGGER.info("set_ev_charge_limit: not supported for %s chargers (no-op)", charger_type)
+        return True
+
     ev_config = _get_ev_config(config_entry)
     ev_provider = ev_config["ev_provider"]
     vehicle_vin = params.get("vehicle_vin")
@@ -1879,18 +1968,43 @@ async def _action_set_ev_charging_amps(
     params: Dict[str, Any]
 ) -> bool:
     """
-    Set EV charging amperage via Tesla Fleet/Teslemetry or Tesla BLE.
+    Set EV charging amperage via Tesla, OCPP, or generic charger.
     """
-    ev_config = _get_ev_config(config_entry)
-    ev_provider = ev_config["ev_provider"]
-    vehicle_vin = params.get("vehicle_vin")
-    ble_prefix = _resolve_ble_prefix_for_vehicle(hass, config_entry, vehicle_vin)
-
     # Accept both "amps" and "charging_amps" for flexibility
     amps = params.get("amps") or params.get("charging_amps")
     if amps is None:
         _LOGGER.error("set_ev_charging_amps: missing amps parameter")
         return False
+
+    charger_type = params.get("charger_type", "tesla")
+
+    # OCPP charger
+    if charger_type == "ocpp":
+        ocpp_charger_id = params.get("ocpp_charger_id")
+        if not ocpp_charger_id:
+            _LOGGER.error("OCPP set amps: no charger ID configured")
+            return False
+        return await _set_ocpp_charging_amps(hass, ocpp_charger_id, int(amps))
+
+    # Generic charger
+    if charger_type == "generic":
+        amps_entity = params.get("charger_amps_entity")
+        if not amps_entity:
+            _LOGGER.error("Generic charger set amps: no amps entity configured")
+            return False
+        try:
+            await hass.services.async_call("number", "set_value", {"entity_id": amps_entity, "value": int(amps)}, blocking=True)
+            _LOGGER.info("Generic charger set to %dA via %s", amps, amps_entity)
+            return True
+        except Exception as e:
+            _LOGGER.error("Generic charger set amps failed: %s", e)
+            return False
+
+    # Tesla charger: existing logic below
+    ev_config = _get_ev_config(config_entry)
+    ev_provider = ev_config["ev_provider"]
+    vehicle_vin = params.get("vehicle_vin")
+    ble_prefix = _resolve_ble_prefix_for_vehicle(hass, config_entry, vehicle_vin)
 
     # Clamp to valid range (5-48A typical, but allow up to 80A for some chargers)
     # Note: Tesla vehicles refuse charging below 5A, so we enforce 5A minimum
@@ -2373,7 +2487,12 @@ async def _set_vehicle_amps(
         if not ocpp_charger_id:
             _LOGGER.error("OCPP charger ID not configured")
             return False
-        return await _set_ocpp_charging_amps(hass, ocpp_charger_id, amps)
+        if amps == 0:
+            return await _stop_ocpp_charging(hass, ocpp_charger_id)
+        # Set amps then ensure charger is on (idempotent)
+        amps_ok = await _set_ocpp_charging_amps(hass, ocpp_charger_id, amps)
+        await _start_ocpp_charging(hass, ocpp_charger_id)
+        return amps_ok
 
     elif charger_type == "generic":
         # Use HA service calls to switch and number entities
