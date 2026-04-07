@@ -1658,6 +1658,9 @@ async def _action_start_ev_charging(
                 # Vehicle has reached its charge limit — not an error
                 _LOGGER.info(f"EV charging is complete (at target SOC) — skipping start")
                 return False
+            elif "disconnected" in str(e).lower() or "not_plugged" in str(e).lower():
+                _LOGGER.info(f"EV not plugged in — skipping start charge")
+                return False
             else:
                 _LOGGER.error(f"Failed to start EV charging: {e}")
 
@@ -3410,7 +3413,7 @@ async def _action_start_ev_charging_dynamic_locked(
     if dynamic_mode == "battery_target":
         start_success = await _action_start_ev_charging(hass, config_entry, params, context)
         if not start_success:
-            _LOGGER.error("Dynamic EV: Failed to start EV charging")
+            _LOGGER.info("Dynamic EV: Could not start EV charging (vehicle may be disconnected)")
             return False
 
         # Set initial amps
