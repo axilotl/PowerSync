@@ -11740,11 +11740,28 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     return True
 
 
+_last_api_error_notification: dict[str, float] = {}
+_API_ERROR_COOLDOWN_SECONDS = 300  # 5 minutes between same notification
+
 async def _notify_api_error(hass, title: str, message: str) -> None:
-    """Send push notification for API errors."""
+    """Send push notification for API errors with cooldown to prevent spam.
+
+    Tesla's Fleet API can return 504 Gateway Timeout in bursts (e.g. at the
+    top of each hour). Without cooldown, the user gets multiple identical
+    notifications within seconds. This deduplicates by title — same error
+    title is suppressed for 5 minutes after the first notification.
+    """
+    import time
+    now = time.time()
+    last_sent = _last_api_error_notification.get(title, 0)
+    if now - last_sent < _API_ERROR_COOLDOWN_SECONDS:
+        _LOGGER.debug("Suppressing duplicate notification '%s' (cooldown %ds remaining)", title, int(_API_ERROR_COOLDOWN_SECONDS - (now - last_sent)))
+        return
+
     try:
         from .automations.actions import _send_expo_push
         await _send_expo_push(hass, f"⚠️ {title}", message)
+        _last_api_error_notification[title] = now
     except Exception:
         pass  # Don't let notification failures cascade
 
