@@ -2361,41 +2361,6 @@ async def send_tariff_to_tesla(
                         max_retries
                     )
                     _LOGGER.debug("Tesla API response: %s", result)
-
-                    # Re-apply user's grid charging preference after tariff upload.
-                    # Tesla firmware re-enables grid charging when it sees profitable
-                    # TOU arbitrage, overriding the user's toggle.
-                    # Skip if optimizer is active — it controls grid charging itself
-                    # (force_charge requires grid charging enabled).
-                    try:
-                        for _entry in hass.config_entries.async_entries(DOMAIN):
-                            _entry_data = hass.data.get(DOMAIN, {}).get(_entry.entry_id, {})
-                            user_gc = _entry_data.get("user_grid_charging_enabled")
-                            opt_coordinator = _entry_data.get("optimization_coordinator")
-                            optimizer_active = opt_coordinator and getattr(opt_coordinator, '_enabled', False)
-                            force_active = (
-                                _entry_data.get("force_charge_state", {}).get("active", False) or
-                                _entry_data.get("force_discharge_state", {}).get("active", False)
-                            )
-
-                            if user_gc is not None and not user_gc and not optimizer_active and not force_active:
-                                # User disabled grid charging, no optimizer/force mode — re-apply
-                                await asyncio.sleep(2)  # Brief delay for Tesla to process tariff
-                                gc_url = f"{api_base}/api/1/energy_sites/{site_id}/grid_import_export"
-                                async with session.post(
-                                    gc_url,
-                                    headers=headers,
-                                    json={"disallow_charge_from_grid_with_solar_installed": True},
-                                    timeout=aiohttp.ClientTimeout(total=30),
-                                ) as gc_resp:
-                                    if gc_resp.status == 200:
-                                        _LOGGER.info("Re-applied grid charging=disabled after tariff sync for site %s", site_id)
-                                    else:
-                                        _LOGGER.warning("Failed to re-apply grid charging after tariff sync: %s", gc_resp.status)
-                            break  # Only need the first entry
-                    except Exception as gc_err:
-                        _LOGGER.debug("Could not re-apply grid charging preference: %s", gc_err)
-
                     return True
 
                 # Log error and potentially retry
@@ -18568,12 +18533,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         enabled = bool(enabled)
 
         _LOGGER.info(f"🔌 Setting grid charging to {'enabled' if enabled else 'disabled'}")
-
-        # Persist user's grid charging preference so we can re-apply after tariff refreshes
-        # (Tesla firmware re-enables grid charging when it sees profitable TOU arbitrage)
-        entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
-        entry_data["user_grid_charging_enabled"] = enabled
-        _LOGGER.info("Persisted user grid charging preference: %s", enabled)
 
         try:
             site_configs = _get_tesla_site_configs(hass, entry)
