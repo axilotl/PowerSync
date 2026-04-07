@@ -3289,6 +3289,7 @@ class BatteryModeSensor(SensorEntity):
         # Add mode-specific attributes
         if mode == BATTERY_MODE_STATE_FORCE_CHARGE:
             attributes["description"] = "Battery is being force charged"
+            attributes["force_duration_minutes"] = force_charge_state.get("duration", 0)
             if force_charge_state.get("expires_at"):
                 expires_at = force_charge_state["expires_at"]
                 attributes["expires_at"] = expires_at.isoformat() if hasattr(expires_at, 'isoformat') else str(expires_at)
@@ -3299,6 +3300,7 @@ class BatteryModeSensor(SensorEntity):
                 attributes["force_remaining_minutes"] = attributes["remaining_minutes"]
         elif mode == BATTERY_MODE_STATE_FORCE_DISCHARGE:
             attributes["description"] = "Battery is being force discharged"
+            attributes["force_duration_minutes"] = force_discharge_state.get("duration", 0)
             if force_discharge_state.get("expires_at"):
                 expires_at = force_discharge_state["expires_at"]
                 attributes["expires_at"] = expires_at.isoformat() if hasattr(expires_at, 'isoformat') else str(expires_at)
