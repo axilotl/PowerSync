@@ -1147,20 +1147,30 @@ async def _action_enable_optimizer(
     hass: HomeAssistant,
     config_entry: ConfigEntry,
 ) -> bool:
-    """Enable the LP optimizer via config entry options."""
-    from ..const import DOMAIN, CONF_OPTIMIZATION_ENABLED, CONF_OPTIMIZATION_PROVIDER, OPT_PROVIDER_POWERSYNC
+    """Enable the LP optimizer via opt_coordinator.set_settings().
+
+    Uses the same code path as the mobile app to avoid triggering a full
+    integration reload. The set_settings() method sets _skip_reload before
+    updating the config entry, so the options listener skips the reload.
+    """
+    from ..const import DOMAIN
 
     try:
-        new_data = dict(config_entry.data)
-        new_options = dict(config_entry.options)
-        was_enabled = new_options.get(CONF_OPTIMIZATION_ENABLED, False)
-        if was_enabled:
-            _LOGGER.info("enable_optimizer: optimizer already enabled")
-            return True
-        new_data[CONF_OPTIMIZATION_PROVIDER] = OPT_PROVIDER_POWERSYNC
-        new_options[CONF_OPTIMIZATION_ENABLED] = True
-        hass.config_entries.async_update_entry(config_entry, data=new_data, options=new_options)
-        _LOGGER.info("Optimizer enabled via automation action")
+        entry_data = hass.data.get(DOMAIN, {}).get(config_entry.entry_id, {})
+        opt_coordinator = entry_data.get("optimization_coordinator")
+        if opt_coordinator:
+            await opt_coordinator.set_settings({"enabled": True})
+            _LOGGER.info("Optimizer enabled via automation action (set_settings path)")
+        else:
+            # Fallback: no coordinator yet, update config directly with skip flag
+            entry_data["_skip_reload"] = True
+            from ..const import CONF_OPTIMIZATION_ENABLED, CONF_OPTIMIZATION_PROVIDER, OPT_PROVIDER_POWERSYNC
+            new_data = dict(config_entry.data)
+            new_options = dict(config_entry.options)
+            new_data[CONF_OPTIMIZATION_PROVIDER] = OPT_PROVIDER_POWERSYNC
+            new_options[CONF_OPTIMIZATION_ENABLED] = True
+            hass.config_entries.async_update_entry(config_entry, data=new_data, options=new_options)
+            _LOGGER.info("Optimizer enabled via automation action (direct config path)")
         return True
     except Exception as e:
         _LOGGER.error(f"Failed to enable optimizer: {e}")
@@ -1171,20 +1181,29 @@ async def _action_disable_optimizer(
     hass: HomeAssistant,
     config_entry: ConfigEntry,
 ) -> bool:
-    """Disable the LP optimizer and restore normal battery operation."""
-    from ..const import DOMAIN, CONF_OPTIMIZATION_ENABLED, CONF_OPTIMIZATION_PROVIDER, OPT_PROVIDER_NATIVE, SERVICE_RESTORE_NORMAL
+    """Disable the LP optimizer and restore normal battery operation.
+
+    Uses opt_coordinator.set_settings() to avoid triggering a full
+    integration reload (same path as the mobile app).
+    """
+    from ..const import DOMAIN, SERVICE_RESTORE_NORMAL
 
     try:
-        new_data = dict(config_entry.data)
-        new_options = dict(config_entry.options)
-        was_enabled = new_options.get(CONF_OPTIMIZATION_ENABLED, True)
-        if not was_enabled:
-            _LOGGER.info("disable_optimizer: optimizer already disabled")
-            return True
-        new_data[CONF_OPTIMIZATION_PROVIDER] = OPT_PROVIDER_NATIVE
-        new_options[CONF_OPTIMIZATION_ENABLED] = False
-        hass.config_entries.async_update_entry(config_entry, data=new_data, options=new_options)
-        _LOGGER.info("Optimizer disabled via automation action")
+        entry_data = hass.data.get(DOMAIN, {}).get(config_entry.entry_id, {})
+        opt_coordinator = entry_data.get("optimization_coordinator")
+        if opt_coordinator:
+            await opt_coordinator.set_settings({"enabled": False})
+            _LOGGER.info("Optimizer disabled via automation action (set_settings path)")
+        else:
+            # Fallback: no coordinator, update config directly with skip flag
+            entry_data["_skip_reload"] = True
+            from ..const import CONF_OPTIMIZATION_ENABLED, CONF_OPTIMIZATION_PROVIDER, OPT_PROVIDER_NATIVE
+            new_data = dict(config_entry.data)
+            new_options = dict(config_entry.options)
+            new_data[CONF_OPTIMIZATION_PROVIDER] = OPT_PROVIDER_NATIVE
+            new_options[CONF_OPTIMIZATION_ENABLED] = False
+            hass.config_entries.async_update_entry(config_entry, data=new_data, options=new_options)
+            _LOGGER.info("Optimizer disabled via automation action (direct config path)")
         # Restore normal battery operation so the battery isn't stuck in a forced mode
         try:
             await hass.services.async_call(DOMAIN, SERVICE_RESTORE_NORMAL, {}, blocking=True)
