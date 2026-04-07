@@ -10455,9 +10455,9 @@ class EVWidgetDataView(HomeAssistantView):
 
             # Add Tesla vehicles that are connected or charging
             # Skip vehicles already represented in widget_data (by name) to avoid duplicates
-            existing_names = {w["vehicle_name"].lower() for w in widget_data}
+            existing_names = {(w.get("vehicle_name") or "").lower() for w in widget_data}
             for tv in tesla_vehicles:
-                if tv["vehicle_name"].lower() in existing_names:
+                if (tv.get("vehicle_name") or "").lower() in existing_names:
                     continue
                 if not tv["is_connected"] and not tv["is_charging"]:
                     continue  # Skip vehicles not plugged in
