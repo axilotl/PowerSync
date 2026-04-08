@@ -805,6 +805,10 @@ class FoxESSController(InverterController):
                 await self._write_holding_register(reg.remote_enable, enable_val)
                 if reg.remote_timeout:
                     await self._write_holding_register(reg.remote_timeout, timeout_seconds)
+                # H3-Smart silently clears reg 46003/4 if the power setpoint
+                # arrives before the inverter finishes processing remote_enable.
+                # A brief sleep prevents this race condition.
+                await asyncio.sleep(0.5)
 
             # Write active power
             write_val = power_val

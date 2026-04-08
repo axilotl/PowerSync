@@ -918,6 +918,31 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     new_expiry = dt_util.utcnow() + timedelta(minutes=self._config.interval_minutes + 5)
                     _ext_state["expires_at"] = new_expiry
 
+                    # Re-issue Modbus writes for hardware-controlled inverters
+                    # (FoxESS, Sigenergy, Sungrow). Their hardware countdown
+                    # expires independently of the software timer — if we only
+                    # extend the software timer, the inverter stops when its
+                    # internal timeout hits.
+                    if battery and hasattr(battery, "force_charge") and self.battery_system not in ("tesla",):
+                        extend_mins = self._config.interval_minutes + 5
+                        try:
+                            if force_type == "charge":
+                                await battery.force_charge(
+                                    duration_minutes=extend_mins,
+                                    power_w=action.power_w,
+                                )
+                            else:
+                                await battery.force_discharge(
+                                    duration_minutes=extend_mins,
+                                    power_w=action.power_w,
+                                )
+                            _LOGGER.debug(
+                                "Optimizer: re-issued Modbus %s command for hardware timer extension (%dmin)",
+                                force_type, extend_mins,
+                            )
+                        except Exception as ext_err:
+                            _LOGGER.warning("Optimizer: failed to re-issue Modbus %s for extension: %s", force_type, ext_err)
+
                     async def _auto_restore_extended(_now):
                         if _ext_state.get("active"):
                             _LOGGER.info("⏰ Force %s expired (extended timer), auto-restoring", force_type)
