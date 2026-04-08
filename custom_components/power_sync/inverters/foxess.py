@@ -791,7 +791,7 @@ class FoxESSController(InverterController):
         reads back remote_enable to confirm. Retries once on verification
         failure (covers silent Modbus collisions from concurrent integrations).
         """
-        max_attempts = 2
+        max_attempts = 3
         for attempt in range(1, max_attempts + 1):
             # Enable remote control
             # H3-Pro/H3-Smart: use grid/CT target (0x0009) so the power setpoint
@@ -825,26 +825,64 @@ class FoxESSController(InverterController):
                     continue
                 return False
 
-            # Verify: read back remote_enable to confirm the inverter accepted it
+            # Verify step 1: read back remote_enable to confirm register write
             if reg.remote_enable:
                 await asyncio.sleep(0.5)
                 verify = await self._read_holding_registers(reg.remote_enable, 1)
-                if verify and verify[0] == enable_val:
-                    _LOGGER.info(
-                        "FoxESS %s activated for %d minutes (timeout %ds)%s",
-                        label, duration_minutes, timeout_seconds,
-                        "" if attempt == 1 else f" (attempt {attempt})",
-                    )
-                    return True
-                else:
+                if not verify or verify[0] != enable_val:
                     _LOGGER.warning(
-                        "FoxESS %s verify failed: remote_enable=%s (attempt %d/%d)",
-                        label, verify, attempt, max_attempts,
+                        "FoxESS %s register verify failed: remote_enable=%s expected=%s (attempt %d/%d)",
+                        label, verify, enable_val, attempt, max_attempts,
                     )
                     if attempt < max_attempts:
                         await asyncio.sleep(1)
                         continue
                     return False
+
+                # Verify step 2: read back active power after a longer delay to
+                # confirm the inverter actually actioned the remote control command.
+                # FoxESS H3-Smart can acknowledge the register write but not switch
+                # mode if the firmware is in a transitional state.
+                await asyncio.sleep(2)
+                if reg.remote_active_power_is_32bit:
+                    power_readback = await self._read_holding_registers(reg.remote_active_power, 2)
+                    if power_readback and len(power_readback) == 2:
+                        rb_val = (power_readback[0] << 16) | power_readback[1]
+                        if rb_val > 0x7FFFFFFF:
+                            rb_val -= 0x100000000
+                        _LOGGER.debug(
+                            "FoxESS %s power readback: wrote=%d read=%d",
+                            label, power_val, rb_val,
+                        )
+                        if rb_val != power_val:
+                            _LOGGER.warning(
+                                "FoxESS %s power verify mismatch: wrote %d, read %d (attempt %d/%d) — retrying",
+                                label, power_val, rb_val, attempt, max_attempts,
+                            )
+                            if attempt < max_attempts:
+                                await asyncio.sleep(2)
+                                continue
+                            # Final attempt failed — log but still return True
+                            # (register write succeeded, inverter may catch up)
+                            _LOGGER.warning(
+                                "FoxESS %s power verify still mismatched after %d attempts — "
+                                "inverter may not have actioned the command",
+                                label, max_attempts,
+                            )
+                else:
+                    power_readback = await self._read_holding_registers(reg.remote_active_power, 1)
+                    if power_readback:
+                        rb_val = power_readback[0]
+                        if rb_val > 0x7FFF:
+                            rb_val -= 0x10000
+                        _LOGGER.debug("FoxESS %s power readback: wrote=%d read=%d", label, power_val, rb_val)
+
+                _LOGGER.info(
+                    "FoxESS %s activated for %d minutes (timeout %ds)%s",
+                    label, duration_minutes, timeout_seconds,
+                    "" if attempt == 1 else f" (attempt {attempt})",
+                )
+                return True
             else:
                 # No remote_enable register to verify — trust the write
                 _LOGGER.info("FoxESS %s activated for %d minutes (timeout %ds)", label, duration_minutes, timeout_seconds)
