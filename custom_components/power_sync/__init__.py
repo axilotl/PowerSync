@@ -16344,6 +16344,39 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             duration = DEFAULT_DISCHARGE_DURATION
 
         source = call.data.get("source", "user")
+        extend_hardware = call.data.get("_extend_hardware", False)
+
+        # Hardware extension: optimizer is extending an active force discharge.
+        # Only re-issue Modbus writes to reset the inverter's hardware timer.
+        if extend_hardware and force_discharge_state.get("active"):
+            entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+            power_w = call.data.get("power_w", 0)
+            foxess_coord = entry_data.get("foxess_coordinator")
+            if foxess_coord:
+                await foxess_coord.force_discharge(duration, power_w=power_w)
+                _LOGGER.debug(f"FoxESS force discharge hardware extended ({duration}min, {power_w}W)")
+                return
+            sig_coord = entry_data.get("sigenergy_coordinator")
+            if sig_coord:
+                from .inverters.sigenergy import SigenergyController
+                controller = SigenergyController(sig_coord.client)
+                power_kw = power_w / 1000 if power_w > 0 else 10.0
+                await controller.force_discharge(power_kw=power_kw)
+                await controller.disconnect()
+                _LOGGER.debug(f"Sigenergy force discharge hardware extended ({duration}min)")
+                return
+            sungrow_coord = entry_data.get("sungrow_coordinator")
+            if sungrow_coord:
+                await sungrow_coord.force_discharge(duration, power_w=power_w)
+                _LOGGER.debug(f"Sungrow force discharge hardware extended ({duration}min)")
+                return
+            goodwe_coord = entry_data.get("goodwe_coordinator")
+            if goodwe_coord:
+                await goodwe_coord.force_discharge(duration, power_w=power_w)
+                _LOGGER.debug(f"GoodWe force discharge hardware extended ({duration}min)")
+                return
+            _LOGGER.warning("_extend_hardware: no coordinator found, falling through to full handler")
+
         _LOGGER.info(f"🔋 FORCE DISCHARGE: Activating for {duration} minutes (source={source})")
 
         # Set force discharge state IMMEDIATELY so the optimizer sees it
@@ -17018,6 +17051,42 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             duration = DEFAULT_DISCHARGE_DURATION
 
         source = call.data.get("source", "user")
+        extend_hardware = call.data.get("_extend_hardware", False)
+
+        # Hardware extension: optimizer is extending an active force charge.
+        # Only re-issue Modbus writes to reset the inverter's hardware timer.
+        # Skip all state management, timer setup, and dispatcher signals —
+        # the optimizer coordinator manages those.
+        if extend_hardware and force_charge_state.get("active"):
+            entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+            power_w = call.data.get("power_w", 0)
+            foxess_coord = entry_data.get("foxess_coordinator")
+            if foxess_coord:
+                await foxess_coord.force_charge(duration, power_w=power_w)
+                _LOGGER.debug(f"FoxESS force charge hardware extended ({duration}min, {power_w}W)")
+                return
+            sig_coord = entry_data.get("sigenergy_coordinator")
+            if sig_coord:
+                from .inverters.sigenergy import SigenergyController
+                controller = SigenergyController(sig_coord.client)
+                power_kw = power_w / 1000 if power_w > 0 else 10.0
+                await controller.force_charge(power_kw=power_kw)
+                await controller.disconnect()
+                _LOGGER.debug(f"Sigenergy force charge hardware extended ({duration}min)")
+                return
+            sungrow_coord = entry_data.get("sungrow_coordinator")
+            if sungrow_coord:
+                await sungrow_coord.force_charge(duration, power_w=power_w)
+                _LOGGER.debug(f"Sungrow force charge hardware extended ({duration}min)")
+                return
+            goodwe_coord = entry_data.get("goodwe_coordinator")
+            if goodwe_coord:
+                await goodwe_coord.force_charge(duration, power_w=power_w)
+                _LOGGER.debug(f"GoodWe force charge hardware extended ({duration}min)")
+                return
+            # Fallback: no coordinator found, proceed with full handler
+            _LOGGER.warning("_extend_hardware: no coordinator found, falling through to full handler")
+
         _LOGGER.info(f"🔌 FORCE CHARGE: Activating for {duration} minutes (source={source})")
 
         # Block force charge during demand peak periods (grid charging must stay off)
