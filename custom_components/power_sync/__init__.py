@@ -16227,6 +16227,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 if mode == "charge":
                     force_charge_state["active"] = True
                     force_charge_state["expires_at"] = expires_at
+                    force_charge_state["duration"] = persisted_force_state.get("duration", int(remaining_minutes))
                     force_charge_state["source"] = persisted_force_state.get("source", "user")
                     force_charge_state["saved_tariff"] = persisted_force_state.get("saved_tariff")
                     force_charge_state["saved_operation_mode"] = persisted_force_state.get("saved_operation_mode")
@@ -16268,6 +16269,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 elif mode == "discharge":
                     force_discharge_state["active"] = True
                     force_discharge_state["expires_at"] = expires_at
+                    force_discharge_state["duration"] = persisted_force_state.get("duration", int(remaining_minutes))
                     force_discharge_state["source"] = persisted_force_state.get("source", "user")
                     force_discharge_state["saved_tariff"] = persisted_force_state.get("saved_tariff")
                     force_discharge_state["saved_operation_mode"] = persisted_force_state.get("saved_operation_mode")
@@ -16349,6 +16351,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         was_already_force_discharging = force_discharge_state.get("active", False)
         force_discharge_state["active"] = True
         force_discharge_state["source"] = source
+        force_discharge_state["duration"] = duration
 
         # Check if this is a Sigenergy system
         is_sigenergy = bool(entry.data.get(CONF_SIGENERGY_STATION_ID))
@@ -16442,6 +16445,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 if discharge_result:
                     force_discharge_state["active"] = True
                     force_discharge_state["source"] = source
+                    force_discharge_state["duration"] = duration
                     force_discharge_state["expires_at"] = dt_util.utcnow() + timedelta(minutes=duration)
                     _LOGGER.info(f"FoxESS FORCE DISCHARGE ACTIVE for {duration} minutes (power_w={power_w})")
 
@@ -17038,6 +17042,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         was_already_force_charging = force_charge_state.get("active", False)
         force_charge_state["active"] = True
         force_charge_state["source"] = source
+        force_charge_state["duration"] = duration
 
         # Check if this is a Sigenergy system
         is_sigenergy = bool(entry.data.get(CONF_SIGENERGY_STATION_ID))
@@ -17149,6 +17154,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 if charge_result:
                     force_charge_state["active"] = True
                     force_charge_state["source"] = source
+                    force_charge_state["duration"] = duration
                     force_charge_state["expires_at"] = dt_util.utcnow() + timedelta(minutes=duration)
                     _LOGGER.info(f"FoxESS FORCE CHARGE ACTIVE for {duration} minutes (power_w={power_w})")
 
