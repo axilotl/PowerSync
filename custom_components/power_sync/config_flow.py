@@ -2400,30 +2400,19 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             current_tesla_provider = self.config_entry.data.get(CONF_TESLA_API_PROVIDER, TESLA_PROVIDER_TESLEMETRY)
             current_token = self.config_entry.data.get(CONF_TESLEMETRY_API_TOKEN)
 
-            # Switching TO PowerSync from another provider — need a psync_ token
-            if self._tesla_provider == TESLA_PROVIDER_POWERSYNC and (
-                current_tesla_provider != TESLA_PROVIDER_POWERSYNC
-                or not current_token
-                or not current_token.startswith("psync_")
-            ):
+            # If user picked PowerSync, route to the token entry step.
+            # The step itself accepts an empty submission to keep the current
+            # token if it's already a valid psync_ token.
+            if self._tesla_provider == TESLA_PROVIDER_POWERSYNC:
                 return await self.async_step_powersync_token()
 
-            # Switching TO Teslemetry from another provider — need a Teslemetry token
-            if self._tesla_provider == TESLA_PROVIDER_TESLEMETRY and (
-                current_tesla_provider != TESLA_PROVIDER_TESLEMETRY
-                or not current_token
-                or current_token.startswith("psync_")
-            ):
+            # Same for Teslemetry — always show the token step so the user can
+            # optionally rotate it. Empty submission keeps the current token.
+            if self._tesla_provider == TESLA_PROVIDER_TESLEMETRY:
                 return await self.async_step_teslemetry_token()
 
-            # Update config entry data with new Tesla provider and optimization provider
+            # Fleet API — no token entry needed
             new_data = dict(self.config_entry.data)
-
-            # Update Teslemetry token if provided
-            new_token = user_input.get("update_teslemetry_token", "").strip()
-            if new_token:
-                new_data[CONF_TESLEMETRY_API_TOKEN] = new_token
-                _LOGGER.info("Teslemetry API token updated via options flow")
             if self._tesla_provider != current_tesla_provider:
                 new_data[CONF_TESLA_API_PROVIDER] = self._tesla_provider
             new_data[CONF_OPTIMIZATION_PROVIDER] = optimization_provider
@@ -2498,15 +2487,8 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                         CONF_OPTIMIZATION_BACKUP_RESERVE,
                         default=int(current_backup_reserve * 100) if current_backup_reserve < 1 else int(current_backup_reserve),
                     ): vol.All(vol.Coerce(int), vol.Range(min=0, max=100)),
-                    vol.Optional(
-                        "update_teslemetry_token",
-                        default="",
-                    ): str,
                 }
             ),
-            description_placeholders={
-                "teslemetry_hint": "Paste a new Teslemetry API token to update it (leave blank to keep current)",
-            },
         )
 
     async def async_step_init_sigenergy(
@@ -3066,19 +3048,48 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             errors=errors,
         )
 
+    async def _async_route_to_provider_options(self) -> FlowResult:
+        """Continue the options flow into the electricity-provider-specific step."""
+        if self._provider == "amber":
+            return await self.async_step_amber_options()
+        if self._provider == "flow_power":
+            return await self.async_step_flow_power_options()
+        if self._provider in ("globird", "aemo_vpp"):
+            return await self.async_step_globird_options()
+        if self._provider == "localvolts":
+            return await self.async_step_localvolts_options()
+        if self._provider == "octopus":
+            return await self.async_step_octopus_options()
+        if self._provider == "epex":
+            return await self.async_step_epex_options()
+        if self._provider == "nz":
+            return await self.async_step_nz_options()
+        return await self.async_step_amber_options()
+
     async def async_step_powersync_token(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         """Step to enter a PowerSync.cc proxy token (options flow path).
 
-        Triggered when a user switches their Tesla provider to PowerSync from
-        the integration's Configure page. Validates the token by hitting the
-        proxy's /api/1/products endpoint.
+        Shown whenever the user picks PowerSync as the Tesla provider in the
+        options flow. If a valid psync_ token is already saved, the user can
+        submit empty to keep it. Otherwise they must paste a new one.
         """
         errors: dict[str, str] = {}
+        current_token = self.config_entry.data.get(CONF_TESLEMETRY_API_TOKEN, "") or ""
+        has_current_powersync_token = current_token.startswith("psync_")
 
         if user_input is not None:
             token = user_input.get(CONF_TESLEMETRY_API_TOKEN, "").strip()
+
+            if not token and has_current_powersync_token:
+                # Empty submission + existing token → keep the current one
+                new_data = dict(self.config_entry.data)
+                new_data[CONF_TESLA_API_PROVIDER] = TESLA_PROVIDER_POWERSYNC
+                self.hass.config_entries.async_update_entry(
+                    self.config_entry, data=new_data
+                )
+                return await self._async_route_to_provider_options()
 
             if not token:
                 errors["base"] = "no_token_provided"
@@ -3091,30 +3102,20 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     self.hass.config_entries.async_update_entry(
                         self.config_entry, data=new_data
                     )
+                    return await self._async_route_to_provider_options()
+                errors["base"] = validation_result.get("error", "unknown")
 
-                    # Route to provider-specific step
-                    if self._provider == "amber":
-                        return await self.async_step_amber_options()
-                    if self._provider == "flow_power":
-                        return await self.async_step_flow_power_options()
-                    if self._provider in ("globird", "aemo_vpp"):
-                        return await self.async_step_globird_options()
-                    if self._provider == "localvolts":
-                        return await self.async_step_localvolts_options()
-                    if self._provider == "octopus":
-                        return await self.async_step_octopus_options()
-                    if self._provider == "epex":
-                        return await self.async_step_epex_options()
-                    if self._provider == "nz":
-                        return await self.async_step_nz_options()
-                else:
-                    errors["base"] = validation_result.get("error", "unknown")
+        # Use the same step_id whether we're updating or fresh
+        step_id = "powersync_token_update" if has_current_powersync_token else "powersync_token"
 
         return self.async_show_form(
-            step_id="powersync_token",
+            step_id=step_id,
             data_schema=vol.Schema(
                 {
-                    vol.Required(CONF_TESLEMETRY_API_TOKEN): TextSelector(
+                    vol.Optional(
+                        CONF_TESLEMETRY_API_TOKEN,
+                        default="",
+                    ): TextSelector(
                         TextSelectorConfig(type=TextSelectorType.PASSWORD)
                     ),
                 }
@@ -3128,53 +3129,53 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
     async def async_step_teslemetry_token(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Step to enter Teslemetry API token."""
-        errors = {}
+        """Step to enter a Teslemetry API token (options flow path).
+
+        Shown whenever the user picks Teslemetry as the Tesla provider in the
+        options flow. If a valid Teslemetry token is already saved, the user
+        can submit empty to keep it. Otherwise they must paste a new one.
+        """
+        errors: dict[str, str] = {}
+        current_token = self.config_entry.data.get(CONF_TESLEMETRY_API_TOKEN, "") or ""
+        # A "current Teslemetry token" is one that's set and isn't a psync_ token
+        has_current_teslemetry_token = bool(current_token) and not current_token.startswith("psync_")
 
         if user_input is not None:
             token = user_input.get(CONF_TESLEMETRY_API_TOKEN, "").strip()
 
+            if not token and has_current_teslemetry_token:
+                # Keep current token, just update provider
+                new_data = dict(self.config_entry.data)
+                new_data[CONF_TESLA_API_PROVIDER] = TESLA_PROVIDER_TESLEMETRY
+                self.hass.config_entries.async_update_entry(
+                    self.config_entry, data=new_data
+                )
+                return await self._async_route_to_provider_options()
+
             if not token:
                 errors["base"] = "no_token_provided"
             else:
-                # Validate token by testing API
-                session = async_get_clientsession(self.hass)
-                headers = {"Authorization": f"Bearer {token}"}
+                validation_result = await validate_teslemetry_token(self.hass, token)
+                if validation_result["success"]:
+                    new_data = dict(self.config_entry.data)
+                    new_data[CONF_TESLA_API_PROVIDER] = TESLA_PROVIDER_TESLEMETRY
+                    new_data[CONF_TESLEMETRY_API_TOKEN] = token
+                    self.hass.config_entries.async_update_entry(
+                        self.config_entry, data=new_data
+                    )
+                    return await self._async_route_to_provider_options()
+                errors["base"] = validation_result.get("error", "unknown")
 
-                try:
-                    async with session.get(
-                        f"{TESLEMETRY_API_BASE_URL}/api/1/products",
-                        headers=headers,
-                        timeout=aiohttp.ClientTimeout(total=10)
-                    ) as response:
-                        if response.status == 200:
-                            # Token is valid, update config entry data
-                            new_data = dict(self.config_entry.data)
-                            new_data[CONF_TESLA_API_PROVIDER] = TESLA_PROVIDER_TESLEMETRY
-                            new_data[CONF_TESLEMETRY_API_TOKEN] = token
-                            self.hass.config_entries.async_update_entry(
-                                self.config_entry, data=new_data
-                            )
-
-                            # Route to provider-specific step
-                            if self._provider == "amber":
-                                return await self.async_step_amber_options()
-                            elif self._provider == "flow_power":
-                                return await self.async_step_flow_power_options()
-                            elif self._provider in ("globird", "aemo_vpp"):
-                                return await self.async_step_globird_options()
-                            elif self._provider == "nz":
-                                return await self.async_step_nz_options()
-                        else:
-                            errors["base"] = "invalid_auth"
-                except Exception:
-                    errors["base"] = "cannot_connect"
+        step_id = "teslemetry_token_update" if has_current_teslemetry_token else "teslemetry_token"
 
         return self.async_show_form(
-            step_id="teslemetry_token",
+            step_id=step_id,
             data_schema=vol.Schema(
                 {
-                    vol.Required(CONF_TESLEMETRY_API_TOKEN): TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD)),
+                    vol.Optional(
+                        CONF_TESLEMETRY_API_TOKEN,
+                        default="",
+                    ): TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD)),
                 }
             ),
             errors=errors,
