@@ -131,19 +131,14 @@ Remote monitoring and control via iOS and Android.
 - **Demo Mode** — Try the app without a Home Assistant connection using simulated data
 
 <p align="center">
-  <img src="docs/images/app-dashboard.png" alt="Dashboard" width="200"/>
-  <img src="docs/images/app-dashboard-flow.png" alt="Power Flow" width="200"/>
-  <img src="docs/images/app-optimization.png" alt="Smart Optimization" width="200"/>
+  <img src="docs/images/app-hero.png" alt="Dashboard — live energy flow" width="200"/>
+  <img src="docs/images/app-optimization.png" alt="Smart Optimization summary" width="200"/>
+  <img src="docs/images/app-action-plan.png" alt="24-hour LP action plan" width="200"/>
 </p>
 <p align="center">
-  <img src="docs/images/app-optimization-schedule.png" alt="24-Hour Schedule" width="200"/>
-  <img src="docs/images/app-optimization-plan.png" alt="Action Plan" width="200"/>
+  <img src="docs/images/app-price-chart.png" alt="TOU schedule and price forecast" width="200"/>
   <img src="docs/images/app-ev-charging.png" alt="EV Charging" width="200"/>
-</p>
-<p align="center">
   <img src="docs/images/app-settings.png" alt="Settings" width="200"/>
-  <img src="docs/images/app-provider.png" alt="Provider Settings" width="200"/>
-  <img src="docs/images/app-provider-optimization.png" alt="Optimization Settings" width="200"/>
 </p>
 
 ---
