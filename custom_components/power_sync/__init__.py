@@ -556,19 +556,6 @@ def _get_ev_vehicles_status(hass, entry) -> list:
         if not is_tesla_vehicle:
             continue
 
-        # Check if vehicle is at home — skip vehicles that are away
-        skip_vehicle = False
-        for entity in entity_registry.entities.values():
-            if entity.device_id != device.id:
-                continue
-            if entity.domain == "device_tracker" and "_location" in entity.entity_id.lower():
-                loc_state = hass.states.get(entity.entity_id)
-                if loc_state and loc_state.state == "not_home":
-                    skip_vehicle = True
-                    break
-        if skip_vehicle:
-            continue
-
         ev_power_kw = 0.0
         ev_soc = None
         is_connected = False
@@ -10668,14 +10655,12 @@ class EVWidgetDataView(HomeAssistantView):
                         "is_charging": True,
                     }]
 
-            # Add Tesla vehicles that are connected or charging
-            # Skip vehicles already represented in widget_data (by name) to avoid duplicates
+            # Add all known Tesla vehicles to the widget — even idle ones.
+            # Skip vehicles already represented in widget_data (by name) to avoid duplicates.
             existing_names = {(w.get("vehicle_name") or "").lower() for w in widget_data}
             for tv in tesla_vehicles:
                 if (tv.get("vehicle_name") or "").lower() in existing_names:
                     continue
-                if not tv["is_connected"] and not tv["is_charging"]:
-                    continue  # Skip vehicles not plugged in
                 tv_power_kw = tv["ev_power_kw"]
                 tv_soc = tv["ev_soc"]
                 if tv_power_kw > 0.05:
@@ -10740,10 +10725,11 @@ class EVWidgetDataView(HomeAssistantView):
                             "surplus_kw": round(surplus_kw, 2),
                         })
 
-            # Filter to vehicles that are connected or charging
-            active_widget_data = [w for w in widget_data if w.get("is_connected") or w["is_charging"]]
+            # Show all known vehicles regardless of connection state. Idle vehicles
+            # appear with current_power_kw=0 and source="idle". Only fall back to a
+            # placeholder if there are literally zero vehicles in the system.
+            active_widget_data = widget_data
 
-            # If no connected/charging vehicles, return idle status
             if not active_widget_data:
                 active_widget_data.append({
                     "vehicle_name": "No Active Vehicle",
