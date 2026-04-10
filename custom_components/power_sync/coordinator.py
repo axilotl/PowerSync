@@ -1443,8 +1443,13 @@ class TeslaEnergyCoordinator(DataUpdateCoordinator):
                 timeout_seconds=60,  # Longer timeout
             )
 
-            live_status = data.get("response", {})
+            # Tesla returns {"response": null} occasionally during transient failures
+            # or right after a token mint when the account state is still propagating.
+            # Treat null/missing response as a temporary outage to avoid crashing.
+            live_status = data.get("response") or {}
             _LOGGER.debug("Tesla API live_status response: %s", live_status)
+            if not live_status:
+                raise UpdateFailed("Tesla returned empty live_status response")
 
             # Extract EV charging power from Tesla Wall Connectors
             ev_power_kw = 0.0

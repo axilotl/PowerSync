@@ -685,30 +685,16 @@
       },
       "teslemetry_token": {
         "title": "Teslemetry Configuration",
-        "description": "Enter your Teslemetry API token. You can get this from teslemetry.com.",
+        "description": "{instructions}",
         "data": {
           "teslemetry_api_token": "Teslemetry API Token"
         }
       },
-      "teslemetry_token_update": {
-        "title": "Update Teslemetry Token (optional)",
-        "description": "A Teslemetry API token is already saved.\n\nLeave the field below blank and press Submit to keep the current token, or paste a new token from teslemetry.com to update it.",
-        "data": {
-          "teslemetry_api_token": "New Teslemetry API Token (optional)"
-        }
-      },
       "powersync_token": {
         "title": "Connect with PowerSync",
-        "description": "1. Open this URL in a browser and sign in with your Tesla account:\n\n**{auth_url}**\n\n2. After signing in, you'll get a token starting with `psync_`.\n\n3. Paste it below to connect.\n\nYour Tesla credentials are never seen by PowerSync — Tesla handles authentication and we only receive a token to call the Fleet API on your behalf.",
+        "description": "{instructions}",
         "data": {
           "teslemetry_api_token": "PowerSync Token"
-        }
-      },
-      "powersync_token_update": {
-        "title": "Update PowerSync Token (optional)",
-        "description": "A PowerSync token is already saved.\n\nLeave the field below blank and press Submit to keep the current token, or paste a new `psync_` token to update it.\n\nTo get a new token, sign in again at:\n\n**{auth_url}**",
-        "data": {
-          "teslemetry_api_token": "New PowerSync Token (optional)"
         }
       },
       "amber_options": {

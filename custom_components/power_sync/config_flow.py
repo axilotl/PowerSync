@@ -3105,11 +3105,25 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     return await self._async_route_to_provider_options()
                 errors["base"] = validation_result.get("error", "unknown")
 
-        # Use the same step_id whether we're updating or fresh
-        step_id = "powersync_token_update" if has_current_powersync_token else "powersync_token"
+        if has_current_powersync_token:
+            instructions = (
+                "A PowerSync token is already saved.\n\n"
+                "Leave the field blank and press **Submit** to keep the current token, "
+                "or paste a new `psync_` token below to update it.\n\n"
+                f"To get a new token, sign in again at:\n\n**{POWERSYNC_AUTH_START_URL}**"
+            )
+        else:
+            instructions = (
+                "1. Open this URL in a browser and sign in with your Tesla account:\n\n"
+                f"**{POWERSYNC_AUTH_START_URL}**\n\n"
+                "2. After signing in, you'll get a token starting with `psync_`.\n\n"
+                "3. Paste it below to connect.\n\n"
+                "Your Tesla credentials are never seen by PowerSync — Tesla handles "
+                "authentication and we only receive a token to call the Fleet API on your behalf."
+            )
 
         return self.async_show_form(
-            step_id=step_id,
+            step_id="powersync_token",
             data_schema=vol.Schema(
                 {
                     vol.Optional(
@@ -3123,6 +3137,7 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             errors=errors,
             description_placeholders={
                 "auth_url": POWERSYNC_AUTH_START_URL,
+                "instructions": instructions,
             },
         )
 
@@ -3166,10 +3181,19 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     return await self._async_route_to_provider_options()
                 errors["base"] = validation_result.get("error", "unknown")
 
-        step_id = "teslemetry_token_update" if has_current_teslemetry_token else "teslemetry_token"
+        if has_current_teslemetry_token:
+            instructions = (
+                "A Teslemetry API token is already saved.\n\n"
+                "Leave the field blank and press **Submit** to keep the current token, "
+                "or paste a new token from teslemetry.com to update it."
+            )
+        else:
+            instructions = (
+                "Enter your Teslemetry API token. You can get this from teslemetry.com."
+            )
 
         return self.async_show_form(
-            step_id=step_id,
+            step_id="teslemetry_token",
             data_schema=vol.Schema(
                 {
                     vol.Optional(
@@ -3179,6 +3203,9 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 }
             ),
             errors=errors,
+            description_placeholders={
+                "instructions": instructions,
+            },
         )
 
     async def async_step_amber_options(
