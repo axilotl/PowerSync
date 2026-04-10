@@ -1372,6 +1372,19 @@ class TeslaEnergyCoordinator(DataUpdateCoordinator):
         self._energy_acc = EnergyAccumulator(hass, "tesla")
         self._firmware = None  # Extracted from site_info gateways
 
+        # Tesla Energy Site capability detection (populated by probe on first site_info fetch).
+        # Keys: storm_mode, off_grid_vehicle_charging_reserve, vpp_programs.
+        # Value True means the feature is supported by this site; False means unsupported
+        # (either Tesla returned 4xx on probe, or the feature is not available in this country).
+        self.tesla_capabilities: dict[str, bool] = {}
+        self._capabilities_probed = False
+        self._site_country: str | None = None  # From site_info (used to gate region-locked features)
+
+        # Cached current-state values for new energy-site controls (populated opportunistically)
+        self._storm_mode_enabled: bool | None = None
+        self._off_grid_reserve_percent: int | None = None
+        self._vpp_programs_cache: list[dict] | None = None
+
         # Grid status tracking (off-grid / islanding detection)
         self._last_grid_status: str = "Active"  # "Active" or "Islanded"
 
@@ -1675,9 +1688,53 @@ class TeslaEnergyCoordinator(DataUpdateCoordinator):
                 else:
                     _LOGGER.info("No firmware key found in gateway: %s", gateway)
 
+            # Extract country (used for region-gating; Tesla reports ISO country code
+            # in site_info for Energy Sites, though the key has varied historically).
+            self._site_country = (
+                site_info.get("country")
+                or site_info.get("installation_country")
+                or components.get("country")
+            )
+
+            # Opportunistically capture current state for new energy-site controls.
+            # Tesla returns these in site_info when available; otherwise we fall back
+            # to explicit GET calls during the capability probe.
+            if "off_grid_vehicle_charging_reserve_percent" in site_info:
+                self._off_grid_reserve_percent = site_info.get(
+                    "off_grid_vehicle_charging_reserve_percent"
+                )
+            elif "off_grid_vehicle_charging_reserve_percent" in components:
+                self._off_grid_reserve_percent = components.get(
+                    "off_grid_vehicle_charging_reserve_percent"
+                )
+
+            storm_mode_active = (
+                site_info.get("storm_mode_active")
+                if "storm_mode_active" in site_info
+                else components.get("storm_mode_active")
+            )
+            storm_mode_enabled = (
+                site_info.get("user_settings", {}).get("storm_mode_enabled")
+                if isinstance(site_info.get("user_settings"), dict)
+                else None
+            )
+            if storm_mode_enabled is not None:
+                self._storm_mode_enabled = bool(storm_mode_enabled)
+            elif storm_mode_active is not None:
+                self._storm_mode_enabled = bool(storm_mode_active)
+
             # Cache the result with timestamp
             self._site_info_cache = site_info
             self._site_info_last_fetch = time.monotonic()
+
+            # Schedule one-shot capability probe on first successful fetch.
+            # Runs in background to avoid blocking the main fetch path.
+            if not self._capabilities_probed:
+                self._capabilities_probed = True
+                self.hass.async_create_task(
+                    self._async_probe_tesla_capabilities(),
+                    name=f"{DOMAIN}_tesla_capability_probe",
+                )
 
             return site_info
 
@@ -1744,6 +1801,262 @@ class TeslaEnergyCoordinator(DataUpdateCoordinator):
         except Exception as err:
             _LOGGER.error(f"Error setting grid charging: {err}")
             return False
+
+    # ------------------------------------------------------------------
+    # Unified Tesla Energy Site API helper
+    # ------------------------------------------------------------------
+
+    def _tesla_headers(self) -> dict[str, str]:
+        """Build authorization headers using the freshest token."""
+        return {
+            "Authorization": f"Bearer {self._get_current_token()}",
+            "Content-Type": "application/json",
+            "User-Agent": POWER_SYNC_USER_AGENT,
+        }
+
+    async def _tesla_api_call(
+        self,
+        method: str,
+        path: str,
+        *,
+        json_body: dict | None = None,
+        max_retries: int = 3,
+        timeout_seconds: int = 30,
+    ) -> tuple[int, dict | None]:
+        """Make a Tesla Energy Site API call with retry/backoff.
+
+        Returns (status_code, response_json_or_none). Retries on 429/5xx using
+        Retry-After if provided, otherwise exponential backoff. Does NOT raise
+        on 4xx — callers interpret status codes (e.g. probe uses 4xx to detect
+        unsupported features).
+        """
+        url = f"{self.api_base_url}{path}"
+        last_status = 0
+        retry_after_delay: float | None = None
+
+        for attempt in range(max_retries):
+            try:
+                if attempt > 0:
+                    wait_time = retry_after_delay or (2 ** attempt)
+                    retry_after_delay = None
+                    await asyncio.sleep(wait_time)
+
+                headers = self._tesla_headers()
+                request = self.session.request(
+                    method,
+                    url,
+                    headers=headers,
+                    json=json_body if method.upper() != "GET" else None,
+                    timeout=aiohttp.ClientTimeout(total=timeout_seconds),
+                )
+                async with request as response:
+                    last_status = response.status
+                    if response.status == 200:
+                        try:
+                            return response.status, await response.json()
+                        except Exception:
+                            return response.status, None
+
+                    if response.status in (429, 500, 502, 503, 504):
+                        retry_after_delay = _parse_retry_after(response)
+                        _LOGGER.warning(
+                            "Tesla %s %s attempt %d/%d: %s",
+                            method, path, attempt + 1, max_retries, response.status,
+                        )
+                        continue
+
+                    # Non-retryable status — return as-is for caller inspection
+                    try:
+                        return response.status, await response.json()
+                    except Exception:
+                        return response.status, None
+
+            except asyncio.TimeoutError:
+                _LOGGER.warning(
+                    "Tesla %s %s attempt %d/%d timed out",
+                    method, path, attempt + 1, max_retries,
+                )
+                continue
+            except aiohttp.ClientError as err:
+                _LOGGER.warning(
+                    "Tesla %s %s attempt %d/%d network error: %s",
+                    method, path, attempt + 1, max_retries, err,
+                )
+                continue
+
+        return last_status or 0, None
+
+    # ------------------------------------------------------------------
+    # Capability probe (run once after first site_info fetch)
+    # ------------------------------------------------------------------
+
+    async def _async_probe_tesla_capabilities(self) -> None:
+        """Probe Tesla Energy Site endpoints to determine which features are supported.
+
+        Tesla does not expose clean feature flags; instead we attempt a harmless
+        GET on each new endpoint and interpret the response:
+          - 200: feature supported → True
+          - 404 / 501 / 400 "not_supported": unsupported → False
+          - other 4xx: unknown (assume supported so user can retry)
+          - 5xx / network error: unknown (assume supported; probe again later)
+        Results are cached in self.tesla_capabilities and persist until restart.
+        """
+        _LOGGER.info("Probing Tesla Energy Site capabilities for site %s", self.site_id)
+
+        async def _probe(name: str, path: str) -> bool:
+            status, _body = await self._tesla_api_call("GET", path, max_retries=1, timeout_seconds=15)
+            if status == 200:
+                _LOGGER.info("Tesla capability '%s' supported (200)", name)
+                return True
+            if status in (400, 404, 405, 501):
+                _LOGGER.info("Tesla capability '%s' unsupported (%d)", name, status)
+                return False
+            _LOGGER.info(
+                "Tesla capability '%s' probe inconclusive (%d) — assuming supported",
+                name, status,
+            )
+            return True
+
+        # Run probes sequentially to be gentle on Tesla rate limits.
+        base = f"/api/1/energy_sites/{self.site_id}"
+        self.tesla_capabilities["storm_mode"] = await _probe(
+            "storm_mode", f"{base}/storm_mode",
+        )
+        self.tesla_capabilities["off_grid_vehicle_charging_reserve"] = await _probe(
+            "off_grid_vehicle_charging_reserve",
+            f"{base}/off_grid_vehicle_charging_reserve",
+        )
+        # VPP programs endpoint returns the list of programs the site is eligible for.
+        # An empty list still means the endpoint is supported (just no programs).
+        status, body = await self._tesla_api_call(
+            "GET", f"{base}/programs", max_retries=1, timeout_seconds=15,
+        )
+        if status == 200:
+            programs = []
+            if isinstance(body, dict):
+                resp = body.get("response", body)
+                if isinstance(resp, dict):
+                    programs = resp.get("programs") or resp.get("enrolled_programs") or []
+                elif isinstance(resp, list):
+                    programs = resp
+            self._vpp_programs_cache = programs if isinstance(programs, list) else []
+            self.tesla_capabilities["vpp_programs"] = True
+            _LOGGER.info(
+                "Tesla capability 'vpp_programs' supported — %d programs available",
+                len(self._vpp_programs_cache),
+            )
+        elif status in (400, 404, 405, 501):
+            self.tesla_capabilities["vpp_programs"] = False
+            _LOGGER.info("Tesla capability 'vpp_programs' unsupported (%d)", status)
+        else:
+            self.tesla_capabilities["vpp_programs"] = True
+            _LOGGER.info(
+                "Tesla capability 'vpp_programs' probe inconclusive (%d) — assuming supported",
+                status,
+            )
+
+        # Notify platforms so entities can be (re)created now that capabilities are known.
+        entry_data = self.hass.data.get(DOMAIN, {}).get(self._entry_id, {})
+        entry_data["tesla_capabilities"] = dict(self.tesla_capabilities)
+        entry_data["tesla_site_country"] = self._site_country
+
+    # ------------------------------------------------------------------
+    # New Energy Site controls (storm mode, off-grid EV reserve, VPP programs)
+    # ------------------------------------------------------------------
+
+    async def async_set_storm_watch(self, enabled: bool) -> bool:
+        """Enable or disable Tesla Storm Watch (predictive pre-charging)."""
+        path = f"/api/1/energy_sites/{self.site_id}/storm_mode"
+        status, _body = await self._tesla_api_call(
+            "POST", path, json_body={"enabled": bool(enabled)},
+        )
+        if status == 200:
+            self._storm_mode_enabled = bool(enabled)
+            _LOGGER.info("Storm Watch %s for site %s", "enabled" if enabled else "disabled", self.site_id)
+            return True
+        _LOGGER.error("Failed to set storm mode for site %s: HTTP %s", self.site_id, status)
+        return False
+
+    async def async_get_storm_watch_status(self) -> dict | None:
+        """Fetch current storm watch enabled + active state."""
+        path = f"/api/1/energy_sites/{self.site_id}/storm_mode"
+        status, body = await self._tesla_api_call("GET", path)
+        if status != 200 or not isinstance(body, dict):
+            return None
+        resp = body.get("response", body)
+        if not isinstance(resp, dict):
+            return None
+        if "enabled" in resp:
+            self._storm_mode_enabled = bool(resp.get("enabled"))
+        return resp
+
+    async def async_set_off_grid_ev_reserve(self, percent: int) -> bool:
+        """Set off-grid vehicle charging reserve percent (0-100)."""
+        try:
+            percent = int(percent)
+        except (TypeError, ValueError):
+            _LOGGER.error("Invalid off-grid EV reserve value: %r", percent)
+            return False
+        percent = max(0, min(100, percent))
+        path = f"/api/1/energy_sites/{self.site_id}/off_grid_vehicle_charging_reserve"
+        status, _body = await self._tesla_api_call(
+            "POST", path, json_body={"off_grid_vehicle_charging_reserve_percent": percent},
+        )
+        if status == 200:
+            self._off_grid_reserve_percent = percent
+            _LOGGER.info("Off-grid EV reserve set to %d%% for site %s", percent, self.site_id)
+            return True
+        _LOGGER.error("Failed to set off-grid EV reserve for site %s: HTTP %s", self.site_id, status)
+        return False
+
+    async def async_get_vpp_programs(self, force_refresh: bool = False) -> list[dict]:
+        """Fetch VPP / grid-services programs the site is eligible for.
+
+        Each program is a dict; Tesla's schema has varied but typically includes
+        ``id`` / ``program_id``, ``name``, and an ``enrolled`` / ``is_enrolled``
+        flag.
+        """
+        if self._vpp_programs_cache is not None and not force_refresh:
+            return self._vpp_programs_cache
+        path = f"/api/1/energy_sites/{self.site_id}/programs"
+        status, body = await self._tesla_api_call("GET", path)
+        if status != 200 or not isinstance(body, dict):
+            return self._vpp_programs_cache or []
+        resp = body.get("response", body)
+        programs: list[dict] = []
+        if isinstance(resp, dict):
+            raw = resp.get("programs") or resp.get("enrolled_programs") or []
+            if isinstance(raw, list):
+                programs = [p for p in raw if isinstance(p, dict)]
+        elif isinstance(resp, list):
+            programs = [p for p in resp if isinstance(p, dict)]
+        self._vpp_programs_cache = programs
+        return programs
+
+    async def async_set_vpp_enrollment(self, program_id: str, enrolled: bool) -> bool:
+        """Opt in or out of a Tesla VPP / grid-services program."""
+        if not program_id:
+            _LOGGER.error("Missing program_id for VPP enrollment")
+            return False
+        path = f"/api/1/energy_sites/{self.site_id}/programs"
+        payload = {
+            "program_id": program_id,
+            "enrolled": bool(enrolled),
+        }
+        status, _body = await self._tesla_api_call("POST", path, json_body=payload)
+        if status == 200:
+            # Invalidate cache so next read picks up new state.
+            self._vpp_programs_cache = None
+            _LOGGER.info(
+                "VPP program %s %s for site %s",
+                program_id, "enrolled" if enrolled else "unenrolled", self.site_id,
+            )
+            return True
+        _LOGGER.error(
+            "Failed to set VPP enrollment for site %s program %s: HTTP %s",
+            self.site_id, program_id, status,
+        )
+        return False
 
     async def async_get_calendar_history(
         self,

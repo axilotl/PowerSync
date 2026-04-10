@@ -108,9 +108,54 @@ async def async_setup_entry(
                     icon="mdi:battery-arrow-down",
                 ),
             ),
+            GridChargingSwitch(hass=hass, entry=entry),
         ])
 
     async_add_entities(entities)
+
+    # Capability-gated Tesla entities (storm watch, VPP program switches).
+    # These cannot be added until the Tesla capability probe completes,
+    # which runs ~after the first site_info fetch. We wait for that in a
+    # background task and add them once.
+    if is_tesla:
+        async def _add_capability_gated_switches() -> None:
+            entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+            waited = 0.0
+            while "tesla_capabilities" not in entry_data and waited < 120.0:
+                await asyncio.sleep(2.0)
+                waited += 2.0
+                entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+            caps = entry_data.get("tesla_capabilities", {})
+            if not caps:
+                _LOGGER.info(
+                    "Tesla capability probe did not complete within 120s — "
+                    "skipping capability-gated switch creation"
+                )
+                return
+
+            tesla_coord = entry_data.get("tesla_coordinator")
+            to_add: list[SwitchEntity] = []
+            if caps.get("storm_mode"):
+                to_add.append(StormWatchSwitch(hass=hass, entry=entry))
+            if caps.get("vpp_programs") and tesla_coord is not None:
+                programs = getattr(tesla_coord, "_vpp_programs_cache", None) or []
+                for program in programs:
+                    to_add.append(
+                        VppProgramSwitch(hass=hass, entry=entry, program=program)
+                    )
+            if to_add:
+                _LOGGER.info(
+                    "Adding %d capability-gated Tesla switches (storm_mode=%s, vpp=%d)",
+                    len(to_add),
+                    caps.get("storm_mode"),
+                    len(getattr(tesla_coord, "_vpp_programs_cache", None) or []) if tesla_coord else 0,
+                )
+                async_add_entities(to_add)
+
+        hass.async_create_task(
+            _add_capability_gated_switches(),
+            name=f"{DOMAIN}_capability_gated_switches",
+        )
 
 
 class AutoSyncSwitch(SwitchEntity):
@@ -554,3 +599,161 @@ class MonitoringModeSwitch(SwitchEntity):
         )
 
         self.async_write_ha_state()
+
+
+class _TeslaSiteSwitchBase(SwitchEntity):
+    """Base for Tesla Energy Site switches that call coordinator methods."""
+
+    _attr_has_entity_name = True
+
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry, key: str, name: str, icon: str) -> None:
+        self.hass = hass
+        self._entry = entry
+        self._attr_unique_id = f"{entry.entry_id}_{key}"
+        self._attr_suggested_object_id = f"power_sync_{key}"
+        self._attr_name = name
+        self._attr_icon = icon
+        self._attr_is_on: bool | None = None
+
+    @property
+    def device_info(self):
+        return {"identifiers": {(DOMAIN, self._entry.entry_id)}}
+
+    def _tesla_coord(self):
+        return self.hass.data.get(DOMAIN, {}).get(self._entry.entry_id, {}).get("tesla_coordinator")
+
+
+class GridChargingSwitch(_TeslaSiteSwitchBase):
+    """Toggle whether the Powerwall may charge from grid (TOU arbitrage)."""
+
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+        super().__init__(
+            hass, entry,
+            key="tesla_grid_charging",
+            name="Grid Charging",
+            icon="mdi:transmission-tower-import",
+        )
+
+    @property
+    def is_on(self) -> bool | None:
+        coord = self._tesla_coord()
+        site_info = getattr(coord, "_site_info_cache", None) if coord else None
+        if not site_info:
+            return self._attr_is_on
+        components = site_info.get("components", {}) or {}
+        disallow = components.get(
+            "disallow_charge_from_grid_with_solar_installed",
+            site_info.get("disallow_charge_from_grid_with_solar_installed", False),
+        )
+        return not bool(disallow)
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        await self.hass.services.async_call(
+            DOMAIN, "set_grid_charging", {"enabled": True}, blocking=False,
+        )
+        self._attr_is_on = True
+        self.async_write_ha_state()
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        await self.hass.services.async_call(
+            DOMAIN, "set_grid_charging", {"enabled": False}, blocking=False,
+        )
+        self._attr_is_on = False
+        self.async_write_ha_state()
+
+
+class StormWatchSwitch(_TeslaSiteSwitchBase):
+    """Toggle Tesla Storm Watch (predictive pre-charging before severe weather)."""
+
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+        super().__init__(
+            hass, entry,
+            key="tesla_storm_watch",
+            name="Storm Watch",
+            icon="mdi:weather-lightning",
+        )
+
+    @property
+    def is_on(self) -> bool | None:
+        coord = self._tesla_coord()
+        if coord is None:
+            return None
+        return getattr(coord, "_storm_mode_enabled", None)
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        await self.hass.services.async_call(
+            DOMAIN, "set_storm_watch", {"enabled": True}, blocking=False,
+        )
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        await self.hass.services.async_call(
+            DOMAIN, "set_storm_watch", {"enabled": False}, blocking=False,
+        )
+
+
+class VppProgramSwitch(_TeslaSiteSwitchBase):
+    """Enrollment toggle for a single Tesla VPP / grid-services program."""
+
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry, program: dict) -> None:
+        pid = (
+            program.get("id")
+            or program.get("program_id")
+            or program.get("name")
+            or "unknown"
+        )
+        pid_str = str(pid)
+        safe_key = "".join(c if c.isalnum() else "_" for c in pid_str.lower())
+        display_name = program.get("display_name") or program.get("name") or pid_str
+        super().__init__(
+            hass, entry,
+            key=f"tesla_vpp_{safe_key}",
+            name=f"VPP: {display_name}",
+            icon="mdi:transmission-tower",
+        )
+        self._program_id = pid_str
+        self._program = program
+
+    def _current_program(self) -> dict | None:
+        coord = self._tesla_coord()
+        if coord is None:
+            return self._program
+        programs = getattr(coord, "_vpp_programs_cache", None) or []
+        for p in programs:
+            if str(p.get("id") or p.get("program_id") or p.get("name")) == self._program_id:
+                return p
+        return self._program
+
+    @property
+    def is_on(self) -> bool | None:
+        p = self._current_program()
+        if not p:
+            return None
+        val = p.get("enrolled")
+        if val is None:
+            val = p.get("is_enrolled")
+        if val is None:
+            val = p.get("user_enrolled")
+        return bool(val) if val is not None else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        p = self._current_program() or {}
+        return {
+            "program_id": self._program_id,
+            "display_name": p.get("display_name") or p.get("name"),
+            "description": p.get("description"),
+        }
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        await self.hass.services.async_call(
+            DOMAIN, "set_vpp_enrollment",
+            {"program_id": self._program_id, "enrolled": True},
+            blocking=False,
+        )
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        await self.hass.services.async_call(
+            DOMAIN, "set_vpp_enrollment",
+            {"program_id": self._program_id, "enrolled": False},
+            blocking=False,
+        )

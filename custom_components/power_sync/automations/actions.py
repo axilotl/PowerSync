@@ -894,6 +894,12 @@ async def _execute_single_action(
         return await _action_set_grid_export(hass, config_entry, params)
     elif action_type == "set_grid_charging":
         return await _action_set_grid_charging(hass, config_entry, params)
+    elif action_type == "set_storm_watch":
+        return await _action_set_storm_watch(hass, config_entry, params)
+    elif action_type == "set_off_grid_ev_reserve":
+        return await _action_set_off_grid_ev_reserve(hass, config_entry, params)
+    elif action_type == "set_vpp_enrollment":
+        return await _action_set_vpp_enrollment(hass, config_entry, params)
     elif action_type == "restore_normal":
         return await _action_restore_normal(hass, config_entry)
     elif action_type == "set_amber_forecast_type":
@@ -1416,6 +1422,87 @@ async def _action_set_grid_charging(
         return True
     except Exception as e:
         _LOGGER.error(f"Failed to set grid charging: {e}")
+        return False
+
+
+async def _action_set_storm_watch(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+    params: Dict[str, Any],
+) -> bool:
+    """Enable or disable Tesla Storm Watch via the set_storm_watch service."""
+    from ..const import DOMAIN
+
+    enabled = bool(params.get("enabled", True))
+    try:
+        await hass.services.async_call(
+            DOMAIN, "set_storm_watch", {"enabled": enabled}, blocking=True,
+        )
+        return True
+    except Exception as e:
+        _LOGGER.error(f"Failed to set Storm Watch: {e}")
+        return False
+
+
+async def _action_set_off_grid_ev_reserve(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+    params: Dict[str, Any],
+) -> bool:
+    """Set off-grid vehicle charging reserve percent."""
+    from ..const import DOMAIN
+
+    percent = params.get("off_grid_ev_reserve_percent")
+    if percent is None:
+        percent = params.get("percent")
+    if percent is None:
+        _LOGGER.error("set_off_grid_ev_reserve: missing percent parameter")
+        return False
+    try:
+        percent = int(percent)
+    except (ValueError, TypeError):
+        _LOGGER.error("set_off_grid_ev_reserve: invalid percent %r", percent)
+        return False
+    percent = max(0, min(100, percent))
+
+    try:
+        await hass.services.async_call(
+            DOMAIN, "set_off_grid_ev_reserve", {"percent": percent}, blocking=True,
+        )
+        return True
+    except Exception as e:
+        _LOGGER.error(f"Failed to set off-grid EV reserve: {e}")
+        return False
+
+
+async def _action_set_vpp_enrollment(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+    params: Dict[str, Any],
+) -> bool:
+    """Enroll or unenroll the site in a Tesla VPP / grid-services program."""
+    from ..const import DOMAIN
+
+    program_id = params.get("vpp_program_id") or params.get("program_id")
+    if not program_id:
+        _LOGGER.error("set_vpp_enrollment: missing program_id parameter")
+        return False
+    # Automation UI reuses the `enabled` key for clarity alongside storm_watch/grid_charging
+    enrolled = params.get("enrolled")
+    if enrolled is None:
+        enrolled = params.get("enabled", True)
+    enrolled = bool(enrolled)
+
+    try:
+        await hass.services.async_call(
+            DOMAIN,
+            "set_vpp_enrollment",
+            {"program_id": str(program_id), "enrolled": enrolled},
+            blocking=True,
+        )
+        return True
+    except Exception as e:
+        _LOGGER.error(f"Failed to set VPP enrollment: {e}")
         return False
 
 

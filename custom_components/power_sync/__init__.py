@@ -886,7 +886,13 @@ logging.getLogger("custom_components.power_sync.inverters.sigenergy").setLevel(l
 logging.getLogger("custom_components.power_sync.websocket_client").setLevel(logging.DEBUG)
 logging.getLogger("custom_components.power_sync.tariff_converter").setLevel(logging.DEBUG)
 
-PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.SWITCH, Platform.SELECT]
+PLATFORMS: list[Platform] = [
+    Platform.SENSOR,
+    Platform.SWITCH,
+    Platform.SELECT,
+    Platform.NUMBER,
+    Platform.BINARY_SENSOR,
+]
 
 # Storage version for persisting data across HA restarts
 STORAGE_VERSION = 1
@@ -3206,6 +3212,17 @@ class PowerwallSettingsView(HomeAssistantView):
             entry_data = self._hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
             manual_export_override = entry_data.get("manual_export_override", False)
 
+            # Include capability flags and current state for new energy-site
+            # controls (storm watch, off-grid EV reserve, VPP programs). These
+            # let the mobile app render the right controls for each site.
+            tesla_capabilities = entry_data.get("tesla_capabilities", {}) if entry_data else {}
+            tesla_coord = entry_data.get("tesla_coordinator") if entry_data else None
+            storm_watch_enabled = None
+            off_grid_ev_reserve = None
+            if tesla_coord is not None:
+                storm_watch_enabled = getattr(tesla_coord, "_storm_mode_enabled", None)
+                off_grid_ev_reserve = getattr(tesla_coord, "_off_grid_reserve_percent", None)
+
             result = {
                 "success": True,
                 "backup_reserve": backup_reserve,
@@ -3214,6 +3231,16 @@ class PowerwallSettingsView(HomeAssistantView):
                 "grid_charging_enabled": not disallow_charge,
                 "solar_curtailment_enabled": solar_curtailment_enabled,
                 "manual_export_override": manual_export_override,
+                "capabilities": {
+                    "storm_mode": bool(tesla_capabilities.get("storm_mode", False)),
+                    "off_grid_vehicle_charging_reserve": bool(
+                        tesla_capabilities.get("off_grid_vehicle_charging_reserve", False)
+                    ),
+                    "vpp_programs": bool(tesla_capabilities.get("vpp_programs", False)),
+                },
+                "storm_watch_enabled": storm_watch_enabled,
+                "off_grid_ev_reserve_percent": off_grid_ev_reserve,
+                "site_country": entry_data.get("tesla_site_country") if entry_data else None,
             }
 
             _LOGGER.info(f"✅ Powerwall settings: reserve={backup_reserve}%, mode={operation_mode}, export={grid_export_rule}, manual_override={manual_export_override}")
@@ -3329,6 +3356,184 @@ class PowerwallTypeView(HomeAssistantView):
                 {"success": False, "error": str(e)},
                 status=500
             )
+
+
+def _find_first_power_sync_entry(hass: HomeAssistant):
+    for config_entry in hass.config_entries.async_entries(DOMAIN):
+        return config_entry
+    return None
+
+
+def _get_tesla_coord_for_view(hass: HomeAssistant):
+    """Return (entry, tesla_coordinator) or (entry, None) for HTTP views."""
+    entry = _find_first_power_sync_entry(hass)
+    if not entry:
+        return None, None
+    entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+    return entry, entry_data.get("tesla_coordinator")
+
+
+class StormWatchView(HomeAssistantView):
+    """GET/POST Tesla Storm Watch enabled state."""
+
+    url = "/api/power_sync/tesla/storm_watch"
+    name = "api:power_sync:tesla:storm_watch"
+    requires_auth = True
+
+    def __init__(self, hass: HomeAssistant):
+        self._hass = hass
+
+    async def get(self, request: web.Request) -> web.Response:
+        entry, coord = _get_tesla_coord_for_view(self._hass)
+        if coord is None:
+            return web.json_response({"success": False, "error": "Tesla not configured"}, status=503)
+        if not coord.tesla_capabilities.get("storm_mode", True):
+            return web.json_response({
+                "success": False,
+                "supported": False,
+                "error": "Storm Watch is not available for this site",
+            }, status=200)
+        status = await coord.async_get_storm_watch_status()
+        return web.json_response({
+            "success": True,
+            "supported": True,
+            "enabled": coord._storm_mode_enabled,
+            "raw": status,
+        })
+
+    async def post(self, request: web.Request) -> web.Response:
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"success": False, "error": "Invalid JSON"}, status=400)
+        enabled = payload.get("enabled")
+        if enabled is None:
+            return web.json_response({"success": False, "error": "Missing 'enabled'"}, status=400)
+
+        entry, coord = _get_tesla_coord_for_view(self._hass)
+        if coord is None:
+            return web.json_response({"success": False, "error": "Tesla not configured"}, status=503)
+        if not coord.tesla_capabilities.get("storm_mode", True):
+            return web.json_response({
+                "success": False, "error": "Storm Watch not supported for this site",
+            }, status=400)
+
+        ok = await coord.async_set_storm_watch(bool(enabled))
+        return web.json_response({
+            "success": ok,
+            "enabled": coord._storm_mode_enabled,
+        }, status=200 if ok else 500)
+
+
+class OffGridEvReserveView(HomeAssistantView):
+    """GET/POST off-grid vehicle charging reserve percent."""
+
+    url = "/api/power_sync/tesla/off_grid_ev_reserve"
+    name = "api:power_sync:tesla:off_grid_ev_reserve"
+    requires_auth = True
+
+    def __init__(self, hass: HomeAssistant):
+        self._hass = hass
+
+    async def get(self, request: web.Request) -> web.Response:
+        entry, coord = _get_tesla_coord_for_view(self._hass)
+        if coord is None:
+            return web.json_response({"success": False, "error": "Tesla not configured"}, status=503)
+        if not coord.tesla_capabilities.get("off_grid_vehicle_charging_reserve", True):
+            return web.json_response({
+                "success": False,
+                "supported": False,
+                "error": "Off-grid EV reserve not available for this site",
+            }, status=200)
+        return web.json_response({
+            "success": True,
+            "supported": True,
+            "percent": coord._off_grid_reserve_percent,
+        })
+
+    async def post(self, request: web.Request) -> web.Response:
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"success": False, "error": "Invalid JSON"}, status=400)
+        percent = payload.get("percent")
+        try:
+            percent = int(percent)
+        except (ValueError, TypeError):
+            return web.json_response({"success": False, "error": "Invalid 'percent'"}, status=400)
+        if percent < 0 or percent > 100:
+            return web.json_response({"success": False, "error": "percent must be 0-100"}, status=400)
+
+        entry, coord = _get_tesla_coord_for_view(self._hass)
+        if coord is None:
+            return web.json_response({"success": False, "error": "Tesla not configured"}, status=503)
+        if not coord.tesla_capabilities.get("off_grid_vehicle_charging_reserve", True):
+            return web.json_response({
+                "success": False, "error": "Not supported for this site",
+            }, status=400)
+
+        ok = await coord.async_set_off_grid_ev_reserve(percent)
+        return web.json_response({
+            "success": ok,
+            "percent": coord._off_grid_reserve_percent,
+        }, status=200 if ok else 500)
+
+
+class VppProgramsView(HomeAssistantView):
+    """GET VPP program list / POST enroll or unenroll."""
+
+    url = "/api/power_sync/tesla/vpp_programs"
+    name = "api:power_sync:tesla:vpp_programs"
+    requires_auth = True
+
+    def __init__(self, hass: HomeAssistant):
+        self._hass = hass
+
+    async def get(self, request: web.Request) -> web.Response:
+        entry, coord = _get_tesla_coord_for_view(self._hass)
+        if coord is None:
+            return web.json_response({"success": False, "error": "Tesla not configured"}, status=503)
+        if not coord.tesla_capabilities.get("vpp_programs", True):
+            return web.json_response({
+                "success": False,
+                "supported": False,
+                "programs": [],
+                "error": "VPP programs not available for this site",
+            }, status=200)
+        force = request.query.get("refresh", "").lower() in ("1", "true", "yes")
+        programs = await coord.async_get_vpp_programs(force_refresh=force)
+        return web.json_response({
+            "success": True,
+            "supported": True,
+            "programs": programs,
+        })
+
+    async def post(self, request: web.Request) -> web.Response:
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"success": False, "error": "Invalid JSON"}, status=400)
+        program_id = payload.get("program_id")
+        enrolled = payload.get("enrolled")
+        if not program_id or enrolled is None:
+            return web.json_response({
+                "success": False, "error": "Missing 'program_id' or 'enrolled'",
+            }, status=400)
+
+        entry, coord = _get_tesla_coord_for_view(self._hass)
+        if coord is None:
+            return web.json_response({"success": False, "error": "Tesla not configured"}, status=503)
+        if not coord.tesla_capabilities.get("vpp_programs", True):
+            return web.json_response({
+                "success": False, "error": "VPP programs not supported",
+            }, status=400)
+
+        ok = await coord.async_set_vpp_enrollment(str(program_id), bool(enrolled))
+        programs = await coord.async_get_vpp_programs(force_refresh=True) if ok else []
+        return web.json_response({
+            "success": ok,
+            "programs": programs,
+        }, status=200 if ok else 500)
 
 
 class BatteryHealthView(HomeAssistantView):
@@ -18870,6 +19075,93 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         except Exception as e:
             _LOGGER.error(f"Error setting grid charging: {e}", exc_info=True)
 
+    def _get_tesla_coordinator_for_service(service_name: str):
+        """Return the Tesla energy coordinator for this entry, or None with a log."""
+        entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+        coord = entry_data.get("tesla_coordinator")
+        if coord is None:
+            _LOGGER.error("%s: Tesla energy coordinator not available", service_name)
+        return coord
+
+    async def handle_set_storm_watch(call: ServiceCall) -> None:
+        """Enable or disable Tesla Storm Watch for the energy site."""
+        enabled = call.data.get("enabled")
+        if enabled is None:
+            _LOGGER.error("Missing 'enabled' parameter for set_storm_watch")
+            return
+        if isinstance(enabled, str):
+            enabled = enabled.strip().lower() in ("true", "1", "yes", "on")
+        enabled = bool(enabled)
+
+        coord = _get_tesla_coordinator_for_service("set_storm_watch")
+        if coord is None:
+            return
+        if not coord.tesla_capabilities.get("storm_mode", True):
+            _LOGGER.warning("set_storm_watch: site does not support storm mode")
+            return
+
+        _LOGGER.info("⛈️ Setting Storm Watch to %s", "enabled" if enabled else "disabled")
+        try:
+            await coord.async_set_storm_watch(enabled)
+        except Exception as e:
+            _LOGGER.error("Error setting storm watch: %s", e, exc_info=True)
+
+    async def handle_set_off_grid_ev_reserve(call: ServiceCall) -> None:
+        """Set the off-grid vehicle charging reserve percentage."""
+        percent = call.data.get("percent")
+        if percent is None:
+            _LOGGER.error("Missing 'percent' parameter for set_off_grid_ev_reserve")
+            return
+        try:
+            percent = int(percent)
+        except (ValueError, TypeError):
+            _LOGGER.error("Invalid off-grid EV reserve percent: %r", percent)
+            return
+        if percent < 0 or percent > 100:
+            _LOGGER.error("Off-grid EV reserve percent out of range: %d", percent)
+            return
+
+        coord = _get_tesla_coordinator_for_service("set_off_grid_ev_reserve")
+        if coord is None:
+            return
+        if not coord.tesla_capabilities.get("off_grid_vehicle_charging_reserve", True):
+            _LOGGER.warning("set_off_grid_ev_reserve: site does not support this feature")
+            return
+
+        _LOGGER.info("🔋 Setting off-grid EV reserve to %d%%", percent)
+        try:
+            await coord.async_set_off_grid_ev_reserve(percent)
+        except Exception as e:
+            _LOGGER.error("Error setting off-grid EV reserve: %s", e, exc_info=True)
+
+    async def handle_set_vpp_enrollment(call: ServiceCall) -> None:
+        """Enroll or unenroll the site in a Tesla VPP / grid-services program."""
+        program_id = call.data.get("program_id")
+        enrolled = call.data.get("enrolled")
+        if not program_id or enrolled is None:
+            _LOGGER.error("set_vpp_enrollment requires 'program_id' and 'enrolled'")
+            return
+        if isinstance(enrolled, str):
+            enrolled = enrolled.strip().lower() in ("true", "1", "yes", "on")
+        enrolled = bool(enrolled)
+
+        coord = _get_tesla_coordinator_for_service("set_vpp_enrollment")
+        if coord is None:
+            return
+        if not coord.tesla_capabilities.get("vpp_programs", True):
+            _LOGGER.warning("set_vpp_enrollment: site is not eligible for VPP programs")
+            return
+
+        _LOGGER.info(
+            "📡 %s VPP program %s",
+            "Enrolling in" if enrolled else "Unenrolling from",
+            program_id,
+        )
+        try:
+            await coord.async_set_vpp_enrollment(str(program_id), enrolled)
+        except Exception as e:
+            _LOGGER.error("Error setting VPP enrollment: %s", e, exc_info=True)
+
     # Register force discharge, force charge, and restore normal services
     hass.services.async_register(DOMAIN, SERVICE_FORCE_DISCHARGE, handle_force_discharge)
     hass.services.async_register(DOMAIN, SERVICE_FORCE_CHARGE, handle_force_charge)
@@ -18887,6 +19179,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.services.async_register(DOMAIN, SERVICE_SET_GRID_EXPORT, handle_set_grid_export)
     hass.services.async_register(DOMAIN, SERVICE_SET_GRID_CHARGING, handle_set_grid_charging)
     hass.services.async_register(DOMAIN, "set_grid_export_auto", handle_set_grid_export_auto)
+    hass.services.async_register(DOMAIN, "set_storm_watch", handle_set_storm_watch)
+    hass.services.async_register(DOMAIN, "set_off_grid_ev_reserve", handle_set_off_grid_ev_reserve)
+    hass.services.async_register(DOMAIN, "set_vpp_enrollment", handle_set_vpp_enrollment)
 
     _LOGGER.info("🔋 Force charge/discharge, restore, and Powerwall settings services registered")
 
@@ -19229,6 +19524,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Register HTTP endpoint for Powerwall settings (for mobile app Controls)
     hass.http.register_view(PowerwallSettingsView(hass))
     _LOGGER.info("⚙️ Powerwall settings HTTP endpoint registered at /api/power_sync/powerwall_settings")
+
+    # Register HTTP endpoints for new Tesla Energy Site controls
+    hass.http.register_view(StormWatchView(hass))
+    hass.http.register_view(OffGridEvReserveView(hass))
+    hass.http.register_view(VppProgramsView(hass))
+    _LOGGER.info(
+        "⛈️ Tesla extended controls registered: /api/power_sync/tesla/{storm_watch,off_grid_ev_reserve,vpp_programs}"
+    )
 
     # Register HTTP endpoint for Powerwall type (for mobile app Settings)
     hass.http.register_view(PowerwallTypeView(hass))
