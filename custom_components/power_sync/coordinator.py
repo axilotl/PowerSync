@@ -12,6 +12,7 @@ import asyncio
 import aiohttp
 
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.storage import Store
@@ -561,6 +562,16 @@ async def _fetch_with_retry(
                     )
                     last_error = UpdateFailed(f"Server error: {response.status}")
                     continue
+
+                # 401 → token expired/revoked. Raise ConfigEntryAuthFailed so
+                # HA triggers the reauth flow and prompts the user to re-enter
+                # their token (PowerSync, Teslemetry, etc.)
+                if response.status == 401:
+                    _LOGGER.warning(
+                        "Authentication failed (401) — triggering reauth: %s",
+                        error_text[:200],
+                    )
+                    raise ConfigEntryAuthFailed(f"Token rejected by upstream: {error_text[:200]}")
 
                 # Other 4xx client errors — don't retry
                 raise UpdateFailed(f"Client error {response.status}: {error_text}")
@@ -1537,6 +1548,9 @@ class TeslaEnergyCoordinator(DataUpdateCoordinator):
 
             return energy_data
 
+        except ConfigEntryAuthFailed:
+            # Don't retry — let HA's reauth flow take over
+            raise
         except (UpdateFailed, Exception) as err:
             self._consecutive_failures += 1
             now = time.monotonic()

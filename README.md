@@ -24,7 +24,7 @@
 
 | System | Connection | Control |
 |--------|-----------|---------|
-| **Tesla Powerwall** | Fleet API or Teslemetry | TOU tariff sync, force charge/discharge, export rules |
+| **Tesla Powerwall** | PowerSync.cc, Fleet API, or Teslemetry | TOU tariff sync, force charge/discharge, export rules |
 | **FoxESS** (H1, H3, H3-Pro, H3 Smart, KH + OEM rebrands) | Modbus TCP or RS485 | Work mode, force charge/discharge, backup reserve |
 | **Sigenergy** | Cloud API + Modbus TCP | Remote EMS control, force charge/discharge, DC solar curtailment |
 | **Solax** | Modbus TCP or HA entity | Export control, curtailment (GEN2-GEN6) |
@@ -69,6 +69,8 @@ Solar inverters that bypass the battery can be curtailed during negative feed-in
 3. **Pick your electricity provider** and enter API credentials if required
 4. **Connect your battery system** and enter connection details
 5. **Done!** Sensors appear automatically and a **PowerSync dashboard** is auto-created in your sidebar. Enable [Smart Optimization](https://github.com/bolagnaise/PowerSync/wiki/Smart-Optimization) for automated scheduling, or install the [Mobile App](#mobile-app) for remote control.
+
+> **Tesla Powerwall users**: PowerSync now offers a **free** built-in OAuth flow via [powersync.cc](https://powersync.cc) — no developer registration, no monthly fees, no Tesla Fleet integration required. Just click "Sign in with Tesla" during setup.
 
 ---
 

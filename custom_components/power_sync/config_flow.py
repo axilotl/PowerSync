@@ -8,7 +8,7 @@ import aiohttp
 import voluptuous as vol
 
 from homeassistant import config_entries
-from homeassistant.config_entries import ConfigEntryState
+from homeassistant.config_entries import ConfigEntry, ConfigEntryState
 from homeassistant.const import CONF_ACCESS_TOKEN, CONF_TOKEN
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import FlowResult
@@ -648,6 +648,7 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._tesla_fleet_available: bool = False
         self._tesla_fleet_token: str | None = None
         self._selected_provider: str | None = None
+        self._reauth_entry: ConfigEntry | None = None
         # Battery system selection
         self._selected_battery_system: str = BATTERY_SYSTEM_TESLA
         self._sigenergy_data: dict[str, Any] = {}
@@ -677,6 +678,121 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         # Battery system selection is the first step
         return await self.async_step_battery_system()
+
+    async def async_step_reauth(
+        self, entry_data: dict[str, Any]
+    ) -> FlowResult:
+        """Handle reauthentication when the stored token is no longer valid.
+
+        Triggered by ConfigEntryAuthFailed from the coordinator. We jump
+        straight to the relevant token entry step based on which provider
+        the user originally configured.
+        """
+        self._reauth_entry = self.hass.config_entries.async_get_entry(
+            self.context["entry_id"]
+        )
+        return await self.async_step_reauth_confirm()
+
+    async def async_step_reauth_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Show the reauth flow for the configured Tesla provider."""
+        if self._reauth_entry is None:
+            return self.async_abort(reason="reauth_failed")
+
+        provider = self._reauth_entry.data.get(
+            CONF_TESLA_API_PROVIDER, TESLA_PROVIDER_TESLEMETRY
+        )
+
+        # Route to the right token entry step based on the existing provider
+        if provider == TESLA_PROVIDER_POWERSYNC:
+            return await self.async_step_powersync_reauth()
+        if provider == TESLA_PROVIDER_TESLEMETRY:
+            return await self.async_step_teslemetry_reauth()
+        # Fleet API uses the existing tesla_fleet integration's tokens — no
+        # token entry needed; abort and let the user fix tesla_fleet directly
+        return self.async_abort(reason="reauth_fleet_api_use_tesla_fleet")
+
+    async def async_step_powersync_reauth(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Re-enter a PowerSync token after the existing one was invalidated."""
+        errors: dict[str, str] = {}
+
+        if user_input is not None and self._reauth_entry is not None:
+            powersync_token = user_input.get(CONF_TESLEMETRY_API_TOKEN, "").strip()
+            if not powersync_token:
+                errors["base"] = "no_token_provided"
+            else:
+                validation_result = await validate_powersync_token(
+                    self.hass, powersync_token
+                )
+                if validation_result["success"]:
+                    new_data = {
+                        **self._reauth_entry.data,
+                        CONF_TESLEMETRY_API_TOKEN: powersync_token,
+                        CONF_TESLA_API_PROVIDER: TESLA_PROVIDER_POWERSYNC,
+                    }
+                    self.hass.config_entries.async_update_entry(
+                        self._reauth_entry, data=new_data
+                    )
+                    await self.hass.config_entries.async_reload(self._reauth_entry.entry_id)
+                    return self.async_abort(reason="reauth_successful")
+                errors["base"] = validation_result.get("error", "unknown")
+
+        return self.async_show_form(
+            step_id="powersync_reauth",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_TESLEMETRY_API_TOKEN): TextSelector(
+                        TextSelectorConfig(type=TextSelectorType.PASSWORD)
+                    ),
+                }
+            ),
+            errors=errors,
+            description_placeholders={
+                "auth_url": POWERSYNC_AUTH_START_URL,
+            },
+        )
+
+    async def async_step_teslemetry_reauth(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Re-enter a Teslemetry token after the existing one was invalidated."""
+        errors: dict[str, str] = {}
+
+        if user_input is not None and self._reauth_entry is not None:
+            teslemetry_token = user_input.get(CONF_TESLEMETRY_API_TOKEN, "").strip()
+            if not teslemetry_token:
+                errors["base"] = "no_token_provided"
+            else:
+                validation_result = await validate_teslemetry_token(
+                    self.hass, teslemetry_token
+                )
+                if validation_result["success"]:
+                    new_data = {
+                        **self._reauth_entry.data,
+                        CONF_TESLEMETRY_API_TOKEN: teslemetry_token,
+                        CONF_TESLA_API_PROVIDER: TESLA_PROVIDER_TESLEMETRY,
+                    }
+                    self.hass.config_entries.async_update_entry(
+                        self._reauth_entry, data=new_data
+                    )
+                    await self.hass.config_entries.async_reload(self._reauth_entry.entry_id)
+                    return self.async_abort(reason="reauth_successful")
+                errors["base"] = validation_result.get("error", "unknown")
+
+        return self.async_show_form(
+            step_id="teslemetry_reauth",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_TESLEMETRY_API_TOKEN): TextSelector(
+                        TextSelectorConfig(type=TextSelectorType.PASSWORD)
+                    ),
+                }
+            ),
+            errors=errors,
+        )
 
     async def async_step_provider_selection(
         self, user_input: dict[str, Any] | None = None
