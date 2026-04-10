@@ -239,6 +239,7 @@ SUNGROW_BATTERY_VOLTAGE_DEFAULT = 48  # Typical LFP battery pack voltage
 CONF_TESLA_API_PROVIDER = "tesla_api_provider"
 TESLA_PROVIDER_TESLEMETRY = "teslemetry"
 TESLA_PROVIDER_FLEET_API = "fleet_api"
+TESLA_PROVIDER_POWERSYNC = "powersync"  # PowerSync.cc cloud OAuth proxy (free, recommended)
 
 # All supported Tesla/EV integrations (for device/entity discovery)
 # These are the HA integration domain names used in device identifiers
@@ -811,6 +812,27 @@ TESLEMETRY_API_BASE_URL = "https://api.teslemetry.com"
 FLEET_API_BASE_URL = "https://fleet-api.prd.na.vn.cloud.tesla.com"
 FLEET_API_AUTH_URL = "https://auth.tesla.com/oauth2/v3"
 FLEET_API_TOKEN_URL = "https://auth.tesla.com/oauth2/v3/token"
+
+# PowerSync.cc cloud proxy — free OAuth + Tesla Fleet API proxy
+# Users authenticate via Sign in with Tesla on https://api.powersync.cc/auth/start
+# and get a psync_xxx token. Coordinator hits the proxy at /api/proxy/api/1/...
+POWERSYNC_API_BASE_URL = "https://api.powersync.cc/api/proxy"
+POWERSYNC_AUTH_START_URL = "https://api.powersync.cc/auth/start"
+POWERSYNC_AUTH_ME_URL = "https://api.powersync.cc/auth/me"
+
+
+def get_tesla_api_base_url(provider: str | None) -> str:
+    """Return the Tesla API base URL for a given provider.
+
+    Used by all Tesla service handlers to construct API request URLs.
+    All three providers expose the same /api/1/... path structure, only
+    the base differs.
+    """
+    if provider == TESLA_PROVIDER_POWERSYNC:
+        return POWERSYNC_API_BASE_URL
+    if provider == TESLA_PROVIDER_FLEET_API:
+        return FLEET_API_BASE_URL
+    return TESLEMETRY_API_BASE_URL
 
 # Services
 SERVICE_SYNC_TOU = "sync_tou_schedule"

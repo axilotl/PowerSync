@@ -24,8 +24,10 @@ from .const import (
     AMBER_API_BASE_URL,
     TESLEMETRY_API_BASE_URL,
     FLEET_API_BASE_URL,
+    POWERSYNC_API_BASE_URL,
     TESLA_PROVIDER_TESLEMETRY,
     TESLA_PROVIDER_FLEET_API,
+    TESLA_PROVIDER_POWERSYNC,
     POWER_SYNC_USER_AGENT,
     DEFAULT_TWAP_WINDOW_DAYS,
     MIN_TWAP_SAMPLES,
@@ -1369,7 +1371,10 @@ class TeslaEnergyCoordinator(DataUpdateCoordinator):
         self._last_outage_notification: float = 0  # monotonic timestamp (cooldown)
 
         # Determine API base URL based on provider
-        if api_provider == TESLA_PROVIDER_FLEET_API:
+        if api_provider == TESLA_PROVIDER_POWERSYNC:
+            self.api_base_url = POWERSYNC_API_BASE_URL
+            _LOGGER.info(f"TeslaEnergyCoordinator initialized with PowerSync.cc proxy for site {site_id}")
+        elif api_provider == TESLA_PROVIDER_FLEET_API:
             self.api_base_url = FLEET_API_BASE_URL
             _LOGGER.info(f"TeslaEnergyCoordinator initialized with Fleet API for site {site_id}")
         else:
@@ -1392,7 +1397,9 @@ class TeslaEnergyCoordinator(DataUpdateCoordinator):
                     # Update provider and base URL if it changed
                     if provider != self.api_provider:
                         self.api_provider = provider
-                        if provider == TESLA_PROVIDER_FLEET_API:
+                        if provider == TESLA_PROVIDER_POWERSYNC:
+                            self.api_base_url = POWERSYNC_API_BASE_URL
+                        elif provider == TESLA_PROVIDER_FLEET_API:
                             self.api_base_url = FLEET_API_BASE_URL
                         else:
                             self.api_base_url = TESLEMETRY_API_BASE_URL

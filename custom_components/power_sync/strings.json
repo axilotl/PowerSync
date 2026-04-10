@@ -399,7 +399,7 @@
       },
       "tesla_provider": {
         "title": "Choose Tesla API Provider",
-        "description": "{fleet_detected}\n\nSelect how you want to access your Tesla Powerwall. Tesla Fleet API is free but requires the Tesla Fleet integration to be installed. Teslemetry is a paid proxy service (~$4/month) that's easier to set up.",
+        "description": "{fleet_detected}\n\nSelect how you want to access your Tesla Powerwall:\n\n• **PowerSync** (recommended) — Free. Sign in with your Tesla account on powersync.cc and we handle the OAuth flow for you.\n\n• **Tesla Fleet API** — Free. Uses an existing Tesla Fleet integration that you've already set up in Home Assistant.\n\n• **Teslemetry** — ~$4/month. A third-party paid proxy.",
         "data": {
           "tesla_api_provider": "Tesla API Provider"
         }
@@ -409,6 +409,13 @@
         "description": "Enter your Teslemetry API token. You can get this from teslemetry.com",
         "data": {
           "teslemetry_api_token": "Teslemetry API Token"
+        }
+      },
+      "powersync": {
+        "title": "Connect with PowerSync",
+        "description": "1. Open this URL in a browser and sign in with your Tesla account:\n\n**{auth_url}**\n\n2. After signing in, you'll get a token starting with `psync_`.\n\n3. Paste it below to connect.\n\nYour Tesla credentials are never seen by PowerSync — Tesla handles authentication and we only receive a token to call the Fleet API on your behalf.",
+        "data": {
+          "teslemetry_api_token": "PowerSync Token"
         }
       },
       "site_selection": {

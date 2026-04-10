@@ -72,6 +72,9 @@ from .const import (
     DEFAULT_DISCHARGE_DURATION,
     TESLEMETRY_API_BASE_URL,
     FLEET_API_BASE_URL,
+    POWERSYNC_API_BASE_URL,
+    TESLA_PROVIDER_POWERSYNC,
+    get_tesla_api_base_url,
     CONF_AEMO_SPIKE_ENABLED,
     CONF_AEMO_REGION,
     CONF_AEMO_SPIKE_THRESHOLD,
@@ -1249,7 +1252,7 @@ class AEMOSpikeManager:
                 "Authorization": f"Bearer {current_token}",
                 "Content-Type": "application/json",
             }
-            api_base = TESLEMETRY_API_BASE_URL if current_provider == TESLA_PROVIDER_TESLEMETRY else FLEET_API_BASE_URL
+            api_base = get_tesla_api_base_url(current_provider)
 
             # Step 1: Save current tariff
             _LOGGER.info("Saving current tariff before spike mode...")
@@ -1346,7 +1349,7 @@ class AEMOSpikeManager:
                 "Authorization": f"Bearer {current_token}",
                 "Content-Type": "application/json",
             }
-            api_base = TESLEMETRY_API_BASE_URL if current_provider == TESLA_PROVIDER_TESLEMETRY else FLEET_API_BASE_URL
+            api_base = get_tesla_api_base_url(current_provider)
 
             # Step 1: Switch to self_consumption mode first (helps tariff apply)
             _LOGGER.info("Switching to self_consumption mode before tariff restore...")
@@ -1797,7 +1800,7 @@ class SavingSessionTariffManager:
                 "Authorization": f"Bearer {current_token}",
                 "Content-Type": "application/json",
             }
-            api_base = TESLEMETRY_API_BASE_URL if current_provider == TESLA_PROVIDER_TESLEMETRY else FLEET_API_BASE_URL
+            api_base = get_tesla_api_base_url(current_provider)
 
             # Step 1: Save current tariff
             _LOGGER.info("Saving current tariff before session mode...")
@@ -1936,7 +1939,7 @@ class SavingSessionTariffManager:
                 "Authorization": f"Bearer {current_token}",
                 "Content-Type": "application/json",
             }
-            api_base = TESLEMETRY_API_BASE_URL if current_provider == TESLA_PROVIDER_TESLEMETRY else FLEET_API_BASE_URL
+            api_base = get_tesla_api_base_url(current_provider)
 
             # Step 1: Switch to self_consumption mode first
             _LOGGER.info("Switching to self_consumption before tariff restore...")
@@ -2320,7 +2323,7 @@ async def send_tariff_to_tesla(
         _LOGGER.debug("Error logging payload details: %s", err)
 
     # Use correct API base URL based on provider
-    api_base = TESLEMETRY_API_BASE_URL if api_provider == TESLA_PROVIDER_TESLEMETRY else FLEET_API_BASE_URL
+    api_base = get_tesla_api_base_url(api_provider)
     url = f"{api_base}/api/1/energy_sites/{site_id}/time_of_use_settings"
     _LOGGER.debug("Sending TOU schedule via %s API", api_provider)
     last_error = None
@@ -3146,7 +3149,7 @@ class PowerwallSettingsView(HomeAssistantView):
                 "Authorization": f"Bearer {current_token}",
                 "Content-Type": "application/json",
             }
-            api_base = TESLEMETRY_API_BASE_URL if provider == TESLA_PROVIDER_TESLEMETRY else FLEET_API_BASE_URL
+            api_base = get_tesla_api_base_url(provider)
 
             # Fetch site info
             async with session.get(
@@ -3266,7 +3269,7 @@ class PowerwallTypeView(HomeAssistantView):
                 "Authorization": f"Bearer {current_token}",
                 "Content-Type": "application/json",
             }
-            api_base = TESLEMETRY_API_BASE_URL if provider == TESLA_PROVIDER_TESLEMETRY else FLEET_API_BASE_URL
+            api_base = get_tesla_api_base_url(provider)
 
             # Fetch site info
             async with session.get(
@@ -5995,7 +5998,7 @@ async def fetch_tesla_tariff_schedule(hass: HomeAssistant, entry: ConfigEntry) -
             "Authorization": f"Bearer {current_token}",
             "Content-Type": "application/json",
         }
-        api_base = TESLEMETRY_API_BASE_URL if provider == TESLA_PROVIDER_TESLEMETRY else FLEET_API_BASE_URL
+        api_base = get_tesla_api_base_url(provider)
 
         # Fetch site_info which contains tariff_content
         async with session.get(
@@ -12987,7 +12990,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 return None
 
             session = async_get_clientsession(hass)
-            api_base_url = TESLEMETRY_API_BASE_URL if current_provider == TESLA_PROVIDER_TESLEMETRY else FLEET_API_BASE_URL
+            api_base_url = get_tesla_api_base_url(current_provider)
             headers = {
                 "Authorization": f"Bearer {current_token}",
                 "Content-Type": "application/json",
@@ -13058,11 +13061,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 return
 
             session = async_get_clientsession(hass)
-            api_base = (
-                TESLEMETRY_API_BASE_URL
-                if current_provider == TESLA_PROVIDER_TESLEMETRY
-                else FLEET_API_BASE_URL
-            )
+            api_base = get_tesla_api_base_url(current_provider)
             headers = {
                 "Authorization": f"Bearer {current_token}",
                 "Content-Type": "application/json",
@@ -14952,7 +14951,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             if force_mode_toggle and sync_mode != 'initial_forecast':
                 try:
                     site_id = entry.data[CONF_TESLA_ENERGY_SITE_ID]
-                    api_base = TESLEMETRY_API_BASE_URL if current_provider == TESLA_PROVIDER_TESLEMETRY else FLEET_API_BASE_URL
+                    api_base = get_tesla_api_base_url(current_provider)
                     headers = {"Authorization": f"Bearer {current_token}", "Content-Type": "application/json"}
                     session = async_get_clientsession(hass)
 
@@ -15133,7 +15132,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                                             _cal_session = async_get_clientsession(hass)
                                             _cal_site_id = entry.data[CONF_TESLA_ENERGY_SITE_ID]
                                             _cal_token = current_token
-                                            _cal_api_base = TESLEMETRY_API_BASE_URL if current_provider == TESLA_PROVIDER_TESLEMETRY else FLEET_API_BASE_URL
+                                            _cal_api_base = get_tesla_api_base_url(current_provider)
                                             _cal_headers = {"Authorization": f"Bearer {_cal_token}", "Content-Type": "application/json"}
 
                                             # Try setting autonomous mode
@@ -15535,7 +15534,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 return
 
             session = async_get_clientsession(hass)
-            api_base_url = TESLEMETRY_API_BASE_URL if current_provider == TESLA_PROVIDER_TESLEMETRY else FLEET_API_BASE_URL
+            api_base_url = get_tesla_api_base_url(current_provider)
             headers = {
                 "Authorization": f"Bearer {current_token}",
                 "Content-Type": "application/json",
@@ -15851,7 +15850,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 return
 
             session = async_get_clientsession(hass)
-            api_base_url = TESLEMETRY_API_BASE_URL if current_provider == TESLA_PROVIDER_TESLEMETRY else FLEET_API_BASE_URL
+            api_base_url = get_tesla_api_base_url(current_provider)
             headers = {
                 "Authorization": f"Bearer {current_token}",
                 "Content-Type": "application/json",
@@ -16632,7 +16631,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         "Authorization": f"Bearer {current_token}",
                         "Content-Type": "application/json",
                     }
-                    api_base = TESLEMETRY_API_BASE_URL if provider == TESLA_PROVIDER_TESLEMETRY else FLEET_API_BASE_URL
+                    api_base = get_tesla_api_base_url(provider)
                     site_state = {}
 
                     _LOGGER.info("Saving current tariff before force discharge for site %s...", site_id)
@@ -16765,7 +16764,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     "Authorization": f"Bearer {current_token}",
                     "Content-Type": "application/json",
                 }
-                api_base = TESLEMETRY_API_BASE_URL if provider == TESLA_PROVIDER_TESLEMETRY else FLEET_API_BASE_URL
+                api_base = get_tesla_api_base_url(provider)
 
                 saved_mode = (force_discharge_state.get("saved_states") or {}).get(site_id, {}).get("saved_operation_mode")
                 if saved_mode != "autonomous":
@@ -17402,7 +17401,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         "Authorization": f"Bearer {current_token}",
                         "Content-Type": "application/json",
                     }
-                    api_base = TESLEMETRY_API_BASE_URL if provider == TESLA_PROVIDER_TESLEMETRY else FLEET_API_BASE_URL
+                    api_base = get_tesla_api_base_url(provider)
                     site_state = {}
 
                     _LOGGER.info("Saving current tariff before force charge for site %s...", site_id)
@@ -17498,7 +17497,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     "Authorization": f"Bearer {current_token}",
                     "Content-Type": "application/json",
                 }
-                api_base = TESLEMETRY_API_BASE_URL if provider == TESLA_PROVIDER_TESLEMETRY else FLEET_API_BASE_URL
+                api_base = get_tesla_api_base_url(provider)
 
                 saved_mode = (force_charge_state.get("saved_states") or {}).get(site_id, {}).get("saved_operation_mode")
                 if saved_mode != "autonomous":
@@ -18030,7 +18029,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         "Authorization": f"Bearer {current_token}",
                         "Content-Type": "application/json",
                     }
-                    api_base = TESLEMETRY_API_BASE_URL if provider == TESLA_PROVIDER_TESLEMETRY else FLEET_API_BASE_URL
+                    api_base = get_tesla_api_base_url(provider)
                     async with session.post(
                         f"{api_base}/api/1/energy_sites/{site_id}/operation",
                         headers=headers,
@@ -18103,7 +18102,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     "Authorization": f"Bearer {current_token}",
                     "Content-Type": "application/json",
                 }
-                api_base = TESLEMETRY_API_BASE_URL if provider == TESLA_PROVIDER_TESLEMETRY else FLEET_API_BASE_URL
+                api_base = get_tesla_api_base_url(provider)
 
                 # Per-site saved mode, or fall back to global saved mode
                 discharge_saved = force_discharge_state.get("saved_states") or {}
@@ -18392,7 +18391,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     "Authorization": f"Bearer {current_token}",
                     "Content-Type": "application/json",
                 }
-                api_base = TESLEMETRY_API_BASE_URL if provider == TESLA_PROVIDER_TESLEMETRY else FLEET_API_BASE_URL
+                api_base = get_tesla_api_base_url(provider)
 
                 async with session.post(
                     f"{api_base}/api/1/energy_sites/{site_id}/operation",
@@ -18445,7 +18444,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     "Authorization": f"Bearer {current_token}",
                     "Content-Type": "application/json",
                 }
-                api_base = TESLEMETRY_API_BASE_URL if provider == TESLA_PROVIDER_TESLEMETRY else FLEET_API_BASE_URL
+                api_base = get_tesla_api_base_url(provider)
 
                 async with session.post(
                     f"{api_base}/api/1/energy_sites/{site_id}/operation",
@@ -18612,7 +18611,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         "Authorization": f"Bearer {current_token}",
                         "Content-Type": "application/json",
                     }
-                    api_base = TESLEMETRY_API_BASE_URL if provider == TESLA_PROVIDER_TESLEMETRY else FLEET_API_BASE_URL
+                    api_base = get_tesla_api_base_url(provider)
 
                     # Retry up to 3 times for backup reserve
                     for attempt in range(1, 4):
@@ -18699,7 +18698,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     "Authorization": f"Bearer {current_token}",
                     "Content-Type": "application/json",
                 }
-                api_base = TESLEMETRY_API_BASE_URL if provider == TESLA_PROVIDER_TESLEMETRY else FLEET_API_BASE_URL
+                api_base = get_tesla_api_base_url(provider)
 
                 # Retry up to 3 times for operation mode
                 for attempt in range(1, 4):
@@ -18762,7 +18761,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     "Authorization": f"Bearer {current_token}",
                     "Content-Type": "application/json",
                 }
-                api_base = TESLEMETRY_API_BASE_URL if provider == TESLA_PROVIDER_TESLEMETRY else FLEET_API_BASE_URL
+                api_base = get_tesla_api_base_url(provider)
 
                 async with session.post(
                     f"{api_base}/api/1/energy_sites/{site_id}/grid_import_export",
@@ -18825,7 +18824,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     "Authorization": f"Bearer {current_token}",
                     "Content-Type": "application/json",
                 }
-                api_base = TESLEMETRY_API_BASE_URL if provider == TESLA_PROVIDER_TESLEMETRY else FLEET_API_BASE_URL
+                api_base = get_tesla_api_base_url(provider)
 
                 # Note: Tesla API uses inverted logic - disallow_charge_from_grid_with_solar_installed
                 async with session.post(

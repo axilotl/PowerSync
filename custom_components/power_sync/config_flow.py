@@ -38,9 +38,13 @@ from .const import (
     CONF_TESLA_API_PROVIDER,
     TESLA_PROVIDER_TESLEMETRY,
     TESLA_PROVIDER_FLEET_API,
+    TESLA_PROVIDER_POWERSYNC,
     AMBER_API_BASE_URL,
     TESLEMETRY_API_BASE_URL,
     FLEET_API_BASE_URL,
+    POWERSYNC_API_BASE_URL,
+    POWERSYNC_AUTH_START_URL,
+    POWERSYNC_AUTH_ME_URL,
     # Battery system selection
     CONF_BATTERY_SYSTEM,
     BATTERY_SYSTEM_TESLA,
@@ -433,6 +437,52 @@ async def validate_fleet_api_token(
     except Exception as err:
         _LOGGER.exception("Unexpected error validating Fleet API token: %s", err)
         return {"success": False, "error": "unknown"}
+
+async def validate_powersync_token(
+    hass: HomeAssistant, api_token: str
+) -> dict[str, Any]:
+    """Validate a PowerSync.cc proxy token and fetch the user's energy sites.
+
+    PowerSync tokens look like `psync_<43 base64url chars>`. They authenticate
+    against the PowerSync.cc cloud proxy which forwards to Tesla's Fleet API
+    on the user's behalf, handling OAuth refresh transparently.
+    """
+    if not api_token or not api_token.startswith("psync_"):
+        return {"success": False, "error": "invalid_token_format"}
+
+    session = async_get_clientsession(hass)
+    headers = {
+        "Authorization": f"Bearer {api_token}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        async with session.get(
+            f"{POWERSYNC_API_BASE_URL}/api/1/products",
+            headers=headers,
+            timeout=aiohttp.ClientTimeout(total=30),
+        ) as response:
+            if response.status == 200:
+                data = await response.json()
+                products = data.get("response", [])
+
+                energy_sites = [p for p in products if "energy_site_id" in p]
+
+                if energy_sites:
+                    return {"success": True, "sites": energy_sites}
+                return {"success": False, "error": "no_energy_sites"}
+            if response.status == 401:
+                return {"success": False, "error": "invalid_auth"}
+            error_text = await response.text()
+            _LOGGER.error("PowerSync proxy error %s: %s", response.status, error_text[:200])
+            return {"success": False, "error": "cannot_connect"}
+    except aiohttp.ClientError as err:
+        _LOGGER.exception("Error connecting to PowerSync proxy: %s", err)
+        return {"success": False, "error": "cannot_connect"}
+    except Exception as err:
+        _LOGGER.exception("Unexpected error validating PowerSync token: %s", err)
+        return {"success": False, "error": "unknown"}
+
 
 async def validate_sigenergy_credentials(
     hass: HomeAssistant,
@@ -1606,15 +1656,32 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     except Exception as e:
                         _LOGGER.warning("Failed to extract tokens from Tesla Fleet integration: %s", e)
 
-        # If Tesla Fleet is not available, skip provider selection and go to Teslemetry (required)
+        # If Tesla Fleet is not available, offer PowerSync (free) or Teslemetry (paid)
         if not self._tesla_fleet_available:
-            _LOGGER.info("Tesla Fleet not available - Teslemetry required")
-            return await self.async_step_teslemetry()
+            if user_input is not None:
+                self._selected_provider = user_input[CONF_TESLA_API_PROVIDER]
+                if self._selected_provider == TESLA_PROVIDER_POWERSYNC:
+                    return await self.async_step_powersync()
+                return await self.async_step_teslemetry()
+
+            return self.async_show_form(
+                step_id="tesla_provider",
+                data_schema=vol.Schema({
+                    vol.Required(CONF_TESLA_API_PROVIDER, default=TESLA_PROVIDER_POWERSYNC): vol.In({
+                        TESLA_PROVIDER_POWERSYNC: "PowerSync (Free - sign in with Tesla, recommended)",
+                        TESLA_PROVIDER_TESLEMETRY: "Teslemetry (~$4/month)",
+                    }),
+                }),
+            )
 
         # Tesla Fleet is available - let user choose
         if user_input is not None:
 
             self._selected_provider = user_input[CONF_TESLA_API_PROVIDER]
+
+            if self._selected_provider == TESLA_PROVIDER_POWERSYNC:
+                _LOGGER.info("User selected PowerSync.cc cloud proxy")
+                return await self.async_step_powersync()
 
             if self._selected_provider == TESLA_PROVIDER_FLEET_API:
                 # User chose Fleet API - validate and get sites
@@ -1635,9 +1702,10 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     return self.async_show_form(
                         step_id="tesla_provider",
                         data_schema=vol.Schema({
-                            vol.Required(CONF_TESLA_API_PROVIDER, default=TESLA_PROVIDER_TESLEMETRY): vol.In({
+                            vol.Required(CONF_TESLA_API_PROVIDER, default=TESLA_PROVIDER_POWERSYNC): vol.In({
+                                TESLA_PROVIDER_POWERSYNC: "PowerSync (Free - sign in with Tesla, recommended)",
                                 TESLA_PROVIDER_FLEET_API: "Tesla Fleet API (Free - uses existing Tesla Fleet integration)",
-                                TESLA_PROVIDER_TESLEMETRY: "Teslemetry (~$4/month - easier setup, recommended)",
+                                TESLA_PROVIDER_TESLEMETRY: "Teslemetry (~$4/month)",
                             }),
                         }),
                         errors=errors,
@@ -1647,13 +1715,14 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 _LOGGER.info("User selected Teslemetry")
                 return await self.async_step_teslemetry()
 
-        # Show provider selection form — default to Teslemetry (recommended/easier)
+        # Show provider selection form — default to PowerSync (free, recommended)
         return self.async_show_form(
             step_id="tesla_provider",
             data_schema=vol.Schema({
-                vol.Required(CONF_TESLA_API_PROVIDER, default=TESLA_PROVIDER_TESLEMETRY): vol.In({
+                vol.Required(CONF_TESLA_API_PROVIDER, default=TESLA_PROVIDER_POWERSYNC): vol.In({
+                    TESLA_PROVIDER_POWERSYNC: "PowerSync (Free - sign in with Tesla, recommended)",
                     TESLA_PROVIDER_FLEET_API: "Tesla Fleet API (Free - uses existing Tesla Fleet integration)",
-                    TESLA_PROVIDER_TESLEMETRY: "Teslemetry (~$4/month - easier setup, recommended)",
+                    TESLA_PROVIDER_TESLEMETRY: "Teslemetry (~$4/month)",
                 }),
             }),
             description_placeholders={
@@ -1697,6 +1766,56 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             errors=errors,
             description_placeholders={
                 "teslemetry_url": "https://teslemetry.com",
+            },
+        )
+
+    async def async_step_powersync(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Handle PowerSync.cc cloud proxy token entry.
+
+        Flow:
+        1. Show a form with a button/link to https://api.powersync.cc/auth/start
+        2. User signs in with Tesla in their browser, gets a `psync_xxx` token
+        3. User pastes it back into HA, we validate it against the proxy
+        """
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            powersync_token = user_input.get(CONF_TESLEMETRY_API_TOKEN, "").strip()
+
+            if powersync_token:
+                validation_result = await validate_powersync_token(
+                    self.hass, powersync_token
+                )
+
+                if validation_result["success"]:
+                    # Reuse the teslemetry token slot — coordinator picks the right
+                    # base URL based on CONF_TESLA_API_PROVIDER
+                    self._teslemetry_data = {
+                        CONF_TESLEMETRY_API_TOKEN: powersync_token,
+                        CONF_TESLA_API_PROVIDER: TESLA_PROVIDER_POWERSYNC,
+                    }
+                    self._tesla_sites = validation_result.get("sites", [])
+                    return await self.async_step_site_selection()
+                errors["base"] = validation_result.get("error", "unknown")
+            else:
+                errors["base"] = "no_token_provided"
+
+        data_schema = vol.Schema(
+            {
+                vol.Required(CONF_TESLEMETRY_API_TOKEN): TextSelector(
+                    TextSelectorConfig(type=TextSelectorType.PASSWORD)
+                ),
+            }
+        )
+
+        return self.async_show_form(
+            step_id="powersync",
+            data_schema=data_schema,
+            errors=errors,
+            description_placeholders={
+                "auth_url": POWERSYNC_AUTH_START_URL,
             },
         )
 
