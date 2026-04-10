@@ -121,6 +121,13 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._cost_function = CostFunction("cost")
         self._provider_config = ProviderPriceConfig()
 
+        # Lock to prevent concurrent LP solves. Three independent triggers
+        # (DataUpdateCoordinator's _async_update_data, _schedule_polling_loop,
+        # and _on_price_update) can fire at the same 5-min boundary, causing
+        # 2-3 duplicate Modbus writes per cycle. The lock serialises them so
+        # only one LP solve runs at a time.
+        self._optimization_lock = asyncio.Lock()
+
         # Built-in optimizer
         self._optimizer: BatteryOptimizer | None = None
         self._last_optimizer_result: OptimizerResult | None = None
@@ -621,6 +628,15 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if not self._optimizer or not self._enabled:
             return
 
+        # Skip if another LP solve is already in progress. Three independent
+        # triggers (DataUpdateCoordinator, polling loop, price update) can
+        # fire at the same 5-min boundary; serialise them so only one runs.
+        # The locked() check + acquire() are safe without await between them
+        # because asyncio is single-threaded on the event loop.
+        if self._optimization_lock.locked():
+            _LOGGER.debug("Optimization already in progress — skipping concurrent request")
+            return
+        await self._optimization_lock.acquire()
         try:
             # Retry battery auto-detection if still on defaults
             # (site_info may not have been available during initial setup)
@@ -799,9 +815,18 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         except Exception as e:
             _LOGGER.error("Optimization failed: %s", e, exc_info=True)
+        finally:
+            self._optimization_lock.release()
 
     async def _schedule_polling_loop(self) -> None:
-        """Periodically re-optimize and execute current action."""
+        """Periodically re-optimize and execute current action.
+
+        Sleep-first structure: avoids the structural double where the loop
+        used to execute a heartbeat at the top AND execute again at the end
+        via _run_optimization. Now: sleep → re-optimize (which executes
+        internally). The FoxESS hardware timer is set to interval+5 min on
+        each execute, so it's always renewed before expiry.
+        """
         while self._enabled:
             try:
                 # Safety: if a pre-IDLE backup reserve restore is pending,
@@ -812,24 +837,6 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     if battery:
                         await self._restore_pre_idle_backup_reserve(battery, "polling safety check")
 
-                # Execute current action from schedule
-                if self._current_schedule and self._current_schedule.actions:
-                    current_action = self._get_current_action()
-                    if current_action and self._executor:
-                        # Log the *executed* action (may differ from planned if overridden)
-                        executed = self._last_executed_action or current_action.action
-                        _LOGGER.info(
-                            "Polling: current action=%s power=%.0fW soc=%.1f%%",
-                            executed,
-                            current_action.power_w,
-                            current_action.soc * 100,
-                        )
-                        await self._execute_optimizer_action(current_action)
-                        # Keep sensors in sync with current action
-                        self.async_set_updated_data(self.get_api_data())
-                    elif not current_action:
-                        _LOGGER.debug("Polling: no current action found in schedule")
-
                 # Wait for next interval
                 await asyncio.sleep(self._config.interval_minutes * 60)
 
@@ -837,7 +844,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if not self._enabled:
                     break
 
-                # Re-optimize on each interval
+                # Re-optimize on each interval (executes the resulting action internally)
                 await self._run_optimization()
 
             except asyncio.CancelledError:
@@ -3681,10 +3688,12 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return response
 
     async def _async_update_data(self) -> dict[str, Any]:
-        """Periodic data update — re-optimize and return API data."""
-        if self._enabled:
-            await self._run_optimization()
+        """Periodic data update — return cached API data.
 
+        LP optimization is driven exclusively by _schedule_polling_loop and
+        _initial_opt_task; running it here as well caused duplicate Modbus
+        writes when both fired at the same 5-min boundary.
+        """
         return self.get_api_data()
 
     # ========================================
