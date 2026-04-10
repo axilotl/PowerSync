@@ -513,6 +513,34 @@ class PowerSyncStrategy {
     // Shorthand: resolve then check
     const hasE = (name) => has(e(name));
 
+    // Domain-aware entity finder used by the Tesla Energy Site controls section.
+    // The new Tesla entities use _attr_has_entity_name=True, so HA composes
+    // their entity_ids from the device name (e.g. "Home" → home_backup_reserve)
+    // rather than the suggested object_id. This helper scans hass.states for
+    // any entity_id in the given domain matching one of the candidate suffixes,
+    // tolerating any device-name prefix.
+    const findEntity = (domain, suffix) => {
+      const direct = `${domain}.power_sync_${suffix}`;
+      if (hass.states[direct]) return direct;
+      const prefix = `${domain}.`;
+      const tail = `_${suffix}`;
+      for (const key of Object.keys(hass.states)) {
+        if (!key.startsWith(prefix)) continue;
+        if (key === `${domain}.${suffix}` || key.endsWith(tail)) return key;
+      }
+      return null;
+    };
+
+    // Find every VPP program switch (one switch per Tesla program enrollment).
+    const findVppSwitches = () => {
+      const matches = [];
+      for (const key of Object.keys(hass.states)) {
+        if (!key.startsWith('switch.')) continue;
+        if (key.includes('_vpp_')) matches.push(key);
+      }
+      return matches;
+    };
+
     // ── 3-column layout: left (controls/status), center (flow/charts), right (prices/energy) ──
     const left = [];
     const center = [];
@@ -526,6 +554,17 @@ class PowerSyncStrategy {
     // --- Left Column: Battery Controls (requires button-card) ---
     if (hasButton && (hasE('battery_level') || hasE('battery_power'))) {
       left.push(_batteryControls());
+    }
+
+    // --- Left Column: Tesla Energy Site Controls (v2.10.0+) ---
+    // Groups backup reserve, operation mode, grid export rule, grid charging,
+    // storm watch, off-grid EV reserve, and any VPP program switches into one
+    // card. Each row is only added if the corresponding entity exists, so the
+    // section gracefully scales from a basic Powerwall (4 rows) to a US site
+    // with VPP enrollment (8+ rows).
+    const teslaSection = _teslaEnergySiteControls(findEntity, findVppSwitches);
+    if (teslaSection) {
+      left.push(teslaSection);
     }
 
     // --- Left Column: Optimizer Status (requires button-card) ---
@@ -879,6 +918,69 @@ function _batteryControls() {
         ],
       },
     ],
+  };
+}
+
+function _teslaEnergySiteControls(findEntity, findVppSwitches) {
+  // Resolve all the entity_ids the strategy supports for Tesla Energy Sites.
+  const backupReserve = findEntity('number', 'backup_reserve');
+  const offGridReserve = findEntity('number', 'off_grid_ev_reserve');
+  const operationMode = findEntity('select', 'operation_mode');
+  const exportRule = findEntity('select', 'grid_export_rule');
+  const gridCharging = findEntity('switch', 'grid_charging');
+  const stormWatch = findEntity('switch', 'storm_watch');
+  const stormActive = findEntity('binary_sensor', 'storm_watch_active');
+  const manualOverride = findEntity('binary_sensor', 'manual_export_override');
+  const vppSwitches = findVppSwitches();
+
+  const rows = [];
+  if (backupReserve) {
+    rows.push({ entity: backupReserve, name: 'Backup Reserve', icon: 'mdi:battery-lock' });
+  }
+  if (operationMode) {
+    rows.push({ entity: operationMode, name: 'Operation Mode', icon: 'mdi:cog-transfer' });
+  }
+  if (exportRule) {
+    rows.push({ entity: exportRule, name: 'Grid Export Rule', icon: 'mdi:transmission-tower-export' });
+  }
+  if (gridCharging) {
+    rows.push({ entity: gridCharging, name: 'Grid Charging', icon: 'mdi:transmission-tower-import' });
+  }
+  if (stormWatch) {
+    rows.push({ entity: stormWatch, name: 'Storm Watch', icon: 'mdi:weather-lightning' });
+  }
+  if (stormActive) {
+    rows.push({ entity: stormActive, name: 'Storm Watch Active', icon: 'mdi:weather-lightning-rainy' });
+  }
+  if (offGridReserve) {
+    rows.push({ entity: offGridReserve, name: 'Off-Grid EV Reserve', icon: 'mdi:car-electric' });
+  }
+  if (manualOverride) {
+    rows.push({ entity: manualOverride, name: 'Manual Export Override', icon: 'mdi:hand-back-right' });
+  }
+  for (const sw of vppSwitches) {
+    // Strip everything up to and including "_vpp_" to derive a friendly label.
+    const tail = sw.split('_vpp_').pop() || '';
+    const label = tail
+      .split('_')
+      .filter(Boolean)
+      .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+      .join(' ');
+    rows.push({
+      entity: sw,
+      name: label ? `VPP: ${label}` : 'VPP Program',
+      icon: 'mdi:transmission-tower',
+    });
+  }
+
+  if (rows.length === 0) return null;
+
+  return {
+    type: 'entities',
+    title: 'Tesla Energy Site',
+    show_header_toggle: false,
+    state_color: true,
+    entities: rows,
   };
 }
 

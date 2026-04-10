@@ -376,10 +376,18 @@
         }
       },
       "tesla_provider": {
-        "title": "Choose Tesla API Provider",
-        "description": "{fleet_detected}\n\nSelect how you want to access your Tesla Powerwall:\n\n• **PowerSync** (recommended) — Free. Sign in with your Tesla account on powersync.cc and we handle the OAuth flow for you.\n\n• **Tesla Fleet API** — Free. Uses an existing Tesla Fleet integration that you've already set up in Home Assistant.\n\n• **Teslemetry** — ~$4/month. A third-party paid proxy.",
+        "title": "Choose Tesla API Providers",
+        "description": "{fleet_detected}\n\n**Tesla Energy API Provider** — used for Powerwall control:\n\n• **PowerSync** (recommended) — Free. Sign in with your Tesla account on powersync.cc and we handle the OAuth flow for you.\n\n• **Tesla Fleet API** — Free. Uses an existing Tesla Fleet integration that you've already set up in Home Assistant.\n\n• **Teslemetry** — ~$4/month. A third-party paid proxy.\n\n**Tesla EV API Provider** — used for vehicle commands. PowerSync.cc does not include vehicle endpoints, so pick Tesla Fleet or Teslemetry here if you want to control your Tesla vehicles. Choose **None** if you don't have a Tesla vehicle (or only use BLE control).",
         "data": {
-          "tesla_api_provider": "Tesla API Provider"
+          "tesla_api_provider": "Tesla Energy API Provider",
+          "tesla_ev_api_provider": "Tesla EV API Provider"
+        }
+      },
+      "tesla_ev_teslemetry_token": {
+        "title": "Teslemetry token for vehicle commands",
+        "description": "Teslemetry isn't installed in Home Assistant, so PowerSync needs an API token to talk to vehicles directly.\n\nGet a token from [{teslemetry_url}]({teslemetry_url}) and paste it below.",
+        "data": {
+          "tesla_ev_teslemetry_token": "Teslemetry API Token"
         }
       },
       "teslemetry": {
@@ -530,6 +538,7 @@
       "no_sites": "No Amber Electric sites found for this account.",
       "no_energy_sites": "No Tesla energy sites found in your account.",
       "no_token_provided": "Please provide a Teslemetry API token.",
+      "tesla_fleet_not_installed": "The Tesla Fleet HA integration is not installed. Add it from the Home Assistant integrations page first, then return here.",
       "aemo_region_required": "Please select an AEMO NEM region when spike detection is enabled.",
       "aemo_required_in_aemo_mode": "AEMO spike detection is recommended for Globird/VPP plans that include spike export payments. Disable if your plan does not include this feature.",
       "missing_credentials": "Please provide your Sigenergy email and password.",
@@ -570,13 +579,23 @@
         "description": "Configure your electricity provider, Tesla API connection, and optimization settings.",
         "data": {
           "electricity_provider": "Electricity Provider",
-          "tesla_api_provider": "Tesla API Provider",
+          "tesla_api_provider": "Tesla Energy API Provider",
+          "tesla_ev_api_provider": "Tesla EV API Provider",
           "optimization_provider": "Optimization Provider",
           "optimization_backup_reserve": "Minimum Discharge Level (%)"
         },
         "data_description": {
+          "tesla_api_provider": "Used for Powerwall control. PowerSync.cc is the recommended free option.",
+          "tesla_ev_api_provider": "Used for vehicle commands. PowerSync.cc has no vehicle endpoints, so pick Tesla Fleet or Teslemetry here if you want to control Tesla vehicles. Choose None if you don't have a Tesla vehicle.",
           "optimization_provider": "Choose between Tesla's built-in optimization or Smart Optimization (Built-in LP)",
           "optimization_backup_reserve": "Optimizer will not discharge below this level. This is separate from your battery's hardware backup reserve (set in the mobile app)."
+        }
+      },
+      "options_tesla_ev_token": {
+        "title": "Teslemetry token for vehicle commands",
+        "description": "Teslemetry isn't installed in Home Assistant, so PowerSync needs an API token to talk to vehicles directly.\n\nGet a token from [{teslemetry_url}]({teslemetry_url}) and paste it below.",
+        "data": {
+          "tesla_ev_teslemetry_token": "Teslemetry API Token"
         }
       },
       "init_sigenergy": {

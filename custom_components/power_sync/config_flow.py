@@ -39,6 +39,11 @@ from .const import (
     TESLA_PROVIDER_TESLEMETRY,
     TESLA_PROVIDER_FLEET_API,
     TESLA_PROVIDER_POWERSYNC,
+    CONF_TESLA_EV_API_PROVIDER,
+    CONF_TESLA_EV_TELEMETRY_TOKEN,
+    TESLA_EV_API_PROVIDER_NONE,
+    TESLA_EV_API_PROVIDER_FLEET_API,
+    TESLA_EV_API_PROVIDER_TESLEMETRY,
     AMBER_API_BASE_URL,
     TESLEMETRY_API_BASE_URL,
     FLEET_API_BASE_URL,
@@ -482,6 +487,43 @@ async def validate_powersync_token(
     except Exception as err:
         _LOGGER.exception("Unexpected error validating PowerSync token: %s", err)
         return {"success": False, "error": "unknown"}
+
+
+def _detect_tesla_ev_integrations(hass: HomeAssistant) -> dict[str, bool]:
+    """Detect whether the Tesla Fleet and Teslemetry HA integrations are loaded.
+
+    Returns a dict like ``{"tesla_fleet": True, "teslemetry": False}`` so the
+    config flow can label EV provider options with their detection status.
+    """
+    result = {"tesla_fleet": False, "teslemetry": False}
+    for integration in ("tesla_fleet", "teslemetry"):
+        for entry in hass.config_entries.async_entries(integration):
+            if entry.state == ConfigEntryState.LOADED:
+                result[integration] = True
+                break
+    return result
+
+
+def _build_tesla_ev_provider_choices(hass: HomeAssistant) -> dict[str, str]:
+    """Build the Tesla EV API provider dropdown options with detection annotations."""
+    detected = _detect_tesla_ev_integrations(hass)
+    fleet_label = "Tesla Fleet API"
+    if detected["tesla_fleet"]:
+        fleet_label += " ✓ detected"
+    else:
+        fleet_label += " (install Tesla Fleet HA integration first)"
+
+    teslemetry_label = "Teslemetry"
+    if detected["teslemetry"]:
+        teslemetry_label += " ✓ detected"
+    else:
+        teslemetry_label += " (will prompt for API token)"
+
+    return {
+        TESLA_EV_API_PROVIDER_NONE: "None — no Tesla cloud vehicle commands",
+        TESLA_EV_API_PROVIDER_FLEET_API: fleet_label,
+        TESLA_EV_API_PROVIDER_TESLEMETRY: teslemetry_label,
+    }
 
 
 async def validate_sigenergy_credentials(
@@ -959,6 +1001,16 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         data[CONF_OPTIMIZATION_PROVIDER] = self._optimization_provider
         if self._optimization_provider == OPT_PROVIDER_POWERSYNC and self._ml_options:
             data.update(self._ml_options)
+
+        # Tesla EV API provider (chosen during async_step_tesla_provider).
+        # Defaults to "none" so non-Tesla setups stay clean.
+        ev_provider_choice = getattr(
+            self, "_tesla_ev_provider", TESLA_EV_API_PROVIDER_NONE
+        )
+        data[CONF_TESLA_EV_API_PROVIDER] = ev_provider_choice
+        ev_token = getattr(self, "_tesla_ev_teslemetry_token", None)
+        if ev_token:
+            data[CONF_TESLA_EV_TELEMETRY_TOKEN] = ev_token
 
         # Set appropriate title based on battery system and provider
         battery_label = {
@@ -1772,9 +1824,57 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     except Exception as e:
                         _LOGGER.warning("Failed to extract tokens from Tesla Fleet integration: %s", e)
 
+        # Build the labelled EV provider choices once for reuse below
+        ev_provider_choices = _build_tesla_ev_provider_choices(self.hass)
+
+        def _build_schema(include_fleet: bool) -> vol.Schema:
+            energy_choices: dict[str, str] = {
+                TESLA_PROVIDER_POWERSYNC: "PowerSync (Free - sign in with Tesla, recommended)",
+            }
+            if include_fleet:
+                energy_choices[TESLA_PROVIDER_FLEET_API] = (
+                    "Tesla Fleet API (Free - uses existing Tesla Fleet integration)"
+                )
+            energy_choices[TESLA_PROVIDER_TESLEMETRY] = "Teslemetry (~$4/month)"
+            return vol.Schema({
+                vol.Required(CONF_TESLA_API_PROVIDER, default=TESLA_PROVIDER_POWERSYNC): vol.In(energy_choices),
+                vol.Required(
+                    CONF_TESLA_EV_API_PROVIDER,
+                    default=TESLA_EV_API_PROVIDER_NONE,
+                ): vol.In(ev_provider_choices),
+            })
+
+        async def _handle_ev_provider_selection(user_input_local: dict[str, Any]) -> FlowResult | None:
+            """Stash and validate the EV provider choice. Returns a follow-up
+            FlowResult when the user picked Teslemetry-without-detection (token
+            entry), or None to indicate the caller should continue normally."""
+            ev_choice = user_input_local.get(
+                CONF_TESLA_EV_API_PROVIDER, TESLA_EV_API_PROVIDER_NONE
+            )
+            self._tesla_ev_provider = ev_choice
+            detected = _detect_tesla_ev_integrations(self.hass)
+            if ev_choice == TESLA_EV_API_PROVIDER_FLEET_API and not detected["tesla_fleet"]:
+                # Hard fail — Tesla Fleet OAuth can't be entered manually here
+                return self.async_show_form(
+                    step_id="tesla_provider",
+                    data_schema=_build_schema(self._tesla_fleet_available),
+                    errors={CONF_TESLA_EV_API_PROVIDER: "tesla_fleet_not_installed"},
+                )
+            if ev_choice == TESLA_EV_API_PROVIDER_TESLEMETRY and not detected["teslemetry"]:
+                # Will need a follow-up token entry step (handled after energy
+                # provider validation succeeds, since both flows share that
+                # step). Mark a flag so we know to route there.
+                self._tesla_ev_needs_teslemetry_token = True
+            else:
+                self._tesla_ev_needs_teslemetry_token = False
+            return None
+
         # If Tesla Fleet is not available, offer PowerSync (free) or Teslemetry (paid)
         if not self._tesla_fleet_available:
             if user_input is not None:
+                ev_followup = await _handle_ev_provider_selection(user_input)
+                if ev_followup is not None:
+                    return ev_followup
                 self._selected_provider = user_input[CONF_TESLA_API_PROVIDER]
                 if self._selected_provider == TESLA_PROVIDER_POWERSYNC:
                     return await self.async_step_powersync()
@@ -1782,16 +1882,14 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
             return self.async_show_form(
                 step_id="tesla_provider",
-                data_schema=vol.Schema({
-                    vol.Required(CONF_TESLA_API_PROVIDER, default=TESLA_PROVIDER_POWERSYNC): vol.In({
-                        TESLA_PROVIDER_POWERSYNC: "PowerSync (Free - sign in with Tesla, recommended)",
-                        TESLA_PROVIDER_TESLEMETRY: "Teslemetry (~$4/month)",
-                    }),
-                }),
+                data_schema=_build_schema(include_fleet=False),
             )
 
         # Tesla Fleet is available - let user choose
         if user_input is not None:
+            ev_followup = await _handle_ev_provider_selection(user_input)
+            if ev_followup is not None:
+                return ev_followup
 
             self._selected_provider = user_input[CONF_TESLA_API_PROVIDER]
 
@@ -1814,16 +1912,9 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 else:
                     # Fleet API validation failed - show error
                     errors = {"base": validation_result.get("error", "unknown")}
-
                     return self.async_show_form(
                         step_id="tesla_provider",
-                        data_schema=vol.Schema({
-                            vol.Required(CONF_TESLA_API_PROVIDER, default=TESLA_PROVIDER_POWERSYNC): vol.In({
-                                TESLA_PROVIDER_POWERSYNC: "PowerSync (Free - sign in with Tesla, recommended)",
-                                TESLA_PROVIDER_FLEET_API: "Tesla Fleet API (Free - uses existing Tesla Fleet integration)",
-                                TESLA_PROVIDER_TESLEMETRY: "Teslemetry (~$4/month)",
-                            }),
-                        }),
+                        data_schema=_build_schema(include_fleet=True),
                         errors=errors,
                     )
             else:
@@ -1834,13 +1925,7 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         # Show provider selection form — default to PowerSync (free, recommended)
         return self.async_show_form(
             step_id="tesla_provider",
-            data_schema=vol.Schema({
-                vol.Required(CONF_TESLA_API_PROVIDER, default=TESLA_PROVIDER_POWERSYNC): vol.In({
-                    TESLA_PROVIDER_POWERSYNC: "PowerSync (Free - sign in with Tesla, recommended)",
-                    TESLA_PROVIDER_FLEET_API: "Tesla Fleet API (Free - uses existing Tesla Fleet integration)",
-                    TESLA_PROVIDER_TESLEMETRY: "Teslemetry (~$4/month)",
-                }),
-            }),
+            data_schema=_build_schema(include_fleet=True),
             description_placeholders={
                 "fleet_detected": "✓ Tesla Fleet integration detected!",
             },
@@ -1879,6 +1964,43 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="teslemetry",
             data_schema=data_schema,
+            errors=errors,
+            description_placeholders={
+                "teslemetry_url": "https://teslemetry.com",
+            },
+        )
+
+    async def async_step_tesla_ev_teslemetry_token(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Collect a Teslemetry API token used exclusively for vehicle commands.
+
+        Reached when the user picked Teslemetry as the EV provider but the
+        Teslemetry HA integration is not installed. The token entered here is
+        stored under CONF_TESLA_EV_TELEMETRY_TOKEN and used by
+        get_tesla_vehicle_api_token() at runtime — kept separate from the
+        energy-site Teslemetry token so users can mix providers freely.
+        """
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            token = user_input.get(CONF_TESLA_EV_TELEMETRY_TOKEN, "").strip()
+            if token:
+                validation_result = await validate_teslemetry_token(self.hass, token)
+                if validation_result["success"]:
+                    self._tesla_ev_teslemetry_token = token
+                    return self._create_final_entry()
+                errors["base"] = validation_result.get("error", "unknown")
+            else:
+                errors["base"] = "no_token_provided"
+
+        return self.async_show_form(
+            step_id="tesla_ev_teslemetry_token",
+            data_schema=vol.Schema({
+                vol.Required(CONF_TESLA_EV_TELEMETRY_TOKEN): TextSelector(
+                    TextSelectorConfig(type=TextSelectorType.PASSWORD)
+                ),
+            }),
             errors=errors,
             description_placeholders={
                 "teslemetry_url": "https://teslemetry.com",
@@ -2210,6 +2332,11 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 self._site_data[CONF_AUTO_SYNC_ENABLED] = False
             # For Flow Power, these settings are already in _flow_power_data
 
+            # If the user picked Teslemetry as the EV provider but Teslemetry
+            # isn't installed in HA, prompt for an API token before finalising.
+            if getattr(self, "_tesla_ev_needs_teslemetry_token", False):
+                return await self.async_step_tesla_ev_teslemetry_token()
+
             # Go directly to creating the entry (skip curtailment/weather/demand/EV steps)
             return self._create_final_entry()
 
@@ -2389,64 +2516,98 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
     async def async_step_init_tesla(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Step 1 for Tesla users: Select electricity provider, Tesla API provider, and optimization provider."""
+        """Step 1 for Tesla users: Select electricity provider, Tesla Energy/EV API providers, and optimization provider."""
+        errors: dict[str, str] = {}
+
         if user_input is not None:
             # Store provider selections
             self._provider = user_input.get(CONF_ELECTRICITY_PROVIDER, "amber")
             self._tesla_provider = user_input.get(CONF_TESLA_API_PROVIDER, TESLA_PROVIDER_TESLEMETRY)
             optimization_provider = user_input.get(CONF_OPTIMIZATION_PROVIDER, OPT_PROVIDER_NATIVE)
 
+            # Tesla EV provider — independent from energy provider
+            ev_choice = user_input.get(
+                CONF_TESLA_EV_API_PROVIDER, TESLA_EV_API_PROVIDER_NONE
+            )
+            self._tesla_ev_provider_choice = ev_choice
+            detected = _detect_tesla_ev_integrations(self.hass)
+            if ev_choice == TESLA_EV_API_PROVIDER_FLEET_API and not detected["tesla_fleet"]:
+                errors[CONF_TESLA_EV_API_PROVIDER] = "tesla_fleet_not_installed"
+            elif (
+                ev_choice == TESLA_EV_API_PROVIDER_TESLEMETRY
+                and not detected["teslemetry"]
+                and not self.config_entry.data.get(CONF_TESLA_EV_TELEMETRY_TOKEN)
+            ):
+                # No detected integration AND no stored EV-specific token —
+                # need the user to enter one. Stash the partial selection
+                # before routing to the token step.
+                self._pending_init_tesla_input = dict(user_input)
+                return await self.async_step_options_tesla_ev_token()
+
             # Check if switching providers and need a fresh token
             current_tesla_provider = self.config_entry.data.get(CONF_TESLA_API_PROVIDER, TESLA_PROVIDER_TESLEMETRY)
             current_token = self.config_entry.data.get(CONF_TESLEMETRY_API_TOKEN)
 
-            # If user picked PowerSync, route to the token entry step.
-            # The step itself accepts an empty submission to keep the current
-            # token if it's already a valid psync_ token.
-            if self._tesla_provider == TESLA_PROVIDER_POWERSYNC:
-                return await self.async_step_powersync_token()
+            if not errors:
+                # Persist the EV provider choice now (before any sub-step
+                # branches), since it doesn't depend on the energy provider.
+                new_data = dict(self.config_entry.data)
+                new_data[CONF_TESLA_EV_API_PROVIDER] = ev_choice
+                self.hass.config_entries.async_update_entry(
+                    self.config_entry, data=new_data
+                )
 
-            # Same for Teslemetry — always show the token step so the user can
-            # optionally rotate it. Empty submission keeps the current token.
-            if self._tesla_provider == TESLA_PROVIDER_TESLEMETRY:
-                return await self.async_step_teslemetry_token()
+                # If user picked PowerSync, route to the token entry step.
+                # The step itself accepts an empty submission to keep the current
+                # token if it's already a valid psync_ token.
+                if self._tesla_provider == TESLA_PROVIDER_POWERSYNC:
+                    return await self.async_step_powersync_token()
 
-            # Fleet API — no token entry needed
-            new_data = dict(self.config_entry.data)
-            if self._tesla_provider != current_tesla_provider:
-                new_data[CONF_TESLA_API_PROVIDER] = self._tesla_provider
-            new_data[CONF_OPTIMIZATION_PROVIDER] = optimization_provider
-            # If Smart Optimization, store ML options
-            if optimization_provider == OPT_PROVIDER_POWERSYNC:
-                new_data[CONF_OPTIMIZATION_COST_FUNCTION] = COST_FUNCTION_COST
-                new_data[CONF_OPTIMIZATION_BACKUP_RESERVE] = user_input.get(
-                    CONF_OPTIMIZATION_BACKUP_RESERVE, int(DEFAULT_OPTIMIZATION_BACKUP_RESERVE * 100)
-                ) / 100.0  # Convert from % to decimal
+                # Same for Teslemetry — always show the token step so the user can
+                # optionally rotate it. Empty submission keeps the current token.
+                if self._tesla_provider == TESLA_PROVIDER_TESLEMETRY:
+                    return await self.async_step_teslemetry_token()
 
-            self.hass.config_entries.async_update_entry(
-                self.config_entry, data=new_data
-            )
+                # Fleet API — no token entry needed
+                new_data = dict(self.config_entry.data)
+                if self._tesla_provider != current_tesla_provider:
+                    new_data[CONF_TESLA_API_PROVIDER] = self._tesla_provider
+                new_data[CONF_TESLA_EV_API_PROVIDER] = ev_choice
+                new_data[CONF_OPTIMIZATION_PROVIDER] = optimization_provider
+                # If Smart Optimization, store ML options
+                if optimization_provider == OPT_PROVIDER_POWERSYNC:
+                    new_data[CONF_OPTIMIZATION_COST_FUNCTION] = COST_FUNCTION_COST
+                    new_data[CONF_OPTIMIZATION_BACKUP_RESERVE] = user_input.get(
+                        CONF_OPTIMIZATION_BACKUP_RESERVE, int(DEFAULT_OPTIMIZATION_BACKUP_RESERVE * 100)
+                    ) / 100.0  # Convert from % to decimal
 
-            # Route to provider-specific step
-            if self._provider == "amber":
-                return await self.async_step_amber_options()
-            elif self._provider == "flow_power":
-                return await self.async_step_flow_power_options()
-            elif self._provider in ("globird", "aemo_vpp"):
-                return await self.async_step_globird_options()
-            elif self._provider == "localvolts":
-                return await self.async_step_localvolts_options()
-            elif self._provider == "octopus":
-                return await self.async_step_octopus_options()
-            elif self._provider == "epex":
-                return await self.async_step_epex_options()
-            elif self._provider == "nz":
-                return await self.async_step_nz_options()
+                self.hass.config_entries.async_update_entry(
+                    self.config_entry, data=new_data
+                )
+
+                # Route to provider-specific step
+                if self._provider == "amber":
+                    return await self.async_step_amber_options()
+                elif self._provider == "flow_power":
+                    return await self.async_step_flow_power_options()
+                elif self._provider in ("globird", "aemo_vpp"):
+                    return await self.async_step_globird_options()
+                elif self._provider == "localvolts":
+                    return await self.async_step_localvolts_options()
+                elif self._provider == "octopus":
+                    return await self.async_step_octopus_options()
+                elif self._provider == "epex":
+                    return await self.async_step_epex_options()
+                elif self._provider == "nz":
+                    return await self.async_step_nz_options()
 
         current_provider = self._get_option(CONF_ELECTRICITY_PROVIDER, "amber")
         current_tesla_provider = self.config_entry.data.get(CONF_TESLA_API_PROVIDER, TESLA_PROVIDER_TESLEMETRY)
         current_opt_provider = self.config_entry.data.get(CONF_OPTIMIZATION_PROVIDER, OPT_PROVIDER_NATIVE)
         current_backup_reserve = self.config_entry.data.get(CONF_OPTIMIZATION_BACKUP_RESERVE, DEFAULT_OPTIMIZATION_BACKUP_RESERVE)
+        current_ev_provider = self.config_entry.data.get(
+            CONF_TESLA_EV_API_PROVIDER, TESLA_EV_API_PROVIDER_NONE
+        )
 
         # Build Tesla provider choices
         tesla_providers = {
@@ -2454,6 +2615,9 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             TESLA_PROVIDER_FLEET_API: "Tesla Fleet API (Free - requires Tesla Fleet integration)",
             TESLA_PROVIDER_TESLEMETRY: "Teslemetry (~$4/month)",
         }
+
+        # Tesla EV provider choices (with detection annotations)
+        tesla_ev_providers = _build_tesla_ev_provider_choices(self.hass)
 
         # Build optimization provider choices
         opt_providers = {
@@ -2474,15 +2638,59 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                         default=current_tesla_provider,
                     ): vol.In(tesla_providers),
                     vol.Required(
+                        CONF_TESLA_EV_API_PROVIDER,
+                        default=current_ev_provider,
+                    ): vol.In(tesla_ev_providers),
+                    vol.Required(
                         CONF_OPTIMIZATION_PROVIDER,
                         default=current_opt_provider,
                     ): vol.In(opt_providers),
-                    vol.Optional(
+                    vol.Required(
                         CONF_OPTIMIZATION_BACKUP_RESERVE,
                         default=int(current_backup_reserve * 100) if current_backup_reserve < 1 else int(current_backup_reserve),
                     ): vol.All(vol.Coerce(int), vol.Range(min=0, max=100)),
                 }
             ),
+            errors=errors,
+        )
+
+    async def async_step_options_tesla_ev_token(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Collect a Teslemetry token for vehicle commands (options flow)."""
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            token = user_input.get(CONF_TESLA_EV_TELEMETRY_TOKEN, "").strip()
+            if token:
+                validation_result = await validate_teslemetry_token(self.hass, token)
+                if validation_result["success"]:
+                    new_data = dict(self.config_entry.data)
+                    new_data[CONF_TESLA_EV_API_PROVIDER] = TESLA_EV_API_PROVIDER_TESLEMETRY
+                    new_data[CONF_TESLA_EV_TELEMETRY_TOKEN] = token
+                    self.hass.config_entries.async_update_entry(
+                        self.config_entry, data=new_data
+                    )
+                    # Resume the original init step now that the token is saved
+                    pending = getattr(self, "_pending_init_tesla_input", None)
+                    if pending is not None:
+                        self._pending_init_tesla_input = None
+                        return await self.async_step_init_tesla(pending)
+                    return await self.async_step_init_tesla()
+                errors["base"] = validation_result.get("error", "unknown")
+            else:
+                errors["base"] = "no_token_provided"
+
+        return self.async_show_form(
+            step_id="options_tesla_ev_token",
+            data_schema=vol.Schema({
+                vol.Required(CONF_TESLA_EV_TELEMETRY_TOKEN): TextSelector(
+                    TextSelectorConfig(type=TextSelectorType.PASSWORD)
+                ),
+            }),
+            errors=errors,
+            description_placeholders={
+                "teslemetry_url": "https://teslemetry.com",
+            },
         )
 
     async def async_step_init_sigenergy(
@@ -2607,7 +2815,7 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                         CONF_OPTIMIZATION_PROVIDER,
                         default=current_opt_provider,
                     ): vol.In(opt_providers),
-                    vol.Optional(
+                    vol.Required(
                         CONF_OPTIMIZATION_BACKUP_RESERVE,
                         default=int(current_backup_reserve * 100) if current_backup_reserve < 1 else int(current_backup_reserve),
                     ): vol.All(vol.Coerce(int), vol.Range(min=0, max=100)),
@@ -2772,7 +2980,7 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                         CONF_OPTIMIZATION_PROVIDER,
                         default=current_opt_provider,
                     ): vol.In(opt_providers),
-                    vol.Optional(
+                    vol.Required(
                         CONF_OPTIMIZATION_BACKUP_RESERVE,
                         default=int(current_backup_reserve * 100) if current_backup_reserve < 1 else int(current_backup_reserve),
                     ): vol.All(vol.Coerce(int), vol.Range(min=0, max=100)),
@@ -2907,7 +3115,7 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                         CONF_OPTIMIZATION_PROVIDER,
                         default=current_opt_provider,
                     ): vol.In(opt_providers),
-                    vol.Optional(
+                    vol.Required(
                         CONF_OPTIMIZATION_BACKUP_RESERVE,
                         default=int(current_backup_reserve * 100) if current_backup_reserve < 1 else int(current_backup_reserve),
                     ): vol.All(vol.Coerce(int), vol.Range(min=0, max=100)),
@@ -3018,7 +3226,7 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                         CONF_OPTIMIZATION_PROVIDER,
                         default=current_opt_provider,
                     ): vol.In(opt_providers),
-                    vol.Optional(
+                    vol.Required(
                         CONF_OPTIMIZATION_BACKUP_RESERVE,
                         default=int(current_backup_reserve * 100) if current_backup_reserve < 1 else int(current_backup_reserve),
                     ): vol.All(vol.Coerce(int), vol.Range(min=0, max=100)),

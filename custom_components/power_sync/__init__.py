@@ -2481,6 +2481,71 @@ def get_tesla_api_token(hass: HomeAssistant, entry: ConfigEntry) -> tuple[str | 
     return (token, TESLA_PROVIDER_TESLEMETRY) if token else (None, TESLA_PROVIDER_TESLEMETRY)
 
 
+def get_tesla_vehicle_api_token(
+    hass: HomeAssistant, entry: ConfigEntry
+) -> tuple[str | None, str]:
+    """
+    Get the Tesla API token + provider for *vehicle* commands.
+
+    PowerSync.cc proxy doesn't expose vehicle endpoints, so when the energy
+    site provider is PowerSync the user can pick a separate vehicle provider
+    via CONF_TESLA_EV_API_PROVIDER (Tesla Fleet, Teslemetry, or None).
+
+    On migration, when CONF_TESLA_EV_API_PROVIDER is unset, we default to:
+      - 'tesla_fleet' if energy provider is fleet_api (same source as before)
+      - 'teslemetry' if energy provider is teslemetry (same source as before)
+      - 'none' if energy provider is powersync (vehicle commands disabled)
+
+    Returns:
+        tuple: (token, provider). provider is one of 'tesla_fleet',
+        'teslemetry', or 'none'. token is None when provider is 'none' or
+        when the selected provider isn't available.
+    """
+    from .const import (
+        CONF_TESLA_EV_API_PROVIDER,
+        CONF_TESLA_EV_TELEMETRY_TOKEN,
+        TESLA_EV_API_PROVIDER_NONE,
+        TESLA_EV_API_PROVIDER_FLEET_API,
+        TESLA_EV_API_PROVIDER_TESLEMETRY,
+    )
+
+    ev_provider = entry.data.get(CONF_TESLA_EV_API_PROVIDER)
+    if ev_provider is None:
+        # Migration default — derive from the energy provider
+        energy_provider = entry.data.get(CONF_TESLA_API_PROVIDER, TESLA_PROVIDER_TESLEMETRY)
+        if energy_provider == TESLA_PROVIDER_FLEET_API:
+            ev_provider = TESLA_EV_API_PROVIDER_FLEET_API
+        elif energy_provider == TESLA_PROVIDER_TESLEMETRY:
+            ev_provider = TESLA_EV_API_PROVIDER_TESLEMETRY
+        else:
+            ev_provider = TESLA_EV_API_PROVIDER_NONE
+
+    if ev_provider == TESLA_EV_API_PROVIDER_NONE:
+        return None, TESLA_EV_API_PROVIDER_NONE
+
+    if ev_provider == TESLA_EV_API_PROVIDER_FLEET_API:
+        tesla_fleet_entries = hass.config_entries.async_entries("tesla_fleet")
+        for tesla_entry in tesla_fleet_entries:
+            if tesla_entry.state == ConfigEntryState.LOADED:
+                try:
+                    if CONF_TOKEN in tesla_entry.data:
+                        token_data = tesla_entry.data[CONF_TOKEN]
+                        if CONF_ACCESS_TOKEN in token_data:
+                            return token_data[CONF_ACCESS_TOKEN], TESLA_EV_API_PROVIDER_FLEET_API
+                except Exception as e:
+                    _LOGGER.warning("Failed to extract token from Tesla Fleet integration: %s", e)
+        return None, TESLA_EV_API_PROVIDER_FLEET_API
+
+    if ev_provider == TESLA_EV_API_PROVIDER_TESLEMETRY:
+        # Prefer the dedicated EV Teslemetry token if set; otherwise fall
+        # back to the energy-site Teslemetry token (when energy provider is
+        # already Teslemetry, both share the same credentials).
+        token = entry.data.get(CONF_TESLA_EV_TELEMETRY_TOKEN) or entry.data.get(CONF_TESLEMETRY_API_TOKEN)
+        return (token, TESLA_EV_API_PROVIDER_TESLEMETRY) if token else (None, TESLA_EV_API_PROVIDER_TESLEMETRY)
+
+    return None, TESLA_EV_API_PROVIDER_NONE
+
+
 def _get_tesla_site_configs(
     hass: HomeAssistant, entry: ConfigEntry
 ) -> list[tuple[str, str, str]]:

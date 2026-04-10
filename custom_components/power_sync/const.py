@@ -52,6 +52,26 @@ EV_PROVIDERS = {
     EV_PROVIDER_BOTH: "Both (Fleet API + local BLE/BT)",
 }
 
+# Tesla EV API Provider selection (v2.10.1+).
+# Selects which Tesla cloud API is used for vehicle commands when the energy
+# site provider is PowerSync.cc (which has no vehicle endpoints). Independent
+# from CONF_TESLA_API_PROVIDER, which controls energy site calls only.
+CONF_TESLA_EV_API_PROVIDER = "tesla_ev_api_provider"
+TESLA_EV_API_PROVIDER_NONE = "none"
+TESLA_EV_API_PROVIDER_FLEET_API = "tesla_fleet"
+TESLA_EV_API_PROVIDER_TESLEMETRY = "teslemetry"
+
+TESLA_EV_API_PROVIDERS = {
+    TESLA_EV_API_PROVIDER_NONE: "None (no Tesla cloud vehicle commands)",
+    TESLA_EV_API_PROVIDER_FLEET_API: "Tesla Fleet API",
+    TESLA_EV_API_PROVIDER_TESLEMETRY: "Teslemetry",
+}
+
+# Token slot for Teslemetry when used purely for vehicles (the energy-site
+# Teslemetry token lives in CONF_TESLEMETRY_API_TOKEN — keeping these
+# separate lets users mix energy = PowerSync + EV = Teslemetry).
+CONF_TESLA_EV_TELEMETRY_TOKEN = "tesla_ev_teslemetry_token"
+
 # Tesla BLE configuration (ESPHome Tesla BLE integration)
 CONF_TESLA_BLE_ENABLED = "tesla_ble_enabled"
 CONF_TESLA_BLE_ENTITY_PREFIX = "tesla_ble_entity_prefix"
