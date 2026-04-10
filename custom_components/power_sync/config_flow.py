@@ -2396,14 +2396,24 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             self._tesla_provider = user_input.get(CONF_TESLA_API_PROVIDER, TESLA_PROVIDER_TESLEMETRY)
             optimization_provider = user_input.get(CONF_OPTIMIZATION_PROVIDER, OPT_PROVIDER_NATIVE)
 
-            # Check if switching to Teslemetry and need token
+            # Check if switching providers and need a fresh token
             current_tesla_provider = self.config_entry.data.get(CONF_TESLA_API_PROVIDER, TESLA_PROVIDER_TESLEMETRY)
-            current_teslemetry_token = self.config_entry.data.get(CONF_TESLEMETRY_API_TOKEN)
+            current_token = self.config_entry.data.get(CONF_TESLEMETRY_API_TOKEN)
 
-            if self._tesla_provider == TESLA_PROVIDER_TESLEMETRY and (
-                current_tesla_provider != TESLA_PROVIDER_TESLEMETRY or not current_teslemetry_token
+            # Switching TO PowerSync from another provider — need a psync_ token
+            if self._tesla_provider == TESLA_PROVIDER_POWERSYNC and (
+                current_tesla_provider != TESLA_PROVIDER_POWERSYNC
+                or not current_token
+                or not current_token.startswith("psync_")
             ):
-                # Need to get Teslemetry token
+                return await self.async_step_powersync_token()
+
+            # Switching TO Teslemetry from another provider — need a Teslemetry token
+            if self._tesla_provider == TESLA_PROVIDER_TESLEMETRY and (
+                current_tesla_provider != TESLA_PROVIDER_TESLEMETRY
+                or not current_token
+                or current_token.startswith("psync_")
+            ):
                 return await self.async_step_teslemetry_token()
 
             # Update config entry data with new Tesla provider and optimization provider
@@ -2457,8 +2467,9 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
 
         # Build Tesla provider choices
         tesla_providers = {
+            TESLA_PROVIDER_POWERSYNC: "PowerSync (Free - sign in with Tesla, recommended)",
             TESLA_PROVIDER_FLEET_API: "Tesla Fleet API (Free - requires Tesla Fleet integration)",
-            TESLA_PROVIDER_TESLEMETRY: "Teslemetry (~$4/month - easier setup)",
+            TESLA_PROVIDER_TESLEMETRY: "Teslemetry (~$4/month)",
         }
 
         # Build optimization provider choices
@@ -3053,6 +3064,65 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 }
             ),
             errors=errors,
+        )
+
+    async def async_step_powersync_token(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Step to enter a PowerSync.cc proxy token (options flow path).
+
+        Triggered when a user switches their Tesla provider to PowerSync from
+        the integration's Configure page. Validates the token by hitting the
+        proxy's /api/1/products endpoint.
+        """
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            token = user_input.get(CONF_TESLEMETRY_API_TOKEN, "").strip()
+
+            if not token:
+                errors["base"] = "no_token_provided"
+            else:
+                validation_result = await validate_powersync_token(self.hass, token)
+                if validation_result["success"]:
+                    new_data = dict(self.config_entry.data)
+                    new_data[CONF_TESLA_API_PROVIDER] = TESLA_PROVIDER_POWERSYNC
+                    new_data[CONF_TESLEMETRY_API_TOKEN] = token
+                    self.hass.config_entries.async_update_entry(
+                        self.config_entry, data=new_data
+                    )
+
+                    # Route to provider-specific step
+                    if self._provider == "amber":
+                        return await self.async_step_amber_options()
+                    if self._provider == "flow_power":
+                        return await self.async_step_flow_power_options()
+                    if self._provider in ("globird", "aemo_vpp"):
+                        return await self.async_step_globird_options()
+                    if self._provider == "localvolts":
+                        return await self.async_step_localvolts_options()
+                    if self._provider == "octopus":
+                        return await self.async_step_octopus_options()
+                    if self._provider == "epex":
+                        return await self.async_step_epex_options()
+                    if self._provider == "nz":
+                        return await self.async_step_nz_options()
+                else:
+                    errors["base"] = validation_result.get("error", "unknown")
+
+        return self.async_show_form(
+            step_id="powersync_token",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_TESLEMETRY_API_TOKEN): TextSelector(
+                        TextSelectorConfig(type=TextSelectorType.PASSWORD)
+                    ),
+                }
+            ),
+            errors=errors,
+            description_placeholders={
+                "auth_url": POWERSYNC_AUTH_START_URL,
+            },
         )
 
     async def async_step_teslemetry_token(
