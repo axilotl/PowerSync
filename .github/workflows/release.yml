@@ -33,22 +33,31 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Generate release notes from commits
+      - name: Build release notes
         if: steps.check_tag.outputs.exists == 'false'
         id: notes
         run: |
-          # Find the previous tag
-          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
-          if [ -n "$PREV_TAG" ]; then
-            RANGE="$PREV_TAG..HEAD"
+          # Prefer RELEASE_NOTES.md committed alongside the version bump.
+          # This is the canonical source — fall back to commit-log generation
+          # only when the file is missing or empty.
+          if [ -s RELEASE_NOTES.md ]; then
+            cp RELEASE_NOTES.md /tmp/release_notes.md
+            echo "Using RELEASE_NOTES.md from repository"
           else
-            RANGE="HEAD~20..HEAD"
+            echo "RELEASE_NOTES.md missing or empty — generating from commits"
+            PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+            if [ -n "$PREV_TAG" ]; then
+              RANGE="$PREV_TAG..HEAD"
+            else
+              RANGE="HEAD~20..HEAD"
+            fi
+            echo "## What's Changed" > /tmp/release_notes.md
+            echo "" >> /tmp/release_notes.md
+            git log --pretty=format:"### %s%n%n%b%n---" "$RANGE" -- custom_components/ \
+              | grep -v "^### Bump version" \
+              | grep -v "^---$" \
+              | sed '/^$/N;/^\n$/d' >> /tmp/release_notes.md
           fi
-
-          # Write release notes with full commit messages (subject + body)
-          echo "## What's Changed" > /tmp/release_notes.md
-          echo "" >> /tmp/release_notes.md
-          git log --pretty=format:"### %s%n%n%b%n---" "$RANGE" -- custom_components/ | grep -v "^### Bump version" | grep -v "^---$" | sed '/^$/N;/^\n$/d' >> /tmp/release_notes.md
 
       - name: Create tag and release
         if: steps.check_tag.outputs.exists == 'false'
@@ -62,33 +71,3 @@ jobs:
             --title "v$VERSION" \
             --notes-file /tmp/release_notes.md
           echo "Created release v$VERSION"
-
-      - name: Notify Discord
-        if: steps.check_tag.outputs.exists == 'false'
-        env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          NOTES=$(cat /tmp/release_notes.md | head -50)
-          RELEASE_URL="https://github.com/bolagnaise/PowerSync/releases/tag/$VERSION"
-
-          # Build Discord embed JSON
-          PAYLOAD=$(python3 -c "
-          import json, sys
-          notes = '''$NOTES'''.strip()
-          if len(notes) > 4000:
-              notes = notes[:3997] + '...'
-          payload = {
-              'embeds': [{
-                  'title': f'PowerSync v$VERSION Released',
-                  'description': notes,
-                  'color': 5025616,
-                  'url': '$RELEASE_URL',
-                  'footer': {'text': 'Update available via HACS'}
-              }]
-          }
-          print(json.dumps(payload))
-          ")
-
-          curl -s -H "Content-Type: application/json" -d "$PAYLOAD" "$DISCORD_WEBHOOK"
-          echo "Discord notified for v$VERSION"
