@@ -2423,12 +2423,6 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     CONF_OPTIMIZATION_BACKUP_RESERVE, int(DEFAULT_OPTIMIZATION_BACKUP_RESERVE * 100)
                 ) / 100.0  # Convert from % to decimal
 
-            # Clean up any legacy dual Tesla config data
-            new_data.pop("tesla_energy_site_id_2", None)
-            new_data.pop("tesla_api_token_2", None)
-            new_data.pop("tesla_battery_capacity_1", None)
-            new_data.pop("tesla_battery_capacity_2", None)
-
             self.hass.config_entries.async_update_entry(
                 self.config_entry, data=new_data
             )
