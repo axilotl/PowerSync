@@ -377,7 +377,7 @@
       },
       "tesla_provider": {
         "title": "Choose Tesla API Provider",
-        "description": "{fleet_detected}\n\nSelect how you want to access your Tesla Powerwall. Tesla Fleet API is free but requires the Tesla Fleet integration to be installed. Teslemetry is a paid proxy service (~$4/month) that's easier to set up.",
+        "description": "{fleet_detected}\n\nSelect how you want to access your Tesla Powerwall:\n\n• **PowerSync** (recommended) — Free. Sign in with your Tesla account on powersync.cc and we handle the OAuth flow for you.\n\n• **Tesla Fleet API** — Free. Uses an existing Tesla Fleet integration that you've already set up in Home Assistant.\n\n• **Teslemetry** — ~$4/month. A third-party paid proxy.",
         "data": {
           "tesla_api_provider": "Tesla API Provider"
         }
@@ -385,6 +385,27 @@
       "teslemetry": {
         "title": "Teslemetry Configuration",
         "description": "Enter your Teslemetry API token. You can get this from teslemetry.com",
+        "data": {
+          "teslemetry_api_token": "Teslemetry API Token"
+        }
+      },
+      "powersync": {
+        "title": "Connect with PowerSync",
+        "description": "1. Open this URL in a browser and sign in with your Tesla account:\n\n**{auth_url}**\n\n2. After signing in, you'll get a token starting with `psync_`.\n\n3. Paste it below to connect.\n\nYour Tesla credentials are never seen by PowerSync — Tesla handles authentication and we only receive a token to call the Fleet API on your behalf.",
+        "data": {
+          "teslemetry_api_token": "PowerSync Token"
+        }
+      },
+      "powersync_reauth": {
+        "title": "Re-authenticate with PowerSync",
+        "description": "Your PowerSync token is no longer valid. This usually means it was revoked or your Tesla session expired.\n\n1. Sign in again at:\n\n**{auth_url}**\n\n2. Paste the new `psync_` token below.",
+        "data": {
+          "teslemetry_api_token": "PowerSync Token"
+        }
+      },
+      "teslemetry_reauth": {
+        "title": "Re-authenticate with Teslemetry",
+        "description": "Your Teslemetry token is no longer valid. Get a new one from teslemetry.com and paste it below.",
         "data": {
           "teslemetry_api_token": "Teslemetry API Token"
         }
@@ -530,12 +551,16 @@
       "zaptec_missing_credentials": "Please provide both your Zaptec email and password.",
       "no_prices": "No Octopus prices found for this tariff and region. Check your product and GSP region are correct.",
       "invalid_tariff": "Could not validate this tariff code for the selected network. Check that the tariff code matches your electricity bill.",
+      "invalid_token_format": "Token is not in the expected format. PowerSync tokens start with 'psync_'.",
       "unknown": "An unexpected error occurred. Please try again."
     },
     "abort": {
       "already_configured": "PowerSync is already configured.",
       "no_energy_sites": "No Tesla energy sites found in your Teslemetry account. Please ensure you have a Powerwall or Solar system configured.",
-      "no_stations": "No Sigenergy stations found for this account. Please check your credentials."
+      "no_stations": "No Sigenergy stations found for this account. Please check your credentials.",
+      "reauth_successful": "Token updated successfully — PowerSync is reconnected.",
+      "reauth_failed": "Reauthentication could not be completed. Please remove and re-add the integration.",
+      "reauth_fleet_api_use_tesla_fleet": "PowerSync uses tokens from your existing Tesla Fleet integration. Re-authenticate the Tesla Fleet integration in Home Assistant settings, then PowerSync will pick up the new tokens automatically."
     }
   },
   "options": {
@@ -665,6 +690,13 @@
         "description": "Enter your Teslemetry API token. You can get this from teslemetry.com.",
         "data": {
           "teslemetry_api_token": "Teslemetry API Token"
+        }
+      },
+      "powersync_token": {
+        "title": "Connect with PowerSync",
+        "description": "1. Open this URL in a browser and sign in with your Tesla account:\n\n**{auth_url}**\n\n2. After signing in, you'll get a token starting with `psync_`.\n\n3. Paste it below to connect.\n\nYour Tesla credentials are never seen by PowerSync — Tesla handles authentication and we only receive a token to call the Fleet API on your behalf.",
+        "data": {
+          "teslemetry_api_token": "PowerSync Token"
         }
       },
       "amber_options": {
