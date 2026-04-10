@@ -1,6 +1,6 @@
 ## What's Changed
 
-This release re-announces the work shipped in 2.10.0 and 2.11.0 — both were significant updates but the Discord notification on those releases came through with empty release notes due to a workflow ordering bug (now fixed). Below is the full picture of everything added in the last two releases plus this fix.
+This release re-announces the work shipped in 2.10.0 and 2.11.0 — both were significant updates but the Discord notification on those releases came through with empty release notes due to a workflow ordering bug. The fix in 2.11.1 then accidentally broke Discord entirely (downstream workflows don't fire from `GITHUB_TOKEN` events), so 2.11.2 wires Discord posting directly into the release workflow as the single source of truth. Below is the full picture of everything in the last few releases.
 
 ---
 
@@ -51,9 +51,13 @@ Three new HTTP endpoints — `/api/power_sync/tesla/storm_watch`, `/api/power_sy
 
 ---
 
-### 2.11.1 — Release-notes workflow fix
+### 2.11.2 — Discord notification reliability
 
-**Discord notifications now include the full release notes**
-The release workflow was generating notes from git commit subjects only and then filtering out the version-bump commit, leaving an empty notes file. The Discord notification then read that empty body. The workflow now prefers `RELEASE_NOTES.md` (committed alongside the version bump) and only falls back to commit-log generation when the file is missing. The duplicate inline Discord notification block has been removed so each release now sends exactly one Discord message containing the proper release notes.
+**Discord posting is now wired directly into the release workflow**
+2.11.1 made the release workflow read from `RELEASE_NOTES.md` (good) but also removed the inline Discord block in favour of a separate `discord-notify.yml` workflow that listened to `release: published` events (broken — GitHub Actions intentionally suppresses downstream workflows for events triggered by `GITHUB_TOKEN`, so the listener never fired). 2.11.2 re-adds the inline Discord post to the release workflow itself, reading the populated `RELEASE_NOTES.md`, and removes the orphan listener. Result: exactly one Discord notification per release, with the full release body, every time.
+
+### 2.11.1 — Release-notes workflow fix (incomplete — superseded by 2.11.2)
+
+The release workflow was generating notes from git commit subjects only and then filtering out the version-bump commit, leaving an empty notes file. 2.11.1 made the workflow prefer `RELEASE_NOTES.md` committed alongside the version bump — this part still works.
 
 Update available via HACS
