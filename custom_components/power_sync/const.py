@@ -281,6 +281,29 @@ CONF_FLEET_API_TOKEN_EXPIRES_AT = "fleet_api_token_expires_at"
 CONF_FLEET_API_CLIENT_ID = "fleet_api_client_id"
 CONF_FLEET_API_CLIENT_SECRET = "fleet_api_client_secret"
 
+# Powerwall local control (LAN / TEDAPI v1r)
+# Set only after the pairing flow completes. Stored in entry.data so HA
+# encrypts the private key at rest. The IP and customer password are
+# mirrored from the mobile app so local monitoring works device-independently.
+CONF_POWERWALL_LOCAL_PAIRED = "powerwall_local_paired"
+CONF_POWERWALL_LOCAL_PRIVATE_KEY = "powerwall_local_private_key_pem"
+CONF_POWERWALL_LOCAL_PUBLIC_KEY = "powerwall_local_public_key_der"
+CONF_POWERWALL_LOCAL_DIN = "powerwall_local_din"
+CONF_POWERWALL_LOCAL_IP = "powerwall_local_ip"
+CONF_POWERWALL_LOCAL_VERSION = "powerwall_local_version"  # "pw2" | "pw3"
+CONF_POWERWALL_LOCAL_CUSTOMER_PASSWORD = "powerwall_local_customer_password"
+CONF_POWERWALL_LOCAL_WIFI_SSID = "powerwall_local_wifi_ssid"
+CONF_POWERWALL_LOCAL_WIFI_PASSWORD = "powerwall_local_wifi_password"
+CONF_POWERWALL_LOCAL_ENERGY_SITE_ID = "powerwall_local_energy_site_id"
+CONF_POWERWALL_LOCAL_PAIRED_AT = "powerwall_local_paired_at"
+# Minimum battery SOC (%) below which off-grid commands are refused.
+CONF_POWERWALL_OFF_GRID_MIN_SOC = "powerwall_off_grid_min_soc"
+DEFAULT_POWERWALL_OFF_GRID_MIN_SOC = 20
+# Local poll interval for meters/SOC/grid_status when paired.
+POWERWALL_LOCAL_POLL_INTERVAL = 10  # seconds
+# Pairing window the user has to toggle the Powerwall switch.
+POWERWALL_PAIRING_WINDOW_SECONDS = 120
+
 # Sigenergy Cloud API configuration
 CONF_SIGENERGY_USERNAME = "sigenergy_username"
 CONF_SIGENERGY_PASSWORD = "sigenergy_password"  # Plain password (will be encoded)

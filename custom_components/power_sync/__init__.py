@@ -19756,6 +19756,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.http.register_view(PowerwallTypeView(hass))
     _LOGGER.info("🔋 Powerwall type HTTP endpoint registered at /api/power_sync/powerwall_type")
 
+    # Register Powerwall local pairing + off-grid HTTP endpoints
+    from .powerwall_local.views import register_views as _register_powerwall_local_views
+    from .powerwall_local.services import register_services as _register_powerwall_local_services
+    _register_powerwall_local_views(hass)
+    _register_powerwall_local_services(hass)
+    _LOGGER.info(
+        "🔌 Powerwall local control endpoints + services registered "
+        "(pair/status/cancel/unpair/off_grid/local_status)"
+    )
+
+    # Warm up the local coordinator if this entry is already paired.
+    from .powerwall_local.views import ensure_coordinator as _ensure_pwlocal_coordinator
+    try:
+        await _ensure_pwlocal_coordinator(hass, entry)
+    except Exception as _err:
+        _LOGGER.debug("Powerwall local coordinator warmup skipped: %s", _err)
+
     # Register HTTP endpoint for Battery Health (for mobile app Settings - battery auto-detection section)
     hass.http.register_view(BatteryHealthView(hass))
     _LOGGER.info("🔋 Battery health HTTP endpoint registered at /api/power_sync/battery_health")
