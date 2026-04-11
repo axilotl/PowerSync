@@ -1906,7 +1906,14 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
                 if validation_result["success"]:
                     # Store empty Teslemetry token (we'll use Fleet API in __init__.py)
-                    self._teslemetry_data = {CONF_TESLEMETRY_API_TOKEN: ""}
+                    # AND persist the provider choice so that on HA restart the
+                    # integration remembers we picked Fleet API instead of
+                    # defaulting back to Teslemetry (which would then 401 on
+                    # the empty token and break the Tesla coordinator).
+                    self._teslemetry_data = {
+                        CONF_TESLEMETRY_API_TOKEN: "",
+                        CONF_TESLA_API_PROVIDER: TESLA_PROVIDER_FLEET_API,
+                    }
                     self._tesla_sites = validation_result.get("sites", [])
                     return await self.async_step_site_selection()
                 else:
@@ -2462,6 +2469,24 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 _LOGGER.error("Cannot restore export rule - Fleet API token not available")
                 return
             base_url = FLEET_API_BASE_URL
+        elif api_provider == TESLA_PROVIDER_POWERSYNC:
+            # PowerSync.cc proxy users store their `psync_...` token in the
+            # same CONF_TESLEMETRY_API_TOKEN slot, but it must be sent to
+            # the PowerSync proxy base URL, not the Teslemetry base URL.
+            # Prior code fell through to the `else` branch and hit the
+            # wrong endpoint — the call always 401'd silently and the
+            # export rule was never restored after curtailment.
+            # Guard `.startswith` with `isinstance(api_token, str)` so a
+            # non-string truthy value from storage doesn't raise
+            # AttributeError before the try block below.
+            api_token = self.config_entry.data.get(CONF_TESLEMETRY_API_TOKEN)
+            if not isinstance(api_token, str) or not api_token.startswith("psync_"):
+                _LOGGER.error(
+                    "Cannot restore export rule - PowerSync token missing or "
+                    "not a valid psync_ token"
+                )
+                return
+            base_url = POWERSYNC_API_BASE_URL
         else:
             # Teslemetry
             api_token = self.config_entry.data.get(CONF_TESLEMETRY_API_TOKEN)
