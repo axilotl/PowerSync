@@ -14,7 +14,7 @@ import statistics
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, time as dt_time
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional, List, Dict, Any, Tuple, Iterator
 from enum import Enum
 
 import aiohttp
@@ -22,6 +22,27 @@ import aiohttp
 from ..const import TESLA_INTEGRATIONS
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _iter_tesla_vehicle_devices(device_registry) -> Iterator[Tuple[Any, str]]:
+    """Yield ``(device, vin)`` tuples for every Tesla vehicle in the HA device registry.
+
+    Scans every device, looking for identifiers from one of the
+    ``TESLA_INTEGRATIONS`` domains whose ID value is a 17-character non-digit
+    VIN. Yields at most once per device — subsequent identifiers are ignored.
+
+    Replaces seven near-identical open-coded scan loops that repeated the
+    same ``for device → for identifier → is_tesla_vehicle`` boilerplate.
+    Future BLE-style extensions or new Tesla integrations only need to
+    change this helper rather than edit every call site.
+    """
+    for device in device_registry.devices.values():
+        for identifier in device.identifiers:
+            if len(identifier) >= 2 and identifier[0] in TESLA_INTEGRATIONS:
+                id_str = str(identifier[1])
+                if len(id_str) == 17 and not id_str.isdigit():
+                    yield device, id_str
+                    break
 
 
 class ChargingPriority(Enum):
@@ -183,24 +204,9 @@ async def get_ev_location(
     entity_registry = er.async_get(hass)
     device_registry = dr.async_get(hass)
 
-    tesla_integrations = TESLA_INTEGRATIONS
-
-    for device in device_registry.devices.values():
+    for device, device_vin in _iter_tesla_vehicle_devices(device_registry):
         if location != "unknown":
             break
-
-        is_tesla_vehicle = False
-        device_vin: Optional[str] = None
-        for identifier in device.identifiers:
-            if len(identifier) >= 2 and identifier[0] in tesla_integrations:
-                id_str = str(identifier[1])
-                if len(id_str) == 17 and not id_str.isdigit():
-                    is_tesla_vehicle = True
-                    device_vin = id_str
-                    break
-
-        if not is_tesla_vehicle:
-            continue
 
         # If specific VIN requested, skip other vehicles
         if vehicle_vin is not None and device_vin != vehicle_vin:
@@ -234,21 +240,24 @@ async def get_ev_location(
 
         if vehicle_vin and vehicle_vin.startswith("ble_"):
             # Vehicle-specific BLE — check that vehicle's charger entity
-            ble_prefix = vehicle_vin[4:]
+            ble_prefixes = [vehicle_vin[4:]]
         else:
-            ble_prefix = config.get(CONF_TESLA_BLE_ENTITY_PREFIX, DEFAULT_TESLA_BLE_ENTITY_PREFIX)
-            # Handle comma-separated prefixes — use first one
-            if "," in ble_prefix:
-                ble_prefix = ble_prefix.split(",")[0].strip()
+            # No specific vehicle — scan ALL configured BLE prefixes rather
+            # than silently using only the first one. In a dual-car BLE setup
+            # (ble_car1,ble_car2) the old code ignored car2 entirely.
+            raw_prefix = config.get(CONF_TESLA_BLE_ENTITY_PREFIX, DEFAULT_TESLA_BLE_ENTITY_PREFIX)
+            ble_prefixes = [p.strip() for p in raw_prefix.split(",") if p.strip()]
 
-        ble_charger_entity = f"switch.{ble_prefix}_charger"
-        ble_state = hass.states.get(ble_charger_entity)
-
-        if ble_state:
-            # Entity exists — car was previously detected via BLE at this location.
-            # Even if unavailable (car asleep), it's still in the garage.
-            location = "home"
-            _LOGGER.debug(f"Tesla BLE entity {ble_charger_entity} exists (state={ble_state.state}), assuming location=home")
+        for prefix in ble_prefixes:
+            ble_charger_entity = f"switch.{prefix}_charger"
+            ble_state = hass.states.get(ble_charger_entity)
+            if ble_state:
+                # Entity exists — car was previously detected via BLE at this
+                # location. Even if unavailable (car asleep), it's still in
+                # the garage. Any one prefix being present means "home".
+                location = "home"
+                _LOGGER.debug(f"Tesla BLE entity {ble_charger_entity} exists (state={ble_state.state}), assuming location=home")
+                break
 
     # Location caching: remember last known location per vehicle.
     # When car is asleep, all sensors are unavailable — cache lets us remember where it was.
@@ -311,19 +320,13 @@ async def discover_all_tesla_vehicles(
     # Method 1 — HA device registry scan for Fleet API / Teslemetry / Tessie /
     # Tesla Custom / legacy Tesla integration devices. Each such device
     # publishes an identifier tuple ``(<integration>, <VIN>)``.
-    for device in device_registry.devices.values():
-        for identifier in device.identifiers:
-            if len(identifier) >= 2 and identifier[0] in TESLA_INTEGRATIONS:
-                id_str = str(identifier[1])
-                # VIN is 17 characters and not all digits (distinguish from other IDs)
-                if len(id_str) == 17 and not id_str.isdigit():
-                    vehicles.append({
-                        "vin": id_str,
-                        "name": device.name or device.name_by_user or id_str,
-                        "device_id": device.id,
-                    })
-                    _LOGGER.debug(f"Discovered Tesla vehicle: {device.name} (VIN: {id_str})")
-                    break
+    for device, device_vin in _iter_tesla_vehicle_devices(device_registry):
+        vehicles.append({
+            "vin": device_vin,
+            "name": device.name or device.name_by_user or device_vin,
+            "device_id": device.id,
+        })
+        _LOGGER.debug(f"Discovered Tesla vehicle: {device.name} (VIN: {device_vin})")
 
     # Method 2 — ESPHome Tesla BLE fallback. BLE-only setups don't register a
     # Tesla-domain device in the HA registry (the ESPHome bridge registers under
@@ -468,22 +471,7 @@ async def is_ev_plugged_in(
     entity_registry = er.async_get(hass)
     device_registry = dr.async_get(hass)
 
-    tesla_integrations = TESLA_INTEGRATIONS
-
-    for device in device_registry.devices.values():
-        is_tesla_vehicle = False
-        device_vin: Optional[str] = None
-        for identifier in device.identifiers:
-            if len(identifier) >= 2 and identifier[0] in tesla_integrations:
-                id_str = str(identifier[1])
-                if len(id_str) == 17 and not id_str.isdigit():
-                    is_tesla_vehicle = True
-                    device_vin = id_str
-                    break
-
-        if not is_tesla_vehicle:
-            continue
-
+    for device, device_vin in _iter_tesla_vehicle_devices(device_registry):
         # If specific VIN requested, skip other vehicles
         if vehicle_vin is not None and device_vin != vehicle_vin:
             continue
@@ -557,17 +545,18 @@ async def is_ev_plugged_in(
         return False
 
     if vehicle_vin is None:
-        # No specific vehicle — check first configured BLE prefix (backward compat)
-        ble_prefix = config.get(CONF_TESLA_BLE_ENTITY_PREFIX, DEFAULT_TESLA_BLE_ENTITY_PREFIX)
-        # Handle comma-separated prefixes — use first one
-        if "," in ble_prefix:
-            ble_prefix = ble_prefix.split(",")[0].strip()
-        ble_charger_entity = f"switch.{ble_prefix}_charger"
-        ble_state = hass.states.get(ble_charger_entity)
-
-        if ble_state:
-            _LOGGER.debug(f"Tesla BLE {ble_prefix} entity exists (state={ble_state.state}), assuming plugged in")
-            return True
+        # No specific vehicle — check ALL configured BLE prefixes.  In a
+        # dual-car BLE setup (ble_car1,ble_car2) the old code silently used
+        # only the first prefix, so if car1 was away and car2 plugged in at
+        # home, this returned False incorrectly. Treat any-prefix-plugged-in
+        # as "some vehicle is plugged in" for the no-VIN backward-compat path.
+        raw_prefix = config.get(CONF_TESLA_BLE_ENTITY_PREFIX, DEFAULT_TESLA_BLE_ENTITY_PREFIX)
+        for prefix in (p.strip() for p in raw_prefix.split(",") if p.strip()):
+            ble_charger_entity = f"switch.{prefix}_charger"
+            ble_state = hass.states.get(ble_charger_entity)
+            if ble_state:
+                _LOGGER.debug(f"Tesla BLE {prefix} entity exists (state={ble_state.state}), assuming plugged in")
+                return True
 
     return False
 
@@ -632,39 +621,25 @@ async def get_ev_battery_level(
 
     if vehicle_vin is None:
         config = dict(config_entry.options) if config_entry else {}
-        ble_prefix = config.get(CONF_TESLA_BLE_ENTITY_PREFIX, DEFAULT_TESLA_BLE_ENTITY_PREFIX)
-        # Handle comma-separated prefixes — use first one
-        if "," in ble_prefix:
-            ble_prefix = ble_prefix.split(",")[0].strip()
-        ble_battery_entity = f"sensor.{ble_prefix}_battery_level"
-        ble_state = hass.states.get(ble_battery_entity)
-
-        if ble_state and ble_state.state not in ("unavailable", "unknown", "None", None):
-            try:
-                return float(ble_state.state)
-            except (ValueError, TypeError):
-                pass
+        raw_prefix = config.get(CONF_TESLA_BLE_ENTITY_PREFIX, DEFAULT_TESLA_BLE_ENTITY_PREFIX)
+        # Scan ALL configured BLE prefixes rather than only the first. Return
+        # the first prefix that has a valid reading. In a dual-car BLE setup
+        # with no explicit vehicle_vin, this no longer silently reports only
+        # the first car's SOC.
+        for prefix in (p.strip() for p in raw_prefix.split(",") if p.strip()):
+            ble_battery_entity = f"sensor.{prefix}_battery_level"
+            ble_state = hass.states.get(ble_battery_entity)
+            if ble_state and ble_state.state not in ("unavailable", "unknown", "None", None):
+                try:
+                    return float(ble_state.state)
+                except (ValueError, TypeError):
+                    continue
 
     # Method 2: Check Tesla Fleet/Teslemetry entities
     entity_registry = er.async_get(hass)
     device_registry = dr.async_get(hass)
 
-    tesla_integrations = TESLA_INTEGRATIONS
-
-    for device in device_registry.devices.values():
-        is_tesla_vehicle = False
-        device_vin: Optional[str] = None
-        for identifier in device.identifiers:
-            if len(identifier) >= 2 and identifier[0] in tesla_integrations:
-                id_str = str(identifier[1])
-                if len(id_str) == 17 and not id_str.isdigit():
-                    is_tesla_vehicle = True
-                    device_vin = id_str
-                    break
-
-        if not is_tesla_vehicle:
-            continue
-
+    for device, device_vin in _iter_tesla_vehicle_devices(device_registry):
         # If specific VIN requested, skip other vehicles
         if vehicle_vin is not None and device_vin != vehicle_vin:
             continue
@@ -3294,48 +3269,34 @@ class AutoScheduleExecutor:
         # Resolve vehicle-specific BLE prefix if available
         vehicle_vin = self._resolve_vehicle_vin(vehicle_id)
         if vehicle_vin and vehicle_vin.startswith("ble_"):
-            ble_prefix = vehicle_vin[4:]
+            ble_prefixes = [vehicle_vin[4:]]
         else:
-            ble_prefix = config.get(CONF_TESLA_BLE_ENTITY_PREFIX, DEFAULT_TESLA_BLE_ENTITY_PREFIX)
-            # Handle comma-separated prefixes — use first one
-            if "," in ble_prefix:
-                ble_prefix = ble_prefix.split(",")[0].strip()
-        ble_charge_level_entity = TESLA_BLE_SENSOR_CHARGE_LEVEL.format(prefix=ble_prefix)
-        ble_state = self.hass.states.get(ble_charge_level_entity)
-
-        if ble_state and ble_state.state not in ("unavailable", "unknown", "None", None):
-            try:
-                level = float(ble_state.state)
-                if 0 <= level <= 100:
-                    live_soc = int(level)
-                    _LOGGER.debug(f"Found Tesla BLE SoC from {ble_charge_level_entity}: {live_soc}%")
-            except (ValueError, TypeError):
-                pass
+            raw_prefix = config.get(CONF_TESLA_BLE_ENTITY_PREFIX, DEFAULT_TESLA_BLE_ENTITY_PREFIX)
+            # Scan every configured BLE prefix — in dual-car setups the old
+            # code silently used only the first prefix and returned its SoC
+            # for any vehicle whose VIN couldn't be resolved.
+            ble_prefixes = [p.strip() for p in raw_prefix.split(",") if p.strip()]
+        for prefix in ble_prefixes:
+            ble_charge_level_entity = TESLA_BLE_SENSOR_CHARGE_LEVEL.format(prefix=prefix)
+            ble_state = self.hass.states.get(ble_charge_level_entity)
+            if ble_state and ble_state.state not in ("unavailable", "unknown", "None", None):
+                try:
+                    level = float(ble_state.state)
+                    if 0 <= level <= 100:
+                        live_soc = int(level)
+                        _LOGGER.debug(f"Found Tesla BLE SoC from {ble_charge_level_entity}: {live_soc}%")
+                        break
+                except (ValueError, TypeError):
+                    continue
 
         # Method 2: Check Tesla Fleet/Teslemetry entities via device registry
         if live_soc is None:
             entity_registry = er.async_get(self.hass)
             device_registry = dr.async_get(self.hass)
 
-            tesla_integrations = TESLA_INTEGRATIONS
-
-            for device in device_registry.devices.values():
+            for device, device_vin in _iter_tesla_vehicle_devices(device_registry):
                 if live_soc is not None:
                     break
-
-                is_tesla_device = False
-                device_vin = None
-                for identifier in device.identifiers:
-                    if len(identifier) >= 2 and identifier[0] in tesla_integrations:
-                        id_str = str(identifier[1])
-                        # Only match vehicle devices (VIN format: 17 chars, not all digits)
-                        if len(id_str) == 17 and not id_str.isdigit():
-                            is_tesla_device = True
-                            device_vin = id_str
-                        break
-
-                if not is_tesla_device:
-                    continue
 
                 # If we have a resolved VIN, only match the correct vehicle
                 if vehicle_vin and len(vehicle_vin) == 17 and vehicle_vin.isalnum():
@@ -3434,27 +3395,9 @@ class AutoScheduleExecutor:
         entity_registry = er.async_get(self.hass)
         device_registry = dr.async_get(self.hass)
 
-        tesla_integrations = TESLA_INTEGRATIONS
-
-        for device in device_registry.devices.values():
+        for device, device_vin in _iter_tesla_vehicle_devices(device_registry):
             if location != "unknown":
                 break
-
-            is_tesla_device = False
-            device_name = None
-            device_vin = None
-            for identifier in device.identifiers:
-                if len(identifier) >= 2 and identifier[0] in tesla_integrations:
-                    # Check if this is a vehicle (VIN format: 17 chars, not all digits)
-                    id_str = str(identifier[1])
-                    if len(id_str) == 17 and not id_str.isdigit():
-                        is_tesla_device = True
-                        device_name = device.name
-                        device_vin = id_str
-                        break
-
-            if not is_tesla_device:
-                continue
 
             # If we have a resolved VIN, only match the correct vehicle
             if vehicle_vin and len(vehicle_vin) == 17 and vehicle_vin.isalnum():
@@ -3544,20 +3487,7 @@ class AutoScheduleExecutor:
         entity_registry = er.async_get(self.hass)
         device_registry = dr.async_get(self.hass)
 
-        tesla_integrations = TESLA_INTEGRATIONS
-
-        for device in device_registry.devices.values():
-            is_tesla_device = False
-            for identifier in device.identifiers:
-                if len(identifier) >= 2 and identifier[0] in tesla_integrations:
-                    id_str = str(identifier[1])
-                    if len(id_str) == 17 and not id_str.isdigit():
-                        is_tesla_device = True
-                        break
-
-            if not is_tesla_device:
-                continue
-
+        for device, _device_vin in _iter_tesla_vehicle_devices(device_registry):
             # Find plugged in sensor for this Tesla vehicle
             for entity in entity_registry.entities.values():
                 if entity.device_id != device.id:
@@ -4926,12 +4856,19 @@ class PriceLevelChargingExecutor:
             # Find Tesla devices (with VIN mapping)
             tesla_device_map: Dict[str, str] = {}  # device_id -> VIN
             for device in device_reg.devices.values():
-                # Check various Tesla integration identifiers
+                # Check various Tesla integration identifiers.
+                # Historical note: an earlier version also tested
+                # `domain in ("tesla_ble", "tesla_bluetooth")` here, but
+                # neither is a real HA integration domain — ESPHome Tesla
+                # BLE bridges register under `esphome` with empty
+                # identifiers[], so that extra check never matched. Removed
+                # to avoid misleading future readers. BLE discovery is
+                # handled separately via binary_sensor.{prefix}_status.
                 for identifier in device.identifiers:
                     if len(identifier) >= 2:
                         domain = identifier[0]
                         id_str = str(identifier[1])
-                        if domain in TESLA_INTEGRATIONS or domain in ("tesla_ble", "tesla_bluetooth"):
+                        if domain in TESLA_INTEGRATIONS:
                             # Check if identifier is a VIN (17 chars, not all digits)
                             if len(id_str) == 17 and not id_str.isdigit():
                                 tesla_device_map[device.id] = id_str
