@@ -16724,6 +16724,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _command_generation[0] += 1
         _restore_gen = _command_generation[0]
 
+        # Mutual exclusion: clear any lingering force_charge state.
+        # handle_force_charge has had per-branch clearing of force_discharge
+        # state since forever, but the reverse direction was missing — so
+        # force_charge → force_discharge would leave force_charge_state["active"]
+        # stuck True, confusing downstream checks (optimizer mode eval, TariffPriceView,
+        # automation triggers). Force commands are mutually exclusive; clear the
+        # opposite state here at a single chokepoint.
+        if force_charge_state.get("active"):
+            _LOGGER.info("force_discharge: clearing active force_charge state (transition)")
+            force_charge_state["active"] = False
+            force_charge_state["expires_at"] = None
+
         # Set force discharge state IMMEDIATELY so the optimizer sees it
         # before the async Modbus/API call completes (same race fix as force_charge).
         was_already_force_discharging = force_discharge_state.get("active", False)
