@@ -5350,7 +5350,8 @@ class ConfigView(HomeAssistantView):
             ent_reg = er.async_get(self._hass)
             sensor_keys = [
                 "solar_power", "battery_power", "grid_power", "home_load",
-                "battery_level", "current_import_price", "current_export_price",
+                "battery_level", "grid_status", "firmware",
+                "current_import_price", "current_export_price",
                 "tariff_schedule", "battery_health", "battery_mode",
                 "aemo_spike_status",
                 "solcast_today_forecast", "solcast_tomorrow_forecast",

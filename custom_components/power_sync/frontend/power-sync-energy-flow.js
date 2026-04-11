@@ -844,6 +844,7 @@
     'solar-guide': Object.freeze({ id: 'flow-solar-guide', attrs: Object.freeze(['x1', 'y1', 'x2', 'y2']) }),
     'grid-label': Object.freeze({ id: 'flow-grid-label', attrs: Object.freeze(['x', 'y']) }),
     'grid-power': Object.freeze({ id: 'flow-grid-power', attrs: Object.freeze(['x', 'y']) }),
+    'grid-status': Object.freeze({ id: 'flow-grid-status', attrs: Object.freeze(['x', 'y']) }),
     'grid-guide': Object.freeze({ id: 'flow-grid-guide', attrs: Object.freeze(['x1', 'y1', 'x2', 'y2']) }),
     'load-label': Object.freeze({ id: 'flow-load-label', attrs: Object.freeze(['x', 'y']) }),
     'load-power': Object.freeze({ id: 'flow-load-power', attrs: Object.freeze(['x', 'y']) }),
@@ -1501,6 +1502,31 @@
           applied = true;
         });
       });
+      // Legacy themes shipped before grid-status positioning was tracked only
+      // override grid-label + grid-power. Without an explicit grid-status entry
+      // the status text stays at its default SVG y=100 and collides with
+      // whichever y the theme chose for grid-power. Auto-derive grid-status
+      // from grid-power (same x, y + 15) to match the default 85→100 spacing.
+      if (profile['grid-power'] && !profile['grid-status']) {
+        const gp = profile['grid-power'];
+        const statusEl = this.shadowRoot.querySelector('#flow-grid-status');
+        if (statusEl) {
+          if (typeof gp.x === 'number') {
+            const nextX = String(gp.x);
+            if (statusEl.getAttribute('x') !== nextX) {
+              statusEl.setAttribute('x', nextX);
+              applied = true;
+            }
+          }
+          if (typeof gp.y === 'number') {
+            const nextY = String(gp.y + 15);
+            if (statusEl.getAttribute('y') !== nextY) {
+              statusEl.setAttribute('y', nextY);
+              applied = true;
+            }
+          }
+        }
+      }
       if (applied && marker) this._lastAppliedSceneFlowComponentProfile = marker;
       return applied;
     }
