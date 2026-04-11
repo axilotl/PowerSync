@@ -8216,143 +8216,144 @@ class EVVehiclesView(HomeAssistantView):
             config = self._get_powersync_config()
             ev_provider = config.get(CONF_EV_PROVIDER, EV_PROVIDER_FLEET_API)
 
-            # Check for Tesla Fleet/Teslemetry integration
-            active_integration = None
-            tesla_entries = []
+            # Unified discovery: delegate Fleet API + BLE vehicle discovery to
+            # the shared helper in ev_charging_planner so there's only one
+            # source of truth for "what Tesla vehicles does this user have".
+            # The planner's discovery already handles both paths (device
+            # registry scan + BLE prefix fallback) with the right ev_provider
+            # gating — we reuse it here instead of duplicating the logic.
+            discovered_fleet: list[dict] = []
+            ps_entries = self._hass.config_entries.async_entries(DOMAIN)
+            ps_entry = ps_entries[0] if ps_entries else None
 
-            if ev_provider in (EV_PROVIDER_FLEET_API, EV_PROVIDER_BOTH):
-                for integration in TESLA_INTEGRATIONS:
-                    if integration in self._hass.config_entries.async_domains():
-                        entries = self._hass.config_entries.async_entries(integration)
-                        if entries:
-                            active_integration = integration
-                            tesla_entries = entries
-                            break
+            if ev_provider in (EV_PROVIDER_FLEET_API, EV_PROVIDER_BOTH) and ps_entry:
+                try:
+                    from .automations.ev_charging_planner import discover_all_tesla_vehicles
+                    discovered = await discover_all_tesla_vehicles(self._hass, ps_entry)
+                    # We only want Fleet API (device registry) results here —
+                    # BLE vehicles are handled by the BLE section below so
+                    # they receive full state via _get_tesla_ble_vehicle().
+                    discovered_fleet = [
+                        v for v in discovered if v.get("source") == "fleet_api"
+                    ]
+                except Exception as err:
+                    _LOGGER.debug(
+                        "EV discovery delegation failed, falling back to empty list: %s",
+                        err,
+                    )
 
-            # Get vehicles from Fleet API
-            if active_integration and tesla_entries:
-                device_registry = dr.async_get(self._hass)
+            # Enrich each discovered Fleet API vehicle with current entity state
+            if discovered_fleet:
                 entity_registry = er.async_get(self._hass)
 
                 vehicle_id = 0
-                for entry in tesla_entries:
-                    for device in device_registry.devices.values():
-                        is_tesla_vehicle = False
-                        vin = None
+                for disc in discovered_fleet:
+                    device = disc.get("device")
+                    vin = disc.get("vin")
+                    if device is None or vin is None:
+                        continue
+                    vehicle_id += 1
 
-                        for identifier in device.identifiers:
-                            if identifier[0] in TESLA_INTEGRATIONS:
-                                potential_vin = str(identifier[1])
-                                if len(potential_vin) == 17 and not potential_vin.isdigit():
-                                    is_tesla_vehicle = True
-                                    vin = potential_vin
-                                break
+                    battery_level = None
+                    charging_state = None
+                    charge_limit = None
+                    is_plugged_in = False
+                    charger_power = None
+                    latest_entity_update = None
 
-                        if not is_tesla_vehicle:
+                    device_entities = []
+                    sensor_entities = []
+                    for entity in entity_registry.entities.values():
+                        if entity.device_id != device.id:
+                            continue
+                        device_entities.append(entity.entity_id)
+
+                        if entity.entity_id.startswith("sensor."):
+                            state = self._hass.states.get(entity.entity_id)
+                            state_val = state.state if state else "no_state"
+                            sensor_entities.append(f"{entity.entity_id}={state_val}")
+
+                        state = self._hass.states.get(entity.entity_id)
+                        if not state:
                             continue
 
-                        vehicle_id += 1
+                        entity_id_lower = entity.entity_id.lower()
 
-                        battery_level = None
-                        charging_state = None
-                        charge_limit = None
-                        is_plugged_in = False
+                        if ("battery" in entity_id_lower and
+                            "sensor." in entity_id_lower and
+                            "range" not in entity_id_lower and
+                            "heater" not in entity_id_lower):
+                            if state.state not in ("unknown", "unavailable"):
+                                try:
+                                    val = float(state.state)
+                                    if 0 <= val <= 100 and battery_level is None:
+                                        battery_level = int(val)
+                                except (ValueError, TypeError):
+                                    pass
+
+                        if (("charging" in entity_id_lower or "charge_state" in entity_id_lower) and
+                            "sensor." in entity_id_lower and
+                            "limit" not in entity_id_lower and
+                            "rate" not in entity_id_lower and
+                            "power" not in entity_id_lower):
+                            if state.state in ("unknown", "unavailable") and charging_state is None:
+                                charging_state = "Asleep"
+                            elif state.state not in ("unknown", "unavailable") and charging_state is None:
+                                # Capitalize first letter to match app's expected format
+                                # Tesla Fleet: charging, complete, stopped, etc.
+                                # App expects: Charging, Complete, Stopped, etc.
+                                charging_state = state.state.capitalize()
+
+                        if "charge_limit" in entity_id_lower or "charge_limit_soc" in entity_id_lower:
+                            if state.state not in ("unknown", "unavailable"):
+                                try:
+                                    charge_limit = int(float(state.state))
+                                except (ValueError, TypeError):
+                                    pass
+
+                        if ("plugged" in entity_id_lower or
+                            "cable" in entity_id_lower or
+                            "charger_connected" in entity_id_lower):
+                            if state.state in ("on", "true", "connected"):
+                                is_plugged_in = True
+
+                        if ("charger_power" in entity_id_lower or
+                            "charge_rate" in entity_id_lower or
+                            "charging_power" in entity_id_lower):
+                            if state.state not in ("unknown", "unavailable"):
+                                try:
+                                    charger_power = float(state.state)
+                                except (ValueError, TypeError):
+                                    pass
+
+                        # Track most recent entity update for data freshness
+                        if hasattr(state, 'last_updated') and state.last_updated:
+                            if latest_entity_update is None or state.last_updated > latest_entity_update:
+                                latest_entity_update = state.last_updated
+
+                    _LOGGER.debug(f"EV: Device {device.name} has {len(device_entities)} entities")
+
+                    # Don't report stale charger_power when not actively charging
+                    if charging_state and charging_state.lower() != "charging":
                         charger_power = None
-                        latest_entity_update = None
 
-                        device_entities = []
-                        sensor_entities = []
-                        for entity in entity_registry.entities.values():
-                            if entity.device_id != device.id:
-                                continue
-                            device_entities.append(entity.entity_id)
-
-                            if entity.entity_id.startswith("sensor."):
-                                state = self._hass.states.get(entity.entity_id)
-                                state_val = state.state if state else "no_state"
-                                sensor_entities.append(f"{entity.entity_id}={state_val}")
-
-                            state = self._hass.states.get(entity.entity_id)
-                            if not state:
-                                continue
-
-                            entity_id_lower = entity.entity_id.lower()
-
-                            if ("battery" in entity_id_lower and
-                                "sensor." in entity_id_lower and
-                                "range" not in entity_id_lower and
-                                "heater" not in entity_id_lower):
-                                if state.state not in ("unknown", "unavailable"):
-                                    try:
-                                        val = float(state.state)
-                                        if 0 <= val <= 100 and battery_level is None:
-                                            battery_level = int(val)
-                                    except (ValueError, TypeError):
-                                        pass
-
-                            if (("charging" in entity_id_lower or "charge_state" in entity_id_lower) and
-                                "sensor." in entity_id_lower and
-                                "limit" not in entity_id_lower and
-                                "rate" not in entity_id_lower and
-                                "power" not in entity_id_lower):
-                                if state.state in ("unknown", "unavailable") and charging_state is None:
-                                    charging_state = "Asleep"
-                                elif state.state not in ("unknown", "unavailable") and charging_state is None:
-                                    # Capitalize first letter to match app's expected format
-                                    # Tesla Fleet: charging, complete, stopped, etc.
-                                    # App expects: Charging, Complete, Stopped, etc.
-                                    charging_state = state.state.capitalize()
-
-                            if "charge_limit" in entity_id_lower or "charge_limit_soc" in entity_id_lower:
-                                if state.state not in ("unknown", "unavailable"):
-                                    try:
-                                        charge_limit = int(float(state.state))
-                                    except (ValueError, TypeError):
-                                        pass
-
-                            if ("plugged" in entity_id_lower or
-                                "cable" in entity_id_lower or
-                                "charger_connected" in entity_id_lower):
-                                if state.state in ("on", "true", "connected"):
-                                    is_plugged_in = True
-
-                            if ("charger_power" in entity_id_lower or
-                                "charge_rate" in entity_id_lower or
-                                "charging_power" in entity_id_lower):
-                                if state.state not in ("unknown", "unavailable"):
-                                    try:
-                                        charger_power = float(state.state)
-                                    except (ValueError, TypeError):
-                                        pass
-
-                            # Track most recent entity update for data freshness
-                            if hasattr(state, 'last_updated') and state.last_updated:
-                                if latest_entity_update is None or state.last_updated > latest_entity_update:
-                                    latest_entity_update = state.last_updated
-
-                        _LOGGER.debug(f"EV: Device {device.name} has {len(device_entities)} entities")
-
-                        # Don't report stale charger_power when not actively charging
-                        if charging_state and charging_state.lower() != "charging":
-                            charger_power = None
-
-                        fleet_updated_at = latest_entity_update.isoformat() if latest_entity_update else datetime.now().isoformat()
-                        vehicles.append({
-                            "id": vin or str(device.id),
-                            "vehicle_id": vin or str(device.id),
-                            "vin": vin,
-                            "display_name": device.name or f"Tesla {vehicle_id}",
-                            "model": device.model,
-                            "battery_level": battery_level,
-                            "charging_state": charging_state,
-                            "charge_limit_soc": charge_limit,
-                            "is_plugged_in": is_plugged_in,
-                            "charger_power": charger_power,
-                            "is_online": True,
-                            "data_updated_at": fleet_updated_at,
-                            "source": "fleet_api",
-                            "brand": "tesla",
-                        })
+                    fleet_updated_at = latest_entity_update.isoformat() if latest_entity_update else datetime.now().isoformat()
+                    vehicles.append({
+                        "id": vin or str(device.id),
+                        "vehicle_id": vin or str(device.id),
+                        "vin": vin,
+                        "display_name": device.name or f"Tesla {vehicle_id}",
+                        "model": device.model,
+                        "battery_level": battery_level,
+                        "charging_state": charging_state,
+                        "charge_limit_soc": charge_limit,
+                        "is_plugged_in": is_plugged_in,
+                        "charger_power": charger_power,
+                        "is_online": True,
+                        "data_updated_at": fleet_updated_at,
+                        "source": "fleet_api",
+                        "brand": "tesla",
+                    })
 
             # Get/supplement with Tesla BLE data (supports multiple BLE prefixes)
             if ev_provider in (EV_PROVIDER_TESLA_BLE, EV_PROVIDER_BOTH):

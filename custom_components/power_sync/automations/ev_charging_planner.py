@@ -301,7 +301,19 @@ async def discover_all_tesla_vehicles(
         config_entry: Config entry
 
     Returns:
-        List of dicts: [{"vin": str, "name": str, "device_id": str}, ...]
+        List of dicts with these keys (extra keys are safe to add in future —
+        callers read by key and ignore unknown fields):
+            - ``vin`` (str): 17-char VIN for Fleet API vehicles, or
+              ``"ble_{prefix}"`` for BLE-only vehicles
+            - ``name`` (str): display name
+            - ``device_id`` (str): HA device registry ID, or ``"ble_{prefix}"``
+              for BLE vehicles (no device registry entry exists for those)
+            - ``device`` (DeviceEntry | None): HA device registry entry when
+              available; ``None`` for BLE vehicles. Used by ``EVVehiclesView``
+              to scan entities belonging to the device without a second lookup.
+            - ``source`` (str): ``"fleet_api"`` or ``"tesla_ble"``
+            - ``ble_prefix`` (str | None): BLE entity prefix for BLE vehicles,
+              ``None`` for Fleet API vehicles
     """
     from homeassistant.helpers import device_registry as dr
     from ..const import (
@@ -325,6 +337,9 @@ async def discover_all_tesla_vehicles(
             "vin": device_vin,
             "name": device.name or device.name_by_user or device_vin,
             "device_id": device.id,
+            "device": device,
+            "source": "fleet_api",
+            "ble_prefix": None,
         })
         _LOGGER.debug(f"Discovered Tesla vehicle: {device.name} (VIN: {device_vin})")
 
@@ -358,6 +373,9 @@ async def discover_all_tesla_vehicles(
                 "vin": ble_vin,
                 "name": display_name,
                 "device_id": ble_vin,
+                "device": None,
+                "source": "tesla_ble",
+                "ble_prefix": prefix,
             })
             _LOGGER.debug(f"Discovered Tesla BLE vehicle: {display_name}")
 
