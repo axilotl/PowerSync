@@ -16423,6 +16423,36 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "cancel_expiry_timer": None,
     }
 
+    # Generation counter — incremented synchronously at the start of every
+    # service command (before any await).  Each auto-restore callback captures
+    # its generation at the time the timer is scheduled; if the counter has
+    # advanced when the callback fires, a newer command was issued in the
+    # meantime and the restore is silently skipped.
+    #
+    # This is the defence-in-depth layer.  The primary protection is
+    # _cancel_all_force_timers(), which cancels pending timers before I/O.
+    # Together they close a race where a previous command's expiry timer is
+    # already dequeued in asyncio by the time cancel() is called.
+    _command_generation = [0]  # mutable list so inner functions share one counter
+
+    def _cancel_all_force_timers(reason: str = "") -> None:
+        """Cancel all pending force-mode expiry timers.
+
+        Must be called synchronously (no await) at the start of every service
+        handler that issues an inverter command, before the first await.
+        Because the asyncio event loop is single-threaded and this function
+        contains no awaits, it is guaranteed to run to completion before any
+        pending timer callback can be dequeued — even if the timer's scheduled
+        time has already passed.
+        """
+        if reason:
+            _LOGGER.debug("Cancelling pending force timers: %s", reason)
+        for _state in (force_discharge_state, force_charge_state):
+            _cancel = _state.get("cancel_expiry_timer")
+            if _cancel:
+                _cancel()
+                _state["cancel_expiry_timer"] = None
+
     # Store force states in hass.data so TariffPriceView can access them
     # This allows the endpoint to return real tariff instead of fake ML tariff
     hass.data[DOMAIN][entry.entry_id]["force_charge_state"] = force_charge_state
@@ -16547,7 +16577,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         _LOGGER.error("Failed to re-issue force charge after restart: %s", e)
 
                     # Re-setup expiry timer
+                    _restore_gen_charge_persisted = _command_generation[0]
+
                     async def auto_restore_charge(_now):
+                        if _command_generation[0] != _restore_gen_charge_persisted:
+                            _LOGGER.debug("Persisted force charge timer superseded — skipping restore")
+                            return
                         if force_charge_state["active"]:
                             _LOGGER.info("⏰ Force charge expired (restored timer), auto-restoring")
                             await hass.services.async_call(DOMAIN, SERVICE_RESTORE_NORMAL, {}, blocking=True)
@@ -16592,7 +16627,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         _LOGGER.error("Failed to re-issue force discharge after restart: %s", e)
 
                     # Re-setup expiry timer
+                    _restore_gen_discharge_persisted = _command_generation[0]
+
                     async def auto_restore_discharge(_now):
+                        if _command_generation[0] != _restore_gen_discharge_persisted:
+                            _LOGGER.debug("Persisted force discharge timer superseded — skipping restore")
+                            return
                         if force_discharge_state["active"]:
                             _LOGGER.info("⏰ Force discharge expired (restored timer), auto-restoring")
                             await hass.services.async_call(DOMAIN, SERVICE_RESTORE_NORMAL, {}, blocking=True)
@@ -16677,6 +16717,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         _LOGGER.info(f"🔋 FORCE DISCHARGE: Activating for {duration} minutes (source={source})")
 
+        # Cancel any pending expiry timers and advance the generation counter
+        # synchronously — before any await — so that a queued restore callback
+        # from a previous command cannot fire during this command's I/O window.
+        _cancel_all_force_timers("new force_discharge command")
+        _command_generation[0] += 1
+        _restore_gen = _command_generation[0]
+
         # Set force discharge state IMMEDIATELY so the optimizer sees it
         # before the async Modbus/API call completes (same race fix as force_charge).
         was_already_force_discharging = force_discharge_state.get("active", False)
@@ -16739,6 +16786,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         force_discharge_state["cancel_expiry_timer"]()
 
                     async def auto_restore_sigenergy(_now):
+                        if _command_generation[0] != _restore_gen:
+                            _LOGGER.debug("Sigenergy force discharge timer superseded — skipping restore")
+                            return
                         if force_discharge_state["active"]:
                             _LOGGER.info("⏰ Sigenergy force discharge expired, auto-restoring")
                             await hass.services.async_call(DOMAIN, SERVICE_RESTORE_NORMAL, {}, blocking=True)
@@ -16790,6 +16840,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         force_discharge_state["cancel_expiry_timer"]()
 
                     async def auto_restore_discharge_foxess(_now):
+                        if _command_generation[0] != _restore_gen:
+                            _LOGGER.debug("FoxESS force discharge timer superseded — skipping restore")
+                            return
                         if force_discharge_state["active"]:
                             _LOGGER.info("FoxESS force discharge expired, auto-restoring")
                             await hass.services.async_call(DOMAIN, SERVICE_RESTORE_NORMAL, {}, blocking=True)
@@ -16840,6 +16893,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         force_discharge_state["cancel_expiry_timer"]()
 
                     async def auto_restore_discharge_goodwe(_now):
+                        if _command_generation[0] != _restore_gen:
+                            _LOGGER.debug("GoodWe force discharge timer superseded — skipping restore")
+                            return
                         if force_discharge_state["active"]:
                             _LOGGER.info("GoodWe force discharge expired, auto-restoring")
                             await hass.services.async_call(DOMAIN, SERVICE_RESTORE_NORMAL, {}, blocking=True)
@@ -16890,6 +16946,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         force_discharge_state["cancel_expiry_timer"]()
 
                     async def auto_restore_discharge_sungrow(_now):
+                        if _command_generation[0] != _restore_gen:
+                            _LOGGER.debug("Sungrow force discharge timer superseded — skipping restore")
+                            return
                         if force_discharge_state["active"]:
                             _LOGGER.info("Sungrow force discharge expired, auto-restoring")
                             await hass.services.async_call(DOMAIN, SERVICE_RESTORE_NORMAL, {}, blocking=True)
@@ -17125,6 +17184,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
                 async def auto_restore(_now):
                     """Auto-restore normal operation when discharge expires."""
+                    if _command_generation[0] != _restore_gen:
+                        _LOGGER.debug("Tesla force discharge timer superseded — skipping restore")
+                        return
                     if force_discharge_state["active"]:
                         _LOGGER.info("Force discharge expired, auto-restoring normal operation")
                         await hass.services.async_call(DOMAIN, SERVICE_RESTORE_NORMAL, {}, blocking=True)
@@ -17400,6 +17462,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 )
                 return
 
+        # Cancel any pending expiry timers and advance the generation counter
+        # synchronously — before any await — so that a queued restore callback
+        # from a previous command cannot fire during this command's I/O window.
+        _cancel_all_force_timers("new force_charge command")
+        _command_generation[0] += 1
+        _restore_gen = _command_generation[0]
+
         # Set force charge state IMMEDIATELY so the optimizer sees it
         # before the async Modbus/API call completes.  Prevents a race
         # where the optimizer finishes its LP cycle during the Modbus
@@ -17475,6 +17544,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         force_charge_state["cancel_expiry_timer"]()
 
                     async def auto_restore_charge_sigenergy(_now):
+                        if _command_generation[0] != _restore_gen:
+                            _LOGGER.debug("Sigenergy force charge timer superseded — skipping restore")
+                            return
                         if force_charge_state["active"]:
                             _LOGGER.info("⏰ Sigenergy force charge expired, auto-restoring")
                             await hass.services.async_call(DOMAIN, SERVICE_RESTORE_NORMAL, {}, blocking=True)
@@ -17535,6 +17607,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         force_charge_state["cancel_expiry_timer"]()
 
                     async def auto_restore_charge_foxess(_now):
+                        if _command_generation[0] != _restore_gen:
+                            _LOGGER.debug("FoxESS force charge timer superseded — skipping restore")
+                            return
                         if force_charge_state["active"]:
                             _LOGGER.info("FoxESS force charge expired, auto-restoring")
                             await hass.services.async_call(DOMAIN, SERVICE_RESTORE_NORMAL, {}, blocking=True)
@@ -17594,6 +17669,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         force_charge_state["cancel_expiry_timer"]()
 
                     async def auto_restore_charge_goodwe(_now):
+                        if _command_generation[0] != _restore_gen:
+                            _LOGGER.debug("GoodWe force charge timer superseded — skipping restore")
+                            return
                         if force_charge_state["active"]:
                             _LOGGER.info("GoodWe force charge expired, auto-restoring")
                             await hass.services.async_call(DOMAIN, SERVICE_RESTORE_NORMAL, {}, blocking=True)
@@ -17653,6 +17731,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         force_charge_state["cancel_expiry_timer"]()
 
                     async def auto_restore_charge_sungrow(_now):
+                        if _command_generation[0] != _restore_gen:
+                            _LOGGER.debug("Sungrow force charge timer superseded — skipping restore")
+                            return
                         if force_charge_state["active"]:
                             _LOGGER.info("Sungrow force charge expired, auto-restoring")
                             await hass.services.async_call(DOMAIN, SERVICE_RESTORE_NORMAL, {}, blocking=True)
@@ -17874,6 +17955,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
                 async def auto_restore_charge(_now):
                     """Auto-restore normal operation when charge expires."""
+                    if _command_generation[0] != _restore_gen:
+                        _LOGGER.debug("Tesla force charge timer superseded — skipping restore")
+                        return
                     if force_charge_state["active"]:
                         _LOGGER.info("Force charge expired, auto-restoring normal operation")
                         await hass.services.async_call(DOMAIN, SERVICE_RESTORE_NORMAL, {}, blocking=True)
@@ -18097,13 +18181,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             if not monitoring_mode:
                 suppress_notification = True
 
-        # Cancel any pending expiry timers (discharge and charge)
-        if force_discharge_state.get("cancel_expiry_timer"):
-            force_discharge_state["cancel_expiry_timer"]()
-            force_discharge_state["cancel_expiry_timer"] = None
-        if force_charge_state.get("cancel_expiry_timer"):
-            force_charge_state["cancel_expiry_timer"]()
-            force_charge_state["cancel_expiry_timer"] = None
+        # Cancel any pending expiry timers and advance the generation counter
+        # synchronously — before any await — so no queued auto-restore callback
+        # can interfere with this restore operation.
+        _cancel_all_force_timers("restore_normal")
+        _command_generation[0] += 1
 
         # Check if this is a Sigenergy system
         is_sigenergy = bool(entry.data.get(CONF_SIGENERGY_STATION_ID))
