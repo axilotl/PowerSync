@@ -1,16 +1,14 @@
 ## What's Changed
 
-**Refactor: unified Tesla vehicle discovery across the mobile API view and automation planner (issue #23 finding D)**
-Before this release there were two parallel Tesla vehicle discovery systems: `EVVehiclesView.get()` in the HTTP view layer scanned the device registry manually for Fleet API vehicles and then ran its own BLE discovery via `_get_tesla_ble_vehicle()`, while `discover_all_tesla_vehicles()` in the automation charging planner did a second, independent scan of the same device registry with a second BLE fallback path. Any future extension — new Tesla integration, BLE/Teslemetry/Tessie enhancement, capability probe — had to land in both places, and it was very easy for the two to drift out of sync (the BLE discovery path already had because PR #24 added it to only one of them).
+Three Tesla integration bug fixes from PR #25, thanks again to **@Artic0din** for the CodeRabbit audit and clean independent commits.
 
-This release collapses both paths into a single source of truth:
+**Fix: `invalidate_site_info_cache()` now actually invalidates the cached payload**
+The cache-invalidation helper introduced in 2.11.8 reset `_site_info_last_fetch = 0` but never cleared `_site_info_cache` itself. `async_get_site_info()` checks `if self._site_info_cache and (time.monotonic() - self._site_info_last_fetch) <= 21600`, and `time.monotonic() - 0` equals the process uptime, so on freshly-restarted HA hosts (uptime < 6 hours) the age check always passed and the stale cached payload was returned. That meant 2.11.8's fix for "stale grid export rule after write" only actually worked after 6+ hours of uptime — otherwise users saw the same stale dashboard values they had before. The cache payload is now cleared alongside the timestamp, forcing a genuine refetch on the next read regardless of uptime.
 
-- `discover_all_tesla_vehicles()` now returns a richer dict per vehicle including the `device` registry entry, `source` (`fleet_api` / `tesla_ble`), and `ble_prefix`. Backward compatible — existing callers that only read `vin` / `name` / `device_id` see no change.
-- `EVVehiclesView.get()` now calls `discover_all_tesla_vehicles()` for its Fleet API section instead of doing its own device-registry scan. The previous ~60-line duplicated scan loop (the 8th occurrence of the same pattern) is gone, and the view simply iterates discovery results and enriches each with current entity state for the mobile app.
-- The BLE section of `EVVehiclesView.get()` is unchanged — it still uses `_get_tesla_ble_vehicle()` to produce rich state dicts — but now the discovery and the state enrichment are clearly separated.
+**Fix: PowerSync.cc proxy tokens no longer routed to the Teslemetry URL when restoring the export rule**
+`config_flow._restore_export_rule()` ran when a user disabled solar curtailment to flip Tesla's export rule back to `battery_ok`. The provider check was a two-way if/else covering Fleet API and Teslemetry only — PowerSync.cc users (the recommended free-tier path) fell into the `else` branch and had their `psync_...` token sent to `TESLEMETRY_API_BASE_URL`, which Teslemetry's server rejected with a silent 401. Result: every curtailment-disable call silently failed and the export rule was never actually restored, leaving solar export blocked at the inverter level until manual intervention. An explicit `elif api_provider == TESLA_PROVIDER_POWERSYNC` branch now uses `POWERSYNC_API_BASE_URL` with the correct token validation.
 
-Net effect: any future Tesla integration support (or BLE enhancement) added to `discover_all_tesla_vehicles()` automatically appears in both the automation planner and the mobile app vehicle list without a parallel edit. No behavior changes for existing users.
-
-**Refactor stats:** `__init__.py` loses ~45 lines of duplicated scan-loop boilerplate; `ev_charging_planner.py` adds ~8 lines of dict enrichment to expose `device` / `source` / `ble_prefix` to the view.
+**Fix: Fleet API provider choice now survives HA restart during initial setup**
+The initial setup flow's Fleet API branch stored `self._teslemetry_data = {CONF_TESLEMETRY_API_TOKEN: ""}` — an empty token slot — but never wrote `CONF_TESLA_API_PROVIDER: TESLA_PROVIDER_FLEET_API` into the config entry data. On HA restart, `get_tesla_api_token()` read the default `TESLA_PROVIDER_TESLEMETRY`, tried to use the empty token, and 401'd on every Tesla API call. Users who picked Fleet API during setup saw everything work until the first restart, then the entire Powerwall section went stale/unknown with no obvious cause in the logs. The Fleet API dict now includes `CONF_TESLA_API_PROVIDER: TESLA_PROVIDER_FLEET_API` so the provider choice persists.
 
 Update available via HACS
