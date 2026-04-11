@@ -516,29 +516,39 @@ class PowerSyncStrategy {
     // Domain-aware entity finder used by the Tesla Energy Site controls section.
     // The new Tesla entities use _attr_has_entity_name=True, so HA composes
     // their entity_ids from the device name (e.g. "Home" → home_backup_reserve)
-    // rather than the suggested object_id. This helper scans hass.states for
-    // any entity_id in the given domain matching one of the candidate suffixes,
-    // tolerating any device-name prefix.
+    // rather than the suggested object_id. This helper scans both hass.states
+    // AND hass.entities (registry) for any entity_id in the given domain whose
+    // object_id contains the suffix, tolerating any device-name prefix.
     const findEntity = (domain, suffix) => {
       const direct = `${domain}.power_sync_${suffix}`;
       if (hass.states[direct]) return direct;
       const prefix = `${domain}.`;
       const tail = `_${suffix}`;
-      for (const key of Object.keys(hass.states)) {
+      const exact = `${domain}.${suffix}`;
+      // First pass: states (only keeps available entities)
+      for (const key of Object.keys(hass.states || {})) {
         if (!key.startsWith(prefix)) continue;
-        if (key === `${domain}.${suffix}` || key.endsWith(tail)) return key;
+        if (key === exact || key.endsWith(tail)) return key;
+      }
+      // Second pass: entity registry (includes unavailable entities too)
+      const registry = hass.entities || {};
+      for (const key of Object.keys(registry)) {
+        if (!key.startsWith(prefix)) continue;
+        if (key === exact || key.endsWith(tail)) return key;
       }
       return null;
     };
 
     // Find every VPP program switch (one switch per Tesla program enrollment).
     const findVppSwitches = () => {
-      const matches = [];
-      for (const key of Object.keys(hass.states)) {
-        if (!key.startsWith('switch.')) continue;
-        if (key.includes('_vpp_')) matches.push(key);
+      const matches = new Set();
+      for (const key of Object.keys(hass.states || {})) {
+        if (key.startsWith('switch.') && key.includes('_vpp_')) matches.add(key);
       }
-      return matches;
+      for (const key of Object.keys(hass.entities || {})) {
+        if (key.startsWith('switch.') && key.includes('_vpp_')) matches.add(key);
+      }
+      return Array.from(matches);
     };
 
     // ── 3-column layout: left (controls/status), center (flow/charts), right (prices/energy) ──
@@ -933,54 +943,152 @@ function _teslaEnergySiteControls(findEntity, findVppSwitches) {
   const manualOverride = findEntity('binary_sensor', 'manual_export_override');
   const vppSwitches = findVppSwitches();
 
-  const rows = [];
+  // Diagnostic log so missing entities are visible in the browser console.
+  // Shown once per dashboard render; helps debug the "only grid charging
+  // shows" class of report when a user's entity_id naming doesn't match.
+  try {
+    const report = {
+      backupReserve, offGridReserve, operationMode, exportRule,
+      gridCharging, stormWatch, stormActive, manualOverride,
+      vppCount: vppSwitches.length,
+    };
+    console.debug('[PowerSync Strategy] Tesla Energy Site controls:', report);
+  } catch (_) { /* ignore */ }
+
+  const cards = [];
+
+  // ── Slider row: backup reserve + off-grid EV reserve (when supported) ──
+  const sliders = [];
   if (backupReserve) {
-    rows.push({ entity: backupReserve, name: 'Backup Reserve', icon: 'mdi:battery-lock' });
-  }
-  if (operationMode) {
-    rows.push({ entity: operationMode, name: 'Operation Mode', icon: 'mdi:cog-transfer' });
-  }
-  if (exportRule) {
-    rows.push({ entity: exportRule, name: 'Grid Export Rule', icon: 'mdi:transmission-tower-export' });
-  }
-  if (gridCharging) {
-    rows.push({ entity: gridCharging, name: 'Grid Charging', icon: 'mdi:transmission-tower-import' });
-  }
-  if (stormWatch) {
-    rows.push({ entity: stormWatch, name: 'Storm Watch', icon: 'mdi:weather-lightning' });
-  }
-  if (stormActive) {
-    rows.push({ entity: stormActive, name: 'Storm Watch Active', icon: 'mdi:weather-lightning-rainy' });
+    sliders.push({
+      type: 'tile',
+      entity: backupReserve,
+      name: 'Backup Reserve',
+      icon: 'mdi:battery-lock',
+      vertical: false,
+    });
   }
   if (offGridReserve) {
-    rows.push({ entity: offGridReserve, name: 'Off-Grid EV Reserve', icon: 'mdi:car-electric' });
+    sliders.push({
+      type: 'tile',
+      entity: offGridReserve,
+      name: 'Off-Grid EV Reserve',
+      icon: 'mdi:car-electric',
+      vertical: false,
+    });
   }
-  if (manualOverride) {
-    rows.push({ entity: manualOverride, name: 'Manual Export Override', icon: 'mdi:hand-back-right' });
-  }
-  for (const sw of vppSwitches) {
-    // Strip everything up to and including "_vpp_" to derive a friendly label.
-    const tail = sw.split('_vpp_').pop() || '';
-    const label = tail
-      .split('_')
-      .filter(Boolean)
-      .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-      .join(' ');
-    rows.push({
-      entity: sw,
-      name: label ? `VPP: ${label}` : 'VPP Program',
-      icon: 'mdi:transmission-tower',
+  if (sliders.length > 0) {
+    cards.push({
+      type: 'grid',
+      columns: sliders.length === 2 ? 2 : 1,
+      square: false,
+      cards: sliders,
     });
   }
 
-  if (rows.length === 0) return null;
+  // ── Select row: operation mode + grid export rule (side-by-side) ──
+  const selects = [];
+  if (operationMode) {
+    selects.push({
+      type: 'tile',
+      entity: operationMode,
+      name: 'Operation Mode',
+      icon: 'mdi:cog-transfer',
+      vertical: false,
+    });
+  }
+  if (exportRule) {
+    selects.push({
+      type: 'tile',
+      entity: exportRule,
+      name: 'Grid Export',
+      icon: 'mdi:transmission-tower-export',
+      vertical: false,
+    });
+  }
+  if (selects.length > 0) {
+    cards.push({
+      type: 'grid',
+      columns: selects.length === 2 ? 2 : 1,
+      square: false,
+      cards: selects,
+    });
+  }
+
+  // ── Toggle row: grid charging + storm watch + each VPP program ──
+  const toggles = [];
+  if (gridCharging) {
+    toggles.push({
+      type: 'tile',
+      entity: gridCharging,
+      name: 'Grid Charging',
+      icon: 'mdi:transmission-tower-import',
+      vertical: false,
+    });
+  }
+  if (stormWatch) {
+    toggles.push({
+      type: 'tile',
+      entity: stormWatch,
+      name: 'Storm Watch',
+      icon: 'mdi:weather-lightning',
+      vertical: false,
+    });
+  }
+  for (const sw of vppSwitches) {
+    const tail = sw.split('_vpp_').pop() || '';
+    const label = tail
+      .split('_').filter(Boolean)
+      .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+      .join(' ');
+    toggles.push({
+      type: 'tile',
+      entity: sw,
+      name: label ? `VPP: ${label}` : 'VPP Program',
+      icon: 'mdi:transmission-tower',
+      vertical: false,
+    });
+  }
+  if (toggles.length > 0) {
+    // Split into rows of 2 for better mobile layout
+    cards.push({
+      type: 'grid',
+      columns: Math.min(2, toggles.length),
+      square: false,
+      cards: toggles,
+    });
+  }
+
+  // ── Status row: storm active + manual export override badges ──
+  const statuses = [];
+  if (stormActive) {
+    statuses.push({ entity: stormActive, name: 'Storm Watch Active', icon: 'mdi:weather-lightning-rainy' });
+  }
+  if (manualOverride) {
+    statuses.push({ entity: manualOverride, name: 'Manual Export Override', icon: 'mdi:hand-back-right' });
+  }
+  if (statuses.length > 0) {
+    cards.push({
+      type: 'entities',
+      title: null,
+      show_header_toggle: false,
+      state_color: true,
+      entities: statuses,
+    });
+  }
+
+  if (cards.length === 0) return null;
 
   return {
-    type: 'entities',
-    title: 'Tesla Energy Site',
-    show_header_toggle: false,
-    state_color: true,
-    entities: rows,
+    type: 'vertical-stack',
+    cards: [
+      {
+        type: 'markdown',
+        content: '## ⚡ Tesla Energy Site\n_Powerwall and site-level controls_',
+        card_mod: { style: 'ha-card { padding: 8px 16px 0; background: none; border: none; box-shadow: none; }' },
+      },
+      ...cards,
+    ],
   };
 }
 
