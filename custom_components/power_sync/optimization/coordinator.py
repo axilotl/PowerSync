@@ -402,6 +402,9 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._is_dynamic_pricing = coordinator_name in dynamic_providers
 
         if self._is_dynamic_pricing:
+            # Unsubscribe existing listener before re-registering (idempotent)
+            if self._price_listener_unsub:
+                self._price_listener_unsub()
             self._price_listener_unsub = self.price_coordinator.async_add_listener(
                 self._on_price_update
             )
@@ -438,6 +441,9 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         self._enabled = True
         _LOGGER.info("Optimization enabled (built-in LP)")
+
+        # Restore dynamic price listener (may have been lost on disable/enable cycle)
+        await self._setup_price_listener()
 
         # Defer Modbus-heavy startup operations to a background task so they
         # don't block async_setup_entry.  HA's bootstrap stage 2 has a global
@@ -1033,12 +1039,13 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     soc_now, _ = await self._get_battery_state()
                     opt_reserve = self._config.backup_reserve
                     if soc_now <= opt_reserve + 0.05:
+                        hw_reserve_pct = self._startup_backup_reserve or 0
                         _LOGGER.debug(
                             "Optimizer: Overriding IDLE → self_consumption — "
                             "SOC %.1f%% at optimizer reserve %.0f%%, "
                             "hardware reserve %.0f%% (%.0f%% headroom)",
                             soc_now * 100, opt_reserve * 100,
-                            hw_reserve * 100, (opt_reserve - hw_reserve) * 100,
+                            hw_reserve_pct, (opt_reserve * 100 - hw_reserve_pct),
                         )
                         effective_action = "self_consumption"
                 except Exception:
