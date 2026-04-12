@@ -1,23 +1,15 @@
 ## What's New
 
-### Powerwall Off-Grid & Reconnect Control
-You can now take your Powerwall off-grid and reconnect directly from the PowerSync app — no Tesla app needed. This works on both Powerwall 2 (local REST) and Powerwall 3 (signed cloud commands via your paired RSA key). Tap the Go Off-Grid or Reconnect buttons in Controls > Local Grid Control, or use the `powerwall_go_off_grid` and `powerwall_reconnect_grid` actions in automations to trigger islanding based on price, time, or other conditions.
+### Off-Grid Curtailment in the Optimizer
+The LP optimizer can now physically take your Powerwall off-grid during negative export price periods. When enabled in Battery Setup > Local Control, the optimizer identifies periods where export has zero or negative value and marks them as OFF_GRID in the schedule. The Powerwall physically disconnects from the grid, guaranteeing zero export — stronger than Tesla's "never export" rule alone.
 
-### Off-Grid Curtailment
-When enabled in Battery Setup > Local Control, PowerSync can automatically take your Powerwall off-grid during negative price periods to avoid paying to export. It reconnects when prices recover. Configurable safety gates include a minimum SOC floor and a daily duration cap to prevent excessive cycling.
+The optimizer coordinates off-grid timing with charge/discharge planning so it automatically reconnects before any upcoming charge window. Solar continues producing while off-grid, charging the battery and powering your home.
 
-### Smarter Grid Status Notifications
-Grid status change notifications (outage detected / power restored) no longer fire on every HA restart. They only trigger on actual grid transitions, and correctly distinguish between on-grid and off-grid states.
+Safety gates: minimum SOC floor (default 40%), daily duration cap (default 6 hours), minimum 15 minutes per off-grid session to prevent contactor cycling.
 
----
+**Requires:** Tesla Powerwall with completed gateway pairing + off-grid curtailment enabled. No change for users who don't enable this feature — the optimizer continues using Tesla's export rule as before.
 
-### App Improvements
-
-- **Quick Actions** — Duration selector simplified from 12 buttons to 6 clean pills (15m, 30m, 1h, 2h, 3h, 4h)
-- **Automations** — Action type selector redesigned from scattered chips to a clean list with checkmarks
-- **EV Charging Flow** — Animation now flows from home to car (was reversed), with separate flow lines for dual-EV setups
-- **VPP Programs** — Card hidden when no programs are available instead of showing an empty section
-- **Settings** — Home Assistant setup and Appearance moved to dedicated screens, keeping the main settings page clean
-- **Pairing** — Customer password auto-derived from WiFi password (last 5 chars) — no more manual entry
+### Grid Status Notifications Fixed
+Grid outage/restored push notifications no longer fire on every HA restart. They only trigger on actual grid transitions and correctly distinguish between Active (on-grid) and Inactive (off-grid) states.
 
 Update available via HACS
