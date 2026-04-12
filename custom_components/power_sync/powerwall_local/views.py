@@ -40,12 +40,19 @@ from ..const import (
     CONF_POWERWALL_LOCAL_WIFI_PASSWORD,
     CONF_POWERWALL_LOCAL_WIFI_SSID,
     CONF_POWERWALL_OFF_GRID_MIN_SOC,
+    CONF_POWERWALL_OFFGRID_AS_CURTAILMENT,
+    CONF_POWERWALL_OFFGRID_CURTAILMENT_MAX_SECONDS,
+    CONF_POWERWALL_OFFGRID_CURTAILMENT_MIN_SOC,
     DEFAULT_POWERWALL_OFF_GRID_MIN_SOC,
+    DEFAULT_POWERWALL_OFFGRID_AS_CURTAILMENT,
+    DEFAULT_POWERWALL_OFFGRID_CURTAILMENT_MAX_SECONDS,
+    DEFAULT_POWERWALL_OFFGRID_CURTAILMENT_MIN_SOC,
     DOMAIN,
     POWERWALL_PAIRING_WINDOW_SECONDS,
 )
 from .client import PowerwallLocalClient, PowerwallVersion
 from .coordinator import PowerwallLocalCoordinator
+from .curtailment_fallback import get_fallback as _get_curtailment_fallback
 from .exceptions import PowerwallLocalError, PowerwallPairingError
 from .pairing import PowerwallPairingManager
 
@@ -484,6 +491,113 @@ class PowerwallLocalStatusView(HomeAssistantView):
         )
 
 
+class PowerwallCurtailmentFallbackView(HomeAssistantView):
+    """GET/POST the Powerwall off-grid curtailment fallback config + status.
+
+    GET returns the current options and the live fallback state so the app
+    can show "Currently off-grid due to curtailment" with a session duration
+    counter.
+
+    POST updates any of ``enabled``, ``min_soc``, ``max_seconds`` in
+    entry.options. The per-entry PowerwallCurtailmentFallback singleton
+    re-reads options on every gate check, so there is no need to reset it.
+    """
+
+    url = "/api/power_sync/powerwall/curtailment_fallback"
+    name = "api:power_sync:powerwall:curtailment_fallback"
+    requires_auth = True
+
+    def __init__(self, hass: HomeAssistant) -> None:
+        self._hass = hass
+
+    async def get(self, request: web.Request) -> web.Response:
+        entry = _get_entry(self._hass)
+        if entry is None:
+            return web.json_response(
+                {"success": False, "error": "PowerSync not configured"},
+                status=503,
+            )
+        enabled = bool(
+            entry.options.get(
+                CONF_POWERWALL_OFFGRID_AS_CURTAILMENT,
+                entry.data.get(
+                    CONF_POWERWALL_OFFGRID_AS_CURTAILMENT,
+                    DEFAULT_POWERWALL_OFFGRID_AS_CURTAILMENT,
+                ),
+            )
+        )
+        min_soc = int(
+            entry.options.get(
+                CONF_POWERWALL_OFFGRID_CURTAILMENT_MIN_SOC,
+                entry.data.get(
+                    CONF_POWERWALL_OFFGRID_CURTAILMENT_MIN_SOC,
+                    DEFAULT_POWERWALL_OFFGRID_CURTAILMENT_MIN_SOC,
+                ),
+            )
+        )
+        max_seconds = int(
+            entry.options.get(
+                CONF_POWERWALL_OFFGRID_CURTAILMENT_MAX_SECONDS,
+                entry.data.get(
+                    CONF_POWERWALL_OFFGRID_CURTAILMENT_MAX_SECONDS,
+                    DEFAULT_POWERWALL_OFFGRID_CURTAILMENT_MAX_SECONDS,
+                ),
+            )
+        )
+        fallback = _get_curtailment_fallback(self._hass, entry)
+        return web.json_response(
+            {
+                "success": True,
+                "config": {
+                    "enabled": enabled,
+                    "min_soc": min_soc,
+                    "max_seconds": max_seconds,
+                },
+                "status": fallback.status().to_dict(),
+            }
+        )
+
+    async def post(self, request: web.Request) -> web.Response:
+        entry = _get_entry(self._hass)
+        if entry is None:
+            return web.json_response(
+                {"success": False, "error": "PowerSync not configured"},
+                status=503,
+            )
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        new_options = dict(entry.options)
+        if "enabled" in body:
+            new_options[CONF_POWERWALL_OFFGRID_AS_CURTAILMENT] = bool(body["enabled"])
+        if "min_soc" in body:
+            try:
+                v = int(body["min_soc"])
+            except (TypeError, ValueError):
+                return web.json_response(
+                    {"success": False, "error": "min_soc must be an integer"},
+                    status=400,
+                )
+            new_options[CONF_POWERWALL_OFFGRID_CURTAILMENT_MIN_SOC] = max(
+                0, min(100, v)
+            )
+        if "max_seconds" in body:
+            try:
+                v = int(body["max_seconds"])
+            except (TypeError, ValueError):
+                return web.json_response(
+                    {"success": False, "error": "max_seconds must be an integer"},
+                    status=400,
+                )
+            # Clamp 10 minutes … 24 hours.
+            new_options[CONF_POWERWALL_OFFGRID_CURTAILMENT_MAX_SECONDS] = max(
+                600, min(86400, v)
+            )
+        self._hass.config_entries.async_update_entry(entry, options=new_options)
+        return await self.get(request)
+
+
 def register_views(hass: HomeAssistant) -> None:
     """Wire up every Powerwall-local view onto the HA http app."""
     hass.http.register_view(PowerwallPairStartView(hass))
@@ -492,3 +606,4 @@ def register_views(hass: HomeAssistant) -> None:
     hass.http.register_view(PowerwallPairUnpairView(hass))
     hass.http.register_view(PowerwallOffGridView(hass))
     hass.http.register_view(PowerwallLocalStatusView(hass))
+    hass.http.register_view(PowerwallCurtailmentFallbackView(hass))

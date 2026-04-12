@@ -13732,6 +13732,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         return True
 
     # Helper function for AC-coupled inverter curtailment
+    async def _powerwall_curtailment_fallback(curtail: bool, reason: str) -> bool:
+        """Try the Powerwall off-grid path as a last-resort curtailment lever.
+
+        Called after inverter curtailment is either unavailable (no inverter
+        configured, incompatible brand) or fails. The helper handles all
+        safety gates itself — we just dispatch the intent.
+        """
+        try:
+            from .powerwall_local.curtailment_fallback import get_fallback
+            fallback = get_fallback(hass, entry)
+            if curtail:
+                return await fallback.activate(reason)
+            return await fallback.release(trigger_reason=reason)
+        except Exception as err:
+            _LOGGER.error(
+                "Powerwall curtailment fallback raised: %s", err, exc_info=True
+            )
+            return False
+
     async def apply_inverter_curtailment(curtail: bool, import_price: float | None = None, export_earnings: float | None = None) -> bool:
         """Apply or remove inverter curtailment for AC-coupled solar systems.
 
@@ -13746,9 +13765,31 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             entry.data.get(CONF_AC_INVERTER_CURTAILMENT_ENABLED, False)
         )
 
+        # Derive a log-friendly reason for the fallback so the off-grid
+        # session carries context back to the user.
+        fallback_reason = "negative_price"
+        if import_price is not None and import_price < 0:
+            fallback_reason = "negative_import_price"
+        elif export_earnings is not None and export_earnings < 0:
+            fallback_reason = "negative_export_earnings"
+
         if not inverter_enabled:
             _LOGGER.debug("AC-coupled inverter curtailment not enabled in config - skipping")
-            return True  # Not enabled, nothing to do
+            # No inverter curtailment configured — this is exactly the case
+            # where the Powerwall off-grid fallback is most useful. Users
+            # running an unsupported inverter brand (or no inverter at all)
+            # get curtailment-via-islanding if they have opted in.
+            if curtail:
+                fallback_ok = await _powerwall_curtailment_fallback(True, fallback_reason)
+                if fallback_ok:
+                    _LOGGER.info(
+                        "⚡ Powerwall off-grid fallback handled curtailment "
+                        "(no inverter configured, reason=%s)",
+                        fallback_reason,
+                    )
+            else:
+                await _powerwall_curtailment_fallback(False, "inverter_restore")
+            return True  # Not enabled at inverter level, but fallback may have handled it
 
         inverter_brand = entry.options.get(
             CONF_INVERTER_BRAND,
@@ -13903,8 +13944,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     # Track DPEL update time for Enphase refresh logic
                     from datetime import datetime
                     hass.data[DOMAIN][entry.entry_id]["last_dpel_update_time"] = datetime.now()
+                    # Inverter handled curtailment cleanly — make sure any
+                    # prior off-grid fallback session is released now that
+                    # the AC path is working again.
+                    await _powerwall_curtailment_fallback(False, "inverter_took_over")
                 else:
                     _LOGGER.error(f"❌ Failed to curtail inverter")
+                    # Inverter refused or errored — try the Powerwall off-grid
+                    # path as the last-resort curtailment lever.
+                    fallback_ok = await _powerwall_curtailment_fallback(True, fallback_reason)
+                    if fallback_ok:
+                        _LOGGER.info(
+                            "⚡ Powerwall off-grid fallback took over from "
+                            "failed inverter curtailment (reason=%s)",
+                            fallback_reason,
+                        )
+                        return True
                 return success
             else:
                 _LOGGER.info(f"🟢 Restoring inverter at {inverter_host}")
@@ -13916,10 +13971,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     hass.data[DOMAIN][entry.entry_id]["inverter_power_limit_w"] = None  # Clear power limit
                 else:
                     _LOGGER.error(f"❌ Failed to restore inverter")
+                # Always release any off-grid curtailment session when
+                # curtailment should be restored — even if the inverter
+                # restore itself failed, we want the grid contactor back.
+                await _powerwall_curtailment_fallback(False, "inverter_restore")
                 return success
 
         except Exception as e:
             _LOGGER.error(f"Error controlling inverter: {e}", exc_info=True)
+            # Exception path: if the caller wanted curtailment and the
+            # inverter blew up, at least try the Powerwall fallback before
+            # giving up entirely.
+            if curtail:
+                try:
+                    if await _powerwall_curtailment_fallback(True, fallback_reason):
+                        _LOGGER.info(
+                            "⚡ Powerwall off-grid fallback activated after "
+                            "inverter controller exception"
+                        )
+                        return True
+                except Exception:
+                    pass
             return False
 
     # Migrate legacy entity IDs to power_sync_ prefix
