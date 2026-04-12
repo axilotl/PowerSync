@@ -499,6 +499,141 @@ class PowerwallLocalStatusView(HomeAssistantView):
         )
 
 
+class PowerwallGatewayInfoView(HomeAssistantView):
+    """GET gateway metadata derived from Tesla Fleet API ``site_info``.
+
+    Tesla's ``/api/1/energy_sites/{id}/site_info`` response contains a DIN
+    in ``id`` formatted ``{part_number}--{serial_number}``. The customer
+    password used by the Powerwall's REST login endpoint is the last 5
+    characters of ``serial_number``. Surfacing this automatically means
+    the pairing wizard can pre-fill the field instead of making the user
+    crawl under their gateway to read a sticker.
+
+    Response shape::
+
+        {
+            "success": true,
+            "gateway_serial": "TG12345678904G",
+            "part_number": "STSTSM",
+            "suggested_customer_password": "8904G",
+            "site_name": "Home",
+            "din": "STSTSM--TG12345678904G"
+        }
+
+    All fields may be null if site_info is unavailable or the DIN doesn't
+    parse — the wizard should fall back to manual entry in that case and
+    not treat it as an error.
+    """
+
+    url = "/api/power_sync/powerwall/gateway_info"
+    name = "api:power_sync:powerwall:gateway_info"
+    requires_auth = True
+
+    def __init__(self, hass: HomeAssistant) -> None:
+        self._hass = hass
+
+    async def get(self, request: web.Request) -> web.Response:
+        entry = _get_entry(self._hass)
+        if entry is None:
+            return web.json_response(
+                {"success": False, "error": "PowerSync not configured"},
+                status=503,
+            )
+
+        # Walk hass.data for the running Tesla coordinator so we can read
+        # its cached site_info without making a fresh Fleet API call. The
+        # coordinator refreshes site_info every 6 hours, so the cache is
+        # almost always populated — and when it isn't we fall back to a
+        # direct fetch below.
+        bucket = self._hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+        tesla_coord = bucket.get("tesla_coordinator")
+        site_info: dict[str, Any] | None = None
+        if tesla_coord is not None:
+            cached = getattr(tesla_coord, "_site_info_cache", None)
+            if isinstance(cached, dict) and cached:
+                site_info = cached
+
+        if site_info is None:
+            # Cache miss — fetch directly. We reuse the existing token
+            # helper so all three provider paths (PowerSync proxy,
+            # Teslemetry, Fleet API) work identically here.
+            try:
+                from .. import get_tesla_api_token
+                from ..const import CONF_TESLA_ENERGY_SITE_ID, get_tesla_api_base_url
+                from homeassistant.helpers.aiohttp_client import async_get_clientsession
+
+                token, provider = get_tesla_api_token(self._hass, entry)
+                base = get_tesla_api_base_url(provider)
+                site_id = entry.data.get(CONF_TESLA_ENERGY_SITE_ID)
+                if not token or not base or not site_id:
+                    return web.json_response(
+                        {
+                            "success": False,
+                            "error": "Tesla API not configured",
+                        },
+                        status=503,
+                    )
+                session = async_get_clientsession(self._hass)
+                url = f"{base}/api/1/energy_sites/{site_id}/site_info"
+                headers = {"Authorization": f"Bearer {token}"}
+                async with session.get(url, headers=headers) as resp:
+                    if resp.status != 200:
+                        return web.json_response(
+                            {
+                                "success": False,
+                                "error": f"Fleet API site_info failed ({resp.status})",
+                            },
+                            status=502,
+                        )
+                    data = await resp.json()
+                    site_info = data.get("response", {}) if isinstance(data, dict) else {}
+            except Exception as err:
+                _LOGGER.debug("gateway_info fetch error: %s", err)
+                return web.json_response(
+                    {"success": False, "error": str(err)},
+                    status=502,
+                )
+
+        din = site_info.get("id") if isinstance(site_info, dict) else None
+        site_name = (
+            site_info.get("site_name")
+            if isinstance(site_info, dict)
+            else None
+        )
+
+        gateway_serial: str | None = None
+        part_number: str | None = None
+        if isinstance(din, str) and din:
+            parts = din.split("--")
+            if len(parts) >= 2:
+                # Some DIN formats have >2 parts; the serial is always the
+                # last non-empty segment. This matches pypowerwall's parser
+                # and handles both ``STSTSM--TG123`` and edge cases like
+                # ``TESLA--STSTSM--TG123``.
+                tail = [p for p in parts if p]
+                if tail:
+                    gateway_serial = tail[-1]
+                    if len(tail) >= 2:
+                        part_number = tail[-2]
+            else:
+                gateway_serial = din
+
+        suggested_pw = None
+        if gateway_serial and len(gateway_serial) >= 5:
+            suggested_pw = gateway_serial[-5:]
+
+        return web.json_response(
+            {
+                "success": True,
+                "gateway_serial": gateway_serial,
+                "part_number": part_number,
+                "suggested_customer_password": suggested_pw,
+                "site_name": site_name,
+                "din": din,
+            }
+        )
+
+
 class PowerwallDiscoverView(HomeAssistantView):
     """GET a list of candidate Powerwall gateway IPs from Home Assistant's mDNS.
 
@@ -800,3 +935,4 @@ def register_views(hass: HomeAssistant) -> None:
     hass.http.register_view(PowerwallSafetyConfigView(hass))
     hass.http.register_view(PowerwallCurtailmentFallbackView(hass))
     hass.http.register_view(PowerwallDiscoverView(hass))
+    hass.http.register_view(PowerwallGatewayInfoView(hass))
