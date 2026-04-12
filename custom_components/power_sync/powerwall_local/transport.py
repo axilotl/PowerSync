@@ -382,8 +382,8 @@ class TEDAPIv1rTransport:
 
         mode = 2 if off_grid else 1
         env = tp.MessageEnvelope()
-        env.deliveryChannel = 2  # HERMES_COMMAND
-        env.sender.authorizedClient = 1
+        env.deliveryChannel = 1  # LOCAL_HTTPS (try instead of HERMES_COMMAND)
+        env.sender.local = 2  # LOCAL_PARTICIPANT_CUSTOMER
         env.recipient.din = din
         env.teg.setIslandModeRequest.mode = mode
         env.teg.setIslandModeRequest.force = True
@@ -425,6 +425,53 @@ class TEDAPIv1rTransport:
             )
         except Exception as err:
             _LOGGER.warning("set_island_mode: response parse error: %s", err)
+        return False
+
+    async def trigger_islanding(self, din: str) -> bool:
+        """Send ``triggerIslandingBlackStartRequest`` — the actual contactor-open command.
+
+        ``setIslandModeRequest`` only sets the *desired* island mode preference
+        but doesn't physically open the grid contactor. This command is what
+        the Tesla app sends when the user taps "Go Off-Grid" — it triggers
+        the full islanding transition including grid-frequency ramp-down,
+        contactor open, and inverter restart in island mode.
+        """
+        from . import tesla_local_pb2 as tp
+
+        env = tp.MessageEnvelope()
+        env.deliveryChannel = 2  # HERMES_COMMAND
+        env.sender.authorizedClient = 1
+        env.recipient.din = din
+        env.teg.triggerIslandingBlackStartRequest.SetInParent()
+
+        _LOGGER.info("trigger_islanding: din=%s", din)
+        resp = await self.post_v1r(env.SerializeToString(), din)
+        if not resp.ok or not resp.inner_bytes:
+            _LOGGER.warning(
+                "trigger_islanding failed: ok=%s fault=%s http=%s",
+                resp.ok, resp.fault_name, resp.http_status,
+            )
+            return False
+        try:
+            reply = tp.MessageEnvelope()
+            reply.ParseFromString(resp.inner_bytes)
+            _LOGGER.info(
+                "trigger_islanding: response payload_case=%s raw_hex=%s",
+                reply.WhichOneof("payload"),
+                resp.inner_bytes[:200].hex(),
+            )
+            if reply.HasField("teg"):
+                teg_field = reply.teg.WhichOneof("message")
+                _LOGGER.info("trigger_islanding: TEG field = %s", teg_field)
+                if teg_field == "triggerIslandingBlackStartResponse":
+                    return True
+            if reply.HasField("common"):
+                _LOGGER.warning(
+                    "trigger_islanding: common response (may be error): %s",
+                    resp.inner_bytes[:200].hex(),
+                )
+        except Exception as err:
+            _LOGGER.warning("trigger_islanding: response parse error: %s", err)
         return False
 
     async def schedule_manual_backup(self, din: str, duration_s: int) -> bool:

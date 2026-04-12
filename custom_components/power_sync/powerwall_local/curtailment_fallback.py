@@ -158,13 +158,13 @@ class PowerwallCurtailmentFallback:
             return False
 
         try:
-            ok = await coord.client.go_off_grid()
+            ok = await coord.client.curtail_via_backup_mode()
         except PowerwallLocalError as err:
-            _LOGGER.error("Curtailment fallback: go_off_grid failed: %s", err)
+            _LOGGER.error("Curtailment fallback: curtail_via_backup_mode failed: %s", err)
             return False
-        except Exception as err:  # defensive — off-grid path must not crash caller
+        except Exception as err:
             _LOGGER.error(
-                "Curtailment fallback: unexpected go_off_grid error: %s",
+                "Curtailment fallback: unexpected curtail error: %s",
                 err,
                 exc_info=True,
             )
@@ -172,7 +172,7 @@ class PowerwallCurtailmentFallback:
 
         if not ok:
             _LOGGER.warning(
-                "Curtailment fallback: gateway refused islanding command"
+                "Curtailment fallback: config write to backup mode failed"
             )
             return False
 
@@ -228,13 +228,13 @@ class PowerwallCurtailmentFallback:
             return False
 
         try:
-            ok = await coord.client.reconnect_grid()
+            ok = await coord.client.restore_from_curtailment()
         except PowerwallLocalError as err:
-            _LOGGER.error("Curtailment fallback: reconnect_grid failed: %s", err)
+            _LOGGER.error("Curtailment fallback: restore_from_curtailment failed: %s", err)
             return False
         except Exception as err:
             _LOGGER.error(
-                "Curtailment fallback: unexpected reconnect_grid error: %s",
+                "Curtailment fallback: unexpected restore error: %s",
                 err,
                 exc_info=True,
             )
@@ -242,7 +242,7 @@ class PowerwallCurtailmentFallback:
 
         if not ok:
             _LOGGER.warning(
-                "Curtailment fallback: gateway refused reconnect command"
+                "Curtailment fallback: config restore failed"
             )
             return False
 

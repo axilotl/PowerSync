@@ -125,12 +125,18 @@ async def _build_client(
     elif isinstance(private_key_pem, bytes):
         key_bytes = private_key_pem
 
+    # Fleet API context for the device_command cloud path (off-grid/reconnect).
+    fleet_token, fleet_base, fleet_site_id = _get_fleet_api_context(hass, entry)
+
     return PowerwallLocalClient(
         host,
         customer_password,
         version=version,
         private_key_pem=key_bytes,
         din=din,
+        fleet_api_base=fleet_base,
+        fleet_api_token=fleet_token,
+        energy_site_id=fleet_site_id,
     )
 
 
@@ -949,3 +955,32 @@ def register_views(hass: HomeAssistant) -> None:
     hass.http.register_view(PowerwallCurtailmentFallbackView(hass))
     hass.http.register_view(PowerwallDiscoverView(hass))
     hass.http.register_view(PowerwallGatewayInfoView(hass))
+    hass.http.register_view(PowerwallDebugConfigView(hass))
+
+
+class PowerwallDebugConfigView(HomeAssistantView):
+    """TEMPORARY: dump gateway config.json for debugging islanding keys."""
+    url = "/api/power_sync/powerwall/debug_config"
+    name = "api:power_sync:powerwall:debug_config"
+    requires_auth = True
+
+    def __init__(self, hass: HomeAssistant) -> None:
+        self._hass = hass
+
+    async def get(self, request: web.Request) -> web.Response:
+        entry = _get_entry(self._hass)
+        if entry is None:
+            return web.json_response({"error": "no entry"}, status=503)
+        coordinator = await ensure_coordinator(self._hass, entry)
+        if coordinator is None or coordinator.client is None:
+            return web.json_response({"error": "no client"}, status=503)
+        client = coordinator.client
+        # Login + fetch DIN
+        await client.login()
+        din = client.din
+        if not din or not client._transport:
+            return web.json_response({"error": f"no din={din}"}, status=503)
+        config = await client._transport.read_config(din)
+        if config is None:
+            return web.json_response({"error": "read_config returned None"}, status=502)
+        return web.json_response({"success": True, "config": config})
