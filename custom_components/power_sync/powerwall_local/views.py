@@ -214,6 +214,19 @@ class PowerwallPairStartView(HomeAssistantView):
         except ValueError:
             version = PowerwallVersion.PW3
 
+        # Auto-derive customer password from the WiFi password if the user
+        # didn't provide one explicitly. The Powerwall REST login at
+        # /api/login/Basic accepts the last 5 characters of the gateway WiFi
+        # AP password (what pypowerwall calls gw_pwd) as the "customer
+        # password". The mobile app already collects this WiFi password for
+        # battery health scanning, so for most users the derivation is free
+        # — they never have to look up a separate password.
+        if not customer_password and wifi_password and len(wifi_password) >= 5:
+            customer_password = wifi_password[-5:]
+            _LOGGER.info(
+                "Derived customer password from WiFi password (last 5 chars)"
+            )
+
         # Mirror app-supplied creds into the entry so HA holds authoritative
         # config independent of the phone that initiated pairing.
         new_data = {
