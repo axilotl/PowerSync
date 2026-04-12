@@ -521,25 +521,50 @@ class PowerwallDiscoverView(HomeAssistantView):
             # somehow have zeroconf disabled.
             from homeassistant.components.zeroconf import async_get_instance
 
-            aiozc = await async_get_instance(self._hass)
-            zc = aiozc.zeroconf
+            # HA's async_get_instance() returns an HaZeroconf instance
+            # (subclass of zeroconf.Zeroconf) directly — there is no
+            # .zeroconf attribute on it. Earlier HA versions wrapped it
+            # in an AsyncZeroconf, which is where the old .zeroconf
+            # accessor came from; using it on the modern API raises
+            # AttributeError.
+            zc = await async_get_instance(self._hass)
             # Tesla gateways advertise under several service types across
-            # firmware generations — check the common ones.
+            # firmware generations — check the common ones. Use the
+            # AsyncServiceBrowser cache via async_get_service_info which
+            # is the supported path on HaZeroconf.
             service_types = [
                 "_teslapowerwall._tcp.local.",
                 "_teslanterstudio._tcp.local.",
             ]
+            from zeroconf import ServiceBrowser
+
             for service_type in service_types:
-                infos = zc.cache.entries_with_name(service_type) or []
-                for info in infos:
+                # entries_with_name is the lowest-level cache read — it
+                # returns any DNS record whose name matches. We pull
+                # service names out of the cached PTR records then
+                # resolve each one into a ServiceInfo with a short
+                # timeout to avoid blocking when the record is gone.
+                try:
+                    cache_entries = list(zc.cache.entries_with_name(service_type))
+                except Exception:
+                    cache_entries = []
+                service_names: set[str] = set()
+                for entry in cache_entries:
                     try:
-                        name = getattr(info, "name", None) or getattr(info, "alias", None)
-                        if not name:
-                            continue
-                        service_info = zc.get_service_info(service_type, name, timeout=500)
+                        alias = getattr(entry, "alias", None)
+                        if alias:
+                            service_names.add(alias)
+                    except Exception:
+                        continue
+
+                for name in service_names:
+                    try:
+                        service_info = zc.get_service_info(
+                            service_type, name, timeout=500
+                        )
                         if service_info is None:
                             continue
-                        addresses = []
+                        addresses: list[str] = []
                         try:
                             addresses = service_info.parsed_addresses() or []
                         except Exception:
