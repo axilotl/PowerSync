@@ -236,8 +236,9 @@ def _get_current_prices(hass: HomeAssistant, entry_id: str) -> tuple[float | Non
                 # Amber perKwh is in cents → convert to $/kWh
                 buy_dollar = buy_cents / 100.0
                 sell_dollar = (sell_cents / 100.0) if sell_cents is not None else 0.0
-                # Feed-in prices from Amber are negative (credit) → use absolute value
-                return (buy_dollar, abs(sell_dollar))
+                # Amber feedIn: negative = you earn, positive = you pay to export
+                # Negate so sell_price is positive when earning, negative when paying
+                return (buy_dollar, -sell_dollar)
 
         # Fall back to tariff schedule (TOU rates)
         tariff_schedule = entry_data.get("tariff_schedule")
@@ -1139,8 +1140,9 @@ class AmberUsageCoordinator:
             for iv in channels.get("feedIn", []):
                 kwh = abs(iv.get("kwh", 0))
                 export_kwh += kwh
-                # Amber cost for feedIn is negative when earning (cents → dollars)
-                export_earnings += abs(iv.get("cost", 0)) / 100
+                # Amber feedIn cost: negative = you earned, positive = you paid to export
+                # Negate so earnings are positive when earning, negative when paying
+                export_earnings += -iv.get("cost", 0) / 100
                 qualities.add(iv.get("quality", "estimated"))
 
             for iv in channels.get("controlledLoad", []):
