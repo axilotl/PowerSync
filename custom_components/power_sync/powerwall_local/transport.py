@@ -417,7 +417,9 @@ class TEDAPIv1rTransport:
                 if teg_field == "setIslandModeResponse":
                     result = reply.teg.setIslandModeResponse.result
                     _LOGGER.info("set_island_mode response: result=%s", result)
-                    return result == 0
+                    # Tesla uses result=1 for success (protobuf default 0
+                    # means "unset"). Accept any non-negative result as OK.
+                    return result >= 0
             _LOGGER.warning(
                 "set_island_mode: unexpected response payload (no setIslandModeResponse)"
             )
