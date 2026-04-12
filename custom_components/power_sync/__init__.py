@@ -21912,6 +21912,15 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         except Exception as e:
             _LOGGER.error(f"Error stopping WebSocket client: {e}")
 
+    # Stop Tesla signaling WebSocket if it exists
+    pw_local = entry_data.get("powerwall_local", {})
+    if signaling := pw_local.get("signaling"):
+        try:
+            await signaling.stop()
+            _LOGGER.info("Tesla signaling WebSocket stopped")
+        except Exception as e:
+            _LOGGER.error(f"Error stopping Tesla signaling WebSocket: {e}")
+
     # Flush energy accumulator so the next restore has the latest values
     # (prevents total_increasing sensors from going backwards after reload)
     for coord_key in ("tesla_coordinator", "sigenergy_coordinator", "sungrow_coordinator",

@@ -277,6 +277,78 @@ class TEDAPIv1rTransport:
         inner = resp_msg.protobuf_message_as_bytes
         return TEDAPIResponse(True, inner if inner else None)
 
+    def build_signed_bytes(self, envelope_bytes: bytes, din: str) -> bytes:
+        """Build a signed ``RoutableMessage`` and return the raw bytes.
+
+        Same signing as ``post_v1r`` but returns the serialized protobuf
+        instead of posting locally. The caller can base64-encode these
+        bytes and send them through the cloud ``device_command`` endpoint
+        as ``energy_device_message``.
+        """
+        routable = combined_pb2.RoutableMessage()
+        routable.to_destination.domain = combined_pb2.DOMAIN_ENERGY_DEVICE
+        routable.protobuf_message_as_bytes = envelope_bytes
+        routable.uuid = str(uuid.uuid4()).encode()
+
+        expires_at = math.ceil(time.time()) + _SIGNATURE_TTL_SECONDS
+        tlv = self._build_tlv_payload(
+            din, expires_at, routable.protobuf_message_as_bytes
+        )
+        signature = self._sign(tlv)
+
+        routable.signature_data.signer_identity.public_key = self._public_key_der
+        routable.signature_data.rsa_data.expires_at = expires_at
+        routable.signature_data.rsa_data.signature = signature
+
+        return routable.SerializeToString()
+
+    def build_signed_raw_command(self, din: str, raw_bytes: bytes) -> bytes:
+        """Wrap arbitrary raw bytes in a signed RoutableMessage.
+
+        Used when the command protobuf format is different from the
+        TEGMessages schema (e.g. the captured device_command protobufs
+        from the Tesla app).
+        """
+        return self.build_signed_bytes(raw_bytes, din)
+
+    def build_signed_trigger_islanding(self, din: str) -> bytes:
+        """Build a signed ``triggerIslandingBlackStartRequest`` for cloud relay.
+
+        This is the actual contactor-open command. ``setIslandModeRequest``
+        sets the mode preference; this command physically opens the grid
+        contactor.
+        """
+        from . import tesla_local_pb2 as tp
+
+        env = tp.MessageEnvelope()
+        env.deliveryChannel = 2  # HERMES_COMMAND
+        env.sender.authorizedClient = 1  # CUSTOMER_MOBILE_APP
+        env.recipient.din = din
+        env.teg.triggerIslandingBlackStartRequest.SetInParent()
+
+        return self.build_signed_bytes(env.SerializeToString(), din)
+
+    def build_signed_island_mode(self, din: str, *, off_grid: bool) -> bytes:
+        """Build a signed island-mode ``RoutableMessage`` for cloud relay.
+
+        Returns base64-ready bytes that can be sent as
+        ``energy_device_message`` in a ``device_command`` call.
+        """
+        from . import tesla_local_pb2 as tp
+
+        # Mode 6 = off-grid, Mode 1 = on-grid (reconnect).
+        # Discovered via mitmproxy of Tesla app — mode=2 gets accepted
+        # but doesn't physically island; mode=6 is what the app sends.
+        mode = 6 if off_grid else 1
+        env = tp.MessageEnvelope()
+        env.deliveryChannel = 2  # HERMES_COMMAND for cloud relay
+        env.sender.authorizedClient = 1  # CUSTOMER_MOBILE_APP
+        env.recipient.din = din
+        env.teg.setIslandModeRequest.mode = mode
+        env.teg.setIslandModeRequest.force = False
+
+        return self.build_signed_bytes(env.SerializeToString(), din)
+
     async def read_config(self, din: str) -> dict[str, Any] | None:
         """Read ``config.json`` from the gateway via FileStore readFileRequest."""
         msg = combined_pb2.Message()
