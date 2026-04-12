@@ -26,6 +26,7 @@ class BatteryAction(Enum):
     DISCHARGE = "discharge"  # Legacy - generic discharge
     CONSUME = "consume"      # Battery -> Home load (powering home)
     EXPORT = "export"        # Battery -> Grid (exporting to grid)
+    OFF_GRID = "off_grid"    # Physically disconnect from grid (contactor open)
 
 
 class CostFunction(Enum):

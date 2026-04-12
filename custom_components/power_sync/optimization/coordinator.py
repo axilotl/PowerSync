@@ -202,6 +202,10 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # IDLE modifies it. Used as the authoritative restore value.
         self._startup_backup_reserve: int | None = None
         self._idle_reserve_adjustment: bool = False  # True while IDLE is setting backup_reserve (suppresses persistence)
+
+        # Off-grid curtailment hysteresis (mirrors _idle_sc_holdoff pattern)
+        self._offgrid_entry_holdoff: int = 0   # Consecutive OFF_GRID decisions before activating
+        self._offgrid_exit_holdoff: int = 0    # Consecutive non-OFF_GRID decisions before reconnecting
         self._charge_holdoff: int = 0  # Hysteresis for entering CHARGE (require 2 consecutive)
 
         # Background task handles (for cancellation on disable)
@@ -565,6 +569,32 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             except Exception as e:
                 _LOGGER.warning("Failed to restore work mode on enable: %s", e)
 
+        # Safety: if the Powerwall was left off-grid from a prior session
+        # (e.g. HA crashed while off-grid curtailment was active), reconnect
+        # so the optimizer starts from a clean on-grid state.
+        if self._should_apply_offgrid_overlay() and not _monitoring and not _force_active:
+            try:
+                from ..powerwall_local.curtailment_fallback import get_fallback
+                fallback = get_fallback(self.hass, self._entry)
+                if not fallback._active:
+                    # No active curtailment session — check actual grid state
+                    from ..const import DOMAIN as _STARTUP_OG_DOMAIN
+                    _og_data = self.hass.data.get(_STARTUP_OG_DOMAIN, {}).get(self.entry_id, {})
+                    _pw_local = _og_data.get("powerwall_local", {})
+                    _coord = _pw_local.get("coordinator")
+                    if _coord and _coord.data and hasattr(_coord.data, "grid_status"):
+                        gs = _coord.data.grid_status or ""
+                        if "island" in gs.lower():
+                            _LOGGER.warning(
+                                "Optimizer startup: Powerwall is off-grid "
+                                "(grid_status=%s) without active curtailment "
+                                "session — reconnecting",
+                                gs,
+                            )
+                            await fallback.release(trigger_reason="startup_orphan_cleanup")
+            except Exception as e:
+                _LOGGER.debug("Optimizer startup: off-grid orphan check failed: %s", e)
+
     async def disable(self) -> None:
         """Disable optimization."""
         if not self._enabled:
@@ -773,6 +803,14 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._last_optimizer_result = result
             self._current_schedule = result.schedule
             self._last_update_time = dt_util.now()
+
+            # Apply off-grid curtailment overlay if enabled — converts
+            # eligible SELF_CONSUMPTION/IDLE slots to OFF_GRID during
+            # negative export price periods.
+            if self._should_apply_offgrid_overlay():
+                self._current_schedule = self._apply_offgrid_overlay(
+                    self._current_schedule, export_prices,
+                )
 
             # Store forecast data for LP forecast sensors
             self._has_solar_forecast = solar_forecast is not None and any(v > 0 for v in (solar_forecast or []))
@@ -1012,6 +1050,38 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # Self-consumption lets the battery discharge to cover home load,
             # minimizing grid import during the demand window.
             effective_action = action.action
+
+            # --- Off-grid transition handling ---
+            # If we're currently off-grid and the new action needs the grid,
+            # reconnect FIRST. The contactor takes a few seconds to close.
+            if self._last_executed_action == "off_grid" and effective_action != "off_grid":
+                _LOGGER.info(
+                    "Optimizer: transitioning from OFF_GRID → %s — "
+                    "reconnecting grid first",
+                    effective_action,
+                )
+                try:
+                    from ..powerwall_local.curtailment_fallback import get_fallback
+                    fallback = get_fallback(self.hass, self._entry)
+                    reconnected = await fallback.release(
+                        trigger_reason="optimizer_reconnect"
+                    )
+                    if not reconnected:
+                        _LOGGER.error(
+                            "Optimizer: failed to reconnect grid — "
+                            "staying off-grid, skipping %s",
+                            effective_action,
+                        )
+                        return
+                except Exception as err:
+                    _LOGGER.error(
+                        "Optimizer: reconnect error: %s — skipping %s",
+                        err, effective_action,
+                    )
+                    return
+                # Brief pause for contactor to close
+                import asyncio
+                await asyncio.sleep(3)
 
             # Skip charge/export actions during suspected calibration
             from ..const import DOMAIN as _CAL_DOMAIN
@@ -1461,19 +1531,68 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     _LOGGER.info("Optimizer: IDLE — self-consumption (no set_backup_reserve)")
                 elif hasattr(battery, "restore_normal"):
                     await battery.restore_normal()
+            elif effective_action == "off_grid":
+                # Off-grid curtailment: physically disconnect from grid.
+                # Delegates to CurtailmentFallback which enforces SOC floor,
+                # daily duration cap, and pairing checks.
+                #
+                # Hysteresis: require 2 consecutive OFF_GRID decisions
+                # before actually going off-grid (avoids contactor cycling
+                # from price noise). Immediate activation if already off-grid.
+                if self._last_executed_action == "off_grid":
+                    # Already off-grid — stay there
+                    _LOGGER.debug("Optimizer: OFF_GRID — already off-grid, holding")
+                else:
+                    # Go off-grid — no entry holdoff, the overlay already
+                    # requires 3 consecutive eligible slots (15 min) before
+                    # marking as OFF_GRID so the decision is pre-validated.
+                    try:
+                        from ..powerwall_local.curtailment_fallback import get_fallback
+                        fallback = get_fallback(self.hass, self._entry)
+                        ok = await fallback.activate(reason="optimizer_offgrid")
+                        if not ok:
+                            _LOGGER.info(
+                                "Optimizer: OFF_GRID refused by safety gates "
+                                "(SOC floor / daily cap) — using self_consumption"
+                            )
+                            effective_action = "self_consumption"
+                            if hasattr(battery, "set_self_consumption_mode"):
+                                await battery.set_self_consumption_mode()
+                        else:
+                            _LOGGER.info(
+                                "Optimizer: OFF_GRID — physically disconnected from grid"
+                            )
+                    except Exception as err:
+                        _LOGGER.error("Optimizer: OFF_GRID activation error: %s", err)
+                        effective_action = "self_consumption"
+
             else:
                 # self_consumption or consume — let battery operate naturally.
                 # Do NOT set backup_reserve here — self_consumption should be
                 # able to run all the way to 0% (powering the home naturally).
                 # The backup_reserve floor only applies to optimizer-controlled
                 # discharge/export (force_discharge to grid).
-                if self._last_executed_action == "self_consumption":
-                    _LOGGER.debug("Optimizer: Already in self-consumption mode — skipping redundant API call")
-                elif hasattr(battery, "set_self_consumption_mode"):
-                    await battery.set_self_consumption_mode()
-                elif hasattr(battery, "restore_normal"):
-                    await battery.restore_normal()
-                _LOGGER.debug("Optimizer: Self-consumption mode (action=%s)", effective_action)
+                #
+                # Off-grid exit hysteresis: if coming from off_grid, require
+                # 3 consecutive non-off_grid decisions before reconnecting.
+                # Charge/export exit immediately (handled by reconnect block
+                # at the top of this method).
+                # Off-grid exit is handled by the reconnect transition
+                # block at the top of this method — no additional holdoff
+                # needed since the overlay already pre-validated run length.
+
+                if effective_action != "off_grid":
+                    if self._last_executed_action == "self_consumption":
+                        _LOGGER.debug("Optimizer: Already in self-consumption mode — skipping redundant API call")
+                    elif hasattr(battery, "set_self_consumption_mode"):
+                        await battery.set_self_consumption_mode()
+                    elif hasattr(battery, "restore_normal"):
+                        await battery.restore_normal()
+                    _LOGGER.debug("Optimizer: Self-consumption mode (action=%s)", effective_action)
+
+            # Reset off-grid holdoffs when action is not off_grid related
+            if effective_action not in ("off_grid",):
+                self._offgrid_entry_holdoff = 0
 
             self._last_executed_action = effective_action
 
@@ -3026,6 +3145,148 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return 0
         elapsed = (dt_util.now() - self._last_update_time).total_seconds()
         return max(0, int(elapsed / (self._config.interval_minutes * 60)))
+
+    # ------------------------------------------------------------------
+    # Off-grid curtailment overlay
+    # ------------------------------------------------------------------
+
+    # Minimum consecutive eligible slots (5 min each) before going off-grid.
+    # 3 slots = 15 minutes — prevents short contactor cycles.
+    _OFFGRID_MIN_CONSECUTIVE = 3
+    # Export price threshold ($/kWh). Below this, export has negative or
+    # negligible value and off-grid curtailment is beneficial.
+    _OFFGRID_EXPORT_THRESHOLD = 0.01  # 1c/kWh
+
+    def _should_apply_offgrid_overlay(self) -> bool:
+        """Check if off-grid curtailment overlay should be applied."""
+        from ..const import (
+            CONF_POWERWALL_OFFGRID_AS_CURTAILMENT,
+            CONF_POWERWALL_LOCAL_PAIRED,
+            DEFAULT_POWERWALL_OFFGRID_AS_CURTAILMENT,
+        )
+        if not self._entry:
+            return False
+        entry = self._entry
+        enabled = entry.options.get(
+            CONF_POWERWALL_OFFGRID_AS_CURTAILMENT,
+            entry.data.get(
+                CONF_POWERWALL_OFFGRID_AS_CURTAILMENT,
+                DEFAULT_POWERWALL_OFFGRID_AS_CURTAILMENT,
+            ),
+        )
+        paired = entry.data.get(CONF_POWERWALL_LOCAL_PAIRED, False)
+        battery_type = entry.data.get("battery_system", "")
+        return bool(enabled and paired and battery_type == "tesla")
+
+    def _apply_offgrid_overlay(
+        self,
+        schedule: list,
+        export_prices: list[float],
+    ) -> list:
+        """Post-LP overlay: mark eligible slots as OFF_GRID.
+
+        A slot is eligible when:
+          - export_price < threshold (negative/zero value export)
+          - LP action is self_consumption or idle (grid not actively needed)
+          - projected SOC stays above the off-grid curtailment floor
+
+        Only marks contiguous runs of >= _OFFGRID_MIN_CONSECUTIVE slots.
+        Inserts a reconnect buffer (self_consumption) before any CHARGE
+        slot that follows an off-grid run.
+        """
+        from ..const import (
+            CONF_POWERWALL_OFFGRID_CURTAILMENT_MIN_SOC,
+            DEFAULT_POWERWALL_OFFGRID_CURTAILMENT_MIN_SOC,
+        )
+        if not schedule or not export_prices:
+            return schedule
+
+        soc_floor = (
+            self._entry.options.get(
+                CONF_POWERWALL_OFFGRID_CURTAILMENT_MIN_SOC,
+                self._entry.data.get(
+                    CONF_POWERWALL_OFFGRID_CURTAILMENT_MIN_SOC,
+                    DEFAULT_POWERWALL_OFFGRID_CURTAILMENT_MIN_SOC,
+                ),
+            )
+            if self._entry
+            else DEFAULT_POWERWALL_OFFGRID_CURTAILMENT_MIN_SOC
+        )
+
+        n = min(len(schedule), len(export_prices))
+
+        # Step 1: flag each slot as eligible
+        eligible = []
+        for t in range(n):
+            action = schedule[t]
+            act = action.action if hasattr(action, "action") else str(action)
+            price = export_prices[t] if t < len(export_prices) else 1.0
+            soc = action.soc if hasattr(action, "soc") else None
+
+            is_eligible = (
+                price < self._OFFGRID_EXPORT_THRESHOLD
+                and act in ("self_consumption", "idle")
+                and (soc is None or soc >= soc_floor)
+            )
+            eligible.append(is_eligible)
+
+        # Step 2: find contiguous runs of eligible slots
+        # and mark them as off_grid if long enough
+        result = list(schedule)
+        t = 0
+        while t < n:
+            if not eligible[t]:
+                t += 1
+                continue
+            # Find the end of this eligible run
+            run_start = t
+            while t < n and eligible[t]:
+                t += 1
+            run_end = t  # exclusive
+            run_length = run_end - run_start
+
+            if run_length < self._OFFGRID_MIN_CONSECUTIVE:
+                continue  # Too short — skip
+
+            # Check if a CHARGE slot follows — need reconnect buffer
+            next_action = ""
+            if run_end < len(schedule):
+                a = schedule[run_end]
+                next_action = a.action if hasattr(a, "action") else str(a)
+
+            # Mark slots as off_grid
+            mark_end = run_end
+            if next_action == "charge" and run_length > 1:
+                # Leave last slot as self_consumption (reconnect buffer)
+                mark_end = run_end - 1
+
+            for i in range(run_start, mark_end):
+                slot = result[i]
+                if hasattr(slot, "action"):
+                    # ScheduleAction dataclass — create a copy with new action
+                    from .schedule_reader import ScheduleAction
+                    result[i] = ScheduleAction(
+                        timestamp=slot.timestamp,
+                        action="off_grid",
+                        power_w=slot.power_w,
+                        soc=slot.soc,
+                        battery_charge_w=slot.battery_charge_w,
+                        battery_discharge_w=slot.battery_discharge_w,
+                    )
+
+        offgrid_count = sum(
+            1
+            for s in result
+            if (hasattr(s, "action") and s.action == "off_grid")
+        )
+        if offgrid_count > 0:
+            _LOGGER.info(
+                "Off-grid overlay: marked %d/%d slots as OFF_GRID "
+                "(export threshold=%.1fc, SOC floor=%d%%)",
+                offgrid_count, n, self._OFFGRID_EXPORT_THRESHOLD * 100, soc_floor,
+            )
+
+        return result
 
     def _track_actual_cost(self) -> None:
         """Track actual electricity cost using real elapsed time.

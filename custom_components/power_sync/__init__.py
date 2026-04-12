@@ -13779,7 +13779,26 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             # where the Powerwall off-grid fallback is most useful. Users
             # running an unsupported inverter brand (or no inverter at all)
             # get curtailment-via-islanding if they have opted in.
-            if curtail:
+            #
+            # If the LP optimizer is enabled and owns off-grid decisions,
+            # skip the independent fallback — the optimizer handles off-grid
+            # timing as part of its schedule to avoid conflicts with
+            # charge/discharge planning.
+            _opt_coord = entry_data.get("optimization_coordinator")
+            _optimizer_owns_offgrid = (
+                _opt_coord
+                and getattr(_opt_coord, "enabled", False)
+                and entry.options.get(
+                    CONF_POWERWALL_OFFGRID_AS_CURTAILMENT,
+                    entry.data.get(CONF_POWERWALL_OFFGRID_AS_CURTAILMENT, False),
+                )
+                and entry.data.get("battery_system") == "tesla"
+            )
+            if _optimizer_owns_offgrid:
+                _LOGGER.debug(
+                    "Skipping independent off-grid trigger — optimizer owns off-grid decisions"
+                )
+            elif curtail:
                 fallback_ok = await _powerwall_curtailment_fallback(True, fallback_reason)
                 if fallback_ok:
                     _LOGGER.info(

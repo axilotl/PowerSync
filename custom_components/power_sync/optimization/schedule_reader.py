@@ -15,7 +15,7 @@ from typing import Any
 class ScheduleAction:
     """Single action in the optimization schedule."""
     timestamp: datetime
-    action: str  # "idle", "charge", "discharge", "consume", "export", "self_consumption"
+    action: str  # "idle", "charge", "discharge", "consume", "export", "self_consumption", "off_grid"
     power_w: float
     soc: float | None = None
     battery_charge_w: float = 0.0
