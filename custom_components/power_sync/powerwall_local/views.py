@@ -491,6 +491,164 @@ class PowerwallLocalStatusView(HomeAssistantView):
         )
 
 
+class PowerwallDiscoverView(HomeAssistantView):
+    """GET a list of candidate Powerwall gateway IPs from Home Assistant's mDNS.
+
+    Tesla gateways advertise themselves as ``_teslapowerwall._tcp`` on the
+    local network. HA has a built-in zeroconf browser that maintains a live
+    cache of service advertisements — we query that cache (no network
+    traffic of our own) and return the candidates to the mobile app so the
+    pairing wizard can offer a "Detect Gateway" button instead of forcing
+    the user to dig through their router's DHCP client list.
+
+    Results are best-effort: an empty list just means the browser hasn't
+    seen the gateway advertise yet. Many routers drop mDNS between
+    subnets, so a user with a guest / IoT VLAN may need to enter the IP
+    manually anyway.
+    """
+
+    url = "/api/power_sync/powerwall/discover"
+    name = "api:power_sync:powerwall:discover"
+    requires_auth = True
+
+    def __init__(self, hass: HomeAssistant) -> None:
+        self._hass = hass
+
+    async def get(self, request: web.Request) -> web.Response:
+        candidates: list[dict[str, Any]] = []
+        try:
+            # Lazy import so the module still loads on HA installs that
+            # somehow have zeroconf disabled.
+            from homeassistant.components.zeroconf import async_get_instance
+
+            aiozc = await async_get_instance(self._hass)
+            zc = aiozc.zeroconf
+            # Tesla gateways advertise under several service types across
+            # firmware generations — check the common ones.
+            service_types = [
+                "_teslapowerwall._tcp.local.",
+                "_teslanterstudio._tcp.local.",
+            ]
+            for service_type in service_types:
+                infos = zc.cache.entries_with_name(service_type) or []
+                for info in infos:
+                    try:
+                        name = getattr(info, "name", None) or getattr(info, "alias", None)
+                        if not name:
+                            continue
+                        service_info = zc.get_service_info(service_type, name, timeout=500)
+                        if service_info is None:
+                            continue
+                        addresses = []
+                        try:
+                            addresses = service_info.parsed_addresses() or []
+                        except Exception:
+                            pass
+                        for addr in addresses:
+                            candidates.append(
+                                {
+                                    "ip": addr,
+                                    "name": name,
+                                    "port": service_info.port,
+                                    "service_type": service_type,
+                                }
+                            )
+                    except Exception:
+                        # Don't let one bad record break the whole browse.
+                        continue
+        except Exception as err:
+            _LOGGER.debug("Gateway mDNS discover failed: %s", err)
+
+        # Dedupe by IP — multiple service types can advertise the same host.
+        seen_ips: set[str] = set()
+        deduped = []
+        for c in candidates:
+            if c["ip"] in seen_ips:
+                continue
+            seen_ips.add(c["ip"])
+            deduped.append(c)
+
+        return web.json_response(
+            {"success": True, "candidates": deduped}
+        )
+
+
+class PowerwallSafetyConfigView(HomeAssistantView):
+    """GET/POST the manual off-grid SOC floor.
+
+    Separate from ``curtailment_fallback`` because the manual floor applies
+    to the always-available ``power_sync.powerwall_go_off_grid`` service
+    and the Battery Setup "Go Off-Grid" button — not the opt-in curtailment
+    fallback path. Keeping them on different endpoints makes the mental
+    model clearer: one knob for "how low can I let the battery get when I
+    deliberately go off-grid", one knob for "how low can I let it get when
+    PowerSync automatically goes off-grid to block excess export".
+    """
+
+    url = "/api/power_sync/powerwall/safety_config"
+    name = "api:power_sync:powerwall:safety_config"
+    requires_auth = True
+
+    def __init__(self, hass: HomeAssistant) -> None:
+        self._hass = hass
+
+    async def get(self, request: web.Request) -> web.Response:
+        entry = _get_entry(self._hass)
+        if entry is None:
+            return web.json_response(
+                {"success": False, "error": "PowerSync not configured"},
+                status=503,
+            )
+        min_soc = int(
+            entry.options.get(
+                CONF_POWERWALL_OFF_GRID_MIN_SOC,
+                entry.data.get(
+                    CONF_POWERWALL_OFF_GRID_MIN_SOC,
+                    DEFAULT_POWERWALL_OFF_GRID_MIN_SOC,
+                ),
+            )
+        )
+        return web.json_response(
+            {
+                "success": True,
+                "off_grid_min_soc": min_soc,
+            }
+        )
+
+    async def post(self, request: web.Request) -> web.Response:
+        entry = _get_entry(self._hass)
+        if entry is None:
+            return web.json_response(
+                {"success": False, "error": "PowerSync not configured"},
+                status=503,
+            )
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if "off_grid_min_soc" not in body:
+            return web.json_response(
+                {"success": False, "error": "off_grid_min_soc required"},
+                status=400,
+            )
+        try:
+            v = int(body["off_grid_min_soc"])
+        except (TypeError, ValueError):
+            return web.json_response(
+                {"success": False, "error": "off_grid_min_soc must be an integer"},
+                status=400,
+            )
+        # Hard clamp to the safe range — 0% would let the user fully drain
+        # the battery, 90% would make the feature useless.
+        clamped = max(5, min(90, v))
+        new_options = dict(entry.options)
+        new_options[CONF_POWERWALL_OFF_GRID_MIN_SOC] = clamped
+        self._hass.config_entries.async_update_entry(entry, options=new_options)
+        return web.json_response(
+            {"success": True, "off_grid_min_soc": clamped}
+        )
+
+
 class PowerwallCurtailmentFallbackView(HomeAssistantView):
     """GET/POST the Powerwall off-grid curtailment fallback config + status.
 
@@ -606,4 +764,6 @@ def register_views(hass: HomeAssistant) -> None:
     hass.http.register_view(PowerwallPairUnpairView(hass))
     hass.http.register_view(PowerwallOffGridView(hass))
     hass.http.register_view(PowerwallLocalStatusView(hass))
+    hass.http.register_view(PowerwallSafetyConfigView(hass))
     hass.http.register_view(PowerwallCurtailmentFallbackView(hass))
+    hass.http.register_view(PowerwallDiscoverView(hass))

@@ -15,9 +15,16 @@ from typing import Any
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from ..const import POWERWALL_LOCAL_POLL_INTERVAL
+from ..const import (
+    CONF_POWERWALL_LOCAL_PAIRED,
+    POWERWALL_LOCAL_POLL_INTERVAL,
+)
 from .client import PowerwallLocalClient, PowerwallSnapshot
-from .exceptions import PowerwallLocalError, PowerwallUnreachableError
+from .exceptions import (
+    PowerwallLocalError,
+    PowerwallSignatureError,
+    PowerwallUnreachableError,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -39,8 +46,17 @@ class PowerwallLocalCoordinator(DataUpdateCoordinator[PowerwallSnapshot | None])
             update_interval=timedelta(seconds=POWERWALL_LOCAL_POLL_INTERVAL),
         )
         self._client = client
+        self._entry_id = entry_id
         self._consecutive_failures = 0
         self._last_success_ts: float | None = None
+        # Flips True when the gateway rejects our RSA signature — ie the
+        # user revoked the key from the Tesla app or did a factory reset.
+        # Surfaces via the app banner and a re-pair push notification.
+        self._needs_repair = False
+
+    @property
+    def needs_repair(self) -> bool:
+        return self._needs_repair
 
     @property
     def client(self) -> PowerwallLocalClient:
@@ -62,6 +78,16 @@ class PowerwallLocalCoordinator(DataUpdateCoordinator[PowerwallSnapshot | None])
     async def _async_update_data(self) -> PowerwallSnapshot | None:
         try:
             snap = await self._client.get_snapshot()
+        except PowerwallSignatureError as err:
+            # Gateway no longer recognises our RSA key — usually means the
+            # user revoked it from the Tesla app, or the gateway was
+            # factory-reset. Flip the paired flag off so the re-pair banner
+            # shows in the mobile app, fire a push notification once, and
+            # stop trying to poll.
+            if not self._needs_repair:
+                self._needs_repair = True
+                await self._handle_key_rejected(err)
+            raise UpdateFailed(f"Powerwall key rejected: {err}") from err
         except PowerwallUnreachableError as err:
             self._consecutive_failures += 1
             if self._consecutive_failures <= 3:
@@ -81,6 +107,41 @@ class PowerwallLocalCoordinator(DataUpdateCoordinator[PowerwallSnapshot | None])
         self._consecutive_failures = 0
         return snap
 
+    async def _handle_key_rejected(self, err: Exception) -> None:
+        """Mark the entry as unpaired and prompt the user to re-pair.
+
+        Runs once per rejection event. Updates ``entry.data`` so the
+        binary_sensor.powerwall_local_paired flips off, which in turn hides
+        the Local Control dashboard card and surfaces the re-pair banner
+        in the Battery Setup screen. Fires a push notification so the
+        user knows why their local control just stopped working.
+        """
+        _LOGGER.warning(
+            "Powerwall gateway rejected our RSA key — marking entry as needs-repair: %s",
+            err,
+        )
+        # Walk the config entries to find the one we belong to. We cached
+        # entry_id at construction so this lookup is O(1).
+        for entry in self.hass.config_entries.async_entries():
+            if entry.entry_id != self._entry_id:
+                continue
+            new_data = {**entry.data}
+            new_data[CONF_POWERWALL_LOCAL_PAIRED] = False
+            self.hass.config_entries.async_update_entry(entry, data=new_data)
+            break
+        try:
+            from ..automations.actions import _send_expo_push
+
+            await _send_expo_push(
+                self.hass,
+                "🔒 Powerwall Re-pair Required",
+                "Your Powerwall gateway no longer recognises PowerSync's "
+                "local control key. Open Battery Setup and tap Pair Gateway "
+                "to restore direct LAN control.",
+            )
+        except Exception as push_err:
+            _LOGGER.debug("Re-pair push notification failed: %s", push_err)
+
     def snapshot_as_api(self) -> dict[str, Any]:
         """Shape the snapshot into an app-friendly dict."""
         snap = self.data
@@ -89,11 +150,13 @@ class PowerwallLocalCoordinator(DataUpdateCoordinator[PowerwallSnapshot | None])
                 "available": False,
                 "reachable": self.reachable,
                 "last_success_ts": self._last_success_ts,
+                "needs_repair": self._needs_repair,
             }
         return {
             "available": True,
             "reachable": True,
             "last_success_ts": self._last_success_ts,
+            "needs_repair": self._needs_repair,
             "soc_percent": snap.soc,
             "solar_w": snap.solar_w,
             "battery_w": snap.battery_w,

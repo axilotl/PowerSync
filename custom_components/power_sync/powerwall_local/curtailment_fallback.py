@@ -190,6 +190,24 @@ class PowerwallCurtailmentFallback:
             await coord.async_request_refresh()
         except Exception:  # non-fatal
             pass
+        # Fire a push notification so the user knows their Powerwall just
+        # went off-grid automatically. Best-effort — never block activation.
+        try:
+            from ..automations.actions import _send_expo_push
+
+            pretty_reason = {
+                "negative_price": "negative export price",
+                "negative_import_price": "negative import price",
+                "negative_export_earnings": "negative export earnings",
+            }.get(reason, reason)
+            await _send_expo_push(
+                self._hass,
+                "⚡ Powerwall Off-Grid",
+                f"Disconnected from grid to block excess export "
+                f"({pretty_reason}). SOC {soc_val:.0f}%.",
+            )
+        except Exception as err:
+            _LOGGER.debug("Off-grid activation push failed: %s", err)
         return True
 
     async def release(self, trigger_reason: str | None = None) -> bool:
@@ -236,18 +254,30 @@ class PowerwallCurtailmentFallback:
         self._active = False
         self._started_at = None
         self._reason = None
+        session_s = int(time.time() - (prev_started or time.time()))
         _LOGGER.info(
             "⚡ Powerwall off-grid curtailment RELEASED (was reason=%s, "
             "trigger=%s, session=%ss, daily=%ss)",
             prev_reason,
             trigger_reason,
-            int(time.time() - (prev_started or time.time())),
+            session_s,
             int(self._daily_duration_s),
         )
         try:
             await coord.async_request_refresh()
         except Exception:
             pass
+        try:
+            from ..automations.actions import _send_expo_push
+
+            minutes = max(1, abs(session_s) // 60)
+            await _send_expo_push(
+                self._hass,
+                "⚡ Powerwall Back On-Grid",
+                f"Reconnected after {minutes}m off-grid curtailment.",
+            )
+        except Exception as err:
+            _LOGGER.debug("Off-grid release push failed: %s", err)
         return True
 
     # ── Internal gates ──────────────────────────────────────────────
