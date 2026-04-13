@@ -51,6 +51,13 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
+# SOC threshold for automated off-grid trigger. Only curtail when the
+# battery is essentially full — below this, charging the battery from
+# cheap/free solar is more valuable than islanding. The user-configurable
+# floor (CONF_POWERWALL_OFFGRID_CURTAILMENT_MIN_SOC) is the SAFETY floor
+# for emergency reconnect during an active session, not the trigger.
+_OFFGRID_FULL_SOC_THRESHOLD = 98.0
+
 CoordinatorGetter = Callable[[], "PowerwallLocalCoordinator | None"]
 
 
@@ -141,6 +148,16 @@ class PowerwallCurtailmentFallback:
                 "Curtailment fallback: skipped — SOC %s%% below floor %s%%",
                 soc_val,
                 floor,
+            )
+            return False
+        # Only trigger when battery is essentially full — otherwise the
+        # correct response to negative prices is to charge the battery,
+        # not to island and waste the cheap solar.
+        if soc_val is None or soc_val < _OFFGRID_FULL_SOC_THRESHOLD:
+            _LOGGER.debug(
+                "Curtailment fallback: skipped — SOC %s%% below full "
+                "threshold %s%% (charge the battery instead)",
+                soc_val, _OFFGRID_FULL_SOC_THRESHOLD,
             )
             return False
         if not self._within_daily_cap():

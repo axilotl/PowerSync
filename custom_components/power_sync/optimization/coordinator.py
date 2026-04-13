@@ -3161,6 +3161,10 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     # Export price threshold ($/kWh). Below this, export has negative or
     # negligible value and off-grid curtailment is beneficial.
     _OFFGRID_EXPORT_THRESHOLD = 0.01  # 1c/kWh
+    # SOC threshold for automated off-grid curtailment. Only trigger when
+    # the battery is essentially full — below this, we should CHARGE the
+    # battery from solar instead of wasting it by islanding.
+    _OFFGRID_FULL_SOC_THRESHOLD = 98.0  # %
 
     def _should_apply_offgrid_overlay(self) -> bool:
         """Check if off-grid curtailment overlay should be applied."""
@@ -3193,30 +3197,15 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         A slot is eligible when:
           - export_price < threshold (negative/zero value export)
           - LP action is self_consumption or idle (grid not actively needed)
-          - projected SOC stays above the off-grid curtailment floor
+          - projected SOC is at or above FULL threshold (battery can't
+            absorb more — otherwise we should charge instead of curtail)
 
         Only marks contiguous runs of >= _OFFGRID_MIN_CONSECUTIVE slots.
         Inserts a reconnect buffer (self_consumption) before any CHARGE
         slot that follows an off-grid run.
         """
-        from ..const import (
-            CONF_POWERWALL_OFFGRID_CURTAILMENT_MIN_SOC,
-            DEFAULT_POWERWALL_OFFGRID_CURTAILMENT_MIN_SOC,
-        )
         if not schedule or not export_prices:
             return schedule
-
-        soc_floor = (
-            self._entry.options.get(
-                CONF_POWERWALL_OFFGRID_CURTAILMENT_MIN_SOC,
-                self._entry.data.get(
-                    CONF_POWERWALL_OFFGRID_CURTAILMENT_MIN_SOC,
-                    DEFAULT_POWERWALL_OFFGRID_CURTAILMENT_MIN_SOC,
-                ),
-            )
-            if self._entry
-            else DEFAULT_POWERWALL_OFFGRID_CURTAILMENT_MIN_SOC
-        )
 
         n = min(len(schedule), len(export_prices))
 
@@ -3231,7 +3220,8 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             is_eligible = (
                 price < self._OFFGRID_EXPORT_THRESHOLD
                 and act in ("self_consumption", "idle")
-                and (soc is None or soc >= soc_floor)
+                and soc is not None
+                and soc >= self._OFFGRID_FULL_SOC_THRESHOLD
             )
             eligible.append(is_eligible)
 
