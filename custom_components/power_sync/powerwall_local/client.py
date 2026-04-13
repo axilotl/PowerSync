@@ -268,6 +268,11 @@ class PowerwallLocalClient:
         The PW2 Tesla app sends a signed get_backup_events_request before
         the actual unsigned island command. This establishes the cloud
         delivery path so the subsequent unsigned command reaches the gateway.
+
+        Uses build_signed_island_mode with mode=2 as a lightweight signed
+        message that the gateway will process. The important thing is that
+        the gateway receives and verifies a signed message from our key,
+        which wakes the cloud session for subsequent unsigned commands.
         """
         if not self._fleet_api_base or not self._fleet_api_token or not self._energy_site_id:
             return
@@ -276,18 +281,12 @@ class PowerwallLocalClient:
 
         import base64
         import aiohttp
-        from . import tesla_local_pb2 as tp
 
-        # Build a signed get_backup_events_request — same as Tesla app
-        env = tp.MessageEnvelope()
-        env.deliveryChannel = 2  # HERMES_COMMAND
-        env.sender.authorizedClient = 1
-        env.recipient.din = self._din
-        env.teg.getBackupEventsRequest.SetInParent()
-
+        # Send a signed setIslandModeRequest as the warm-up. The gateway
+        # will verify our RSA signature which establishes the delivery path.
         try:
-            signed_bytes = self._transport.build_signed_bytes(
-                env.SerializeToString(), self._din,
+            signed_bytes = self._transport.build_signed_island_mode(
+                self._din, off_grid=True, mode_override=2,
             )
         except Exception as err:
             _LOGGER.warning("signed_warmup: failed to build: %s", err)
