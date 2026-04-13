@@ -200,20 +200,35 @@ class PowerwallLocalClient:
     async def go_off_grid(self) -> bool:
         """Physically disconnect from the grid (contactor open).
 
-        PW3: signed RoutableMessage via device_command (mode=6).
-        PW2: unsigned energy_device_message via device_command ("MgQqAggC").
+        MITM capture of the Tesla app shows it sends both a signed
+        routable_message AND an unsigned energy_device_message for PW2.
+        PW3 only needs the signed routable_message.
 
-        Discovered via mitmproxy: PW2 uses energy_device_message (unsigned,
-        mode=2) while PW3 uses routable_message (RSA-signed, mode=6).
+        PW3: signed routable_message with mode=6
+        PW2: signed routable_message with mode=2, then unsigned
+             energy_device_message "MgQqAggC" as fallback
         """
-        # PW3: signed routable_message (requires RSA transport)
-        if self._version == PowerwallVersion.PW3 and self._din and self._transport:
-            _LOGGER.info("go_off_grid: PW3 signed device_command (mode=6)")
-            return await self._send_signed_device_command(off_grid=True)
+        if self._din and self._transport:
+            # PW2 uses mode=2, PW3 uses mode=6
+            mode = 2 if self._version == PowerwallVersion.PW2 else 6
+            _LOGGER.info(
+                "go_off_grid: signed device_command (mode=%d, %s)",
+                mode, self._version.value,
+            )
+            ok = await self._send_signed_device_command(
+                off_grid=True, mode_override=mode,
+            )
+            if ok:
+                return True
+            # PW2 fallback: unsigned energy_device_message
+            if self._version == PowerwallVersion.PW2:
+                _LOGGER.info("go_off_grid: PW2 fallback — unsigned energy_device_message")
+                return await self._send_device_command(off_grid=True)
+            return False
 
-        # PW2 (and PW3 fallback): unsigned energy_device_message
+        # No transport — try unsigned device_command
         if self._din:
-            _LOGGER.info("go_off_grid: unsigned device_command (energy_device_message)")
+            _LOGGER.info("go_off_grid: unsigned device_command (no transport)")
             return await self._send_device_command(off_grid=True)
 
         # Local REST fallback (requires installer auth on PW2).
@@ -228,14 +243,19 @@ class PowerwallLocalClient:
 
     async def reconnect_grid(self) -> bool:
         """Reconnect to the grid (contactor close)."""
-        # PW3: signed routable_message
-        if self._version == PowerwallVersion.PW3 and self._din and self._transport:
-            _LOGGER.info("reconnect_grid: PW3 signed device_command (mode=1)")
-            return await self._send_signed_device_command(off_grid=False)
+        if self._din and self._transport:
+            # Reconnect is mode=1 for both PW2 and PW3
+            _LOGGER.info("reconnect_grid: signed device_command (mode=1)")
+            ok = await self._send_signed_device_command(off_grid=False)
+            if ok:
+                return True
+            if self._version == PowerwallVersion.PW2:
+                _LOGGER.info("reconnect_grid: PW2 fallback — unsigned energy_device_message")
+                return await self._send_device_command(off_grid=False)
+            return False
 
-        # PW2 (and PW3 fallback): unsigned energy_device_message
         if self._din:
-            _LOGGER.info("reconnect_grid: unsigned device_command (energy_device_message)")
+            _LOGGER.info("reconnect_grid: unsigned device_command (no transport)")
             return await self._send_device_command(off_grid=False)
 
         body = {"island_mode": ISLAND_MODE_ONGRID}
@@ -362,13 +382,14 @@ class PowerwallLocalClient:
 
         return mode_ok
 
-    async def _send_signed_device_command(self, *, off_grid: bool) -> bool:
+    async def _send_signed_device_command(
+        self, *, off_grid: bool, mode_override: int | None = None,
+    ) -> bool:
         """Send a signed island-mode command via cloud ``device_command``.
 
-        Builds the same RSA-signed ``RoutableMessage`` we use for local
-        TEDAPI, but base64-encodes it and sends through the cloud
-        ``device_command`` endpoint as ``energy_device_message``. The
-        gateway should verify our RSA signature and execute the command.
+        Builds an RSA-signed ``RoutableMessage`` and sends through the
+        cloud ``device_command`` endpoint as ``routable_message``. The
+        gateway verifies our RSA signature from the paired key.
         """
         if not self._fleet_api_base or not self._fleet_api_token or not self._energy_site_id:
             return False
@@ -388,12 +409,11 @@ class PowerwallLocalClient:
             "Content-Type": "application/json",
         }
 
-        # Mode 6 = off-grid, Mode 1 = reconnect. Discovered via mitmproxy
-        # of the Tesla app — mode=2 was a red herring (accepted but didn't
-        # physically island). The Tesla app sends mode=6, force=false.
+        # PW3: mode=6 off-grid, mode=1 reconnect
+        # PW2: mode=2 off-grid, mode=1 reconnect
         try:
             signed_bytes = self._transport.build_signed_island_mode(
-                self._din, off_grid=off_grid,
+                self._din, off_grid=off_grid, mode_override=mode_override,
             )
         except Exception as err:
             _LOGGER.error("signed_device_command: failed to build signed bytes: %s", err)
