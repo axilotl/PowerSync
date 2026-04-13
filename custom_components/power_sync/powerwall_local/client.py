@@ -197,6 +197,92 @@ class PowerwallLocalClient:
             },
         )
 
+    async def verify_pairing(self) -> int | None:
+        """Check our key's state on the gateway via list_authorized_clients.
+
+        Returns the state integer (2=pending, 3=verified) or None if
+        we couldn't determine it. Matches on our specific public key.
+        """
+        if not self._fleet_api_base or not self._fleet_api_token or not self._energy_site_id:
+            return None
+
+        import base64
+        import aiohttp
+
+        # Get our public key base64 to match against the gateway's list
+        our_pubkey_b64: str | None = None
+        if self._transport is not None:
+            our_pubkey_b64 = base64.b64encode(
+                self._transport._public_key_der
+            ).decode()
+
+        url = (
+            f"{self._fleet_api_base}/api/1/energy_sites/"
+            f"{self._energy_site_id}/command"
+        )
+        headers = {
+            "Authorization": f"Bearer {self._fleet_api_token}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "command_type": "grpc_command",
+            "command_properties": {
+                "identifier_type": 1,
+                "message": {
+                    "authorization": {
+                        "list_authorized_clients_request": {}
+                    }
+                },
+            },
+        }
+
+        try:
+            async with aiohttp.ClientSession() as sess:
+                async with sess.post(
+                    url, json=payload, headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=15),
+                ) as resp:
+                    if resp.status != 200:
+                        return None
+                    data = await resp.json()
+        except Exception as err:
+            _LOGGER.warning("verify_pairing: request failed: %s", err)
+            return None
+
+        # Extract clients list from response
+        clients: list[dict] = []
+        try:
+            msg = data["response"]["message"]["Payload"]["Authorization"]["Message"]
+            for key in ("ListAuthorizedClientsResponse", "list_authorized_clients_response"):
+                if key in msg:
+                    clients = msg[key].get("clients") or msg[key].get("Clients") or []
+                    break
+        except (KeyError, TypeError):
+            try:
+                msg = data["response"]["message"]["payload"]["authorization"]["message"]
+                for key in ("ListAuthorizedClientsResponse", "list_authorized_clients_response"):
+                    if key in msg:
+                        clients = msg[key].get("clients") or msg[key].get("Clients") or []
+                        break
+            except (KeyError, TypeError):
+                return None
+
+        # Match our specific key
+        for client in clients:
+            pub = client.get("public_key") or client.get("Public_key", "")
+            state = client.get("state") or client.get("State")
+            if our_pubkey_b64 and pub == our_pubkey_b64:
+                _LOGGER.info(
+                    "verify_pairing: found our key — state=%s", state,
+                )
+                try:
+                    return int(state)
+                except (TypeError, ValueError):
+                    return None
+
+        _LOGGER.warning("verify_pairing: our key not found in %d clients", len(clients))
+        return None
+
     async def go_off_grid(self, *, mode_override: int | None = None) -> bool:
         """Physically disconnect from the grid (contactor open).
 
@@ -209,6 +295,20 @@ class PowerwallLocalClient:
         PW3 default mode=6, PW2 default mode=2. Use mode_override to
         test alternative mode values.
         """
+        # Verify our key is state=3 (verified) before attempting off-grid
+        key_state = await self.verify_pairing()
+        if key_state is not None and key_state != 3:
+            _LOGGER.error(
+                "go_off_grid: pairing key state=%d (not verified). "
+                "Toggle the DC isolator to complete pairing.",
+                key_state,
+            )
+            return False
+        if key_state is None:
+            _LOGGER.warning(
+                "go_off_grid: could not verify pairing state — proceeding anyway"
+            )
+
         # Determine default mode based on version
         if mode_override is not None:
             mode = mode_override
