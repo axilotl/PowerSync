@@ -344,7 +344,7 @@ class TEDAPIv1rTransport:
 
         mode = mode_override if mode_override is not None else (6 if off_grid else 1)
         env = tp.MessageEnvelope()
-        env.deliveryChannel = 1 if off_grid else 2  # LOCAL_HTTPS for off-grid
+        env.deliveryChannel = 2  # HERMES_COMMAND for cloud relay
         env.sender.authorizedClient = 1  # CUSTOMER_MOBILE_APP
         env.recipient.din = din
         env.teg.setIslandModeRequest.mode = mode
