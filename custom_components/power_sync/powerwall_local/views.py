@@ -153,12 +153,13 @@ async def _build_client(
     # Fleet API context for the device_command cloud path (off-grid/reconnect).
     fleet_token, fleet_base, fleet_site_id = _get_fleet_api_context(hass, entry)
 
-    # Build the signaling client for PW3 installs with a known DIN.
-    # The access token provider returns whatever token is available —
-    # psync_ proxy tokens work via the proxy's /hermes_jwt endpoint,
-    # real Tesla JWTs work via the Fleet API hermes exchange directly.
+    # Build the signaling client for installs with a known DIN.
+    # The signaling WebSocket establishes a cloud session with the
+    # gateway — required for device_command delivery on both PW2 and PW3.
+    # Without it, device_command reaches Tesla's cloud but has no path
+    # to relay to the gateway.
     signaling: TeslaSignalingClient | None = None
-    if version == PowerwallVersion.PW3 and din:
+    if din:
 
         async def _access_token_provider() -> str | None:
             token, _base, _site = _get_fleet_api_context(hass, entry)
