@@ -299,6 +299,14 @@ class PowerwallPairStartView(HomeAssistantView):
             new_data[CONF_POWERWALL_LOCAL_WIFI_PASSWORD] = wifi_password
         self._hass.config_entries.async_update_entry(entry, data=new_data)
 
+        # ----------------------------------------------------------
+        # PW2 fast path: no RSA signing needed — just validate local
+        # REST connectivity (login with customer password) and mark
+        # as paired immediately.
+        # ----------------------------------------------------------
+        if version == PowerwallVersion.PW2:
+            return await self._pair_pw2(entry, gateway_ip, customer_password)
+
         token, base, site_id = _get_fleet_api_context(self._hass, entry)
         if not token or not base:
             return web.json_response(
@@ -347,6 +355,73 @@ class PowerwallPairStartView(HomeAssistantView):
                 {"success": False, "error": str(err)}, status=409
             )
 
+        return web.json_response({"success": True, "status": status.to_dict()})
+
+    async def _pair_pw2(
+        self,
+        entry: ConfigEntry,
+        gateway_ip: str,
+        customer_password: str,
+    ) -> web.Response:
+        """PW2 simplified pairing: validate local REST login, mark paired.
+
+        PW2 off-grid uses a simple REST POST to the local gateway — no RSA
+        signing, no Fleet API key registration, no DC isolator toggle needed.
+        We just confirm the gateway is reachable and the customer password
+        works, then set CONF_POWERWALL_LOCAL_PAIRED so off-grid is unlocked.
+        """
+        from .client import _UnsignedRESTClient
+        from .exceptions import PowerwallAuthError, PowerwallUnreachableError
+
+        client = _UnsignedRESTClient(gateway_ip, customer_password)
+        try:
+            logged_in = await client.login()
+        except PowerwallAuthError as err:
+            _LOGGER.warning("PW2 pairing: auth failed for %s: %s", gateway_ip, err)
+            return web.json_response(
+                {"success": False, "error": f"Authentication failed: {err}"},
+                status=401,
+            )
+        except PowerwallUnreachableError as err:
+            _LOGGER.warning("PW2 pairing: unreachable %s: %s", gateway_ip, err)
+            return web.json_response(
+                {"success": False, "error": f"Gateway unreachable: {err}"},
+                status=502,
+            )
+
+        if not logged_in:
+            return web.json_response(
+                {"success": False, "error": "Gateway login failed — check password"},
+                status=401,
+            )
+
+        _LOGGER.info("PW2 pairing: local REST login successful for %s", gateway_ip)
+
+        # Fetch energy_site_id from Tesla API if available (for TOU sync etc).
+        _, _, site_id = _get_fleet_api_context(self._hass, entry)
+
+        updated = {
+            **entry.data,
+            CONF_POWERWALL_LOCAL_PAIRED: True,
+            CONF_POWERWALL_LOCAL_PAIRED_AT: time.time(),
+        }
+        if site_id is not None:
+            updated[CONF_POWERWALL_LOCAL_ENERGY_SITE_ID] = site_id
+        self._hass.config_entries.async_update_entry(entry, data=updated)
+
+        # Spin up the local monitoring coordinator.
+        await ensure_coordinator(self._hass, entry)
+
+        # Return a "verified" status so the app's polling loop sees a
+        # terminal success state immediately without waiting.
+        from .pairing import PairingState, PairingStatus
+
+        status = PairingStatus(
+            state=PairingState.VERIFIED,
+            message="PW2 paired via local REST — no RSA key needed",
+            started_at=time.time(),
+            energy_site_id=site_id,
+        )
         return web.json_response({"success": True, "status": status.to_dict()})
 
 
