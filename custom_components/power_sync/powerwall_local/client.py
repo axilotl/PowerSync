@@ -321,9 +321,12 @@ class PowerwallLocalClient:
         # Local TEDAPI v1r — direct to gateway, no cloud needed
         if self._din and self._transport:
             _LOGGER.info("go_off_grid: local TEDAPI set_island_mode (mode=%d)", mode)
-            ok = await self._transport.set_island_mode(self._din, off_grid=True)
-            if ok:
-                return True
+            try:
+                ok = await self._transport.set_island_mode(self._din, off_grid=True)
+                if ok:
+                    return True
+            except Exception as err:
+                _LOGGER.warning("go_off_grid: local TEDAPI error: %s", err)
             _LOGGER.warning("go_off_grid: local TEDAPI failed, trying cloud")
 
             # Cloud fallback: signed routable_message
@@ -347,9 +350,12 @@ class PowerwallLocalClient:
         # Local TEDAPI v1r — direct to gateway
         if self._din and self._transport:
             _LOGGER.info("reconnect_grid: local TEDAPI set_island_mode (mode=1)")
-            ok = await self._transport.set_island_mode(self._din, off_grid=False)
-            if ok:
-                return True
+            try:
+                ok = await self._transport.set_island_mode(self._din, off_grid=False)
+                if ok:
+                    return True
+            except Exception as err:
+                _LOGGER.warning("reconnect_grid: local TEDAPI error: %s", err)
             _LOGGER.warning("reconnect_grid: local TEDAPI failed, trying cloud")
 
             return await self._send_signed_device_command(off_grid=False)
