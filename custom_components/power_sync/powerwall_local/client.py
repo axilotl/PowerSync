@@ -326,43 +326,15 @@ class PowerwallLocalClient:
                 return True
             _LOGGER.warning("go_off_grid: local TEDAPI failed, trying cloud")
 
-            # Cloud fallback: set mode preference + send trigger
-            _LOGGER.info("go_off_grid: cloud fallback — set mode=%d then trigger", mode)
-            await self._send_signed_device_command(
-                off_grid=True, mode_override=mode,
-            )
-            # Send the actual contactor-open command as signed protobuf
-            ok = await self._send_signed_trigger()
-            if ok:
-                return True
-            # Try sending trigger via Hermes WebSocket (bypasses REST)
-            if self._transport and self._din and self._signaling:
-                _LOGGER.info("go_off_grid: trying trigger via Hermes WebSocket")
-                trigger_bytes = self._transport.build_signed_trigger_islanding(self._din)
-                ok = await self._signaling.send_signed_command(trigger_bytes)
-                if ok:
-                    return True
-            # Fall back to mode-only
+            # Cloud fallback: signed routable_message
+            _LOGGER.info("go_off_grid: cloud signed device_command (mode=%d)", mode)
             return await self._send_signed_device_command(
                 off_grid=True, mode_override=mode,
             )
 
         # No transport — cloud only (signed path)
         if self._din:
-            _LOGGER.info("go_off_grid: cloud set mode=%d then trigger (no transport)", mode)
-            await self._send_signed_device_command(
-                off_grid=True, mode_override=mode,
-            )
-            ok = await self._send_signed_trigger()
-            if ok:
-                return True
-            # Try Hermes WebSocket path
-            if self._signaling and self._transport:
-                _LOGGER.info("go_off_grid: trying trigger via Hermes WebSocket (no local)")
-                trigger_bytes = self._transport.build_signed_trigger_islanding(self._din)
-                ok = await self._signaling.send_signed_command(trigger_bytes)
-                if ok:
-                    return True
+            _LOGGER.info("go_off_grid: cloud signed device_command (mode=%d, no transport)", mode)
             return await self._send_signed_device_command(
                 off_grid=True, mode_override=mode,
             )
