@@ -348,7 +348,7 @@ class TEDAPIv1rTransport:
         env.sender.authorizedClient = 1  # CUSTOMER_MOBILE_APP
         env.recipient.din = din
         env.teg.setIslandModeRequest.mode = mode
-        env.teg.setIslandModeRequest.force = False
+        env.teg.setIslandModeRequest.force = off_grid  # force=True for off-grid
 
         return self.build_signed_bytes(env.SerializeToString(), din)
 
