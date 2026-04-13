@@ -320,48 +320,21 @@ class PowerwallLocalClient:
             _LOGGER.warning("go_off_grid: no DIN")
             return False
 
-        # Cloud signed path first — fast and reliable
+        # Cloud signed routable_message — the only working path for
+        # both PW2 and PW3. Local TEDAPI v1r returns success but does
+        # not physically operate the contactor.
         _LOGGER.info("go_off_grid: cloud signed device_command (mode=%d)", mode)
-        ok = await self._send_signed_device_command(
+        return await self._send_signed_device_command(
             off_grid=True, mode_override=mode,
         )
-        if ok:
-            return True
-
-        # Local TEDAPI v1r fallback (only useful on same LAN as gateway)
-        if self._transport:
-            _LOGGER.info("go_off_grid: cloud failed, trying local TEDAPI (mode=%d)", mode)
-            try:
-                ok = await self._transport.set_island_mode(self._din, off_grid=True)
-                if ok:
-                    return True
-            except Exception as err:
-                _LOGGER.warning("go_off_grid: local TEDAPI error: %s", err)
-
-        return False
 
     async def reconnect_grid(self) -> bool:
         """Reconnect to the grid (contactor close)."""
         if not self._din:
             return False
 
-        # Cloud signed path first — fast and reliable
         _LOGGER.info("reconnect_grid: cloud signed device_command (mode=1)")
-        ok = await self._send_signed_device_command(off_grid=False)
-        if ok:
-            return True
-
-        # Local TEDAPI v1r fallback
-        if self._transport:
-            _LOGGER.info("reconnect_grid: cloud failed, trying local TEDAPI")
-            try:
-                ok = await self._transport.set_island_mode(self._din, off_grid=False)
-                if ok:
-                    return True
-            except Exception as err:
-                _LOGGER.warning("reconnect_grid: local TEDAPI error: %s", err)
-
-        return False
+        return await self._send_signed_device_command(off_grid=False)
 
     async def _send_signed_warmup(self) -> None:
         """Send a signed routable_message to establish the gateway session.
