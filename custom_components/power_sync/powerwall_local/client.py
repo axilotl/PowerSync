@@ -326,15 +326,29 @@ class PowerwallLocalClient:
                 return True
             _LOGGER.warning("go_off_grid: local TEDAPI failed, trying cloud")
 
-            # Cloud fallback: signed routable_message (both PW2 and PW3)
-            _LOGGER.info("go_off_grid: cloud fallback signed device_command (mode=%d)", mode)
+            # Cloud fallback: set mode preference + send trigger
+            _LOGGER.info("go_off_grid: cloud fallback — set mode=%d then trigger", mode)
+            await self._send_signed_device_command(
+                off_grid=True, mode_override=mode,
+            )
+            # Send the actual contactor-open command as signed protobuf
+            ok = await self._send_signed_trigger()
+            if ok:
+                return True
+            # Fall back to mode-only (works for reconnect, may work for some modes)
             return await self._send_signed_device_command(
                 off_grid=True, mode_override=mode,
             )
 
         # No transport — cloud only (signed path)
         if self._din:
-            _LOGGER.info("go_off_grid: cloud signed device_command (mode=%d, no transport)", mode)
+            _LOGGER.info("go_off_grid: cloud set mode=%d then trigger (no transport)", mode)
+            await self._send_signed_device_command(
+                off_grid=True, mode_override=mode,
+            )
+            ok = await self._send_signed_trigger()
+            if ok:
+                return True
             return await self._send_signed_device_command(
                 off_grid=True, mode_override=mode,
             )
@@ -614,6 +628,65 @@ class PowerwallLocalClient:
 
         except Exception as err:
             _LOGGER.error("signed_device_command %s error: %s", action, err)
+            return False
+
+    async def _send_signed_trigger(self) -> bool:
+        """Send a signed triggerIslandingBlackStartRequest via device_command.
+
+        This is the actual contactor-open command. setIslandModeRequest only
+        sets a preference; this physically opens the grid contactor.
+        Sends as a signed routable_message so the gateway can verify
+        our RSA signature.
+        """
+        if not self._fleet_api_base or not self._fleet_api_token or not self._energy_site_id:
+            return False
+        if not self._transport or not self._din:
+            return False
+
+        import base64
+        import aiohttp
+
+        try:
+            signed_bytes = self._transport.build_signed_trigger_islanding(self._din)
+        except Exception as err:
+            _LOGGER.error("signed_trigger: failed to build: %s", err)
+            return False
+
+        msg_b64 = base64.b64encode(signed_bytes).decode()
+        _LOGGER.info(
+            "signed_trigger: triggerIslandingBlackStart %d bytes", len(signed_bytes),
+        )
+
+        url = (
+            f"{self._fleet_api_base}/api/1/energy_sites/"
+            f"{self._energy_site_id}/device_command"
+        )
+        headers = {
+            "Authorization": f"Bearer {self._fleet_api_token}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "data": {
+                "target_id": self._din,
+                "routable_message": msg_b64,
+                "command_timeout_s": 30,
+                "identifier_type": 1,
+            }
+        }
+
+        try:
+            async with aiohttp.ClientSession() as sess:
+                async with sess.post(
+                    url, json=payload, headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=35),
+                ) as resp:
+                    body = await resp.text()
+                    _LOGGER.info(
+                        "signed_trigger: HTTP %d — %s", resp.status, body[:500],
+                    )
+                    return resp.status == 200 and "response" in body
+        except Exception as err:
+            _LOGGER.error("signed_trigger error: %s", err)
             return False
 
     async def _send_island_command(self, *, off_grid: bool) -> bool:
