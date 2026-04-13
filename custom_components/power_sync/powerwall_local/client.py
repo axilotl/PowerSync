@@ -96,10 +96,6 @@ class PowerwallLocalClient:
         self._saved_reserve_percent: int | None = None
         self._curtailment_active = False
 
-        # Saved pre-off-grid state (PW2 cloud path) — separate from
-        # curtailment so the two features don't clobber each other.
-        self._offgrid_saved_mode: str | None = None
-        self._offgrid_saved_reserve: int | None = None
 
         # Both generations use the same signed transport for symmetry — on
         # PW2 the RSA signing path is unused but the REST helpers live in
@@ -204,27 +200,25 @@ class PowerwallLocalClient:
     async def go_off_grid(self) -> bool:
         """Physically disconnect from the grid (contactor open).
 
-        On PW3: sends signed ``setIslandModeRequest(mode=6)`` via the
-        Fleet API ``device_command`` cloud relay.
+        Both PW2 and PW3 require RSA key pairing (physical toggle) for
+        off-grid control. The command is sent as a signed RoutableMessage
+        via the Fleet API ``device_command`` cloud relay.
 
-        On PW2: sets backup mode + 100% reserve via the Tesla cloud API.
-        The PW2 gateway physically opens the contactor when backup reserve
-        is 100% and mode is backup — no local installer auth or RSA
-        signing needed. Discovered by testing against Forlorndeth's PW2.
+        On PW2 firmware, the local REST endpoint ``/api/v2/islanding/mode``
+        requires installer-level auth (customer role gets 403). The Tesla
+        app uses the cloud ``island_mode`` endpoint via owner-api, which
+        requires the same RSA pairing + PowerSync proxy for the command
+        endpoint.
         """
-        if self._version == PowerwallVersion.PW3 and self._din:
-            if self._transport:
-                _LOGGER.info("go_off_grid: sending signed device_command (mode=6)")
-                return await self._send_signed_device_command(off_grid=True)
+        if self._din and self._transport:
+            _LOGGER.info("go_off_grid: sending signed device_command (mode=6)")
+            return await self._send_signed_device_command(off_grid=True)
 
+        if self._din:
             _LOGGER.warning("go_off_grid: no transport for signing, trying unsigned")
             return await self._send_device_command(off_grid=True)
 
-        # PW2: cloud API path — backup mode + 100% reserve = off-grid.
-        if self._fleet_api_base and self._fleet_api_token and self._energy_site_id:
-            return await self._pw2_cloud_off_grid()
-
-        # Legacy local REST fallback (requires installer auth — unlikely to work).
+        # Local REST fallback (requires installer auth on PW2).
         body = {"island_mode": ISLAND_MODE_OFFGRID}
         result = await self._post(ISLAND_MODE_PATH, body)
         if result is not None:
@@ -237,165 +231,21 @@ class PowerwallLocalClient:
     async def reconnect_grid(self) -> bool:
         """Reconnect to the grid (contactor close).
 
-        On PW3: uses signed cloud ``device_command``.
-
-        On PW2: restores the user's previous operation mode + backup
-        reserve via the Tesla cloud API.
+        Uses the same signed device_command path as go_off_grid.
         """
-        if self._version == PowerwallVersion.PW3 and self._din:
-            if self._transport:
-                _LOGGER.info("reconnect_grid: sending signed device_command (mode=1)")
-                return await self._send_signed_device_command(off_grid=False)
+        if self._din and self._transport:
+            _LOGGER.info("reconnect_grid: sending signed device_command (mode=1)")
+            return await self._send_signed_device_command(off_grid=False)
 
+        if self._din:
             _LOGGER.warning("reconnect_grid: no transport for signing, trying unsigned")
             return await self._send_device_command(off_grid=False)
-
-        # PW2: cloud API path — restore saved mode + reserve.
-        if self._fleet_api_base and self._fleet_api_token and self._energy_site_id:
-            return await self._pw2_cloud_reconnect()
 
         body = {"island_mode": ISLAND_MODE_ONGRID}
         result = await self._post(ISLAND_MODE_PATH, body)
         if result is not None:
             return True
         return False
-
-    async def _pw2_cloud_off_grid(self) -> bool:
-        """PW2 off-grid via Tesla cloud API: backup mode + 100% reserve."""
-        import aiohttp
-
-        base = self._fleet_api_base
-        token = self._fleet_api_token
-        site_id = self._energy_site_id
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-        }
-
-        async with aiohttp.ClientSession() as session:
-            # Save current state before going off-grid.
-            try:
-                url = f"{base}/api/1/energy_sites/{site_id}/site_info"
-                async with session.get(url, headers=headers) as resp:
-                    if resp.status == 200:
-                        data = (await resp.json()).get("response", {})
-                        self._offgrid_saved_mode = data.get(
-                            "default_real_mode", "self_consumption"
-                        )
-                        self._offgrid_saved_reserve = int(
-                            data.get("backup_reserve_percent", 14)
-                        )
-                        _LOGGER.info(
-                            "go_off_grid(pw2): saved state mode=%s reserve=%s%%",
-                            self._offgrid_saved_mode,
-                            self._offgrid_saved_reserve,
-                        )
-            except Exception as err:
-                _LOGGER.warning("go_off_grid(pw2): failed to save state: %s", err)
-                # Default fallback values if we can't read current state.
-                if self._offgrid_saved_mode is None:
-                    self._offgrid_saved_mode = "self_consumption"
-                if self._offgrid_saved_reserve is None:
-                    self._offgrid_saved_reserve = 14
-
-            # Step 1: Set backup reserve to 100%.
-            url = f"{base}/api/1/energy_sites/{site_id}/backup"
-            try:
-                async with session.post(
-                    url, json={"backup_reserve_percent": 100}, headers=headers
-                ) as resp:
-                    if resp.status != 200:
-                        text = await resp.text()
-                        _LOGGER.warning(
-                            "go_off_grid(pw2): backup reserve failed (%s): %s",
-                            resp.status, text[:200],
-                        )
-                        return False
-            except aiohttp.ClientError as err:
-                _LOGGER.warning("go_off_grid(pw2): backup request error: %s", err)
-                return False
-
-            # Step 2: Set operation mode to backup.
-            url = f"{base}/api/1/energy_sites/{site_id}/operation"
-            try:
-                async with session.post(
-                    url, json={"default_real_mode": "backup"}, headers=headers
-                ) as resp:
-                    if resp.status != 200:
-                        text = await resp.text()
-                        _LOGGER.warning(
-                            "go_off_grid(pw2): operation mode failed (%s): %s",
-                            resp.status, text[:200],
-                        )
-                        return False
-            except aiohttp.ClientError as err:
-                _LOGGER.warning("go_off_grid(pw2): operation request error: %s", err)
-                return False
-
-        _LOGGER.info("go_off_grid(pw2): backup+100%% sent via cloud API")
-        return True
-
-    async def _pw2_cloud_reconnect(self) -> bool:
-        """PW2 reconnect via Tesla cloud API: restore saved mode + reserve."""
-        import aiohttp
-
-        base = self._fleet_api_base
-        token = self._fleet_api_token
-        site_id = self._energy_site_id
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-        }
-
-        restore_mode = self._offgrid_saved_mode or "self_consumption"
-        restore_reserve = self._offgrid_saved_reserve if self._offgrid_saved_reserve is not None else 14
-
-        async with aiohttp.ClientSession() as session:
-            # Step 1: Restore backup reserve first (lower value allows reconnect).
-            url = f"{base}/api/1/energy_sites/{site_id}/backup"
-            try:
-                async with session.post(
-                    url,
-                    json={"backup_reserve_percent": restore_reserve},
-                    headers=headers,
-                ) as resp:
-                    if resp.status != 200:
-                        text = await resp.text()
-                        _LOGGER.warning(
-                            "reconnect_grid(pw2): backup reserve failed (%s): %s",
-                            resp.status, text[:200],
-                        )
-                        return False
-            except aiohttp.ClientError as err:
-                _LOGGER.warning("reconnect_grid(pw2): backup request error: %s", err)
-                return False
-
-            # Step 2: Restore operation mode.
-            url = f"{base}/api/1/energy_sites/{site_id}/operation"
-            try:
-                async with session.post(
-                    url,
-                    json={"default_real_mode": restore_mode},
-                    headers=headers,
-                ) as resp:
-                    if resp.status != 200:
-                        text = await resp.text()
-                        _LOGGER.warning(
-                            "reconnect_grid(pw2): operation mode failed (%s): %s",
-                            resp.status, text[:200],
-                        )
-                        return False
-            except aiohttp.ClientError as err:
-                _LOGGER.warning("reconnect_grid(pw2): operation request error: %s", err)
-                return False
-
-        _LOGGER.info(
-            "reconnect_grid(pw2): restored mode=%s reserve=%s%% via cloud API",
-            restore_mode, restore_reserve,
-        )
-        self._offgrid_saved_mode = None
-        self._offgrid_saved_reserve = None
-        return True
 
     async def curtail_via_backup_mode(self) -> bool:
         """Stop grid export by switching to backup mode + 100% reserve.
