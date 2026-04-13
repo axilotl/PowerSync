@@ -200,66 +200,56 @@ class PowerwallLocalClient:
     async def go_off_grid(self) -> bool:
         """Physically disconnect from the grid (contactor open).
 
-        PW3: signed routable_message with setIslandModeRequest(mode=6).
-        PW2: signed routable_message warm-up (get_backup_events_request)
-             to establish the cloud session, then unsigned
-             energy_device_message "MgQqAggC" (mode=2) for the actual
-             island command.
+        Primary path (both PW2 and PW3): local TEDAPI v1r with signed
+        setIslandModeRequest sent directly to the gateway over LAN.
+        No cloud relay needed — the RSA-signed protobuf goes straight
+        to the gateway which verifies the signature locally.
 
-        Discovered via MITM: the PW2 Tesla app sends a signed
-        routable_message first (field 49 = get_backup_events, NOT
-        setIslandMode) to wake the gateway session, then sends the
-        unsigned energy_device_message which actually islands.
+        Cloud fallback (PW3 only): signed routable_message via
+        device_command if local TEDAPI fails.
         """
-        # PW3: signed routable_message with the actual island command
-        if self._version == PowerwallVersion.PW3 and self._din and self._transport:
-            _LOGGER.info("go_off_grid: PW3 signed device_command (mode=6)")
-            return await self._send_signed_device_command(off_grid=True)
-
-        # PW2: signed warm-up + unsigned island command
+        # Local TEDAPI v1r — direct to gateway, no cloud needed
         if self._din and self._transport:
-            _LOGGER.info("go_off_grid: PW2 — signed warm-up then unsigned command")
-            # Step 1: Signed routable_message to wake the session
-            await self._send_signed_warmup()
-            # Step 2: Unsigned energy_device_message with the actual command
+            _LOGGER.info("go_off_grid: local TEDAPI set_island_mode (mode=2)")
+            ok = await self._transport.set_island_mode(self._din, off_grid=True)
+            if ok:
+                return True
+            _LOGGER.warning("go_off_grid: local TEDAPI failed, trying cloud")
+
+            # Cloud fallback: signed device_command (PW3 mode=6)
+            if self._version == PowerwallVersion.PW3:
+                _LOGGER.info("go_off_grid: PW3 cloud fallback (mode=6)")
+                return await self._send_signed_device_command(off_grid=True)
+
+            # Cloud fallback: unsigned energy_device_message (PW2)
+            _LOGGER.info("go_off_grid: PW2 cloud fallback (unsigned)")
             return await self._send_device_command(off_grid=True)
 
-        # No transport — try unsigned only (unlikely to work without warm-up)
+        # No transport — cloud only
         if self._din:
-            _LOGGER.info("go_off_grid: unsigned device_command (no transport)")
+            _LOGGER.info("go_off_grid: cloud device_command (no transport)")
             return await self._send_device_command(off_grid=True)
 
-        # Local REST fallback (requires installer auth on PW2).
-        body = {"island_mode": ISLAND_MODE_OFFGRID}
-        result = await self._post(ISLAND_MODE_PATH, body)
-        if result is not None:
-            _LOGGER.info("go_off_grid: REST islanding accepted on %s", self._host)
-            return True
-
-        _LOGGER.warning("go_off_grid: all paths failed on %s", self._host)
+        _LOGGER.warning("go_off_grid: no transport and no DIN")
         return False
 
     async def reconnect_grid(self) -> bool:
         """Reconnect to the grid (contactor close)."""
-        # PW3: signed routable_message
-        if self._version == PowerwallVersion.PW3 and self._din and self._transport:
-            _LOGGER.info("reconnect_grid: PW3 signed device_command (mode=1)")
-            return await self._send_signed_device_command(off_grid=False)
-
-        # PW2: signed warm-up + unsigned reconnect
+        # Local TEDAPI v1r — direct to gateway
         if self._din and self._transport:
-            _LOGGER.info("reconnect_grid: PW2 — signed warm-up then unsigned command")
-            await self._send_signed_warmup()
+            _LOGGER.info("reconnect_grid: local TEDAPI set_island_mode (mode=1)")
+            ok = await self._transport.set_island_mode(self._din, off_grid=False)
+            if ok:
+                return True
+            _LOGGER.warning("reconnect_grid: local TEDAPI failed, trying cloud")
+
+            if self._version == PowerwallVersion.PW3:
+                return await self._send_signed_device_command(off_grid=False)
             return await self._send_device_command(off_grid=False)
 
         if self._din:
-            _LOGGER.info("reconnect_grid: unsigned device_command (no transport)")
             return await self._send_device_command(off_grid=False)
 
-        body = {"island_mode": ISLAND_MODE_ONGRID}
-        result = await self._post(ISLAND_MODE_PATH, body)
-        if result is not None:
-            return True
         return False
 
     async def _send_signed_warmup(self) -> None:
