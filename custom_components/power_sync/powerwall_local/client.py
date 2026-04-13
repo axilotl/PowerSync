@@ -335,7 +335,14 @@ class PowerwallLocalClient:
             ok = await self._send_signed_trigger()
             if ok:
                 return True
-            # Fall back to mode-only (works for reconnect, may work for some modes)
+            # Try sending trigger via Hermes WebSocket (bypasses REST)
+            if self._transport and self._din and self._signaling:
+                _LOGGER.info("go_off_grid: trying trigger via Hermes WebSocket")
+                trigger_bytes = self._transport.build_signed_trigger_islanding(self._din)
+                ok = await self._signaling.send_signed_command(trigger_bytes)
+                if ok:
+                    return True
+            # Fall back to mode-only
             return await self._send_signed_device_command(
                 off_grid=True, mode_override=mode,
             )
@@ -349,6 +356,13 @@ class PowerwallLocalClient:
             ok = await self._send_signed_trigger()
             if ok:
                 return True
+            # Try Hermes WebSocket path
+            if self._signaling and self._transport:
+                _LOGGER.info("go_off_grid: trying trigger via Hermes WebSocket (no local)")
+                trigger_bytes = self._transport.build_signed_trigger_islanding(self._din)
+                ok = await self._signaling.send_signed_command(trigger_bytes)
+                if ok:
+                    return True
             return await self._send_signed_device_command(
                 off_grid=True, mode_override=mode,
             )
