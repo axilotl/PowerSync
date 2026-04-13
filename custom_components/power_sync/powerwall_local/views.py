@@ -647,6 +647,8 @@ class PowerwallDebugProbeView(HomeAssistantView):
         method = str(payload.get("method", "GET")).upper()
         path = str(payload.get("path", "/api/system_status/grid_status"))
         body = payload.get("body")
+        username = str(payload.get("username", "customer"))
+        login_password = str(payload.get("login_password", "")) or password
 
         # Create insecure SSL context for self-signed gateway cert
         ctx = ssl.create_default_context()
@@ -662,9 +664,9 @@ class PowerwallDebugProbeView(HomeAssistantView):
             # Login
             login_url = f"https://{host}/api/login/Basic"
             login_body = {
-                "username": "customer",
-                "password": password,
-                "email": "customer@customer.domain",
+                "username": username,
+                "password": login_password,
+                "email": f"{username}@{username}.domain",
                 "clientInfo": {"timezone": "UTC"},
             }
             async with sess.post(login_url, json=login_body) as lr:
