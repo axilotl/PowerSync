@@ -200,33 +200,31 @@ class PowerwallLocalClient:
     async def go_off_grid(self) -> bool:
         """Physically disconnect from the grid (contactor open).
 
-        MITM capture of the Tesla app shows it sends both a signed
-        routable_message AND an unsigned energy_device_message for PW2.
-        PW3 only needs the signed routable_message.
+        PW3: signed routable_message with setIslandModeRequest(mode=6).
+        PW2: signed routable_message warm-up (get_backup_events_request)
+             to establish the cloud session, then unsigned
+             energy_device_message "MgQqAggC" (mode=2) for the actual
+             island command.
 
-        PW3: signed routable_message with mode=6
-        PW2: signed routable_message with mode=2, then unsigned
-             energy_device_message "MgQqAggC" as fallback
+        Discovered via MITM: the PW2 Tesla app sends a signed
+        routable_message first (field 49 = get_backup_events, NOT
+        setIslandMode) to wake the gateway session, then sends the
+        unsigned energy_device_message which actually islands.
         """
-        if self._din and self._transport:
-            # PW2 uses mode=2, PW3 uses mode=6
-            mode = 2 if self._version == PowerwallVersion.PW2 else 6
-            _LOGGER.info(
-                "go_off_grid: signed device_command (mode=%d, %s)",
-                mode, self._version.value,
-            )
-            ok = await self._send_signed_device_command(
-                off_grid=True, mode_override=mode,
-            )
-            if ok:
-                return True
-            # PW2 fallback: unsigned energy_device_message
-            if self._version == PowerwallVersion.PW2:
-                _LOGGER.info("go_off_grid: PW2 fallback — unsigned energy_device_message")
-                return await self._send_device_command(off_grid=True)
-            return False
+        # PW3: signed routable_message with the actual island command
+        if self._version == PowerwallVersion.PW3 and self._din and self._transport:
+            _LOGGER.info("go_off_grid: PW3 signed device_command (mode=6)")
+            return await self._send_signed_device_command(off_grid=True)
 
-        # No transport — try unsigned device_command
+        # PW2: signed warm-up + unsigned island command
+        if self._din and self._transport:
+            _LOGGER.info("go_off_grid: PW2 — signed warm-up then unsigned command")
+            # Step 1: Signed routable_message to wake the session
+            await self._send_signed_warmup()
+            # Step 2: Unsigned energy_device_message with the actual command
+            return await self._send_device_command(off_grid=True)
+
+        # No transport — try unsigned only (unlikely to work without warm-up)
         if self._din:
             _LOGGER.info("go_off_grid: unsigned device_command (no transport)")
             return await self._send_device_command(off_grid=True)
@@ -243,16 +241,16 @@ class PowerwallLocalClient:
 
     async def reconnect_grid(self) -> bool:
         """Reconnect to the grid (contactor close)."""
+        # PW3: signed routable_message
+        if self._version == PowerwallVersion.PW3 and self._din and self._transport:
+            _LOGGER.info("reconnect_grid: PW3 signed device_command (mode=1)")
+            return await self._send_signed_device_command(off_grid=False)
+
+        # PW2: signed warm-up + unsigned reconnect
         if self._din and self._transport:
-            # Reconnect is mode=1 for both PW2 and PW3
-            _LOGGER.info("reconnect_grid: signed device_command (mode=1)")
-            ok = await self._send_signed_device_command(off_grid=False)
-            if ok:
-                return True
-            if self._version == PowerwallVersion.PW2:
-                _LOGGER.info("reconnect_grid: PW2 fallback — unsigned energy_device_message")
-                return await self._send_device_command(off_grid=False)
-            return False
+            _LOGGER.info("reconnect_grid: PW2 — signed warm-up then unsigned command")
+            await self._send_signed_warmup()
+            return await self._send_device_command(off_grid=False)
 
         if self._din:
             _LOGGER.info("reconnect_grid: unsigned device_command (no transport)")
@@ -263,6 +261,67 @@ class PowerwallLocalClient:
         if result is not None:
             return True
         return False
+
+    async def _send_signed_warmup(self) -> None:
+        """Send a signed routable_message to establish the gateway session.
+
+        The PW2 Tesla app sends a signed get_backup_events_request before
+        the actual unsigned island command. This establishes the cloud
+        delivery path so the subsequent unsigned command reaches the gateway.
+        """
+        if not self._fleet_api_base or not self._fleet_api_token or not self._energy_site_id:
+            return
+        if not self._transport or not self._din:
+            return
+
+        import base64
+        import aiohttp
+        from . import tesla_local_pb2 as tp
+
+        # Build a signed get_backup_events_request — same as Tesla app
+        env = tp.MessageEnvelope()
+        env.deliveryChannel = 2  # HERMES_COMMAND
+        env.sender.authorizedClient = 1
+        env.recipient.din = self._din
+        env.teg.getBackupEventsRequest.SetInParent()
+
+        try:
+            signed_bytes = self._transport.build_signed_bytes(
+                env.SerializeToString(), self._din,
+            )
+        except Exception as err:
+            _LOGGER.warning("signed_warmup: failed to build: %s", err)
+            return
+
+        msg_b64 = base64.b64encode(signed_bytes).decode()
+        url = (
+            f"{self._fleet_api_base}/api/1/energy_sites/"
+            f"{self._energy_site_id}/device_command"
+        )
+        payload = {
+            "data": {
+                "target_id": self._din,
+                "routable_message": msg_b64,
+                "identifier_type": 1,
+            }
+        }
+        headers = {
+            "Authorization": f"Bearer {self._fleet_api_token}",
+            "Content-Type": "application/json",
+        }
+
+        try:
+            async with aiohttp.ClientSession() as sess:
+                async with sess.post(
+                    url, json=payload, headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=15),
+                ) as resp:
+                    body = await resp.text()
+                    _LOGGER.info(
+                        "signed_warmup: HTTP %d — %s", resp.status, body[:200],
+                    )
+        except Exception as err:
+            _LOGGER.warning("signed_warmup error: %s", err)
 
     async def curtail_via_backup_mode(self) -> bool:
         """Stop grid export by switching to backup mode + 100% reserve.
