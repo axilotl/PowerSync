@@ -104,6 +104,11 @@ class EnphaseController(InverterController):
         self._envoy_serial: Optional[str] = None
         self._dpel_supported: Optional[bool] = None
         self._dpel_available: Optional[bool] = None  # None = unknown, True = works, False = broken (503/404)
+        # Some Envoy firmware (observed on AU/NZ region) requires installed_capacity
+        # in the DPEL POST payload — without it the gateway returns 400
+        # "missing/incorrect installed_capacity" and the dynamic limit won't engage.
+        # Computed from sum(maxReportWatts) across all microinverters.
+        self._installed_capacity_w: Optional[float] = None
         self._der_available: Optional[bool] = None   # None = unknown, True = works, False = broken
         self._agf_available: Optional[bool] = None   # None = unknown, True = works, False = broken
         self._profile_switching_supported: Optional[bool] = None
@@ -886,6 +891,75 @@ class EnphaseController(InverterController):
         """Get DPEL (Device Power Export Limit) settings."""
         return await self._get(self.ENDPOINT_DPEL)
 
+    async def _get_installed_capacity_w(self) -> Optional[float]:
+        """Resolve the system's total installed PV capacity in watts.
+
+        Required by some Envoy firmware (AU/NZ region) for the DPEL POST
+        to actually engage dynamic limiting — without it the gateway
+        returns 400 "missing/incorrect installed_capacity" and we silently
+        fall through to a payload format that succeeds (200) but has
+        enable_dynamic_limiting=False, so the inverter keeps producing
+        and the user thinks curtailment is broken.
+
+        Three resolution paths in order of preference:
+          1. Cached value from a previous resolve.
+          2. GET /ivp/ss/dpel — existing settings sometimes include the
+             value the gateway expects to see echoed back.
+          3. Sum maxReportWatts across all microinverters from
+             /api/v1/production/inverters.
+        """
+        if self._installed_capacity_w is not None and self._installed_capacity_w > 0:
+            return self._installed_capacity_w
+
+        # Path 2: read what the gateway already has stored
+        try:
+            existing = await self._get_dpel_settings()
+            if isinstance(existing, dict):
+                settings = existing.get("dynamic_pel_settings", existing)
+                for key in ("installed_capacity", "installed_capacity_W", "installedCapacity"):
+                    val = settings.get(key) if isinstance(settings, dict) else None
+                    if val is not None:
+                        try:
+                            cap = float(val)
+                            if cap > 0:
+                                self._installed_capacity_w = cap
+                                _LOGGER.info(
+                                    "Discovered installed_capacity from /ivp/ss/dpel: %sW", cap
+                                )
+                                return cap
+                        except (TypeError, ValueError):
+                            pass
+        except Exception as err:
+            _LOGGER.debug("DPEL settings read for capacity failed: %s", err)
+
+        # Path 3: sum microinverter ratings
+        try:
+            inverters = await self._get(self.ENDPOINT_INVERTERS)
+            if isinstance(inverters, list) and inverters:
+                total = 0.0
+                for inv in inverters:
+                    val = inv.get("maxReportWatts")
+                    if val is not None:
+                        try:
+                            total += float(val)
+                        except (TypeError, ValueError):
+                            pass
+                if total > 0:
+                    self._installed_capacity_w = total
+                    _LOGGER.info(
+                        "Computed installed_capacity from %d microinverters: %sW",
+                        len(inverters), total,
+                    )
+                    return total
+        except Exception as err:
+            _LOGGER.debug("Microinverter capacity computation failed: %s", err)
+
+        _LOGGER.warning(
+            "Could not determine installed_capacity for DPEL — falling back to "
+            "payloads without it (some Envoy firmware will reject these)"
+        )
+        return None
+
     async def _set_dpel(self, enabled: bool, limit_watts: int = 0, use_production_limit: bool = False) -> tuple[bool, bool]:
         """Set DPEL (Device Power Export Limit) settings.
 
@@ -922,9 +996,29 @@ class EnphaseController(InverterController):
         limit_type = "production" if use_production_limit else "export"
         _LOGGER.debug(f"Setting DPEL with {limit_type} limiting: {limit_watts}W")
 
+        # Resolve installed_capacity — required by some firmware (AU/NZ) for
+        # dynamic_limiting=True to actually engage. Without it the payload
+        # without installed_capacity gets a 400, then we silently fall through
+        # to the dynamic_limiting=False format which the gateway accepts but
+        # doesn't enforce — so the user thinks they're curtailed but isn't.
+        installed_capacity_w = await self._get_installed_capacity_w()
+
+        # Build the primary payload (with capacity if we have it). Fall back
+        # to format variants if the gateway rejects the first attempt.
+        primary_settings = {
+            "enable": enabled,
+            "export_limit": export_limit_flag,
+            "limit_value_W": float(limit_watts),
+            "slew_rate": slew_rate,
+            "enable_dynamic_limiting": True,
+        }
+        if installed_capacity_w is not None and installed_capacity_w > 0:
+            primary_settings["installed_capacity"] = float(installed_capacity_w)
+
         payloads = [
-            # EU gateway format - ALL fields required based on API error responses
-            # enable_dynamic_limiting + slew_rate are mandatory
+            # Preferred: full payload with installed_capacity (AU/NZ firmware)
+            {"dynamic_pel_settings": primary_settings},
+            # Same shape but EU firmware doesn't need installed_capacity
             {"dynamic_pel_settings": {
                 "enable": enabled,
                 "export_limit": export_limit_flag,
@@ -932,7 +1026,11 @@ class EnphaseController(InverterController):
                 "slew_rate": slew_rate,
                 "enable_dynamic_limiting": True
             }},
-            # Try with enable_dynamic_limiting False
+            # Try with enable_dynamic_limiting False — LAST RESORT only.
+            # Gateway accepts this without installed_capacity but doesn't
+            # enforce the limit. We keep it so we get a 200 success rather
+            # than failing entirely on unknown firmware, but the curtailment
+            # won't actually engage. Surface a warning when this hits.
             {"dynamic_pel_settings": {
                 "enable": enabled,
                 "export_limit": export_limit_flag,
@@ -968,6 +1066,23 @@ class EnphaseController(InverterController):
             if success:
                 self._dpel_available = True
                 _LOGGER.debug(f"DPEL succeeded with payload: {payload}")
+                # Critical: if we succeeded with enable_dynamic_limiting=False
+                # the gateway accepted the request but isn't enforcing the
+                # limit. This used to silently fail because we logged success.
+                # Now warn loudly so the user knows curtailment isn't real.
+                settings = payload.get("dynamic_pel_settings", {}) if isinstance(payload, dict) else {}
+                if (
+                    isinstance(settings, dict)
+                    and settings.get("enable_dynamic_limiting") is False
+                ):
+                    _LOGGER.warning(
+                        "DPEL accepted with enable_dynamic_limiting=False — the "
+                        "Envoy will NOT actually limit production. This usually "
+                        "means installed_capacity could not be resolved (check "
+                        "/api/v1/production/inverters access) or the gateway "
+                        "firmware doesn't support dynamic limiting."
+                    )
+                    return False, True
                 return True, True
 
             # 404 = endpoint doesn't exist on this firmware, permanently skip
