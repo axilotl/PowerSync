@@ -891,6 +891,37 @@ class EnphaseController(InverterController):
         """Get DPEL (Device Power Export Limit) settings."""
         return await self._get(self.ENDPOINT_DPEL)
 
+    # Cache of the gateway's full DPEL settings dict — read once on first
+    # curtail attempt and reused. Some Envoy firmware requires every field
+    # it returns to be echoed back (we've seen demands for both
+    # installed_capacity AND relay_config). Easiest way to satisfy that is
+    # to read what the gateway has, merge in the values we want to change,
+    # and POST the full thing.
+    _dpel_base_settings: Optional[dict] = None
+
+    async def _get_dpel_base_settings(self) -> Optional[dict]:
+        """Resolve the gateway's current DPEL settings dict, cached.
+
+        The dict structure is `{"dynamic_pel_settings": {...}}` — we
+        return the inner settings sub-object, or None if the GET failed.
+        """
+        if self._dpel_base_settings:
+            return self._dpel_base_settings
+        try:
+            raw = await self._get_dpel_settings()
+            if isinstance(raw, dict):
+                inner = raw.get("dynamic_pel_settings", raw)
+                if isinstance(inner, dict) and inner:
+                    self._dpel_base_settings = dict(inner)
+                    _LOGGER.info(
+                        "Cached DPEL base settings from gateway: keys=%s",
+                        sorted(self._dpel_base_settings.keys()),
+                    )
+                    return self._dpel_base_settings
+        except Exception as err:
+            _LOGGER.debug("DPEL base settings read failed: %s", err)
+        return None
+
     async def _get_installed_capacity_w(self) -> Optional[float]:
         """Resolve the system's total installed PV capacity in watts.
 
@@ -1003,8 +1034,33 @@ class EnphaseController(InverterController):
         # doesn't enforce — so the user thinks they're curtailed but isn't.
         installed_capacity_w = await self._get_installed_capacity_w()
 
-        # Build the primary payload (with capacity if we have it). Fall back
-        # to format variants if the gateway rejects the first attempt.
+        # Strategy: read the gateway's current DPEL settings, merge in the
+        # values we want to change, and POST the full thing. This handles
+        # firmware that requires extra fields (relay_config, installed_capacity,
+        # etc.) without us having to know the exhaustive list — we just echo
+        # back whatever the gateway already had.
+        merged_settings: Optional[dict] = None
+        base_settings = await self._get_dpel_base_settings()
+        if base_settings:
+            merged_settings = dict(base_settings)
+            merged_settings.update({
+                "enable": enabled,
+                "export_limit": export_limit_flag,
+                "limit_value_W": float(limit_watts),
+                "slew_rate": slew_rate,
+                "enable_dynamic_limiting": True,
+            })
+            # Make sure installed_capacity is present and correct even if the
+            # gateway returned a missing/zero value.
+            if installed_capacity_w is not None and installed_capacity_w > 0:
+                merged_settings["installed_capacity"] = float(installed_capacity_w)
+            _LOGGER.debug(
+                "Built DPEL payload by merging into gateway base: %s",
+                sorted(merged_settings.keys()),
+            )
+
+        # Build the canned primary payload (used as a fallback if the GET
+        # didn't return anything we could merge into).
         primary_settings = {
             "enable": enabled,
             "export_limit": export_limit_flag,
@@ -1015,10 +1071,14 @@ class EnphaseController(InverterController):
         if installed_capacity_w is not None and installed_capacity_w > 0:
             primary_settings["installed_capacity"] = float(installed_capacity_w)
 
-        payloads = [
-            # Preferred: full payload with installed_capacity (AU/NZ firmware)
+        payloads = []
+        # Preferred: merged payload (echoes back all gateway-required fields)
+        if merged_settings:
+            payloads.append({"dynamic_pel_settings": merged_settings})
+        payloads += [
+            # Synthesised payload with installed_capacity (AU/NZ firmware)
             {"dynamic_pel_settings": primary_settings},
-            # Same shape but EU firmware doesn't need installed_capacity
+            # Bare format — EU firmware doesn't need installed_capacity
             {"dynamic_pel_settings": {
                 "enable": enabled,
                 "export_limit": export_limit_flag,
@@ -1500,13 +1560,30 @@ class EnphaseController(InverterController):
                     self._dpel_supported = True
                     await asyncio.sleep(1)
                     return True
-                # Second try: disable DPEL (for systems with zero export profile as base)
-                success, available = await self._set_dpel(enabled=False, limit_watts=0)
-                if success:
-                    _LOGGER.info(f"Successfully curtailed Enphase system at {self.host} via DPEL (disabled, using profile)")
-                    self._dpel_supported = True
-                    await asyncio.sleep(1)
-                    return True
+                # Second try: disable DPEL — only safe if the gateway's BASE
+                # grid profile is itself zero-export. On most Australian
+                # installs the base profile allows full export, so disabling
+                # DPEL just turns curtailment OFF entirely. Skip this branch
+                # for load-following (where we wanted to actively limit, not
+                # fall back to a profile) and only attempt it for zero-export
+                # mode where the user explicitly opted into a zero-export
+                # base profile.
+                if export_limit_w == 0:
+                    success, available = await self._set_dpel(enabled=False, limit_watts=0)
+                    if success:
+                        _LOGGER.info(
+                            f"Successfully curtailed Enphase system at {self.host} via DPEL "
+                            f"(disabled, falling back to base grid profile)"
+                        )
+                        self._dpel_supported = True
+                        await asyncio.sleep(1)
+                        return True
+                else:
+                    _LOGGER.warning(
+                        "DPEL load-following payload was rejected by the gateway. "
+                        "Skipping the disable-DPEL fallback because it would let "
+                        "the inverter export freely on most installs."
+                    )
                 if not available:
                     _LOGGER.info("DPEL endpoint not available on this gateway (503/404), will use fallback methods")
             else:
