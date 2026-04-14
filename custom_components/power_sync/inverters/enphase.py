@@ -1054,6 +1054,18 @@ class EnphaseController(InverterController):
             # gateway returned a missing/zero value.
             if installed_capacity_w is not None and installed_capacity_w > 0:
                 merged_settings["installed_capacity"] = float(installed_capacity_w)
+            # Some Envoy firmware (specifically gateways that have ANY
+            # relay control configured in Enlighten Manager — even with the
+            # relays sitting inert) demand a `relay_config` field on every
+            # DPEL POST, but the matching GET /ivp/ss/dpel does NOT return
+            # it, so we can't echo it back from the base settings. Send a
+            # disabled-relay sentinel by default — gateways without relay
+            # configuration ignore it, gateways with it should accept it
+            # since "no relay" is the safest neutral value. If the gateway
+            # rejects this, the user can disable the relay controls in
+            # Enlighten Manager as a workaround.
+            if "relay_config" not in merged_settings:
+                merged_settings["relay_config"] = False
             _LOGGER.debug(
                 "Built DPEL payload by merging into gateway base: %s",
                 sorted(merged_settings.keys()),
@@ -1070,6 +1082,8 @@ class EnphaseController(InverterController):
         }
         if installed_capacity_w is not None and installed_capacity_w > 0:
             primary_settings["installed_capacity"] = float(installed_capacity_w)
+        # Same relay_config default as merged_settings — see comment above.
+        primary_settings["relay_config"] = False
 
         payloads = []
         # Preferred: merged payload (echoes back all gateway-required fields)
