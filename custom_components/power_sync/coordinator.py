@@ -3693,6 +3693,7 @@ class FoxESSEnergyCoordinator(DataUpdateCoordinator):
                 "min_soc": attrs.get("min_soc"),
                 "max_charge_current_a": attrs.get("max_charge_current_a"),
                 "max_discharge_current_a": attrs.get("max_discharge_current_a"),
+                "battery_voltage_v": attrs.get("battery_voltage_v"),
                 "model_family": attrs.get("model_family"),
                 "energy_summary": acc,
             }
@@ -3725,8 +3726,16 @@ class FoxESSEnergyCoordinator(DataUpdateCoordinator):
                 # Use inverter's configured max charge current (set via FoxESS app)
                 max_charge_a = self.data.get("max_charge_current_a")
                 if max_charge_a and max_charge_a > 0:
-                    power_w = max_charge_a * 300  # Conservative voltage estimate
-                    _LOGGER.info("FoxESS force_charge using inverter max: %.0fA → %.0fW", max_charge_a, power_w)
+                    # Prefer the live battery pack voltage over a fixed 300 V
+                    # estimate. H3-Pro with a FoxESS CQ6 HV pack runs ~500 V,
+                    # so 300 V caps a 50 A × 500 V = 25 kW system at 15 kW.
+                    v = self.data.get("battery_voltage_v")
+                    voltage = v if isinstance(v, (int, float)) and v > 100 else 300
+                    power_w = max_charge_a * voltage
+                    _LOGGER.info(
+                        "FoxESS force_charge using inverter max: %.0fA × %.0fV → %.0fW",
+                        max_charge_a, voltage, power_w,
+                    )
             if power_w <= 0:
                 power_w = 5000  # Fallback default
             return await self._controller.force_charge(duration_minutes, power_w=power_w)
@@ -3744,8 +3753,13 @@ class FoxESSEnergyCoordinator(DataUpdateCoordinator):
                 # Use inverter's configured max discharge current (set via FoxESS app)
                 max_discharge_a = self.data.get("max_discharge_current_a")
                 if max_discharge_a and max_discharge_a > 0:
-                    power_w = max_discharge_a * 300  # Conservative voltage estimate
-                    _LOGGER.info("FoxESS force_discharge using inverter max: %.0fA → %.0fW", max_discharge_a, power_w)
+                    v = self.data.get("battery_voltage_v")
+                    voltage = v if isinstance(v, (int, float)) and v > 100 else 300
+                    power_w = max_discharge_a * voltage
+                    _LOGGER.info(
+                        "FoxESS force_discharge using inverter max: %.0fA × %.0fV → %.0fW",
+                        max_discharge_a, voltage, power_w,
+                    )
             if power_w <= 0:
                 power_w = 5000  # Fallback default
             return await self._controller.force_discharge(duration_minutes, power_w=power_w)
