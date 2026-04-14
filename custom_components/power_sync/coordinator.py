@@ -4189,7 +4189,20 @@ class SolcastForecastCoordinator(DataUpdateCoordinator):
 
         async with self._session.get(url, headers=headers, params=params) as response:
             if response.status == 401:
-                raise UpdateFailed("Solcast API authentication failed - check API key")
+                # Most common cause: user pasted a stale/rotated API key, or
+                # the resource_id belongs to a different Solcast account than
+                # the API key does. Surface key prefix + resource so the user
+                # can at least tell that the right values reached the API.
+                key_preview = (
+                    f"{self._api_key[:4]}…{self._api_key[-4:]}"
+                    if len(self._api_key) > 8 else "<short>"
+                )
+                raise UpdateFailed(
+                    "Solcast API 401 Unauthorized — API key does not match an "
+                    "active account, or resource_id belongs to a different "
+                    "account. Verify both at toolkit.solcast.com.au → API "
+                    f"Management. (key={key_preview}, resource={resource_id})"
+                )
             if response.status == 429:
                 self._rate_limited = True
                 self._last_rate_limit_time = dt_util.now()
