@@ -4642,20 +4642,32 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
         )
 
     async def _async_route_to_provider_options(self) -> FlowResult:
-        """Continue the options flow into the electricity-provider-specific step."""
-        if self._provider == "amber":
+        """Continue the options flow into the electricity-provider-specific step.
+
+        `self._provider` is only set when the user entered this router via
+        async_step_pricing (which explicitly assigns it). Other entry points —
+        notably async_step_powersync_token after a Tesla sign-in — also call
+        this router but never touch `_provider`, which used to raise
+        AttributeError and surface to the user as "Unknown error" in the
+        Tesla sign-in dialog. Fall back to the persisted provider on the
+        config entry so every path into this function is valid.
+        """
+        provider = getattr(self, "_provider", None) or self._get_option(
+            CONF_ELECTRICITY_PROVIDER, "amber"
+        )
+        if provider == "amber":
             return await self.async_step_amber_options()
-        if self._provider == "flow_power":
+        if provider == "flow_power":
             return await self.async_step_flow_power_options()
-        if self._provider in ("globird", "aemo_vpp"):
+        if provider in ("globird", "aemo_vpp"):
             return await self.async_step_globird_options()
-        if self._provider == "localvolts":
+        if provider == "localvolts":
             return await self.async_step_localvolts_options()
-        if self._provider == "octopus":
+        if provider == "octopus":
             return await self.async_step_octopus_options()
-        if self._provider == "epex":
+        if provider == "epex":
             return await self.async_step_epex_options()
-        if self._provider == "nz":
+        if provider == "nz":
             return await self.async_step_nz_options()
         return await self.async_step_amber_options()
 
