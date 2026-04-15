@@ -60,6 +60,7 @@ from .const import (
     SERVICE_SYNC_NOW,
     SERVICE_FORCE_DISCHARGE,
     SERVICE_FORCE_CHARGE,
+    SERVICE_HOLD_BATTERY_SOC,
     SERVICE_RESTORE_NORMAL,
     SERVICE_GET_CALENDAR_HISTORY,
     SERVICE_SYNC_BATTERY_HEALTH,
@@ -16744,6 +16745,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "cancel_expiry_timer": None,
     }
 
+    # Hold-SoC mode: battery locked at current SoC — blocks charge + discharge.
+    # Duration-based like force charge/discharge; auto-restores on expiry.
+    hold_soc_state = {
+        "active": False,
+        "saved_operation_mode": None,
+        "saved_backup_reserve": None,
+        "expires_at": None,
+        "cancel_expiry_timer": None,
+        "locked_soc": None,  # SoC at the moment Hold was engaged, for diagnostics
+    }
+
+    # Self-consumption override: persistent toggle (no timer). When active,
+    # battery ignores TOU optimisation and runs pure self-consumption until
+    # the user switches it off or calls restore_normal.
+    self_consumption_state = {
+        "active": False,
+        "engaged_at": None,
+    }
+
     # Generation counter — incremented synchronously at the start of every
     # service command (before any await).  Each auto-restore callback captures
     # its generation at the time the timer is scheduled; if the counter has
@@ -17005,9 +17025,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         source = call.data.get("source", "user")
         extend_hardware = call.data.get("_extend_hardware", False)
 
-        # Hardware extension: optimizer is extending an active force discharge.
-        # Only re-issue Modbus writes to reset the inverter's hardware timer.
-        if extend_hardware and force_discharge_state.get("active"):
+        # Hardware-only path: fires for BOTH (a) optimizer-issued dispatch and
+        # (b) explicit hardware extensions during an active user force mode.
+        # Either way we want to push the Modbus write and skip the
+        # state/timer/dispatcher machinery that drives the user-facing
+        # Controls screen — the LP owns its own lifecycle, and automated
+        # actions shouldn't show as manual countdowns.
+        if source == "optimizer" or (extend_hardware and force_discharge_state.get("active")):
             entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
             power_w = call.data.get("power_w", 0)
             foxess_coord = entry_data.get("foxess_coordinator")
@@ -17825,11 +17849,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         source = call.data.get("source", "user")
         extend_hardware = call.data.get("_extend_hardware", False)
 
-        # Hardware extension: optimizer is extending an active force charge.
-        # Only re-issue Modbus writes to reset the inverter's hardware timer.
-        # Skip all state management, timer setup, and dispatcher signals —
-        # the optimizer coordinator manages those.
-        if extend_hardware and force_charge_state.get("active"):
+        # Hardware-only path: fires for BOTH (a) optimizer-issued dispatch and
+        # (b) explicit hardware extensions during an active user force mode.
+        # See force_discharge for the full rationale.
+        if source == "optimizer" or (extend_hardware and force_charge_state.get("active")):
             entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
             power_w = call.data.get("power_w", 0)
             foxess_coord = entry_data.get("foxess_coordinator")
@@ -19200,6 +19223,144 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         except Exception as e:
             _LOGGER.error(f"Error in restore normal: {e}", exc_info=True)
 
+    # Per-brand capability matrix for Hold SoC. "supported=True" means the
+    # brand has a primitive that can freeze the battery (block charge AND
+    # discharge). "warning" is surfaced to the mobile user as an info alert
+    # when the action is best-effort rather than a strict hardware lock.
+    HOLD_SOC_CAPS = {
+        "sigenergy": {"supported": True, "warning": None},
+        "sungrow":   {"supported": True, "warning": None},
+        "foxess":    {"supported": True, "warning": None},
+        "goodwe":    {"supported": True, "warning": None},
+        "tesla":     {
+            "supported": True,
+            "warning": (
+                "Tesla holds SoC as a discharge floor, but firmware may still "
+                "charge the battery from excess solar. Set Grid Export: "
+                "Everything manually for a full lock."
+            ),
+        },
+        "alphaess":  {
+            "supported": True,
+            "warning": (
+                "AlphaESS Hold SoC is best-effort — battery may still move. "
+                "Strict lock mode pending hardware testing."
+            ),
+        },
+    }
+
+    async def handle_hold_battery_soc(call: ServiceCall) -> None:
+        """Hold current battery SoC for a duration.
+
+        Locks the battery at its current state of charge by routing through
+        each brand's `set_backup_mode` coordinator method (standby on
+        Sigenergy/AlphaESS, min_soc/Feed-In on FoxESS, ECO on GoodWe,
+        autonomous+backup_reserve on Tesla).
+
+        Duration-based with auto-restore via `restore_normal` on expiry.
+        Source-aware: optimizer-sourced calls skip state management so the
+        user-facing Controls screen never displays automated activity.
+        """
+        from homeassistant.util import dt as dt_util
+
+        raw_duration = call.data.get("duration", DEFAULT_DISCHARGE_DURATION)
+        try:
+            duration = int(raw_duration)
+        except (ValueError, TypeError):
+            duration = DEFAULT_DISCHARGE_DURATION
+        if duration not in DISCHARGE_DURATIONS:
+            duration = DEFAULT_DISCHARGE_DURATION
+
+        source = call.data.get("source", "user")
+
+        entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+
+        # Pick the first available coordinator. All brands expose a
+        # set_backup_mode method that routes to the right inverter primitive.
+        for coord_key, brand in (
+            ("tesla_coordinator", "tesla"),
+            ("sigenergy_coordinator", "sigenergy"),
+            ("sungrow_coordinator", "sungrow"),
+            ("foxess_coordinator", "foxess"),
+            ("goodwe_coordinator", "goodwe"),
+            ("alphaess_coordinator", "alphaess"),
+        ):
+            coord = entry_data.get(coord_key)
+            if coord:
+                break
+        else:
+            _LOGGER.error("Hold SoC: no battery coordinator available")
+            return
+
+        _LOGGER.info(
+            "🔒 HOLD SoC: activating for %d minutes on %s (source=%s)",
+            duration, brand, source,
+        )
+
+        try:
+            result = await coord.set_backup_mode()
+        except Exception as e:
+            _LOGGER.error("Hold SoC failed on %s: %s", brand, e, exc_info=True)
+            return
+
+        if not result:
+            _LOGGER.error("Hold SoC: set_backup_mode returned False on %s", brand)
+            return
+
+        # Optimizer source: skip state / timer / dispatcher. The LP manages
+        # its own lifecycle and we don't want automated activity polluting
+        # the user's Controls screen.
+        if source == "optimizer":
+            _LOGGER.debug("Hold SoC optimizer-sourced — skipping state management")
+            return
+
+        # Snapshot current SoC for diagnostics
+        soc = None
+        if coord and getattr(coord, "data", None):
+            soc = coord.data.get("battery_level")
+
+        # Cancel any previous expiry timer before starting a new one
+        if hold_soc_state.get("cancel_expiry_timer"):
+            try:
+                hold_soc_state["cancel_expiry_timer"]()
+            except Exception:
+                pass
+
+        hold_soc_state["active"] = True
+        hold_soc_state["expires_at"] = dt_util.utcnow() + timedelta(minutes=duration)
+        hold_soc_state["locked_soc"] = soc
+
+        _restore_gen = _command_generation[0]
+
+        async def auto_restore_hold_soc(_now):
+            if _command_generation[0] != _restore_gen:
+                _LOGGER.debug("Hold SoC timer superseded — skipping restore")
+                return
+            if hold_soc_state["active"]:
+                _LOGGER.info("⏰ Hold SoC expired, auto-restoring")
+                await hass.services.async_call(DOMAIN, SERVICE_RESTORE_NORMAL, {}, blocking=True)
+
+        hold_soc_state["cancel_expiry_timer"] = async_track_point_in_utc_time(
+            hass, auto_restore_hold_soc, hold_soc_state["expires_at"],
+        )
+
+        # Dispatch mobile-side state event so the Controls screen can show
+        # the countdown bar.
+        async_dispatcher_send(hass, f"{DOMAIN}_hold_soc_state", {
+            "active": True,
+            "expires_at": hold_soc_state["expires_at"].isoformat(),
+            "duration": duration,
+            "locked_soc": soc,
+            "warning": HOLD_SOC_CAPS.get(brand, {}).get("warning"),
+        })
+
+        await persist_force_mode_state()
+
+        _LOGGER.info(
+            "✅ Hold SoC ACTIVE for %d min on %s (locked_soc=%s)",
+            duration, brand, soc,
+        )
+
     async def handle_set_self_consumption(call: ServiceCall) -> None:
         """Set battery to pure self-consumption mode (no TOU optimization).
 
@@ -19877,6 +20038,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Register force discharge, force charge, and restore normal services
     hass.services.async_register(DOMAIN, SERVICE_FORCE_DISCHARGE, handle_force_discharge)
     hass.services.async_register(DOMAIN, SERVICE_FORCE_CHARGE, handle_force_charge)
+    hass.services.async_register(DOMAIN, SERVICE_HOLD_BATTERY_SOC, handle_hold_battery_soc)
     hass.services.async_register(DOMAIN, SERVICE_RESTORE_NORMAL, handle_restore_normal)
     hass.services.async_register(DOMAIN, "set_self_consumption", handle_set_self_consumption)
     hass.services.async_register(DOMAIN, "set_autonomous", handle_set_autonomous)
