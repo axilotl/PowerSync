@@ -3209,35 +3209,44 @@ class AlphaESSEnergyCoordinator(DataUpdateCoordinator):
         return self._DEFAULT_FORCE_POWER_W
 
     async def force_charge(self, duration_min: int = 30, power_w: float = 0.0) -> bool:
-        """Force-charge the battery via the dispatch register block.
+        """Force-charge the battery via the Note29 dispatch block.
 
         Args:
-            duration_min: Declared duration in minutes (used for logging only —
-                AlphaESS has no auto-timeout; the caller must issue release).
+            duration_min: Force-mode duration in minutes. Passed down to Para6
+                as seconds — the inverter auto-stops when the timer elapses.
+                HA also runs its own expiry timer as a belt-and-braces fallback.
             power_w: Charge power in watts (positive). 0 or negative falls back
-                to the BMS-reported max charge power (register 0x012C), then to
-                a 5 kW safety default if the BMS reading isn't available yet.
+                to the BMS-reported max charge power, then to a 5 kW safety
+                default if the BMS reading isn't available yet.
         """
         power_w = self._resolve_force_power_w(power_w, "charge")
+        duration_seconds = max(60, int(duration_min) * 60)
         _LOGGER.info(
-            "AlphaESS coordinator: force_charge(power_w=%.0f, duration=%dm)",
-            power_w, duration_min,
+            "AlphaESS coordinator: force_charge(power_w=%.0f, duration=%dm/%ds)",
+            power_w, duration_min, duration_seconds,
         )
         async with self._controller:
-            return await self._controller.force_charge(power_kw=power_w / 1000.0)
+            return await self._controller.force_charge(
+                power_kw=power_w / 1000.0,
+                duration_seconds=duration_seconds,
+            )
 
     async def force_discharge(self, duration_min: int = 30, power_w: float = 0.0) -> bool:
-        """Force-discharge the battery via the dispatch register block.
+        """Force-discharge the battery via the Note29 dispatch block.
 
         Same fallback chain as force_charge — see its docstring.
         """
         power_w = self._resolve_force_power_w(power_w, "discharge")
+        duration_seconds = max(60, int(duration_min) * 60)
         _LOGGER.info(
-            "AlphaESS coordinator: force_discharge(power_w=%.0f, duration=%dm)",
-            power_w, duration_min,
+            "AlphaESS coordinator: force_discharge(power_w=%.0f, duration=%dm/%ds)",
+            power_w, duration_min, duration_seconds,
         )
         async with self._controller:
-            return await self._controller.force_discharge(power_kw=power_w / 1000.0)
+            return await self._controller.force_discharge(
+                power_kw=power_w / 1000.0,
+                duration_seconds=duration_seconds,
+            )
 
     async def restore_normal(self) -> bool:
         """Release dispatch and restore export limit to normal."""

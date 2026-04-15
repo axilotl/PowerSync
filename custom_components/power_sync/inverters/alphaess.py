@@ -8,11 +8,14 @@ Key facts (differ from every other brand in PowerSync — read the plan):
 - Default slave ID is 0x55 (85), NOT 1 or 247
 - Battery power register 0126H: negative = charge, positive = discharge
   (already matches PowerSync convention — no sign flip needed)
-- Dispatch active power (0723H) uses a +32000 offset:
-  value < 32000 = charge, value > 32000 = discharge, 32000 = idle
-- Dispatch target SOC (0728H) uses 0.4 %/bit (read SOC at 0102H uses 0.1 %/bit)
-- No auto-revert: once 0722H=1, inverter stays in forced dispatch until
-  we explicitly write 0722H=0. Coordinator must release on unload.
+- Dispatch uses the 0x0880 block (Note29 "Power Dispatch parameter list"),
+  NOT the 0x0722 block (which is HHE-MEC only and silently no-ops on SMILE).
+- Dispatch power (Para2 at 0x0881-0x0882) is a SIGNED int32 in watts with
+  NO offset. Negative = charge from grid, positive = discharge to grid.
+- Cutoff SOC (Para5 at 0x0886) uses percent × 2.5 (so 100% → 250, 10% → 25).
+- Dispatch Time (Para6 at 0x0887-0x0888) is seconds — inverter auto-stops
+  when the timer elapses. We still release (Para1=0) on unload as a
+  belt-and-braces safety net.
 """
 import asyncio
 import logging
@@ -70,50 +73,68 @@ class AlphaESSController(InverterController):
     REG_PV6_POWER = 0x0433
 
     # === CONTROL REGISTERS (R/W) ===
-    # Primary dispatch block (0722H onwards)
-    REG_DISPATCH_START = 0x0722         # U16: 1 = start dispatch, 0 = stop (release)
-    REG_DISPATCH_ACTIVE_POWER = 0x0723  # S32, 1 W/bit, offset +32000
-    REG_DISPATCH_REACTIVE_POWER = 0x0725  # S32, 1 var/bit, offset +32000
-    REG_DISPATCH_MODE = 0x0727          # U16, Note7 enum (value meaning TBD from hardware testing)
-    REG_DISPATCH_SOC = 0x0728           # U16, 0.4 %/bit — DIFFERENT SCALE from 0102H
+    # Power Dispatch block at 0x0880-0x088A (Note29 "Power Dispatch parameter list").
+    # This is the block that ACTUALLY works on SMILE / Storion hardware.
+    #
+    # An older block at 0x0722-0x0728 exists in the PDF under "Household System
+    # (Only applicable to HHE MEC)". We initially shipped against that and got
+    # confirmed acknowledgements with no battery movement — wrong hardware
+    # target. Live SMILE hardware uses 0x0880 per Hillview Lodge and Note29.
+    REG_DISPATCH_PARA1_START = 0x0880       # U16: 1=start, 0=stop
+    REG_DISPATCH_PARA2_POWER = 0x0881       # S32, 1 W/bit, SIGNED DIRECT — no offset
+                                            # For mode 2: negative=charge from grid, positive=discharge
+    REG_DISPATCH_PARA3_RESERVED = 0x0883    # S32, always 0
+    REG_DISPATCH_PARA4_MODE = 0x0885        # U16 mode enum (Note7 values)
+    REG_DISPATCH_PARA5_CUTOFF_SOC = 0x0886  # U16, percent × 2.5 (so 100% → 250, 10% → 25)
+    REG_DISPATCH_PARA6_TIME_SECONDS = 0x0887  # U32, seconds — inverter auto-stops after this
+    REG_DISPATCH_PARA7_DIRECTION = 0x0889   # U16 enum (see constants below)
+    REG_DISPATCH_PARA8_PV_SWITCH = 0x088A   # U16: 1=Open, 2=Close
+
+    # Para7 direction enum (Note29 Tab2)
+    DISPATCH_DIR_AGING_END = 0
+    DISPATCH_DIR_PV_TO_GRID = 1
+    DISPATCH_DIR_PV_TO_BAT = 2
+    DISPATCH_DIR_BAT_TO_GRID = 3      # force discharge
+    DISPATCH_DIR_GRID_TO_BAT = 4      # force charge from grid
+    DISPATCH_DIR_BAT_TO_GRID_2 = 5
+
+    # Para8 PV switch
+    PV_SWITCH_OPEN = 1
+    PV_SWITCH_CLOSE = 2
 
     # Export / feed-in limit
     REG_MAX_FEED_INTO_GRID_PERCENT = 0x0800  # U16, 1 %/bit, 0 = zero export, 100 = unlimited
 
     # Scale / offset constants
-    GAIN_SOC = 10           # 0.1 %/bit for read (0102H, 011BH)
-    GAIN_DISPATCH_SOC = 0.4  # 0.4 %/bit for write (0728H): stored = percent / 0.4
-    DISPATCH_OFFSET = 32000  # Active power offset — see class docstring
-    EXPORT_LIMIT_ZERO = 0    # 0% → zero export
+    GAIN_SOC = 10             # 0.1 %/bit for read (0102H, 011BH)
+    # Cutoff SOC for Para5 (0x0886): encoding is raw = percent × 2.5, so 100% → 250
+    DISPATCH_CUTOFF_SOC_SCALE = 2.5
+    EXPORT_LIMIT_ZERO = 0     # 0% → zero export
     EXPORT_LIMIT_UNLIMITED = 100  # 100% → unlimited export
+    # Default Dispatch Time when the caller doesn't pass one. Keep this short
+    # enough that a lost connection doesn't strand the battery in forced mode.
+    # The coordinator normally passes the real duration from force_charge /
+    # force_discharge calls.
+    DEFAULT_DISPATCH_SECONDS = 3600
 
-    # Dispatch Mode values (register 0x0727). The enum is 1-based — mode 0
-    # is invalid and causes the inverter to silently ignore dispatch writes.
-    #
-    # Authoritative source: Hillview Lodge AlphaESS docs
-    # (https://projects.hillviewlodge.ie/alphaess/), confirmed by a user whose
-    # setup actively uses them. The official AlphaESS PDF lists the same
-    # enum names but its mode 4 "Maximise Output" does NOT give controlled
-    # active-power dispatch in practice — use mode 2 instead.
+    # Dispatch Mode values (written to Para4 at 0x0885). Same enum as Note7;
+    # mode 2 "State of Charge Control" is the direct power-setpoint mode.
     #
     #   1  Battery only charges from PV
-    #   2  State of Charge Control  ← active-power dispatch against 0x0723,
-    #                                   stops at the 0x0728 SOC cutoff
+    #   2  State of Charge Control  ← Para2 = signed W, Para5 = cutoff SOC
     #   3  Load Following
-    #   4  Maximise Output           (not the direct power-setpoint mode)
+    #   4  Maximise Output
     #   5  Normal Mode
     #   6  Optimise Consumption
     #   7  Maximise Consumption
     #  19  No Battery Charge
     #
     # For mode 2:
-    #   - 0x0723 > 32000 (positive dispatch power) AND cutoff SOC < battery SOC
-    #       → discharge at the configured rate until the cutoff SOC is reached
-    #   - 0x0723 < 32000 (negative dispatch power) AND cutoff SOC > battery SOC
+    #   - Para2 > 0 (positive watts) AND cutoff SOC < current battery SOC
+    #       → discharge at the configured rate until cutoff SOC is reached
+    #   - Para2 < 0 (negative watts) AND cutoff SOC > current battery SOC
     #       → charge from grid at the configured rate until cutoff SOC reached
     DISPATCH_MODE_SOC_CONTROL = 2
-    DISPATCH_MODE_MAXIMISE_OUTPUT = 4
-    DISPATCH_MODE_DEFAULT = DISPATCH_MODE_SOC_CONTROL
 
     # Connection defaults
     DEFAULT_PORT = 502
@@ -193,18 +214,19 @@ class AlphaESSController(InverterController):
             self._connected = False
 
     async def release_dispatch(self) -> bool:
-        """Explicitly release forced dispatch (write 0x0722=0) if we hold it.
+        """Explicitly release forced dispatch (write Para1=0) if we hold it.
 
         Called by the coordinator on shutdown to guarantee the inverter doesn't
-        stay locked in charge/discharge after HA unloads. Idempotent — no-op
-        if we've already released or never dispatched.
+        stay locked in charge/discharge after HA unloads. The Para6 duration
+        timer would eventually stop it anyway, but writing Para1=0 is the
+        authoritative release and is safe even mid-duration.
         """
         if not self._dispatch_active:
             return True
         try:
-            ok = await self._write_holding_registers(self.REG_DISPATCH_START, [0])
+            ok = await self._write_holding_registers(self.REG_DISPATCH_PARA1_START, [0])
             if ok:
-                _LOGGER.info("AlphaESS dispatch released (0722H=0)")
+                _LOGGER.info("AlphaESS dispatch released (0x0880=0)")
                 self._dispatch_active = False
                 return True
             _LOGGER.warning("Failed to release AlphaESS dispatch — register write returned False")
@@ -469,18 +491,25 @@ class AlphaESSController(InverterController):
         try:
             if not await self.connect():
                 return False
-            success = await self._write_holding_registers(self.REG_DISPATCH_START, [0])
+            success = await self._write_holding_registers(self.REG_DISPATCH_PARA1_START, [0])
             if success:
                 self._dispatch_active = False
-                _LOGGER.info("AlphaESS dispatch released (0722H=0) — self-consumption resumed")
+                _LOGGER.info("AlphaESS dispatch released (0x0880=0) — self-consumption resumed")
             return success
         except Exception as e:
             _LOGGER.error(f"Error releasing AlphaESS dispatch: {e}")
             return False
 
     async def set_standby_mode(self) -> bool:
-        """IDLE hold: hold dispatch active with zero active power (offset = 32000)."""
-        return await self._set_dispatch(power_w=0, target_soc_pct=50.0)
+        """IDLE hold by releasing dispatch entirely.
+
+        AlphaESS mode 2 (SoC Control) with power=0 has undefined behaviour per
+        Hillview's rules (they require power != 0 and a cutoff on the right
+        side of current SOC). Safest idle is to clear Para1 and let the
+        inverter return to autonomous — the LP optimizer's IDLE path uses
+        self-consumption anyway, so this matches.
+        """
+        return await self.set_self_consumption_mode()
 
     async def restore_from_standby(self) -> bool:
         return await self.set_self_consumption_mode()
@@ -491,13 +520,20 @@ class AlphaESSController(InverterController):
         restore_ok = await self.restore()
         return release_ok and restore_ok
 
-    async def force_charge(self, power_kw: float = 5.0, target_soc_pct: float = 100.0) -> bool:
-        """Force the battery to charge at the given power (from grid if needed).
+    async def force_charge(
+        self,
+        power_kw: float = 5.0,
+        target_soc_pct: float = 100.0,
+        duration_seconds: int = 3600,
+    ) -> bool:
+        """Force the battery to charge at the given power from grid.
 
         Args:
             power_kw: Desired charge power, in kW (positive).
-            target_soc_pct: Dispatch target SOC (0-100 %). Battery stops charging
-                when it reaches this target.
+            target_soc_pct: Cutoff SOC (0-100 %). Charging stops when reached.
+            duration_seconds: Auto-stop duration — inverter drops out of
+                forced dispatch after this many seconds. Coordinator typically
+                passes the force-mode duration in seconds.
         """
         power_w = max(0.0, power_kw) * 1000.0
         # Clamp to BMS-reported max charge power if we know it
@@ -508,15 +544,25 @@ class AlphaESSController(InverterController):
                 f"BMS max {max_regs[0]}W"
             )
             power_w = max_regs[0]
-        return await self._set_dispatch(power_w=-power_w, target_soc_pct=target_soc_pct)
+        return await self._set_dispatch(
+            power_w=-power_w,  # negative watts = charge per Note29
+            target_soc_pct=target_soc_pct,
+            direction=self.DISPATCH_DIR_GRID_TO_BAT,
+            duration_seconds=duration_seconds,
+        )
 
-    async def force_discharge(self, power_kw: float = 5.0, target_soc_pct: float = 10.0) -> bool:
-        """Force the battery to discharge at the given power (to grid/load).
+    async def force_discharge(
+        self,
+        power_kw: float = 5.0,
+        target_soc_pct: float = 10.0,
+        duration_seconds: int = 3600,
+    ) -> bool:
+        """Force the battery to discharge at the given power to grid.
 
         Args:
             power_kw: Desired discharge power, in kW (positive).
-            target_soc_pct: Dispatch floor SOC (0-100 %). Battery stops
-                discharging when it reaches this floor.
+            target_soc_pct: Floor SOC (0-100 %). Discharge stops when reached.
+            duration_seconds: Auto-stop duration (see force_charge).
         """
         power_w = max(0.0, power_kw) * 1000.0
         max_regs = await self._read_holding_registers(self.REG_BAT_MAX_DISCHARGE_POWER, 1)
@@ -526,60 +572,108 @@ class AlphaESSController(InverterController):
                 f"BMS max {max_regs[0]}W"
             )
             power_w = max_regs[0]
-        return await self._set_dispatch(power_w=power_w, target_soc_pct=target_soc_pct)
+        return await self._set_dispatch(
+            power_w=power_w,  # positive watts = discharge
+            target_soc_pct=target_soc_pct,
+            direction=self.DISPATCH_DIR_BAT_TO_GRID,
+            duration_seconds=duration_seconds,
+        )
 
-    async def _set_dispatch(self, power_w: float, target_soc_pct: float) -> bool:
-        """Write the full dispatch block (0722H, 0723H, 0727H, 0728H).
+    async def _set_dispatch(
+        self,
+        power_w: float,
+        target_soc_pct: float,
+        direction: int,
+        duration_seconds: int,
+    ) -> bool:
+        """Write the full Note29 dispatch block (0x0880-0x088A).
+
+        Writes every Para in the order mode-setup → power → SOC cutoff →
+        duration → direction → PV switch → start. Keeping Para1 (start) last
+        means the inverter only activates after every other parameter is valid.
 
         Sign convention for ``power_w``:
-            negative = charge into battery (possibly from grid)
-            positive = discharge from battery
-            0 = idle hold
+            negative = charge (pair with direction=GRID_TO_BAT)
+            positive = discharge (pair with direction=BAT_TO_GRID)
+
+        Args:
+            power_w: Signed watts for Para2.
+            target_soc_pct: Cutoff SOC in percent for Para5.
+            direction: Para7 enum (DISPATCH_DIR_* constants).
+            duration_seconds: Para6 auto-stop duration.
         """
         try:
             if not await self.connect():
                 return False
 
-            # 1. Set dispatch mode (0727H) — Note7 enum; default is DISPATCH_MODE_DEFAULT
-            mode_ok = await self._write_holding_registers(
-                self.REG_DISPATCH_MODE, [self.DISPATCH_MODE_DEFAULT]
+            # Para4 (mode) — SoC Control
+            if not await self._write_holding_registers(
+                self.REG_DISPATCH_PARA4_MODE, [self.DISPATCH_MODE_SOC_CONTROL]
+            ):
+                _LOGGER.error("Failed to write AlphaESS Para4 mode (0x0885)")
+                return False
+
+            # Para2 (power, S32, signed watts, no offset)
+            if not await self._write_holding_registers(
+                self.REG_DISPATCH_PARA2_POWER, self._from_signed32(int(round(power_w)))
+            ):
+                _LOGGER.error("Failed to write AlphaESS Para2 power (0x0881-0x0882)")
+                return False
+
+            # Para3 (reserved, must be 0)
+            await self._write_holding_registers(
+                self.REG_DISPATCH_PARA3_RESERVED, self._from_signed32(0)
             )
-            if not mode_ok:
-                _LOGGER.error("Failed to write AlphaESS dispatch mode (0727H)")
-                return False
 
-            # 2. Set target SOC (0728H) — 0.4 %/bit
+            # Para5 (cutoff SOC): raw = percent × 2.5
             soc_clamped = max(0.0, min(100.0, target_soc_pct))
-            soc_raw = int(round(soc_clamped / self.GAIN_DISPATCH_SOC))
-            soc_ok = await self._write_holding_registers(self.REG_DISPATCH_SOC, [soc_raw])
-            if not soc_ok:
-                _LOGGER.error("Failed to write AlphaESS dispatch SOC (0728H)")
+            soc_raw = int(round(soc_clamped * self.DISPATCH_CUTOFF_SOC_SCALE))
+            if not await self._write_holding_registers(
+                self.REG_DISPATCH_PARA5_CUTOFF_SOC, [soc_raw]
+            ):
+                _LOGGER.error("Failed to write AlphaESS Para5 cutoff SOC (0x0886)")
                 return False
 
-            # 3. Set dispatch active power (0723H) — S32, +32000 offset
-            # charge_w < 32000; discharge_w > 32000; idle = 32000
-            dispatch_raw = self.DISPATCH_OFFSET + int(round(power_w))
-            values = self._from_signed32(dispatch_raw)
-            power_ok = await self._write_holding_registers(self.REG_DISPATCH_ACTIVE_POWER, values)
-            if not power_ok:
-                _LOGGER.error("Failed to write AlphaESS dispatch power (0723H)")
+            # Para6 (duration, U32 seconds) — inverter auto-stops when elapsed
+            duration_clamped = max(60, int(duration_seconds))
+            hi = (duration_clamped >> 16) & 0xFFFF
+            lo = duration_clamped & 0xFFFF
+            if not await self._write_holding_registers(
+                self.REG_DISPATCH_PARA6_TIME_SECONDS, [hi, lo]
+            ):
+                _LOGGER.error("Failed to write AlphaESS Para6 duration (0x0887-0x0888)")
                 return False
 
-            # 4. Start dispatch (0722H = 1)
-            start_ok = await self._write_holding_registers(self.REG_DISPATCH_START, [1])
-            if not start_ok:
-                _LOGGER.error("Failed to start AlphaESS dispatch (0722H)")
+            # Para7 (direction enum)
+            if not await self._write_holding_registers(
+                self.REG_DISPATCH_PARA7_DIRECTION, [direction]
+            ):
+                _LOGGER.error("Failed to write AlphaESS Para7 direction (0x0889)")
+                return False
+
+            # Para8 (PV switch) — Close = normal PV behaviour during dispatch
+            await self._write_holding_registers(
+                self.REG_DISPATCH_PARA8_PV_SWITCH, [self.PV_SWITCH_CLOSE]
+            )
+
+            # Para1 (start = 1) — must be last
+            if not await self._write_holding_registers(
+                self.REG_DISPATCH_PARA1_START, [1]
+            ):
+                _LOGGER.error("Failed to start AlphaESS dispatch (0x0880)")
                 return False
 
             self._dispatch_active = True
-            action = (
-                "CHARGE" if power_w < 0 else
-                "DISCHARGE" if power_w > 0 else
-                "IDLE"
-            )
+            direction_name = {
+                self.DISPATCH_DIR_GRID_TO_BAT: "GRID_TO_BAT (charge)",
+                self.DISPATCH_DIR_BAT_TO_GRID: "BAT_TO_GRID (discharge)",
+                self.DISPATCH_DIR_PV_TO_BAT: "PV_TO_BAT",
+                self.DISPATCH_DIR_PV_TO_GRID: "PV_TO_GRID",
+            }.get(direction, f"dir={direction}")
             _LOGGER.info(
-                f"AlphaESS dispatch {action} active — power={power_w} W, "
-                f"target_soc={soc_clamped}% (raw {soc_raw}), mode={self.DISPATCH_MODE_DEFAULT}"
+                "AlphaESS dispatch %s — power=%.0f W, cutoff_soc=%.1f%% (raw %d), "
+                "duration=%ds, mode=2",
+                direction_name, power_w, soc_clamped, soc_raw, duration_clamped,
             )
             return True
 
