@@ -805,15 +805,14 @@ class FoxESSController(InverterController):
         """
         max_attempts = 3
         for attempt in range(1, max_attempts + 1):
-            # Enable remote control
-            # H3-Pro/H3-Smart: use grid/CT target (0x0009) so the power setpoint
-            # targets the grid meter — the inverter auto-adjusts for PV and load.
-            # H1/H3/KH: use AC output target (0x0001) — untested with grid target.
+            # Enable remote control — AC output target (0x0001) on all families.
+            # Grid target (0x0009) on H3-Pro/Smart made the setpoint control grid
+            # meter draw, so the inverter apportioned battery_charge = setpoint −
+            # load + PV. When an EV was drawing 11 kW, a 15 kW force_charge only
+            # delivered ~4 kW to the battery. AC target commands battery power
+            # directly and is independent of concurrent house load.
             if reg.remote_enable:
-                if self._model_family in (FoxESSModelFamily.H3_PRO, FoxESSModelFamily.H3_SMART):
-                    enable_val = REMOTE_CONTROL_GRID
-                else:
-                    enable_val = REMOTE_CONTROL_AC
+                enable_val = REMOTE_CONTROL_AC
                 await self._write_holding_register(reg.remote_enable, enable_val)
                 if reg.remote_timeout:
                     await self._write_holding_register(reg.remote_timeout, timeout_seconds)
