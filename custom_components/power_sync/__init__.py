@@ -19340,7 +19340,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             try:
                 await hass.services.async_call(
                     DOMAIN, SERVICE_SET_BACKUP_RESERVE,
-                    {"backup_reserve": target_reserve},
+                    {"percent": target_reserve},
                     blocking=True,
                 )
                 await hass.services.async_call(
