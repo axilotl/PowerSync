@@ -7,7 +7,7 @@ import json
 import logging
 import pathlib
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Optional
 
 # Module-level state for alert cooldowns (keyed by entry_id)
 _last_discrepancy_alert: dict[str, datetime] = {}
@@ -7451,20 +7451,70 @@ class CurrentWeatherView(HomeAssistantView):
         """Initialize the view."""
         self._hass = hass
 
+    # Map HA weather-entity standard states to the tight enum the mobile
+    # app's WeatherData.condition expects (sunny / partly_sunny / cloudy).
+    # HA states come from the Home Assistant weather component standard list:
+    # https://developers.home-assistant.io/docs/core/entity/weather/
+    _HA_WEATHER_TO_CONDITION = {
+        "sunny": "sunny",
+        "clear-night": "sunny",        # clear sky, night variant
+        "partlycloudy": "partly_sunny",
+        "windy": "partly_sunny",
+        "windy-variant": "partly_sunny",
+        "lightning": "partly_sunny",
+        "cloudy": "cloudy",
+        "fog": "cloudy",
+        "hail": "cloudy",
+        "lightning-rainy": "cloudy",
+        "pouring": "cloudy",
+        "rainy": "cloudy",
+        "snowy": "cloudy",
+        "snowy-rainy": "cloudy",
+        "exceptional": "cloudy",
+    }
+
     def _is_night_from_sun(self) -> bool:
         """Read HA's built-in sun.sun entity to derive day/night state.
 
         Works on every HA instance out of the box — HA auto-configures
         sun.sun from the instance latitude/longitude set at onboarding.
         Falls back to False (day) if the sun entity is somehow missing
-        rather than reporting a stuck-in-day house scene, which is
-        what we already ship today.
+        rather than reporting a stuck-in-day house scene.
         """
         sun = self._hass.states.get("sun.sun")
         if sun is None:
             _LOGGER.debug("sun.sun entity missing — defaulting is_night to False")
             return False
         return sun.state == "below_horizon"
+
+    def _weather_from_ha_entity(self) -> Optional[dict]:
+        """Pull current weather from HA's built-in weather entity.
+
+        Most HA installs ship weather.forecast_home (met.no by default).
+        We pick the first entity in the 'weather' domain and translate its
+        standard state + attributes to the PowerSync mobile shape.
+        Returns None if no weather entity exists so the caller can fall
+        through to the minimal is_night-only payload.
+        """
+        weather_entities = self._hass.states.async_all("weather")
+        if not weather_entities:
+            return None
+
+        state = weather_entities[0]
+        condition = self._HA_WEATHER_TO_CONDITION.get(
+            state.state, "partly_sunny"
+        )
+        attrs = state.attributes or {}
+        return {
+            "condition": condition,
+            "description": state.state.replace("-", " ").replace("_", " "),
+            "temperature_c": attrs.get("temperature"),
+            "humidity": attrs.get("humidity"),
+            # HA weather entities don't standardise cloud cover; leave null
+            # rather than invent a value.
+            "cloud_cover": attrs.get("cloud_coverage"),
+            "entity_id": state.entity_id,
+        }
 
     async def get(self, request: web.Request) -> web.Response:
         """Handle GET request - fetch current weather.
@@ -7495,19 +7545,36 @@ class CurrentWeatherView(HomeAssistantView):
                 entry.data.get(CONF_OPENWEATHERMAP_API_KEY)
             )
 
-            # OWM not configured — return a minimal success payload so the
-            # mobile app still gets is_night for the house-scene switch.
-            # Previously this returned HTTP 400, leaving Solcast-only users
-            # stuck in the daytime scene after dark.
+            # OWM not configured — fall back to HA's built-in weather entity
+            # if one exists (every install typically has weather.forecast_home
+            # from met.no by default). That gives us real conditions +
+            # temperature + humidity without an external API dependency.
+            # Previously this path returned HTTP 400, leaving Solcast-only
+            # users with no weather payload at all.
             if not api_key:
+                ha_weather = self._weather_from_ha_entity()
+                if ha_weather:
+                    return web.json_response({
+                        "success": True,
+                        "condition": ha_weather["condition"],
+                        "description": ha_weather["description"],
+                        "temperature_c": ha_weather.get("temperature_c"),
+                        "humidity": ha_weather.get("humidity"),
+                        "cloud_cover": ha_weather.get("cloud_cover"),
+                        "is_night": self._is_night_from_sun(),
+                        "source": f"ha:{ha_weather['entity_id']}",
+                    })
+                # No HA weather entity either — still give at least is_night
+                # so the house scene switches correctly after dark.
                 return web.json_response({
                     "success": True,
-                    "condition": "clear",
+                    "condition": "partly_sunny",
                     "description": "",
                     "temperature_c": None,
                     "humidity": None,
                     "cloud_cover": None,
                     "is_night": self._is_night_from_sun(),
+                    "source": "sun_only",
                 })
 
             # Get weather location from config
@@ -7528,16 +7595,30 @@ class CurrentWeatherView(HomeAssistantView):
             )
 
             if not weather_data:
-                # OWM reachable but returned nothing — still give the mobile
-                # app is_night from sun.sun so the scene doesn't get stuck.
+                # OWM reachable but returned nothing — prefer HA's built-in
+                # weather entity as the fallback; that still gives real
+                # conditions. If that's also missing, drop to is_night only.
+                ha_weather = self._weather_from_ha_entity()
+                if ha_weather:
+                    return web.json_response({
+                        "success": True,
+                        "condition": ha_weather["condition"],
+                        "description": ha_weather["description"],
+                        "temperature_c": ha_weather.get("temperature_c"),
+                        "humidity": ha_weather.get("humidity"),
+                        "cloud_cover": ha_weather.get("cloud_cover"),
+                        "is_night": self._is_night_from_sun(),
+                        "source": f"ha:{ha_weather['entity_id']}",
+                    })
                 return web.json_response({
                     "success": True,
-                    "condition": "clear",
+                    "condition": "partly_sunny",
                     "description": "",
                     "temperature_c": None,
                     "humidity": None,
                     "cloud_cover": None,
                     "is_night": self._is_night_from_sun(),
+                    "source": "sun_only",
                 })
 
             # Prefer OWM's is_night (based on the icon) but fall back to
