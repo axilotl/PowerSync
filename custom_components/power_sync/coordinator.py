@@ -1550,6 +1550,17 @@ class TeslaEnergyCoordinator(DataUpdateCoordinator):
                 except Exception:
                     pass
 
+            # Derive the per-site nameplate power from cached site_info
+            # (refreshed every 6 hours). Powerwall 2 is 5 kW continuous and
+            # Powerwall 3 is 11.5 kW continuous; nameplate_power on Tesla's
+            # /live_status payload is the total site rating in watts so it
+            # covers single- and multi-unit installs. Both charge and
+            # discharge use the same ceiling.
+            nameplate_w = None
+            if self._site_info_cache:
+                nameplate_w = self._site_info_cache.get("nameplate_power")
+            nameplate_kw = round(nameplate_w / 1000.0, 2) if nameplate_w else None
+
             energy_data = {
                 "solar_power": solar_kw,
                 "grid_power": grid_kw,
@@ -1561,6 +1572,11 @@ class TeslaEnergyCoordinator(DataUpdateCoordinator):
                 "last_update": dt_util.utcnow(),
                 "energy_summary": self._energy_acc.as_dict(),
                 "firmware": self._firmware,
+                # BMS ceiling for the mobile force-mode picker's Max chip
+                "battery_max_charge_power": nameplate_kw,
+                "battery_max_discharge_power": nameplate_kw,
+                "battery_max_charge_power_w": nameplate_w,
+                "battery_max_discharge_power_w": nameplate_w,
             }
 
             # Tesla API recovered — send recovery notification if we were in outage
@@ -3567,6 +3583,19 @@ class SungrowEnergyCoordinator(DataUpdateCoordinator):
                 "discharge_rate_limit_kw": data.get("discharge_rate_limit_kw"),
                 "export_limit_w": data.get("export_limit_w"),
                 "export_limit_enabled": data.get("export_limit_enabled"),
+                # Aliases for the mobile force-mode picker's Max chip.
+                # The *_rate_limit_kw values already reflect BMS-reported
+                # current × voltage, so reuse them rather than duplicate.
+                "battery_max_charge_power": data.get("charge_rate_limit_kw"),
+                "battery_max_discharge_power": data.get("discharge_rate_limit_kw"),
+                "battery_max_charge_power_w": (
+                    int(data["charge_rate_limit_kw"] * 1000)
+                    if data.get("charge_rate_limit_kw") else None
+                ),
+                "battery_max_discharge_power_w": (
+                    int(data["discharge_rate_limit_kw"] * 1000)
+                    if data.get("discharge_rate_limit_kw") else None
+                ),
                 "energy_summary": self._build_energy_summary(data),
             }
 
@@ -4268,6 +4297,20 @@ class GoodWeEnergyCoordinator(DataUpdateCoordinator):
                 "model_name": data.get("model_name"),
                 "serial_number": data.get("serial_number"),
                 "rated_power_w": data.get("rated_power_w"),
+                # Inverter nameplate rating as the BMS ceiling — GoodWe ET/EH
+                # hybrid inverters match their battery's charge/discharge rate
+                # to rated_power_w in practice, so reuse it as the force-mode
+                # picker's Max value. Symmetric for charge + discharge.
+                "battery_max_charge_power_w": data.get("rated_power_w"),
+                "battery_max_discharge_power_w": data.get("rated_power_w"),
+                "battery_max_charge_power": (
+                    round(data["rated_power_w"] / 1000.0, 2)
+                    if data.get("rated_power_w") else None
+                ),
+                "battery_max_discharge_power": (
+                    round(data["rated_power_w"] / 1000.0, 2)
+                    if data.get("rated_power_w") else None
+                ),
                 "energy_summary": self._energy_acc.as_dict(),
             }
 

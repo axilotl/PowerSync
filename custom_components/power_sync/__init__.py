@@ -18677,8 +18677,33 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         from homeassistant.util import dt as dt_util
         # Log call context for debugging (helps identify if called by automation)
         context = call.context
-        _LOGGER.info(f"🔄 Restore normal service called (context: user_id={context.user_id}, parent_id={context.parent_id})")
+        source = call.data.get("source", "user")
+        _LOGGER.info(f"🔄 Restore normal service called (context: user_id={context.user_id}, parent_id={context.parent_id}, source={source})")
         _LOGGER.info("🔄 RESTORE NORMAL: Restoring normal operation")
+
+        # Clear user-facing state toggles (Hold SoC and Self-Use buttons).
+        # These are mobile-only visual flags; clearing them on user-sourced
+        # restores keeps the Controls screen in sync without forcing the
+        # optimizer to touch them.
+        if source == "user":
+            if self_consumption_state.get("active"):
+                self_consumption_state["active"] = False
+                self_consumption_state["engaged_at"] = None
+                async_dispatcher_send(hass, f"{DOMAIN}_self_consumption_state", {
+                    "active": False,
+                })
+            if hold_soc_state.get("active"):
+                if hold_soc_state.get("cancel_expiry_timer"):
+                    try:
+                        hold_soc_state["cancel_expiry_timer"]()
+                    except Exception:
+                        pass
+                hold_soc_state["active"] = False
+                hold_soc_state["expires_at"] = None
+                hold_soc_state["cancel_expiry_timer"] = None
+                async_dispatcher_send(hass, f"{DOMAIN}_hold_soc_state", {
+                    "active": False,
+                })
 
         # Set a cooldown so the optimizer doesn't immediately re-trigger force mode.
         # User-initiated restores (user_id set) get a 30-min cooldown.
@@ -19364,15 +19389,34 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def handle_set_self_consumption(call: ServiceCall) -> None:
         """Set battery to pure self-consumption mode (no TOU optimization).
 
-        Used by optimizer for CONSUME action - battery should naturally offset
-        home load without making autonomous charge/discharge decisions based on TOU.
+        Used by optimizer for CONSUME action and by the mobile Self-Use
+        button. When the caller supplies source='optimizer' (LP executor),
+        the handler executes the hardware write only and skips updating
+        self_consumption_state — that keeps automated activity out of the
+        user-facing Controls screen toggle. Manual calls (source='user' or
+        omitted) also flip self_consumption_state['active']=True so the
+        mobile UI can render the toggle on.
 
         Unlike restore_normal, this:
         - Sets mode to self_consumption (not autonomous)
         - Does NOT restore TOU tariff
-        - Does NOT send push notifications (optimizer-controlled)
+        - Does NOT send push notifications
         """
-        _LOGGER.info("Optimizer: Setting pure self-consumption mode")
+        from homeassistant.util import dt as dt_util
+
+        source = call.data.get("source", "user")
+        _LOGGER.info("Setting pure self-consumption mode (source=%s)", source)
+
+        # Mark the mobile toggle on for user-sourced calls. The hardware
+        # calls below are idempotent so we set the flag up front; optimizer
+        # calls skip this and go straight to executing the brand action.
+        if source == "user":
+            self_consumption_state["active"] = True
+            self_consumption_state["engaged_at"] = dt_util.utcnow()
+            async_dispatcher_send(hass, f"{DOMAIN}_self_consumption_state", {
+                "active": True,
+                "engaged_at": self_consumption_state["engaged_at"].isoformat(),
+            })
 
         # Check if this is a FoxESS system
         is_foxess = bool(entry.data.get(CONF_FOXESS_HOST) or entry.data.get(CONF_FOXESS_SERIAL_PORT))

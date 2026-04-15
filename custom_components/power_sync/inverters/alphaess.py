@@ -500,15 +500,51 @@ class AlphaESSController(InverterController):
             return False
 
     async def set_standby_mode(self) -> bool:
-        """IDLE hold by releasing dispatch entirely.
+        """IDLE hold — best-effort battery lock at current SoC.
 
-        AlphaESS mode 2 (SoC Control) with power=0 has undefined behaviour per
-        Hillview's rules (they require power != 0 and a cutoff on the right
-        side of current SOC). Safest idle is to clear Para1 and let the
-        inverter return to autonomous — the LP optimizer's IDLE path uses
-        self-consumption anyway, so this matches.
+        Tries to pin the battery at its current state of charge by setting
+        mode 2 (SoC Control) with power=0 and cutoff=current_soc. Per
+        Hillview's rules mode 2 only acts when (Power > 0 & Cutoff < SoC)
+        or (Power < 0 & Cutoff > SoC); with power=0 neither condition
+        applies, so in theory the battery idles.
+
+        This is NOT a hard lock — excess solar may still charge the
+        battery depending on firmware. A true strict-lock would need mode
+        19 'No Battery Charge' combined with something that also blocks
+        discharge, which isn't a single documented primitive. Ship this
+        as the best documented attempt and flag the limitation upstream.
+
+        Falls back to a plain dispatch release (Para1=0) if we can't read
+        the current SoC — releasing is safer than writing bogus params.
         """
-        return await self.set_self_consumption_mode()
+        try:
+            if not await self.connect():
+                return False
+            soc_regs = await self._read_holding_registers(self.REG_BAT_SOC, 1)
+            if not soc_regs:
+                _LOGGER.warning(
+                    "AlphaESS set_standby_mode: SoC read failed, falling back "
+                    "to dispatch release (no strict lock)"
+                )
+                return await self.set_self_consumption_mode()
+            current_soc = soc_regs[0] / self.GAIN_SOC
+            _LOGGER.info(
+                "AlphaESS set_standby_mode: attempting lock at SoC=%.1f%% "
+                "(mode 2, power=0, cutoff=current_soc)",
+                current_soc,
+            )
+            return await self._set_dispatch(
+                power_w=0,
+                target_soc_pct=current_soc,
+                direction=self.DISPATCH_DIRECTION_DISCHARGE,  # sign irrelevant at power=0
+                duration_seconds=self.DEFAULT_DISPATCH_SECONDS,
+            )
+        except Exception as e:
+            _LOGGER.warning(
+                "AlphaESS set_standby_mode failed (%s), falling back to release",
+                e,
+            )
+            return await self.set_self_consumption_mode()
 
     async def restore_from_standby(self) -> bool:
         return await self.set_self_consumption_mode()
