@@ -87,23 +87,33 @@ class AlphaESSController(InverterController):
     EXPORT_LIMIT_ZERO = 0    # 0% → zero export
     EXPORT_LIMIT_UNLIMITED = 100  # 100% → unlimited export
 
-    # Dispatch Mode values (Note7 — official PDF, page 57):
-    #   1 = Battery only charges from PV
-    #   2 = State of Charge control (drives battery to target SOC)
-    #   3 = Load Following
-    #   4 = Maximise Output (follow active-power setpoint at 0x0723) ← what we want
-    #   5 = Normal Mode
-    #   6 = Optimise Consumption
-    #   7 = Maximise Consumption
-    #   8 = ECO Mode
-    #   9 = FCAS Mode
-    #  10 = PV Power Setting
-    # Mode 0 is NOT a valid value — writing it leaves dispatch inert. Kaise's
-    # first hardware test confirmed this: 0x0722=1 was written, the inverter
-    # acknowledged, but no movement because Note7=0 isn't on the list.
-    DISPATCH_MODE_MAXIMISE_OUTPUT = 4
+    # Dispatch Mode values (register 0x0727). The enum is 1-based — mode 0
+    # is invalid and causes the inverter to silently ignore dispatch writes.
+    #
+    # Authoritative source: Hillview Lodge AlphaESS docs
+    # (https://projects.hillviewlodge.ie/alphaess/), confirmed by a user whose
+    # setup actively uses them. The official AlphaESS PDF lists the same
+    # enum names but its mode 4 "Maximise Output" does NOT give controlled
+    # active-power dispatch in practice — use mode 2 instead.
+    #
+    #   1  Battery only charges from PV
+    #   2  State of Charge Control  ← active-power dispatch against 0x0723,
+    #                                   stops at the 0x0728 SOC cutoff
+    #   3  Load Following
+    #   4  Maximise Output           (not the direct power-setpoint mode)
+    #   5  Normal Mode
+    #   6  Optimise Consumption
+    #   7  Maximise Consumption
+    #  19  No Battery Charge
+    #
+    # For mode 2:
+    #   - 0x0723 > 32000 (positive dispatch power) AND cutoff SOC < battery SOC
+    #       → discharge at the configured rate until the cutoff SOC is reached
+    #   - 0x0723 < 32000 (negative dispatch power) AND cutoff SOC > battery SOC
+    #       → charge from grid at the configured rate until cutoff SOC reached
     DISPATCH_MODE_SOC_CONTROL = 2
-    DISPATCH_MODE_DEFAULT = DISPATCH_MODE_MAXIMISE_OUTPUT
+    DISPATCH_MODE_MAXIMISE_OUTPUT = 4
+    DISPATCH_MODE_DEFAULT = DISPATCH_MODE_SOC_CONTROL
 
     # Connection defaults
     DEFAULT_PORT = 502
