@@ -87,10 +87,23 @@ class AlphaESSController(InverterController):
     EXPORT_LIMIT_ZERO = 0    # 0% → zero export
     EXPORT_LIMIT_UNLIMITED = 100  # 100% → unlimited export
 
-    # Dispatch Mode values (Note7 — TBD by hardware testing; defaults are conservative)
-    # We treat mode 0 as "power dispatch" (follow active-power setpoint directly).
-    # If hardware testing proves a different value is correct, update DISPATCH_MODE_DEFAULT.
-    DISPATCH_MODE_DEFAULT = 0
+    # Dispatch Mode values (Note7 — official PDF, page 57):
+    #   1 = Battery only charges from PV
+    #   2 = State of Charge control (drives battery to target SOC)
+    #   3 = Load Following
+    #   4 = Maximise Output (follow active-power setpoint at 0x0723) ← what we want
+    #   5 = Normal Mode
+    #   6 = Optimise Consumption
+    #   7 = Maximise Consumption
+    #   8 = ECO Mode
+    #   9 = FCAS Mode
+    #  10 = PV Power Setting
+    # Mode 0 is NOT a valid value — writing it leaves dispatch inert. Kaise's
+    # first hardware test confirmed this: 0x0722=1 was written, the inverter
+    # acknowledged, but no movement because Note7=0 isn't on the list.
+    DISPATCH_MODE_MAXIMISE_OUTPUT = 4
+    DISPATCH_MODE_SOC_CONTROL = 2
+    DISPATCH_MODE_DEFAULT = DISPATCH_MODE_MAXIMISE_OUTPUT
 
     # Connection defaults
     DEFAULT_PORT = 502
