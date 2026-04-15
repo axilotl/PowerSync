@@ -61,6 +61,120 @@ TIMEZONE_COORDS = {
 }
 
 
+# HA weather-component standard states → PowerSync condition enum.
+# Reference: https://developers.home-assistant.io/docs/core/entity/weather/
+_HA_WEATHER_TO_CONDITION = {
+    "sunny": "sunny",
+    "clear-night": "sunny",
+    "partlycloudy": "partly_sunny",
+    "windy": "partly_sunny",
+    "windy-variant": "partly_sunny",
+    "lightning": "partly_sunny",
+    "cloudy": "cloudy",
+    "fog": "cloudy",
+    "hail": "cloudy",
+    "lightning-rainy": "cloudy",
+    "pouring": "cloudy",
+    "rainy": "cloudy",
+    "snowy": "cloudy",
+    "snowy-rainy": "cloudy",
+    "exceptional": "cloudy",
+}
+
+
+def _is_night_from_sun(hass: HomeAssistant) -> bool:
+    """Read HA's built-in sun.sun entity to derive day/night state.
+
+    HA auto-configures sun.sun from the instance latitude/longitude set at
+    onboarding, so this works on every install with no external API. Falls
+    back to False (day) if the entity is somehow missing.
+    """
+    sun = hass.states.get("sun.sun")
+    if sun is None:
+        return False
+    return sun.state == "below_horizon"
+
+
+def _weather_from_ha_entity(hass: HomeAssistant) -> Optional[Dict[str, Any]]:
+    """Pull current weather from the first available HA weather entity.
+
+    Most HA installs ship weather.forecast_home (met.no by default);
+    others use AccuWeather, Pirate Weather, BOM, etc. All expose the same
+    standard state + attribute schema which we translate to the PowerSync
+    shape (sunny / partly_sunny / cloudy + temperature_c + humidity).
+    """
+    weather_entities = hass.states.async_all("weather")
+    if not weather_entities:
+        return None
+
+    state = weather_entities[0]
+    condition = _HA_WEATHER_TO_CONDITION.get(state.state, "partly_sunny")
+    attrs = state.attributes or {}
+    return {
+        "condition": condition,
+        "description": state.state.replace("-", " ").replace("_", " "),
+        "temperature_c": attrs.get("temperature"),
+        "humidity": attrs.get("humidity"),
+        "cloud_cover": attrs.get("cloud_coverage"),
+        "is_night": _is_night_from_sun(hass),
+        "entity_id": state.entity_id,
+        "source": f"ha:{state.entity_id}",
+    }
+
+
+async def async_resolve_weather(
+    hass: HomeAssistant,
+    api_key: Optional[str],
+    timezone: str = "Australia/Brisbane",
+    weather_location: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Resolve current weather + day/night with a full fallback chain.
+
+    Single source of truth shared between the mobile HTTP endpoint and
+    the automation trigger layer, so both paths treat OWM and HA-inbuilt
+    weather interchangeably.
+
+    Chain:
+        1. OpenWeatherMap — if api_key is set and the call succeeds
+        2. HA weather entity — first entity in the 'weather' domain
+        3. sun.sun only — minimal payload with partly_sunny as a neutral
+           condition but a correct is_night flag
+
+    Always returns a dict with is_night set; returns None only if every
+    path fails (shouldn't happen in practice — sun.sun is always present
+    on a healthy HA instance). 'source' is included for diagnostics:
+        'owm' | 'ha:<entity_id>' | 'sun_only'
+    """
+    # 1. OWM
+    if api_key:
+        try:
+            data = await async_get_current_weather(
+                hass, api_key, timezone, weather_location
+            )
+            if data:
+                data.setdefault("is_night", _is_night_from_sun(hass))
+                data["source"] = "owm"
+                return data
+        except Exception as e:
+            _LOGGER.warning("OWM weather fetch failed, falling back: %s", e)
+
+    # 2. HA weather entity
+    ha_weather = _weather_from_ha_entity(hass)
+    if ha_weather:
+        return ha_weather
+
+    # 3. sun.sun only — minimal but still correct for day/night switching
+    return {
+        "condition": "partly_sunny",
+        "description": "",
+        "temperature_c": None,
+        "humidity": None,
+        "cloud_cover": None,
+        "is_night": _is_night_from_sun(hass),
+        "source": "sun_only",
+    }
+
+
 async def async_get_current_weather(
     hass: HomeAssistant,
     api_key: str,

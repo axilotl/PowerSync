@@ -636,8 +636,14 @@ class AutomationEngine:
         return state
 
     async def _async_get_weather(self) -> Optional[str]:
-        """Get current weather condition with caching."""
-        from .weather import async_get_current_weather
+        """Get current weather condition with caching.
+
+        Goes through the shared resolver so Solcast-only installs still
+        get weather (via HA's inbuilt weather entity) instead of silently
+        returning None and making weather-based automation conditions
+        always fail.
+        """
+        from .weather import async_resolve_weather
         from ..const import CONF_OPENWEATHERMAP_API_KEY, CONF_WEATHER_LOCATION
 
         cache_duration_seconds = 900  # 15 minutes
@@ -648,28 +654,25 @@ class AutomationEngine:
             if cache_age < cache_duration_seconds and self._weather_cache:
                 return self._weather_cache.get("condition")
 
-        # Get API key from config
+        # Resolver handles OWM → HA entity → sun.sun-only fallback chain.
+        # api_key may be None (Solcast-only installs) — resolver skips OWM
+        # and goes straight to the HA entity.
         api_key = self._config_entry.options.get(
             CONF_OPENWEATHERMAP_API_KEY,
-            self._config_entry.data.get(CONF_OPENWEATHERMAP_API_KEY)
+            self._config_entry.data.get(CONF_OPENWEATHERMAP_API_KEY),
         )
-
-        if not api_key:
-            return None
-
-        # Get weather location from config (city name or postcode)
         weather_location = self._config_entry.options.get(
             CONF_WEATHER_LOCATION,
-            self._config_entry.data.get(CONF_WEATHER_LOCATION)
+            self._config_entry.data.get(CONF_WEATHER_LOCATION),
         )
-
-        # Get timezone from config for location fallback
         timezone = self._config_entry.options.get(
             "timezone",
-            self._config_entry.data.get("timezone", "Australia/Brisbane")
+            self._config_entry.data.get("timezone", "Australia/Brisbane"),
         )
 
-        weather_data = await async_get_current_weather(self._hass, api_key, timezone, weather_location)
+        weather_data = await async_resolve_weather(
+            self._hass, api_key, timezone, weather_location
+        )
         if weather_data:
             self._weather_cache = weather_data
             self._weather_cache_time = datetime.utcnow()
