@@ -17031,6 +17031,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 await goodwe_coord.force_discharge(duration, power_w=power_w)
                 _LOGGER.debug(f"GoodWe force discharge hardware extended ({duration}min)")
                 return
+            alphaess_coord = entry_data.get("alphaess_coordinator")
+            if alphaess_coord:
+                await alphaess_coord.force_discharge(duration, power_w=power_w)
+                _LOGGER.debug(f"AlphaESS force discharge hardware extended ({duration}min, {power_w}W)")
+                return
             _LOGGER.warning("_extend_hardware: no coordinator found, falling through to full handler")
 
         _LOGGER.info(f"🔋 FORCE DISCHARGE: Activating for {duration} minutes (source={source})")
@@ -17847,6 +17852,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             if goodwe_coord:
                 await goodwe_coord.force_charge(duration, power_w=power_w)
                 _LOGGER.debug(f"GoodWe force charge hardware extended ({duration}min)")
+                return
+            alphaess_coord = entry_data.get("alphaess_coordinator")
+            if alphaess_coord:
+                await alphaess_coord.force_charge(duration, power_w=power_w)
+                _LOGGER.debug(f"AlphaESS force charge hardware extended ({duration}min, {power_w}W)")
                 return
             # Fallback: no coordinator found, proceed with full handler
             _LOGGER.warning("_extend_hardware: no coordinator found, falling through to full handler")
@@ -19280,6 +19290,26 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 _LOGGER.error(f"Error setting Sigenergy self-consumption: {e}", exc_info=True)
                 return
 
+        # Check if this is an AlphaESS system
+        is_alphaess = bool(entry.data.get(CONF_ALPHAESS_MODBUS_HOST))
+        if is_alphaess:
+            try:
+                entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+                ae_coord = entry_data.get("alphaess_coordinator")
+                if ae_coord and hasattr(ae_coord, '_controller') and ae_coord._controller:
+                    controller = ae_coord._controller
+                    result = await controller.set_self_consumption_mode()
+                    if result:
+                        _LOGGER.info("AlphaESS self-consumption mode set (dispatch released, 0722H=0)")
+                    else:
+                        _LOGGER.warning("AlphaESS set_self_consumption_mode failed")
+                else:
+                    _LOGGER.error("Self-consumption: AlphaESS coordinator/controller not available")
+                return
+            except Exception as e:
+                _LOGGER.error(f"Error setting AlphaESS self-consumption: {e}", exc_info=True)
+                return
+
         # Tesla Powerwall
         try:
             site_configs = _get_tesla_site_configs(hass, entry)
@@ -19329,7 +19359,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         is_sungrow = bool(entry.data.get(CONF_SUNGROW_HOST))
         is_sigenergy = bool(entry.data.get(CONF_SIGENERGY_STATION_ID))
         is_goodwe = bool(entry.data.get(CONF_GOODWE_HOST))
-        if is_foxess or is_sungrow or is_sigenergy or is_goodwe:
+        is_alphaess = bool(entry.data.get(CONF_ALPHAESS_MODBUS_HOST))
+        if is_foxess or is_sungrow or is_sigenergy or is_goodwe or is_alphaess:
             _LOGGER.debug("Non-Tesla system — autonomous mode is implicit, skipping")
             return
 
