@@ -545,9 +545,9 @@ class AlphaESSController(InverterController):
             )
             power_w = max_regs[0]
         return await self._set_dispatch(
-            power_w=-power_w,  # negative watts = charge per Note29
+            power_w=-power_w,  # negative watts = charge per Note29 / Hillview
             target_soc_pct=target_soc_pct,
-            direction=self.DISPATCH_DIR_GRID_TO_BAT,
+            direction=self.DISPATCH_DIR_GRID_TO_BAT,  # logged only — not written
             duration_seconds=duration_seconds,
         )
 
@@ -573,9 +573,9 @@ class AlphaESSController(InverterController):
             )
             power_w = max_regs[0]
         return await self._set_dispatch(
-            power_w=power_w,  # positive watts = discharge
+            power_w=power_w,  # positive watts = discharge per Note29 / Hillview
             target_soc_pct=target_soc_pct,
-            direction=self.DISPATCH_DIR_BAT_TO_GRID,
+            direction=self.DISPATCH_DIR_BAT_TO_GRID,  # logged only — not written
             duration_seconds=duration_seconds,
         )
 
@@ -644,19 +644,16 @@ class AlphaESSController(InverterController):
                 _LOGGER.error("Failed to write AlphaESS Para6 duration (0x0887-0x0888)")
                 return False
 
-            # Para7 (direction enum)
-            if not await self._write_holding_registers(
-                self.REG_DISPATCH_PARA7_DIRECTION, [direction]
-            ):
-                _LOGGER.error("Failed to write AlphaESS Para7 direction (0x0889)")
-                return False
-
-            # Para8 (PV switch) is intentionally NOT written. PDF wording
-            # "1: Open / 2: Close" is ambiguous (in Chinese-translated electrical
-            # terminology it typically inverts from the English convention), and
-            # writing value 2 on Kaise's SMILE caused the inverter to stop using
-            # PV altogether during force_discharge. Leaving the register alone
-            # lets the inverter manage PV itself per its active mode.
+            # Para7 (direction) and Para8 (PV switch) are intentionally NOT
+            # written. Mode 2 "State of Charge Control" is fully specified by
+            # Para2 (signed power) + Para5 (cutoff SOC): Hillview documents
+            # "Power>0 & Cutoff<SoC → discharge" and "Power<0 & Cutoff>SoC →
+            # charge from grid". Writing an explicit Para7 direction on top
+            # of that was observed to contradict the sign semantics — the
+            # inverter honoured the *stop* part of the command but refused
+            # to start the commanded direction. Leaving Para7/Para8 at their
+            # inverter-managed defaults lets mode 2's built-in rules drive
+            # the flow as documented.
 
             # Para1 (start = 1) — must be last
             if not await self._write_holding_registers(
