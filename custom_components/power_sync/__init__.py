@@ -19315,14 +19315,59 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             duration, brand, source,
         )
 
-        try:
-            result = await coord.set_backup_mode()
-        except Exception as e:
-            _LOGGER.error("Hold SoC failed on %s: %s", brand, e, exc_info=True)
-            return
+        # Tesla does not have a single 'set_backup_mode' coordinator
+        # primitive — it doesn't expose any way to strictly lock SoC.
+        # Closest equivalent is: set backup_reserve = current SoC (capped
+        # at 80% — backup reserves above that aren't reliably honoured by
+        # Tesla firmware due to BMS taper) AND switch to self_consumption
+        # mode so backup_reserve acts as a hard discharge floor.
+        # Solar excess can still charge the battery — surfaced as a
+        # warning to the user (see HOLD_SOC_CAPS['tesla']).
+        if brand == "tesla":
+            current_soc = None
+            if getattr(coord, "data", None):
+                current_soc = coord.data.get("battery_level")
+            if current_soc is None:
+                _LOGGER.error(
+                    "Hold SoC: Tesla SoC unavailable, cannot set backup_reserve"
+                )
+                return
+            target_reserve = max(0, min(int(round(current_soc)), 80))
+            _LOGGER.info(
+                "Hold SoC (Tesla): setting backup_reserve=%d%% (current SoC=%.1f%%) + self_consumption mode",
+                target_reserve, current_soc,
+            )
+            try:
+                await hass.services.async_call(
+                    DOMAIN, SERVICE_SET_BACKUP_RESERVE,
+                    {"backup_reserve": target_reserve},
+                    blocking=True,
+                )
+                await hass.services.async_call(
+                    DOMAIN, "set_self_consumption",
+                    {"source": "user"},
+                    blocking=True,
+                )
+                result = True
+            except Exception as e:
+                _LOGGER.error("Hold SoC failed on Tesla: %s", e, exc_info=True)
+                return
+        else:
+            # Modbus brands all expose set_backup_mode on their coordinator
+            if not hasattr(coord, "set_backup_mode"):
+                _LOGGER.error(
+                    "Hold SoC: %s coordinator does not implement set_backup_mode",
+                    brand,
+                )
+                return
+            try:
+                result = await coord.set_backup_mode()
+            except Exception as e:
+                _LOGGER.error("Hold SoC failed on %s: %s", brand, e, exc_info=True)
+                return
 
         if not result:
-            _LOGGER.error("Hold SoC: set_backup_mode returned False on %s", brand)
+            _LOGGER.error("Hold SoC: dispatch returned False on %s", brand)
             return
 
         # Optimizer source: skip state / timer / dispatcher. The LP manages
