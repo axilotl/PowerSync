@@ -986,10 +986,13 @@ SENSOR_TYPE_BATTERY_MODE = "battery_mode"
 BATTERY_MODE_STATE_NORMAL = "normal"
 BATTERY_MODE_STATE_FORCE_CHARGE = "force_charge"
 BATTERY_MODE_STATE_FORCE_DISCHARGE = "force_discharge"
+BATTERY_MODE_STATE_HOLD_SOC = "hold_soc"
+BATTERY_MODE_STATE_SELF_CONSUMPTION = "self_consumption"
 
 # Services for manual battery control
 SERVICE_FORCE_DISCHARGE = "force_discharge"
 SERVICE_FORCE_CHARGE = "force_charge"
+SERVICE_HOLD_BATTERY_SOC = "hold_battery_soc"
 SERVICE_RESTORE_NORMAL = "restore_normal"
 SERVICE_GET_CALENDAR_HISTORY = "get_calendar_history"
 SERVICE_SYNC_BATTERY_HEALTH = "sync_battery_health"

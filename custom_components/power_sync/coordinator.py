@@ -2903,6 +2903,11 @@ class SigenergyEnergyCoordinator(DataUpdateCoordinator):
         self._entry_id = entry_id
         self._controller = SigenergyController(host, port, slave_id, max_export_limit_kw=max_export_limit_kw)
         self._energy_acc = EnergyAccumulator(hass, "sigenergy")
+        # Rated charge/discharge power in kW — cached after first successful
+        # read from input registers 30079/30081. Static hardware spec so it
+        # only needs to be fetched once.
+        self._rated_charge_power_kw: Optional[float] = None
+        self._rated_discharge_power_kw: Optional[float] = None
 
         super().__init__(
             hass,
@@ -2954,6 +2959,28 @@ class SigenergyEnergyCoordinator(DataUpdateCoordinator):
             buy, sell = _get_current_prices(self.hass, self._entry_id)
             self._energy_acc.update(max(0, solar_kw), grid_kw, battery_kw, load_kw, buy, sell)
 
+            # Rated charge/discharge power — hardware spec, static. Fetch once
+            # from the ESS rated power registers via the controller's internal
+            # read path, then cache for the lifetime of the coordinator.
+            if self._rated_charge_power_kw is None or self._rated_discharge_power_kw is None:
+                try:
+                    rc_regs = await self._controller._read_input_registers(
+                        self._controller.REG_ESS_RATED_CHARGE_POWER, 2
+                    )
+                    rd_regs = await self._controller._read_input_registers(
+                        self._controller.REG_ESS_RATED_DISCHARGE_POWER, 2
+                    )
+                    if rc_regs and len(rc_regs) >= 2:
+                        raw = self._controller._to_unsigned32(rc_regs[0], rc_regs[1])
+                        if 0 < raw < 0xFFFFFFFE:
+                            self._rated_charge_power_kw = raw / 1000.0
+                    if rd_regs and len(rd_regs) >= 2:
+                        raw = self._controller._to_unsigned32(rd_regs[0], rd_regs[1])
+                        if 0 < raw < 0xFFFFFFFE:
+                            self._rated_discharge_power_kw = raw / 1000.0
+                except Exception as e:
+                    _LOGGER.debug("Sigenergy rated power read failed (will retry): %s", e)
+
             energy_data = {
                 "solar_power": solar_kw,  # kW (DC + AC-coupled)
                 "grid_power": grid_kw,  # kW, positive = importing, negative = exporting
@@ -2970,6 +2997,17 @@ class SigenergyEnergyCoordinator(DataUpdateCoordinator):
                 # Battery health data
                 "battery_soh": attrs.get("battery_soh"),  # % State of Health
                 "battery_capacity_kwh": attrs.get("battery_capacity_kwh"),  # kWh rated capacity
+                # Rated BMS power for the mobile force-mode picker's "Max" chip
+                "battery_max_charge_power": self._rated_charge_power_kw,
+                "battery_max_discharge_power": self._rated_discharge_power_kw,
+                "battery_max_charge_power_w": (
+                    int(self._rated_charge_power_kw * 1000)
+                    if self._rated_charge_power_kw else None
+                ),
+                "battery_max_discharge_power_w": (
+                    int(self._rated_discharge_power_kw * 1000)
+                    if self._rated_discharge_power_kw else None
+                ),
                 "energy_summary": self._energy_acc.as_dict(),
             }
 
@@ -4003,6 +4041,21 @@ class FoxESSEnergyCoordinator(DataUpdateCoordinator):
                 "energy_summary": acc,
             }
 
+            # Derive BMS-reported max charge/discharge power (kW) so the mobile
+            # app picker can render a correct "Max" chip without re-doing the
+            # current×voltage math. Uses the live pack voltage when available,
+            # else the model-aware fallback from _resolve_pack_voltage.
+            _max_charge_a = attrs.get("max_charge_current_a") or 0
+            _max_discharge_a = attrs.get("max_discharge_current_a") or 0
+            if _max_charge_a > 0 or _max_discharge_a > 0:
+                _pack_v = self._resolve_pack_voltage_from_attrs(attrs)
+                if _max_charge_a > 0:
+                    energy_data["battery_max_charge_power_w"] = int(_max_charge_a * _pack_v)
+                    energy_data["battery_max_charge_power"] = round(_max_charge_a * _pack_v / 1000.0, 2)
+                if _max_discharge_a > 0:
+                    energy_data["battery_max_discharge_power_w"] = int(_max_discharge_a * _pack_v)
+                    energy_data["battery_max_discharge_power"] = round(_max_discharge_a * _pack_v / 1000.0, 2)
+
             _LOGGER.debug(
                 "FoxESS data: solar=%.2f kW, grid=%.2f kW, battery=%.2f kW (%.0f%%), load=%.2f kW, mode=%s",
                 energy_data["solar_power"],
@@ -4018,6 +4071,50 @@ class FoxESSEnergyCoordinator(DataUpdateCoordinator):
         except Exception as err:
             raise UpdateFailed(f"Error fetching FoxESS energy data: {err}") from err
 
+    # Per-model fallback voltage for current→power conversion when the live
+    # pack voltage read is missing. HV families (H3-Pro, H3-Smart) run around
+    # 500 V nominal; LV families (H1, H3, KH) around 51.2 V. The previous
+    # single 300 V fallback silently capped HV systems at 50 A × 300 V = 15 kW.
+    _FALLBACK_PACK_VOLTAGE = {
+        "H3-Pro": 500,
+        "H3-Smart": 500,
+        "H1": 51.2,
+        "H3": 51.2,
+        "KH": 51.2,
+    }
+
+    def _resolve_pack_voltage_from_attrs(self, attrs: dict | None) -> float:
+        """Pick the best pack voltage from an attrs dict, with model-aware fallback."""
+        v = (attrs or {}).get("battery_voltage_v")
+        if isinstance(v, (int, float)) and v > 100:
+            return float(v)
+        family = getattr(getattr(self, "_controller", None), "_model_family", None)
+        family_str = family.value if family and hasattr(family, "value") else None
+        return float(self._FALLBACK_PACK_VOLTAGE.get(family_str, 300))
+
+    def _resolve_pack_voltage(self, for_logging: str = "") -> float:
+        """Pick the best pack voltage we have, falling back by model family.
+
+        Uses self.data (most recent coordinator refresh) as the source and
+        logs when we fall back so a misbehaving voltage register is visible.
+        """
+        v = (self.data or {}).get("battery_voltage_v")
+        if isinstance(v, (int, float)) and v > 100:
+            return float(v)
+
+        family = getattr(getattr(self, "_controller", None), "_model_family", None)
+        family_str = family.value if family and hasattr(family, "value") else None
+        fallback = self._FALLBACK_PACK_VOLTAGE.get(family_str, 300)
+        _LOGGER.warning(
+            "FoxESS%s: live battery voltage unavailable (got %r), "
+            "falling back to %sV based on model family %s",
+            f" {for_logging}" if for_logging else "",
+            v,
+            fallback,
+            family_str or "UNKNOWN",
+        )
+        return float(fallback)
+
     async def force_charge(self, duration_minutes: int = 30, power_w: float = 0) -> bool:
         """Set FoxESS to force charge mode.
 
@@ -4031,11 +4128,7 @@ class FoxESSEnergyCoordinator(DataUpdateCoordinator):
                 # Use inverter's configured max charge current (set via FoxESS app)
                 max_charge_a = self.data.get("max_charge_current_a")
                 if max_charge_a and max_charge_a > 0:
-                    # Prefer the live battery pack voltage over a fixed 300 V
-                    # estimate. H3-Pro with a FoxESS CQ6 HV pack runs ~500 V,
-                    # so 300 V caps a 50 A × 500 V = 25 kW system at 15 kW.
-                    v = self.data.get("battery_voltage_v")
-                    voltage = v if isinstance(v, (int, float)) and v > 100 else 300
+                    voltage = self._resolve_pack_voltage("force_charge")
                     power_w = max_charge_a * voltage
                     _LOGGER.info(
                         "FoxESS force_charge using inverter max: %.0fA × %.0fV → %.0fW",
@@ -4058,8 +4151,7 @@ class FoxESSEnergyCoordinator(DataUpdateCoordinator):
                 # Use inverter's configured max discharge current (set via FoxESS app)
                 max_discharge_a = self.data.get("max_discharge_current_a")
                 if max_discharge_a and max_discharge_a > 0:
-                    v = self.data.get("battery_voltage_v")
-                    voltage = v if isinstance(v, (int, float)) and v > 100 else 300
+                    voltage = self._resolve_pack_voltage("force_discharge")
                     power_w = max_discharge_a * voltage
                     _LOGGER.info(
                         "FoxESS force_discharge using inverter max: %.0fA × %.0fV → %.0fW",
