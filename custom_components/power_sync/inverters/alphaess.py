@@ -152,22 +152,43 @@ class AlphaESSController(InverterController):
                 return False
 
     async def disconnect(self) -> None:
-        """Close Modbus TCP connection. Also releases dispatch if we hold it."""
-        # Release forced dispatch before dropping the connection so the inverter
-        # doesn't stay locked in a charge/discharge command indefinitely.
-        if self._dispatch_active:
-            try:
-                await self._write_holding_registers(self.REG_DISPATCH_START, [0])
-                _LOGGER.info("AlphaESS dispatch released (0722H=0) on disconnect")
-            except Exception as e:
-                _LOGGER.warning(f"Failed to release dispatch on disconnect: {e}")
-            self._dispatch_active = False
+        """Close the Modbus TCP connection.
 
+        Note: this intentionally does NOT release forced dispatch. force_charge
+        / force_discharge open a connection, write the dispatch block, and
+        close it again via an ``async with`` context manager — if we released
+        here, the dispatch would be undone milliseconds after being set.
+
+        Use ``release_dispatch()`` or the coordinator's ``async_shutdown``
+        path to write ``0x0722=0`` explicitly before the final disconnect on
+        integration unload.
+        """
         async with self._lock:
             if self._client:
                 self._client.close()
                 self._client = None
             self._connected = False
+
+    async def release_dispatch(self) -> bool:
+        """Explicitly release forced dispatch (write 0x0722=0) if we hold it.
+
+        Called by the coordinator on shutdown to guarantee the inverter doesn't
+        stay locked in charge/discharge after HA unloads. Idempotent — no-op
+        if we've already released or never dispatched.
+        """
+        if not self._dispatch_active:
+            return True
+        try:
+            ok = await self._write_holding_registers(self.REG_DISPATCH_START, [0])
+            if ok:
+                _LOGGER.info("AlphaESS dispatch released (0722H=0)")
+                self._dispatch_active = False
+                return True
+            _LOGGER.warning("Failed to release AlphaESS dispatch — register write returned False")
+            return False
+        except Exception as e:
+            _LOGGER.warning(f"Failed to release AlphaESS dispatch: {e}")
+            return False
 
     # ---- Low-level Modbus I/O ----
 

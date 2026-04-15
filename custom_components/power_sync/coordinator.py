@@ -3249,8 +3249,14 @@ class AlphaESSEnergyCoordinator(DataUpdateCoordinator):
         """Release dispatch and disconnect on shutdown.
 
         AlphaESS has no auto-revert: if we leave 0722H=1, the battery stays
-        locked in forced mode. disconnect() handles the release.
+        locked in forced mode. We must release dispatch before dropping the
+        connection (disconnect itself is intentionally pure — see the
+        controller's disconnect() docstring for why).
         """
+        try:
+            await self._controller.release_dispatch()
+        except Exception as e:
+            _LOGGER.warning("AlphaESS release_dispatch on shutdown failed: %s", e)
         await self._controller.disconnect()
         if self._cloud is not None:
             try:
