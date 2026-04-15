@@ -651,10 +651,12 @@ class AlphaESSController(InverterController):
                 _LOGGER.error("Failed to write AlphaESS Para7 direction (0x0889)")
                 return False
 
-            # Para8 (PV switch) — Close = normal PV behaviour during dispatch
-            await self._write_holding_registers(
-                self.REG_DISPATCH_PARA8_PV_SWITCH, [self.PV_SWITCH_CLOSE]
-            )
+            # Para8 (PV switch) is intentionally NOT written. PDF wording
+            # "1: Open / 2: Close" is ambiguous (in Chinese-translated electrical
+            # terminology it typically inverts from the English convention), and
+            # writing value 2 on Kaise's SMILE caused the inverter to stop using
+            # PV altogether during force_discharge. Leaving the register alone
+            # lets the inverter manage PV itself per its active mode.
 
             # Para1 (start = 1) — must be last
             if not await self._write_holding_registers(
