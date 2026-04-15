@@ -8,14 +8,18 @@ Key facts (differ from every other brand in PowerSync — read the plan):
 - Default slave ID is 0x55 (85), NOT 1 or 247
 - Battery power register 0126H: negative = charge, positive = discharge
   (already matches PowerSync convention — no sign flip needed)
-- Dispatch uses the 0x0880 block (Note29 "Power Dispatch parameter list"),
-  NOT the 0x0722 block (which is HHE-MEC only and silently no-ops on SMILE).
-- Dispatch power (Para2 at 0x0881-0x0882) is a SIGNED int32 in watts with
-  NO offset. Negative = charge from grid, positive = discharge to grid.
-- Cutoff SOC (Para5 at 0x0886) uses percent × 2.5 (so 100% → 250, 10% → 25).
-- Dispatch Time (Para6 at 0x0887-0x0888) is seconds — inverter auto-stops
-  when the timer elapses. We still release (Para1=0) on unload as a
-  belt-and-braces safety net.
+- Dispatch uses the 0x0880 block (0x0722 is HHE-MEC only and silently
+  no-ops on SMILE).
+- Active-power register 0x0881 uses a +32000 OFFSET encoding:
+  raw = 32000 + (watts × direction), where direction = -1 for charge
+  and +1 for discharge. The PDF's Note29 description of "battery control
+  power (W)" direct-signed was misleading; the working Alpha2MQTT
+  implementation (proven against SMILE hardware) uses the offset.
+- Cutoff SOC (0x0886) uses percent × 2.5 (so 100% → 250, 10% → 25).
+- Dispatch Time (0x0887-0x0888) is seconds — inverter auto-stops when
+  the timer elapses.
+- Write ORDER matters: start → power → time → SOC → mode (LAST). The
+  mode write is what actually commits the dispatch configuration.
 """
 import asyncio
 import logging
@@ -80,27 +84,22 @@ class AlphaESSController(InverterController):
     # (Only applicable to HHE MEC)". We initially shipped against that and got
     # confirmed acknowledgements with no battery movement — wrong hardware
     # target. Live SMILE hardware uses 0x0880 per Hillview Lodge and Note29.
-    REG_DISPATCH_PARA1_START = 0x0880       # U16: 1=start, 0=stop
-    REG_DISPATCH_PARA2_POWER = 0x0881       # S32, 1 W/bit, SIGNED DIRECT — no offset
-                                            # For mode 2: negative=charge from grid, positive=discharge
-    REG_DISPATCH_PARA3_RESERVED = 0x0883    # S32, always 0
-    REG_DISPATCH_PARA4_MODE = 0x0885        # U16 mode enum (Note7 values)
-    REG_DISPATCH_PARA5_CUTOFF_SOC = 0x0886  # U16, percent × 2.5 (so 100% → 250, 10% → 25)
-    REG_DISPATCH_PARA6_TIME_SECONDS = 0x0887  # U32, seconds — inverter auto-stops after this
-    REG_DISPATCH_PARA7_DIRECTION = 0x0889   # U16 enum (see constants below)
-    REG_DISPATCH_PARA8_PV_SWITCH = 0x088A   # U16: 1=Open, 2=Close
+    REG_DISPATCH_START = 0x0880        # U16: 1=start, 0=stop
+    REG_DISPATCH_ACTIVE_POWER = 0x0881  # U32, +32000 offset: raw = 32000 + watts × direction
+    REG_DISPATCH_MODE = 0x0885         # U16 mode enum (written LAST to commit)
+    REG_DISPATCH_SOC = 0x0886          # U16, percent × 2.5 (100% → 250, 10% → 25)
+    REG_DISPATCH_TIME = 0x0887         # U32, seconds — inverter auto-stops when timer elapses
+    # Para3 (0x0883 reactive power), Para7 (0x0889 direction) and Para8
+    # (0x088A PV switch) are intentionally left alone. The Alpha2MQTT
+    # reference implementation does not write them for mode 2 charge/discharge,
+    # and earlier hardware tests showed writing Para7/Para8 prevented the
+    # inverter from executing the dispatch.
 
-    # Para7 direction enum (Note29 Tab2)
-    DISPATCH_DIR_AGING_END = 0
-    DISPATCH_DIR_PV_TO_GRID = 1
-    DISPATCH_DIR_PV_TO_BAT = 2
-    DISPATCH_DIR_BAT_TO_GRID = 3      # force discharge
-    DISPATCH_DIR_GRID_TO_BAT = 4      # force charge from grid
-    DISPATCH_DIR_BAT_TO_GRID_2 = 5
-
-    # Para8 PV switch
-    PV_SWITCH_OPEN = 1
-    PV_SWITCH_CLOSE = 2
+    # Direction constants (used for logging + the +32000 offset calculation;
+    # no actual Para7 register is written — see class docstring).
+    DISPATCH_DIRECTION_CHARGE = -1    # power field multiplier for charge
+    DISPATCH_DIRECTION_DISCHARGE = 1  # power field multiplier for discharge
+    DISPATCH_POWER_OFFSET = 32000     # raw = OFFSET + watts × direction
 
     # Export / feed-in limit
     REG_MAX_FEED_INTO_GRID_PERCENT = 0x0800  # U16, 1 %/bit, 0 = zero export, 100 = unlimited
@@ -224,7 +223,7 @@ class AlphaESSController(InverterController):
         if not self._dispatch_active:
             return True
         try:
-            ok = await self._write_holding_registers(self.REG_DISPATCH_PARA1_START, [0])
+            ok = await self._write_holding_registers(self.REG_DISPATCH_START, [0])
             if ok:
                 _LOGGER.info("AlphaESS dispatch released (0x0880=0)")
                 self._dispatch_active = False
@@ -491,7 +490,7 @@ class AlphaESSController(InverterController):
         try:
             if not await self.connect():
                 return False
-            success = await self._write_holding_registers(self.REG_DISPATCH_PARA1_START, [0])
+            success = await self._write_holding_registers(self.REG_DISPATCH_START, [0])
             if success:
                 self._dispatch_active = False
                 _LOGGER.info("AlphaESS dispatch released (0x0880=0) — self-consumption resumed")
@@ -545,9 +544,9 @@ class AlphaESSController(InverterController):
             )
             power_w = max_regs[0]
         return await self._set_dispatch(
-            power_w=-power_w,  # negative watts = charge per Note29 / Hillview
+            power_w=power_w,
             target_soc_pct=target_soc_pct,
-            direction=self.DISPATCH_DIR_GRID_TO_BAT,  # logged only — not written
+            direction=self.DISPATCH_DIRECTION_CHARGE,
             duration_seconds=duration_seconds,
         )
 
@@ -573,9 +572,9 @@ class AlphaESSController(InverterController):
             )
             power_w = max_regs[0]
         return await self._set_dispatch(
-            power_w=power_w,  # positive watts = discharge per Note29 / Hillview
+            power_w=power_w,
             target_soc_pct=target_soc_pct,
-            direction=self.DISPATCH_DIR_BAT_TO_GRID,  # logged only — not written
+            direction=self.DISPATCH_DIRECTION_DISCHARGE,
             duration_seconds=duration_seconds,
         )
 
@@ -586,93 +585,84 @@ class AlphaESSController(InverterController):
         direction: int,
         duration_seconds: int,
     ) -> bool:
-        """Write the full Note29 dispatch block (0x0880-0x088A).
+        """Write the dispatch block in the exact order Alpha2MQTT uses.
 
-        Writes every Para in the order mode-setup → power → SOC cutoff →
-        duration → direction → PV switch → start. Keeping Para1 (start) last
-        means the inverter only activates after every other parameter is valid.
+        Order matters: the mode register (0x0885) is written LAST — writing
+        it is what actually commits the configuration. Writing it first (or
+        mid-stream) has been observed to either no-op or leave the inverter
+        in a partial state where it halts existing motion but refuses to
+        execute the new direction.
 
-        Sign convention for ``power_w``:
-            negative = charge (pair with direction=GRID_TO_BAT)
-            positive = discharge (pair with direction=BAT_TO_GRID)
+            1. Start             0x0880 = 1
+            2. Active power      0x0881-0x0882 = 32000 + (watts × direction)
+            3. Time (seconds)    0x0887-0x0888 = duration
+            4. Cutoff SoC        0x0886 = percent × 2.5
+            5. Mode              0x0885 = 2 (SoC Control)      ← commit
 
         Args:
-            power_w: Signed watts for Para2.
-            target_soc_pct: Cutoff SOC in percent for Para5.
-            direction: Para7 enum (DISPATCH_DIR_* constants).
-            duration_seconds: Para6 auto-stop duration.
+            power_w: Absolute magnitude in watts (always >= 0).
+            target_soc_pct: Cutoff SoC in percent.
+            direction: DISPATCH_DIRECTION_CHARGE (-1) or
+                DISPATCH_DIRECTION_DISCHARGE (+1). Multiplies watts in the
+                offset calc.
+            duration_seconds: Auto-stop duration.
         """
         try:
             if not await self.connect():
                 return False
 
-            # Para4 (mode) — SoC Control
+            abs_watts = int(round(abs(power_w)))
+            raw_power = self.DISPATCH_POWER_OFFSET + abs_watts * int(direction)
+
+            # 1. Start = 1
             if not await self._write_holding_registers(
-                self.REG_DISPATCH_PARA4_MODE, [self.DISPATCH_MODE_SOC_CONTROL]
+                self.REG_DISPATCH_START, [1]
             ):
-                _LOGGER.error("Failed to write AlphaESS Para4 mode (0x0885)")
+                _LOGGER.error("Failed to write AlphaESS dispatch start (0x0880)")
                 return False
 
-            # Para2 (power, S32, signed watts, no offset)
+            # 2. Active power (U32 with +32000 offset)
+            hi = (raw_power >> 16) & 0xFFFF
+            lo = raw_power & 0xFFFF
             if not await self._write_holding_registers(
-                self.REG_DISPATCH_PARA2_POWER, self._from_signed32(int(round(power_w)))
+                self.REG_DISPATCH_ACTIVE_POWER, [hi, lo]
             ):
-                _LOGGER.error("Failed to write AlphaESS Para2 power (0x0881-0x0882)")
+                _LOGGER.error("Failed to write AlphaESS dispatch power (0x0881)")
                 return False
 
-            # Para3 (reserved, must be 0)
-            await self._write_holding_registers(
-                self.REG_DISPATCH_PARA3_RESERVED, self._from_signed32(0)
-            )
+            # 3. Time (U32 seconds)
+            duration_clamped = max(60, int(duration_seconds))
+            t_hi = (duration_clamped >> 16) & 0xFFFF
+            t_lo = duration_clamped & 0xFFFF
+            if not await self._write_holding_registers(
+                self.REG_DISPATCH_TIME, [t_hi, t_lo]
+            ):
+                _LOGGER.error("Failed to write AlphaESS dispatch time (0x0887)")
+                return False
 
-            # Para5 (cutoff SOC): raw = percent × 2.5
+            # 4. Cutoff SoC (U16, percent × 2.5)
             soc_clamped = max(0.0, min(100.0, target_soc_pct))
             soc_raw = int(round(soc_clamped * self.DISPATCH_CUTOFF_SOC_SCALE))
             if not await self._write_holding_registers(
-                self.REG_DISPATCH_PARA5_CUTOFF_SOC, [soc_raw]
+                self.REG_DISPATCH_SOC, [soc_raw]
             ):
-                _LOGGER.error("Failed to write AlphaESS Para5 cutoff SOC (0x0886)")
+                _LOGGER.error("Failed to write AlphaESS dispatch SoC (0x0886)")
                 return False
 
-            # Para6 (duration, U32 seconds) — inverter auto-stops when elapsed
-            duration_clamped = max(60, int(duration_seconds))
-            hi = (duration_clamped >> 16) & 0xFFFF
-            lo = duration_clamped & 0xFFFF
+            # 5. Mode (commits) — SoC Control
             if not await self._write_holding_registers(
-                self.REG_DISPATCH_PARA6_TIME_SECONDS, [hi, lo]
+                self.REG_DISPATCH_MODE, [self.DISPATCH_MODE_SOC_CONTROL]
             ):
-                _LOGGER.error("Failed to write AlphaESS Para6 duration (0x0887-0x0888)")
-                return False
-
-            # Para7 (direction) and Para8 (PV switch) are intentionally NOT
-            # written. Mode 2 "State of Charge Control" is fully specified by
-            # Para2 (signed power) + Para5 (cutoff SOC): Hillview documents
-            # "Power>0 & Cutoff<SoC → discharge" and "Power<0 & Cutoff>SoC →
-            # charge from grid". Writing an explicit Para7 direction on top
-            # of that was observed to contradict the sign semantics — the
-            # inverter honoured the *stop* part of the command but refused
-            # to start the commanded direction. Leaving Para7/Para8 at their
-            # inverter-managed defaults lets mode 2's built-in rules drive
-            # the flow as documented.
-
-            # Para1 (start = 1) — must be last
-            if not await self._write_holding_registers(
-                self.REG_DISPATCH_PARA1_START, [1]
-            ):
-                _LOGGER.error("Failed to start AlphaESS dispatch (0x0880)")
+                _LOGGER.error("Failed to write AlphaESS dispatch mode (0x0885)")
                 return False
 
             self._dispatch_active = True
-            direction_name = {
-                self.DISPATCH_DIR_GRID_TO_BAT: "GRID_TO_BAT (charge)",
-                self.DISPATCH_DIR_BAT_TO_GRID: "BAT_TO_GRID (discharge)",
-                self.DISPATCH_DIR_PV_TO_BAT: "PV_TO_BAT",
-                self.DISPATCH_DIR_PV_TO_GRID: "PV_TO_GRID",
-            }.get(direction, f"dir={direction}")
+            action = "CHARGE" if direction < 0 else "DISCHARGE"
             _LOGGER.info(
-                "AlphaESS dispatch %s — power=%.0f W, cutoff_soc=%.1f%% (raw %d), "
-                "duration=%ds, mode=2",
-                direction_name, power_w, soc_clamped, soc_raw, duration_clamped,
+                "AlphaESS dispatch %s — power=%d W, raw=%d (offset %d), "
+                "cutoff_soc=%.1f%% (raw %d), duration=%ds, mode=2",
+                action, abs_watts, raw_power, self.DISPATCH_POWER_OFFSET,
+                soc_clamped, soc_raw, duration_clamped,
             )
             return True
 
