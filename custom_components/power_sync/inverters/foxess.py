@@ -334,12 +334,18 @@ class FoxESSController(InverterController):
             baudrate: Serial baud rate (default: 9600)
             model_family: Pre-detected model family (H1, H3, H3-Pro, H3-Smart, KH)
         """
-        super().__init__(host=host, port=port, slave_id=slave_id, model=model)
+        # HA's NumberSelector stores values as floats (e.g. port=502.0,
+        # slave_id=247.0). pymodbus builds its request PDU by calling
+        # `.to_bytes()` on the slave id, which raises
+        # `'float' object has no attribute 'to_bytes'`. Coerce here so
+        # existing installs that saved floats keep working without a
+        # reconfigure.
+        super().__init__(host=host, port=int(port), slave_id=int(slave_id), model=model)
         self._client: Optional[AsyncModbusTcpClient] = None
         self._lock = asyncio.Lock()
         self._connection_type = connection_type
         self._serial_port = serial_port
-        self._baudrate = baudrate
+        self._baudrate = int(baudrate)
         self._original_work_mode: Optional[int] = None
         self._original_min_soc: Optional[int] = None
 
