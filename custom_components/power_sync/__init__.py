@@ -13917,6 +13917,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             # skip the independent fallback — the optimizer handles off-grid
             # timing as part of its schedule to avoid conflicts with
             # charge/discharge planning.
+            entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
             _opt_coord = entry_data.get("optimization_coordinator")
             _optimizer_owns_offgrid = (
                 _opt_coord
