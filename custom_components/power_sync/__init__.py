@@ -17034,12 +17034,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 _LOGGER.debug(f"FoxESS force discharge hardware extended ({duration}min, {power_w}W)")
                 return
             sig_coord = entry_data.get("sigenergy_coordinator")
-            if sig_coord:
-                from .inverters.sigenergy import SigenergyController
-                controller = SigenergyController(sig_coord.client)
+            if sig_coord and getattr(sig_coord, "_controller", None):
+                controller = sig_coord._controller
                 power_kw = power_w / 1000 if power_w > 0 else 10.0
                 await controller.force_discharge(power_kw=power_kw)
-                await controller.disconnect()
                 _LOGGER.debug(f"Sigenergy force discharge hardware extended ({duration}min)")
                 return
             sungrow_coord = entry_data.get("sungrow_coordinator")
@@ -17855,12 +17853,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 _LOGGER.debug(f"FoxESS force charge hardware extended ({duration}min, {power_w}W)")
                 return
             sig_coord = entry_data.get("sigenergy_coordinator")
-            if sig_coord:
-                from .inverters.sigenergy import SigenergyController
-                controller = SigenergyController(sig_coord.client)
+            if sig_coord and getattr(sig_coord, "_controller", None):
+                controller = sig_coord._controller
                 power_kw = power_w / 1000 if power_w > 0 else 10.0
                 await controller.force_charge(power_kw=power_kw)
-                await controller.disconnect()
                 _LOGGER.debug(f"Sigenergy force charge hardware extended ({duration}min)")
                 return
             sungrow_coord = entry_data.get("sungrow_coordinator")
