@@ -1085,22 +1085,7 @@ class SigenergyController(InverterController):
                 return False
             _LOGGER.info("Remote EMS control mode set to DISCHARGE")
 
-            # 3. Set active power target (negative = export/discharge)
-            # REG_ACTIVE_POWER_FIXED_TARGET is S32, gain 1000, kW.
-            # Negative value tells the inverter to actively push power to grid.
-            target_raw = int(-power_kw * 1000)  # kW → gain-1000, negative for export
-            # Two's complement for negative S32 → two unsigned U16 registers
-            if target_raw < 0:
-                target_raw = target_raw + 0x100000000
-            hi = (target_raw >> 16) & 0xFFFF
-            lo = target_raw & 0xFFFF
-            power_result = await self._write_holding_registers(
-                self.REG_ACTIVE_POWER_FIXED_TARGET, [hi, lo]
-            )
-            if not power_result:
-                _LOGGER.warning(f"Failed to set active power target to {-power_kw} kW, falling back to export limit only")
-
-            # 4. Set grid export limit directly (bypass safety cap for force discharge)
+            # 3. Set grid export limit directly (bypass safety cap for force discharge)
             # The safety cap reads REG_GRID_EXPORT_LIMIT which creates a circular
             # dependency — force discharge needs to write a high value, but the cap
             # clamps it to whatever was previously written (often a low curtailment value).
