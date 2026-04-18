@@ -541,7 +541,7 @@ class PowerwallLocalClient:
             "Content-Type": "application/json",
         }
 
-        _LOGGER.info("SPIKE: posting signed readFileRequest to Fleet API %s", url)
+        _LOGGER.warning("SPIKE: posting signed readFileRequest to Fleet API %s din=%s site=%s", url, self._din, self._energy_site_id)
         try:
             async with aiohttp.ClientSession() as sess:
                 async with sess.post(
@@ -549,7 +549,7 @@ class PowerwallLocalClient:
                     timeout=aiohttp.ClientTimeout(total=35),
                 ) as resp:
                     body = await resp.text()
-                    _LOGGER.info("SPIKE: HTTP %d — %s", resp.status, body[:2000])
+                    _LOGGER.warning("SPIKE: HTTP %d — %s", resp.status, body[:2000])
                     if resp.status != 200:
                         return None
 
@@ -573,10 +573,10 @@ class PowerwallLocalClient:
                                 if env_resp.HasField("filestore"):
                                     blob = env_resp.filestore.readFileResponse.file.blob
                                     result = _json.loads(blob.decode("utf-8"))
-                                    _LOGGER.info("SPIKE: decoded config blob keys: %s", list(result.keys()))
+                                    _LOGGER.warning("SPIKE: decoded config blob keys: %s", list(result.keys()))
                                     return result
-                                _LOGGER.info("SPIKE: response had no filestore field — inner envelope fields: %s", env_resp.ListFields())
-                        _LOGGER.info("SPIKE: could not find response bytes in: %s", list(resp_json.keys()))
+                                _LOGGER.warning("SPIKE: response had no filestore field — inner envelope fields: %s", env_resp.ListFields())
+                        _LOGGER.warning("SPIKE: could not find response bytes in: %s", list(resp_json.keys()))
                     except Exception as decode_err:
                         _LOGGER.error("SPIKE: decode failed: %s", decode_err)
         except Exception as err:
