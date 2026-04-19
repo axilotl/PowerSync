@@ -1089,9 +1089,21 @@ class EnphaseController(InverterController):
         # Preferred: merged payload (echoes back all gateway-required fields)
         if merged_settings:
             payloads.append({"dynamic_pel_settings": merged_settings})
+            # Also try with relay_config=True if the gateway rejected False
+            if merged_settings.get("relay_config") is False:
+                merged_relay_true = dict(merged_settings)
+                merged_relay_true["relay_config"] = True
+                payloads.append({"dynamic_pel_settings": merged_relay_true})
+        # Build relay_config=True variant (some AU gateways with relay hardware configured
+        # reject relay_config=False even when no relay is physically wired)
+        primary_settings_relay_true = dict(primary_settings)
+        primary_settings_relay_true["relay_config"] = True
+
         payloads += [
             # Synthesised payload with installed_capacity (AU/NZ firmware)
             {"dynamic_pel_settings": primary_settings},
+            # Same but with relay_config=True — some AU gateways reject False
+            {"dynamic_pel_settings": primary_settings_relay_true},
             # Bare format — EU firmware doesn't need installed_capacity
             {"dynamic_pel_settings": {
                 "enable": enabled,
@@ -1099,6 +1111,25 @@ class EnphaseController(InverterController):
                 "limit_value_W": float(limit_watts),
                 "slew_rate": slew_rate,
                 "enable_dynamic_limiting": True
+            }},
+            # Bare with relay_config=True
+            {"dynamic_pel_settings": {
+                "enable": enabled,
+                "export_limit": export_limit_flag,
+                "limit_value_W": float(limit_watts),
+                "slew_rate": slew_rate,
+                "enable_dynamic_limiting": True,
+                "relay_config": True,
+            }},
+            # Bare with relay_config=True + installed_capacity
+            {"dynamic_pel_settings": {
+                "enable": enabled,
+                "export_limit": export_limit_flag,
+                "limit_value_W": float(limit_watts),
+                "slew_rate": slew_rate,
+                "enable_dynamic_limiting": True,
+                "relay_config": True,
+                **({"installed_capacity": float(installed_capacity_w)} if installed_capacity_w else {}),
             }},
             # Try with enable_dynamic_limiting False — LAST RESORT only.
             # Gateway accepts this without installed_capacity but doesn't
