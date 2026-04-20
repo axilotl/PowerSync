@@ -14674,10 +14674,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 - 'websocket_update': Re-sync only if price differs (Stage 2)
                 - 'rest_api_check': Check REST API and re-sync if differs (Stage 3/4)
         """
-        if _is_monitoring_mode():
-            _LOGGER.info("[MONITORING] Would sync TOU schedule (%s) — blocked by monitoring mode", sync_mode)
-            return
-
         # Determine battery system type for routing
         battery_system = entry.data.get(CONF_BATTERY_SYSTEM, "tesla")
 
@@ -15151,6 +15147,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if battery_system == "sigenergy":
             # Sigenergy-specific tariff sync via Cloud API
             # Pass current_actual_interval for live 5-min price injection
+            if _is_monitoring_mode():
+                _LOGGER.info("[MONITORING] Would sync Sigenergy tariff — blocked by monitoring mode")
+                return
             _LOGGER.info("🔀 Using Sigenergy Cloud API for tariff sync")
             await _sync_tariff_to_sigenergy(forecast_data, sync_mode, current_actual_interval)
             return
@@ -15158,9 +15157,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # FoxESS: sync to Cloud API if configured, otherwise store for sensors only
         if battery_system == "foxess":
             foxess_api_key = entry.data.get(CONF_FOXESS_CLOUD_API_KEY)
-            if foxess_api_key:
+            if foxess_api_key and not _is_monitoring_mode():
                 _LOGGER.info("🔀 Using FoxESS Cloud API for schedule sync")
                 await _sync_tariff_to_foxess(forecast_data, sync_mode, current_actual_interval)
+            elif foxess_api_key and _is_monitoring_mode():
+                _LOGGER.info("[MONITORING] Would sync FoxESS Cloud schedule — blocked by monitoring mode; storing prices for sensors only")
             else:
                 _LOGGER.info("🔀 FoxESS uses Modbus control — storing prices for sensors only")
             # Still build tariff schedule for sensor display
@@ -15449,6 +15450,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         async_dispatcher_send(hass, f"power_sync_tariff_updated_{entry.entry_id}")
 
         # Send tariff to Tesla via Teslemetry or Fleet API
+        # Blocked in monitoring mode — tariff_schedule already stored above for display
+        if _is_monitoring_mode():
+            _LOGGER.info("[MONITORING] Tariff schedule updated for display; Tesla sync blocked by monitoring mode")
+            return
+
         # Get fresh token in case it was refreshed by tesla_fleet integration
         current_token, current_provider = token_getter()
         if not current_token:

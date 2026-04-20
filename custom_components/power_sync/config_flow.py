@@ -206,6 +206,7 @@ from .const import (
     NETWORK_TARIFF_TYPES,
     NETWORK_DISTRIBUTORS,
     ALL_NETWORK_TARIFFS,
+    NETWORK_API_NAME,
     # Flow Power v2 tariff
     CONF_FP_NETWORK,
     CONF_FP_TARIFF_CODE,
@@ -955,19 +956,10 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_flow_power_setup(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Handle Flow Power setup - essentials only (region, tariff, base rate)."""
+        """Handle Flow Power setup - region and base rate only."""
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            # Parse combined tariff selection (format: "distributor:code")
-            combined = user_input.get(CONF_NETWORK_TARIFF_COMBINED, "energex:6900")
-            if ":" in combined:
-                distributor, tariff_code = combined.split(":", 1)
-                user_input[CONF_NETWORK_DISTRIBUTOR] = distributor
-                user_input[CONF_NETWORK_TARIFF_CODE] = tariff_code
-            # Remove combined key before storing
-            user_input.pop(CONF_NETWORK_TARIFF_COMBINED, None)
-
             # Apply sensible defaults for fields not shown during initial setup
             user_input[CONF_FLOW_POWER_PRICE_SOURCE] = "aemo"
             user_input[CONF_PEA_ENABLED] = True
@@ -976,36 +968,25 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             user_input[CONF_AUTO_SYNC_ENABLED] = True
             user_input[CONF_BATTERY_CURTAILMENT_ENABLED] = False
 
-            # Store Flow Power configuration
+            # Store Flow Power configuration — tariff collected in next step
             self._flow_power_data = user_input
 
             # AEMO Direct is the default - no Amber API needed
             self._amber_data = {}
             self._aemo_only_mode = False
 
-            # Route to battery system selection
-            return await self.async_step_battery_system()
+            # Route to tariff selection (region-filtered)
+            return await self.async_step_flow_power_tariff()
 
         return self.async_show_form(
             step_id="flow_power_setup",
             data_schema=vol.Schema(
                 {
-                    vol.Required(CONF_FLOW_POWER_STATE, default="QLD1"): SelectSelector(
+                    vol.Required(CONF_FLOW_POWER_STATE, default="NSW1"): SelectSelector(
                         SelectSelectorConfig(
                             options=[
                                 SelectOptionDict(value=k, label=v)
                                 for k, v in FLOW_POWER_STATES.items()
-                            ],
-                            mode=SelectSelectorMode.DROPDOWN,
-                        )
-                    ),
-                    vol.Required(
-                        CONF_NETWORK_TARIFF_COMBINED, default="energex:6900"
-                    ): SelectSelector(
-                        SelectSelectorConfig(
-                            options=[
-                                SelectOptionDict(value=k, label=v)
-                                for k, v in ALL_NETWORK_TARIFFS.items()
                             ],
                             mode=SelectSelectorMode.DROPDOWN,
                         )
@@ -1019,6 +1000,67 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             step=0.01,
                             unit_of_measurement="c/kWh",
                             mode=NumberSelectorMode.BOX,
+                        )
+                    ),
+                }
+            ),
+            errors=errors,
+        )
+
+    async def async_step_flow_power_tariff(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Select network tariff (region-filtered) for the v2 PEA formula."""
+        errors: dict[str, str] = {}
+        region = self._flow_power_data.get(CONF_FLOW_POWER_STATE, "NSW1")
+
+        if user_input is not None:
+            fp_network = user_input.get(CONF_FP_NETWORK, "")
+            fp_tariff_code = user_input.get(CONF_FP_TARIFF_CODE, "")
+
+            self._flow_power_data[CONF_FP_NETWORK] = fp_network
+            self._flow_power_data[CONF_FP_TARIFF_CODE] = fp_tariff_code
+
+            # Also populate v1 keys from v2 selection so both formula paths work
+            if fp_network and fp_tariff_code:
+                api_name = NETWORK_API_NAME.get(fp_network, fp_network.lower())
+                self._flow_power_data[CONF_NETWORK_DISTRIBUTOR] = api_name
+                self._flow_power_data[CONF_NETWORK_TARIFF_CODE] = fp_tariff_code
+            else:
+                # Legacy formula — leave distributor/tariff_code unset
+                self._flow_power_data.pop(CONF_NETWORK_DISTRIBUTOR, None)
+                self._flow_power_data.pop(CONF_NETWORK_TARIFF_CODE, None)
+
+            return await self.async_step_battery_system()
+
+        # Build region-filtered network options
+        region_network_names = REGION_NETWORKS.get(region, [])
+        network_options = {"": "None (use simple formula)"}
+        network_options.update({n: n for n in region_network_names})
+
+        # Build tariff code options for the currently stored v2 network (empty on first visit)
+        tariff_code_options = {"": "—"}
+
+        return self.async_show_form(
+            step_id="flow_power_tariff",
+            data_schema=vol.Schema(
+                {
+                    vol.Optional(CONF_FP_NETWORK, default=""): SelectSelector(
+                        SelectSelectorConfig(
+                            options=[
+                                SelectOptionDict(value=k, label=v)
+                                for k, v in network_options.items()
+                            ],
+                            mode=SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
+                    vol.Optional(CONF_FP_TARIFF_CODE, default=""): SelectSelector(
+                        SelectSelectorConfig(
+                            options=[
+                                SelectOptionDict(value=k, label=v)
+                                for k, v in tariff_code_options.items()
+                            ],
+                            mode=SelectSelectorMode.DROPDOWN,
                         )
                     ),
                 }
@@ -6001,27 +6043,8 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
     async def async_step_flow_power_options(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Step 2b: Flow Power main settings (region, tariff, base rate, PEA, sync)."""
+        """Step 2b: Flow Power main settings (region, base rate, PEA, sync)."""
         if user_input is not None:
-            # Parse combined tariff selection (format: "distributor:code")
-            combined = user_input.get(CONF_NETWORK_TARIFF_COMBINED)
-            if combined and ":" in combined:
-                distributor, tariff_code = combined.split(":", 1)
-                user_input[CONF_NETWORK_DISTRIBUTOR] = distributor
-                user_input[CONF_NETWORK_TARIFF_CODE] = tariff_code
-            # Remove combined key before storing
-            user_input.pop(CONF_NETWORK_TARIFF_COMBINED, None)
-
-            # Handle empty TWAP override (store None for "auto")
-            twap_val = user_input.get(CONF_FP_TWAP_OVERRIDE)
-            if twap_val is not None and twap_val == "":
-                user_input[CONF_FP_TWAP_OVERRIDE] = None
-
-            # Handle empty Amber markup (store None for "default")
-            markup_val = user_input.get(CONF_FP_AMBER_MARKUP)
-            if markup_val is not None and markup_val == "":
-                user_input[CONF_FP_AMBER_MARKUP] = None
-
             # Store main options temporarily
             self._flow_power_main_options = user_input
 
@@ -6037,36 +6060,6 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 return await self.async_step_flow_power_amber_token()
 
             return await self.async_step_flow_power_network_options()
-
-        # Build current combined tariff value from stored options
-        current_distributor = self._get_option(CONF_NETWORK_DISTRIBUTOR, "energex")
-        current_tariff_code = self._get_option(CONF_NETWORK_TARIFF_CODE, "6900")
-        current_combined = f"{current_distributor}:{current_tariff_code}"
-        # Validate it exists in options, otherwise use default
-        if current_combined not in ALL_NETWORK_TARIFFS:
-            current_combined = "energex:6900"
-
-        # Build network options for v2 tariff
-        current_region = self._get_option(CONF_FLOW_POWER_STATE, "NSW1")
-        networks = REGION_NETWORKS.get(current_region, [])
-        network_options = {n: n for n in networks} if networks else {"": "None"}
-
-        # Build tariff code options for current v2 network
-        current_fp_network = self._get_option(CONF_FP_NETWORK, "")
-        tariff_code_options = {"": "None (legacy formula)"}
-        if current_fp_network:
-            from .tariff_utils import get_tariff_codes_for_network
-
-            codes = await self.hass.async_add_executor_job(
-                get_tariff_codes_for_network, current_fp_network
-            )
-            if codes:
-                tariff_code_options = codes
-
-        # Default Amber markup for region
-        default_markup = DEFAULT_FP_AMBER_MARKUP.get(current_region, 4.0)
-
-        fp_network_combined = {"": "None (legacy formula)", **network_options}
 
         schema = {
             vol.Required(
@@ -6090,16 +6083,6 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 mode=SelectSelectorMode.DROPDOWN,
             )),
             vol.Required(
-                CONF_NETWORK_TARIFF_COMBINED,
-                default=current_combined,
-            ): SelectSelector(SelectSelectorConfig(
-                options=[
-                    SelectOptionDict(value=k, label=v)
-                    for k, v in ALL_NETWORK_TARIFFS.items()
-                ],
-                mode=SelectSelectorMode.DROPDOWN,
-            )),
-            vol.Required(
                 CONF_FLOW_POWER_BASE_RATE,
                 default=self._get_option(
                     CONF_FLOW_POWER_BASE_RATE, FLOW_POWER_DEFAULT_BASE_RATE
@@ -6116,40 +6099,6 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 CONF_AUTO_SYNC_ENABLED,
                 default=self._get_option(CONF_AUTO_SYNC_ENABLED, True),
             ): BooleanSelector(),
-            vol.Optional(
-                CONF_FP_NETWORK,
-                default=self._get_option(CONF_FP_NETWORK, ""),
-            ): SelectSelector(SelectSelectorConfig(
-                options=[
-                    SelectOptionDict(value=k, label=v)
-                    for k, v in fp_network_combined.items()
-                ],
-                mode=SelectSelectorMode.DROPDOWN,
-            )),
-            vol.Optional(
-                CONF_FP_TARIFF_CODE,
-                default=self._get_option(CONF_FP_TARIFF_CODE, ""),
-            ): SelectSelector(SelectSelectorConfig(
-                options=[
-                    SelectOptionDict(value=k, label=v)
-                    for k, v in tariff_code_options.items()
-                ],
-                mode=SelectSelectorMode.DROPDOWN,
-            )),
-            vol.Optional(
-                CONF_FP_TWAP_OVERRIDE,
-                default=self._get_option(CONF_FP_TWAP_OVERRIDE, None),
-            ): vol.Any(None, NumberSelector(NumberSelectorConfig(
-                min=0.0, max=50.0, step=0.01, unit_of_measurement="c/kWh",
-                mode=NumberSelectorMode.BOX,
-            ))),
-            vol.Optional(
-                CONF_FP_AMBER_MARKUP,
-                default=self._get_option(CONF_FP_AMBER_MARKUP, None),
-            ): vol.Any(None, NumberSelector(NumberSelectorConfig(
-                min=0.0, max=20.0, step=0.01, unit_of_measurement="c/kWh",
-                mode=NumberSelectorMode.BOX,
-            ))),
             vol.Optional("connect_portal", default=False): BooleanSelector(),
         }
 
@@ -6306,8 +6255,25 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
     async def async_step_flow_power_network_options(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Step 2b-2: Flow Power network & advanced settings."""
+        """Step 2b-2: Flow Power network tariff & advanced settings."""
         if user_input is not None:
+            # Parse v2 network/tariff selection and populate v1 keys
+            fp_network = user_input.get(CONF_FP_NETWORK, "")
+            fp_tariff_code = user_input.get(CONF_FP_TARIFF_CODE, "")
+            if fp_network and fp_tariff_code:
+                api_name = NETWORK_API_NAME.get(fp_network, fp_network.lower())
+                user_input[CONF_NETWORK_DISTRIBUTOR] = api_name
+                user_input[CONF_NETWORK_TARIFF_CODE] = fp_tariff_code
+            else:
+                user_input.pop(CONF_NETWORK_DISTRIBUTOR, None)
+                user_input.pop(CONF_NETWORK_TARIFF_CODE, None)
+
+            # 0 is sentinel for "not set" — store None so auto-calculation kicks in
+            if not user_input.get(CONF_FP_TWAP_OVERRIDE):
+                user_input[CONF_FP_TWAP_OVERRIDE] = None
+            if not user_input.get(CONF_PEA_CUSTOM_VALUE):
+                user_input[CONF_PEA_CUSTOM_VALUE] = None
+
             # Merge main options from previous step with network/advanced options
             merged = {**self._flow_power_main_options, **user_input}
             self._flow_power_main_options = {}
@@ -6316,6 +6282,27 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             merged[CONF_ELECTRICITY_PROVIDER] = "flow_power"
             self._amber_options = merged
             return await self.async_step_demand_charge_options()
+
+        # Build region-filtered network options
+        current_region = self._get_option(CONF_FLOW_POWER_STATE, "NSW1")
+        region_network_names = REGION_NETWORKS.get(current_region, [])
+        fp_network_options = {"": "None (use simple formula)"}
+        fp_network_options.update({n: n for n in region_network_names})
+
+        # Build tariff code options for the current v2 network
+        current_fp_network = self._get_option(CONF_FP_NETWORK, "")
+        tariff_code_options = {"": "—"}
+        if current_fp_network:
+            from .tariff_utils import get_tariff_codes_for_network
+
+            codes = await self.hass.async_add_executor_job(
+                get_tariff_codes_for_network, current_fp_network
+            )
+            if codes:
+                tariff_code_options = codes
+
+        current_region_for_markup = self._get_option(CONF_FLOW_POWER_STATE, "NSW1")
+        default_markup = DEFAULT_FP_AMBER_MARKUP.get(current_region_for_markup, 4.0)
 
         hour_options = [
             SelectOptionDict(value=f"{h:02d}:00", label=f"{h:02d}:00")
@@ -6327,14 +6314,46 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             data_schema=vol.Schema(
                 {
                     vol.Optional(
+                        CONF_FP_NETWORK,
+                        default=self._get_option(CONF_FP_NETWORK, ""),
+                    ): SelectSelector(SelectSelectorConfig(
+                        options=[
+                            SelectOptionDict(value=k, label=v)
+                            for k, v in fp_network_options.items()
+                        ],
+                        mode=SelectSelectorMode.DROPDOWN,
+                    )),
+                    vol.Optional(
+                        CONF_FP_TARIFF_CODE,
+                        default=self._get_option(CONF_FP_TARIFF_CODE, ""),
+                    ): SelectSelector(SelectSelectorConfig(
+                        options=[
+                            SelectOptionDict(value=k, label=v)
+                            for k, v in tariff_code_options.items()
+                        ],
+                        mode=SelectSelectorMode.DROPDOWN,
+                    )),
+                    vol.Optional(
+                        CONF_FP_TWAP_OVERRIDE,
+                        default=self._get_option(CONF_FP_TWAP_OVERRIDE, None) or 0.0,
+                    ): NumberSelector(NumberSelectorConfig(
+                        min=0.0, max=50.0, step=0.01, unit_of_measurement="c/kWh",
+                        mode=NumberSelectorMode.BOX,
+                    )),
+                    vol.Optional(
+                        CONF_FP_AMBER_MARKUP,
+                        default=self._get_option(CONF_FP_AMBER_MARKUP, None) or default_markup,
+                    ): NumberSelector(NumberSelectorConfig(
+                        min=0.0, max=20.0, step=0.01, unit_of_measurement="c/kWh",
+                        mode=NumberSelectorMode.BOX,
+                    )),
+                    vol.Optional(
                         CONF_PEA_CUSTOM_VALUE,
-                        default=self._get_option(CONF_PEA_CUSTOM_VALUE, None),
-                    ): vol.Any(
-                        None, NumberSelector(NumberSelectorConfig(
-                            min=-50.0, max=50.0, step=0.01, unit_of_measurement="c/kWh",
-                            mode=NumberSelectorMode.BOX,
-                        ))
-                    ),
+                        default=self._get_option(CONF_PEA_CUSTOM_VALUE, None) or 0.0,
+                    ): NumberSelector(NumberSelectorConfig(
+                        min=-50.0, max=50.0, step=0.01, unit_of_measurement="c/kWh",
+                        mode=NumberSelectorMode.BOX,
+                    )),
                     vol.Optional(
                         CONF_NETWORK_USE_MANUAL_RATES,
                         default=self._get_option(CONF_NETWORK_USE_MANUAL_RATES, False),

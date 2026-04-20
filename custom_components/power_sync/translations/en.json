@@ -19,31 +19,27 @@
       },
       "flow_power_setup": {
         "title": "Flow Power pricing",
-        "description": "Enter your base rate and network tariff from your Flow Power bill.",
+        "description": "Enter your base rate from your Flow Power bill.",
         "data": {
           "flow_power_state": "NEM region",
-          "network_tariff_combined": "Network tariff",
           "flow_power_base_rate": "Base rate (c/kWh)"
         },
         "data_description": {
           "flow_power_state": "Your NEM region determines which wholesale price feed is used. Check your bill if unsure.",
-          "network_tariff_combined": "Select the network tariff that matches your electricity bill.",
           "flow_power_base_rate": "The base energy rate from your Flow Power contract, before wholesale adjustments."
         },
         "submit": "Next"
       },
       "flow_power_tariff": {
-        "title": "Network tariff (v2 formula)",
-        "description": "Configure your DNSP network tariff for the corrected PEA formula with GST, network charges, and daily averaging. Select Skip to use the legacy formula.",
+        "title": "Network tariff",
+        "description": "Select your DNSP and tariff code for accurate PEA pricing. Leave as None to use the simple formula.",
         "data": {
-          "skip_tariff": "Skip (use legacy formula)",
           "fp_network": "Network distributor (DNSP)",
           "fp_tariff_code": "Tariff code"
         },
         "data_description": {
-          "skip_tariff": "Check this to skip the v2 tariff setup and use the simpler legacy PEA formula instead.",
-          "fp_network": "Your local network distributor (DNSP). Filtered by your NEM region.",
-          "fp_tariff_code": "The tariff code from your electricity bill (e.g. RESELE, 6900)."
+          "fp_network": "Your local network distributor. Filtered by your NEM region. Leave as None to skip.",
+          "fp_tariff_code": "The tariff code from your electricity bill (e.g. RESELE, 6900). Leave blank if not using v2 formula."
         },
         "submit": "Next"
       },
@@ -1070,26 +1066,17 @@
         "data": {
           "flow_power_state": "NEM region",
           "flow_power_price_source": "Price source",
-          "network_tariff_combined": "Network tariff",
           "flow_power_base_rate": "Base rate (c/kWh)",
           "pea_enabled": "Enable PEA pricing (recommended)",
           "auto_sync_enabled": "Enable automatic TOU sync",
-          "fp_network": "V2 tariff: network distributor",
-          "fp_tariff_code": "V2 tariff: tariff code",
-          "fp_twap_override": "TWAP override (c/kWh)",
-          "fp_amber_markup": "Amber comparison markup (c/kWh)",
           "connect_portal": "Re-authenticate Flow Power portal"
         },
         "data_description": {
           "flow_power_price_source": "AEMO Direct fetches wholesale prices from NEMWeb (no API key). Amber API uses your Amber Electric account.",
           "pea_enabled": "PEA reflects how Flow Power actually bills you: final rate moves with wholesale prices. Disable for flat network tariff rates.",
-          "auto_sync_enabled": "Automatically upload TOU tariff schedules to your battery based on current prices.",
-          "fp_network": "Select your DNSP for the v2 PEA formula (includes GST and network charges). Leave as None for the legacy formula.",
-          "fp_tariff_code": "Tariff code from your electricity bill. Must match the selected network distributor.",
-          "fp_twap_override": "Override the dynamic 30-day TWAP with a fixed value. Leave empty for the rolling average.",
-          "fp_amber_markup": "Retailer margin for the Amber comparison sensor. Leave empty for the regional default (~4 c/kWh)."
+          "auto_sync_enabled": "Automatically upload TOU tariff schedules to your battery based on current prices."
         },
-        "submit": "Save"
+        "submit": "Next"
       },
       "flow_power_portal_reauth": {
         "title": "Portal re-authentication",
@@ -1127,9 +1114,13 @@
         "submit": "Connect"
       },
       "flow_power_network_options": {
-        "title": "Flow Power advanced options",
-        "description": "Advanced network tariff overrides. Most users do not need to change these settings.",
+        "title": "Flow Power network & tariff",
+        "description": "Select your network tariff for accurate PEA pricing. Advanced overrides for manual rate entry are at the bottom.",
         "data": {
+          "fp_network": "Network distributor (DNSP)",
+          "fp_tariff_code": "Tariff code",
+          "fp_twap_override": "TWAP override (c/kWh)",
+          "fp_amber_markup": "Amber comparison markup (c/kWh)",
           "pea_custom_value": "Custom PEA override (c/kWh)",
           "network_use_manual_rates": "Use manual network rates",
           "network_tariff_type": "Network tariff type",
@@ -1145,7 +1136,11 @@
           "network_include_gst": "Include GST (10%)"
         },
         "data_description": {
-          "pea_custom_value": "Override the calculated PEA with a fixed amount. Leave empty for automatic calculation.",
+          "fp_network": "Your DNSP (network distributor). Select to enable the v2 PEA formula with accurate network charges. Leave as None for the simple formula.",
+          "fp_tariff_code": "Tariff code from your electricity bill. Must match the selected distributor.",
+          "fp_twap_override": "Override the dynamic 30-day TWAP with a fixed value. Set to 0 for automatic rolling average.",
+          "fp_amber_markup": "Retailer margin for the Amber comparison sensor. Regional default is pre-filled.",
+          "pea_custom_value": "Override the calculated PEA with a fixed amount. Set to 0 for automatic calculation.",
           "network_use_manual_rates": "Enter network tariff rates manually instead of using the automatic lookup.",
           "network_other_fees": "Additional per-kWh fees not covered by the network tariff (metering, environmental charges, etc.).",
           "network_include_gst": "Add 10% GST on top of the network tariff rates."
