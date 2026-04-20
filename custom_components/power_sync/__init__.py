@@ -10391,7 +10391,8 @@ class OCPPChargersView(HomeAssistantView):
             # Match OCPP integration entities (e.g. sensor.my_charger_status)
             if re.match(r"(sensor|switch|number)\.\w+_(status|availability|charge_control|current_power|energy_meter)", eid, re.IGNORECASE):
                 # Check if this entity belongs to the OCPP integration
-                entity_reg = self._hass.helpers.entity_registry.async_get(self._hass) if hasattr(self._hass.helpers, 'entity_registry') else None
+                from homeassistant.helpers import entity_registry as er
+                entity_reg = er.async_get(self._hass)
                 if entity_reg:
                     entry = entity_reg.async_get(eid)
                     if entry and entry.platform == "ocpp":
