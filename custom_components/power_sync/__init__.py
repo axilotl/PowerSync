@@ -299,6 +299,9 @@ from .const import (
     TESLA_INTEGRATIONS,
     # BYD vehicle integration
     BYD_INTEGRATION,
+    # OCPP EV charger configuration
+    CONF_OCPP_ENABLED,
+    CONF_OCPP_PORT,
     # Zaptec EV charger configuration
     CONF_ZAPTEC_CHARGER_ENTITY,
     CONF_ZAPTEC_INSTALLATION_ID,

@@ -61,8 +61,8 @@ class SigenergyController(InverterController):
     REG_EMS_WORK_MODE = 30003             # EMS work mode (U16)
 
     # Input registers (read-only) - Battery health
-    REG_ESS_RATED_CAPACITY = 30083        # ESS rated energy capacity (U32, gain 100, kWh)
-    REG_ESS_SOH = 30087                   # Battery State of Health (U16, gain 10, %)
+    REG_ESS_RATED_CAPACITY = 30548        # ESS rated energy capacity (U32, gain 100, kWh)
+    REG_ESS_SOH = 30602                   # Battery State of Health (U16, gain 10, %) — plant-level weighted avg
 
     # Input registers (read-only) - Energy totals (U64 = 4 registers, gain 100)
     REG_ACCUMULATED_PV_ENERGY = 30088     # Total PV generation (U64, gain 100, kWh)
@@ -99,8 +99,8 @@ class SigenergyController(InverterController):
     REMOTE_EMS_MODE_DISCHARGE_ESS = 6       # Command discharging (ESS first)
 
     # ESS rated power registers (input, read-only)
-    REG_ESS_RATED_CHARGE_POWER = 30079    # ESS rated charge power (U32, gain 1000, kW)
-    REG_ESS_RATED_DISCHARGE_POWER = 30081 # ESS rated discharge power (U32, gain 1000, kW)
+    REG_ESS_RATED_CHARGE_POWER = 30550    # ESS rated charge power (U32, gain 1000, kW)
+    REG_ESS_RATED_DISCHARGE_POWER = 30552 # ESS rated discharge power (U32, gain 1000, kW)
 
     # Curtailment values
     # Zero export lets the inverter self-curtail PV at hardware speed —
