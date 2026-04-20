@@ -32,14 +32,12 @@
       },
       "flow_power_tariff": {
         "title": "Network tariff",
-        "description": "Select your DNSP and tariff code for accurate PEA pricing. Leave as None to use the simple formula.",
+        "description": "Select your network tariff for accurate PEA pricing. Leave as None to use the simple formula.",
         "data": {
-          "fp_network": "Network distributor (DNSP)",
-          "fp_tariff_code": "Tariff code"
+          "fp_network_tariff_combined": "Network & tariff code"
         },
         "data_description": {
-          "fp_network": "Your local network distributor. Filtered by your NEM region. Leave as None to skip.",
-          "fp_tariff_code": "The tariff code from your electricity bill (e.g. RESELE, 6900). Leave blank if not using v2 formula."
+          "fp_network_tariff_combined": "Your DNSP and tariff code combined (e.g. 'Ausgrid — RESELE'). Filtered by your NEM region. Select None to use the simple formula."
         },
         "submit": "Next"
       },
@@ -1117,8 +1115,7 @@
         "title": "Flow Power network & tariff",
         "description": "Select your network tariff for accurate PEA pricing. Advanced overrides for manual rate entry are at the bottom.",
         "data": {
-          "fp_network": "Network distributor (DNSP)",
-          "fp_tariff_code": "Tariff code",
+          "fp_network_tariff_combined": "Network & tariff code",
           "fp_twap_override": "TWAP override (c/kWh)",
           "fp_amber_markup": "Amber comparison markup (c/kWh)",
           "pea_custom_value": "Custom PEA override (c/kWh)",
@@ -1136,8 +1133,7 @@
           "network_include_gst": "Include GST (10%)"
         },
         "data_description": {
-          "fp_network": "Your DNSP (network distributor). Select to enable the v2 PEA formula with accurate network charges. Leave as None for the simple formula.",
-          "fp_tariff_code": "Tariff code from your electricity bill. Must match the selected distributor.",
+          "fp_network_tariff_combined": "Your DNSP and tariff code (e.g. 'Ausgrid — RESELE'). Filtered by your NEM region. Select None for the simple formula.",
           "fp_twap_override": "Override the dynamic 30-day TWAP with a fixed value. Set to 0 for automatic rolling average.",
           "fp_amber_markup": "Retailer margin for the Amber comparison sensor. Regional default is pre-filled.",
           "pea_custom_value": "Override the calculated PEA with a fixed amount. Set to 0 for automatic calculation.",

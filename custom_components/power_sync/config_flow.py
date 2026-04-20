@@ -1015,76 +1015,53 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         region = self._flow_power_data.get(CONF_FLOW_POWER_STATE, "NSW1")
 
         if user_input is not None:
-            fp_network = user_input.get(CONF_FP_NETWORK, "")
-            fp_tariff_code = user_input.get(CONF_FP_TARIFF_CODE, "")
-
-            # Network just selected but tariff codes weren't loaded yet — re-render.
-            pending = self._flow_power_data.get("_pending_fp_network")
-            if fp_network and not fp_tariff_code and fp_network != pending:
-                self._flow_power_data["_pending_fp_network"] = fp_network
-                return await self.async_step_flow_power_tariff()
-
-            self._flow_power_data.pop("_pending_fp_network", None)
-            self._flow_power_data[CONF_FP_NETWORK] = fp_network
-            self._flow_power_data[CONF_FP_TARIFF_CODE] = fp_tariff_code
-
-            # Also populate v1 keys from v2 selection so both formula paths work
-            if fp_network and fp_tariff_code:
+            combined = user_input.get("fp_network_tariff_combined", "")
+            if combined and ":" in combined:
+                fp_network, fp_tariff_code = combined.split(":", 1)
+                self._flow_power_data[CONF_FP_NETWORK] = fp_network
+                self._flow_power_data[CONF_FP_TARIFF_CODE] = fp_tariff_code
                 api_name = NETWORK_API_NAME.get(fp_network, fp_network.lower())
                 self._flow_power_data[CONF_NETWORK_DISTRIBUTOR] = api_name
                 self._flow_power_data[CONF_NETWORK_TARIFF_CODE] = fp_tariff_code
             else:
-                # Legacy formula — leave distributor/tariff_code unset
+                self._flow_power_data[CONF_FP_NETWORK] = ""
+                self._flow_power_data[CONF_FP_TARIFF_CODE] = ""
                 self._flow_power_data.pop(CONF_NETWORK_DISTRIBUTOR, None)
                 self._flow_power_data.pop(CONF_NETWORK_TARIFF_CODE, None)
 
             return await self.async_step_battery_system()
 
-        # Build region-filtered network options
+        # Build combined network+tariff dropdown for the region — all options loaded at render time
+        from .tariff_utils import get_tariff_codes_for_network
         region_network_names = REGION_NETWORKS.get(region, [])
-        network_options = {"": "None (use simple formula)"}
-        network_options.update({n: n for n in region_network_names})
-
-        # Load tariff codes for the pending or previously stored network selection
-        current_fp_network = (
-            self._flow_power_data.get("_pending_fp_network")
-            or self._flow_power_data.get(CONF_FP_NETWORK, "")
-        )
-        tariff_code_options: dict[str, str] = {"": "—"}
-        if current_fp_network:
-            from .tariff_utils import get_tariff_codes_for_network
-
+        fp_combined_options: dict[str, str] = {"": "None (use simple formula)"}
+        for network_name in region_network_names:
             codes = await self.hass.async_add_executor_job(
-                get_tariff_codes_for_network, current_fp_network
+                get_tariff_codes_for_network, network_name
             )
-            if codes:
-                tariff_code_options = {"": "— (skip)", **codes}
+            for code, desc in codes.items():
+                fp_combined_options[f"{network_name}:{code}"] = f"{network_name} — {desc}"
+
+        stored_network = self._flow_power_data.get(CONF_FP_NETWORK, "")
+        stored_tariff = self._flow_power_data.get(CONF_FP_TARIFF_CODE, "")
+        current_combined = f"{stored_network}:{stored_tariff}" if (stored_network and stored_tariff) else ""
+        if current_combined not in fp_combined_options:
+            current_combined = ""
 
         return self.async_show_form(
             step_id="flow_power_tariff",
             data_schema=vol.Schema(
                 {
                     vol.Optional(
-                        CONF_FP_NETWORK,
-                        default=current_fp_network or "",
-                    ): SelectSelector(
-                        SelectSelectorConfig(
-                            options=[
-                                SelectOptionDict(value=k, label=v)
-                                for k, v in network_options.items()
-                            ],
-                            mode=SelectSelectorMode.DROPDOWN,
-                        )
-                    ),
-                    vol.Optional(CONF_FP_TARIFF_CODE, default=""): SelectSelector(
-                        SelectSelectorConfig(
-                            options=[
-                                SelectOptionDict(value=k, label=v)
-                                for k, v in tariff_code_options.items()
-                            ],
-                            mode=SelectSelectorMode.DROPDOWN,
-                        )
-                    ),
+                        "fp_network_tariff_combined",
+                        default=current_combined,
+                    ): SelectSelector(SelectSelectorConfig(
+                        options=[
+                            SelectOptionDict(value=k, label=v)
+                            for k, v in fp_combined_options.items()
+                        ],
+                        mode=SelectSelectorMode.DROPDOWN,
+                    )),
                 }
             ),
             errors=errors,
@@ -6279,26 +6256,18 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
     ) -> FlowResult:
         """Step 2b-2: Flow Power network tariff & advanced settings."""
         if user_input is not None:
-            fp_network = user_input.get(CONF_FP_NETWORK, "")
-            fp_tariff_code = user_input.get(CONF_FP_TARIFF_CODE, "")
-
-            # If a network was just selected but no tariff codes were loaded yet
-            # (first time selecting this network), re-render so codes can be chosen.
-            pending = getattr(self, "_pending_fp_network", None)
-            if fp_network and not fp_tariff_code and fp_network != pending:
-                self._pending_fp_network = fp_network
-                self._pending_network_input = user_input
-                return await self.async_step_flow_power_network_options()
-
-            self._pending_fp_network = None
-            self._pending_network_input = None
-
-            # Parse v2 network/tariff selection and populate v1 keys
-            if fp_network and fp_tariff_code:
+            # Parse combined network:tariff_code selection
+            combined = user_input.pop("fp_network_tariff_combined", "")
+            if combined and ":" in combined:
+                fp_network, fp_tariff_code = combined.split(":", 1)
+                user_input[CONF_FP_NETWORK] = fp_network
+                user_input[CONF_FP_TARIFF_CODE] = fp_tariff_code
                 api_name = NETWORK_API_NAME.get(fp_network, fp_network.lower())
                 user_input[CONF_NETWORK_DISTRIBUTOR] = api_name
                 user_input[CONF_NETWORK_TARIFF_CODE] = fp_tariff_code
             else:
+                user_input[CONF_FP_NETWORK] = ""
+                user_input[CONF_FP_TARIFF_CODE] = ""
                 user_input.pop(CONF_NETWORK_DISTRIBUTOR, None)
                 user_input.pop(CONF_NETWORK_TARIFF_CODE, None)
 
@@ -6312,35 +6281,30 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             merged = {**self._flow_power_main_options, **user_input}
             self._flow_power_main_options = {}
 
-            # Store flow power options and route to demand charge page
             merged[CONF_ELECTRICITY_PROVIDER] = "flow_power"
             self._amber_options = merged
             return await self.async_step_demand_charge_options()
 
-        # Build region-filtered network options
         current_region = self._get_option(CONF_FLOW_POWER_STATE, "NSW1")
+        default_markup = DEFAULT_FP_AMBER_MARKUP.get(current_region, 4.0)
+
+        # Build combined network+tariff dropdown for the region — all options in one pass
+        from .tariff_utils import get_tariff_codes_for_network
         region_network_names = REGION_NETWORKS.get(current_region, [])
-        fp_network_options = {"": "None (use simple formula)"}
-        fp_network_options.update({n: n for n in region_network_names})
-
-        # Use pending network (just selected) or the stored value to load tariff codes
-        pending_input = getattr(self, "_pending_network_input", None)
-        current_fp_network = (
-            getattr(self, "_pending_fp_network", None)
-            or self._get_option(CONF_FP_NETWORK, "")
-        )
-        tariff_code_options = {"": "—"}
-        if current_fp_network:
-            from .tariff_utils import get_tariff_codes_for_network
-
+        fp_combined_options: dict[str, str] = {"": "None (use simple formula)"}
+        for network_name in region_network_names:
             codes = await self.hass.async_add_executor_job(
-                get_tariff_codes_for_network, current_fp_network
+                get_tariff_codes_for_network, network_name
             )
-            if codes:
-                tariff_code_options = {"": "— (skip)", **codes}
+            for code, desc in codes.items():
+                fp_combined_options[f"{network_name}:{code}"] = f"{network_name} — {desc}"
 
-        current_region_for_markup = self._get_option(CONF_FLOW_POWER_STATE, "NSW1")
-        default_markup = DEFAULT_FP_AMBER_MARKUP.get(current_region_for_markup, 4.0)
+        # Reconstruct current stored selection as combined key
+        stored_network = self._get_option(CONF_FP_NETWORK, "")
+        stored_tariff = self._get_option(CONF_FP_TARIFF_CODE, "")
+        current_combined = f"{stored_network}:{stored_tariff}" if (stored_network and stored_tariff) else ""
+        if current_combined not in fp_combined_options:
+            current_combined = ""
 
         hour_options = [
             SelectOptionDict(value=f"{h:02d}:00", label=f"{h:02d}:00")
@@ -6352,22 +6316,12 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             data_schema=vol.Schema(
                 {
                     vol.Optional(
-                        CONF_FP_NETWORK,
-                        default=current_fp_network or self._get_option(CONF_FP_NETWORK, ""),
+                        "fp_network_tariff_combined",
+                        default=current_combined,
                     ): SelectSelector(SelectSelectorConfig(
                         options=[
                             SelectOptionDict(value=k, label=v)
-                            for k, v in fp_network_options.items()
-                        ],
-                        mode=SelectSelectorMode.DROPDOWN,
-                    )),
-                    vol.Optional(
-                        CONF_FP_TARIFF_CODE,
-                        default=self._get_option(CONF_FP_TARIFF_CODE, ""),
-                    ): SelectSelector(SelectSelectorConfig(
-                        options=[
-                            SelectOptionDict(value=k, label=v)
-                            for k, v in tariff_code_options.items()
+                            for k, v in fp_combined_options.items()
                         ],
                         mode=SelectSelectorMode.DROPDOWN,
                     )),
