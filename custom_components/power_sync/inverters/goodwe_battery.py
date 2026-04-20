@@ -54,10 +54,10 @@ class GoodWeBatteryController:
         grid_w = data.get("active_power", 0) or 0
         grid_kw = -(grid_w / 1000.0)  # Negate
 
-        # GoodWe pbattery1: positive=charge, negative=discharge
+        # GoodWe pbattery1: positive=discharge, negative=charge (matches PowerSync directly)
         # PowerSync battery_power: positive=discharge, negative=charge
         bat_w = data.get("pbattery1", 0) or 0
-        battery_kw = -(bat_w / 1000.0)  # Negate
+        battery_kw = bat_w / 1000.0
 
         solar_w = data.get("ppv", 0) or 0
         solar_kw = solar_w / 1000.0
