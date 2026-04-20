@@ -802,23 +802,26 @@ class FoxESSController(InverterController):
 
     async def _write_remote_control(self, reg: 'FoxESSRegisterMap', power_val: int,
                                     duration_minutes: int, timeout_seconds: int,
-                                    label: str) -> bool:
+                                    label: str,
+                                    enable_val: int = REMOTE_CONTROL_AC) -> bool:
         """Write remote control registers and verify they took effect.
 
         Writes remote_enable, remote_timeout, and remote_active_power, then
         reads back remote_enable to confirm. Retries once on verification
         failure (covers silent Modbus collisions from concurrent integrations).
+
+        enable_val selects the remote control mode:
+          REMOTE_CONTROL_AC (0x0001) — commands inverter AC output directly;
+            battery discharges at exactly power_w regardless of PV or load.
+          REMOTE_CONTROL_GRID (0x0009) — targets the grid meter CT; inverter
+            auto-reduces battery discharge to account for active PV so total
+            grid feed-in is held at power_w.
+        Use AC mode for force_charge (EV load would otherwise steal the setpoint).
+        Use Grid mode for force_discharge (precise export target for tariff events).
         """
         max_attempts = 3
         for attempt in range(1, max_attempts + 1):
-            # Enable remote control — AC output target (0x0001) on all families.
-            # Grid target (0x0009) on H3-Pro/Smart made the setpoint control grid
-            # meter draw, so the inverter apportioned battery_charge = setpoint −
-            # load + PV. When an EV was drawing 11 kW, a 15 kW force_charge only
-            # delivered ~4 kW to the battery. AC target commands battery power
-            # directly and is independent of concurrent house load.
             if reg.remote_enable:
-                enable_val = REMOTE_CONTROL_AC
                 await self._write_holding_register(reg.remote_enable, enable_val)
                 if reg.remote_timeout:
                     await self._write_holding_register(reg.remote_timeout, timeout_seconds)
@@ -969,7 +972,14 @@ class FoxESSController(InverterController):
 
         timeout_seconds = max(duration_minutes * 60, 600)
         power_val = int(abs(power_w))
-        return await self._write_remote_control(reg, power_val, duration_minutes, timeout_seconds, "force discharge")
+        # Grid target mode: hold total grid feed-in at power_w.
+        # Inverter auto-reduces battery contribution when PV is active, so the
+        # export figure is precise (e.g. GloBird bonus export tariff).
+        # force_charge still uses AC mode — see _write_remote_control docstring.
+        return await self._write_remote_control(
+            reg, power_val, duration_minutes, timeout_seconds, "force discharge",
+            enable_val=REMOTE_CONTROL_GRID,
+        )
 
     async def restore_normal(self) -> bool:
         """Restore normal operation (Self Use mode)."""
