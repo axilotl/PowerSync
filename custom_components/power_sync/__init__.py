@@ -238,6 +238,7 @@ from .const import (
     CONF_GOODWE_HOST,
     CONF_GOODWE_PORT,
     CONF_GOODWE_PROTOCOL,
+    CONF_GOODWE_EMS_ENTITY_PREFIX,
     DEFAULT_GOODWE_PORT_UDP,
     DEFAULT_GOODWE_PORT_TCP,
     # Octopus Energy UK configuration
@@ -12662,13 +12663,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         goodwe_host = entry.options.get(CONF_GOODWE_HOST, entry.data.get(CONF_GOODWE_HOST))
         goodwe_port = entry.options.get(CONF_GOODWE_PORT, entry.data.get(CONF_GOODWE_PORT, DEFAULT_GOODWE_PORT_UDP))
+        goodwe_ems_prefix = entry.options.get(
+            CONF_GOODWE_EMS_ENTITY_PREFIX,
+            entry.data.get(CONF_GOODWE_EMS_ENTITY_PREFIX),
+        )
 
-        _LOGGER.info("Initializing GoodWe coordinator: %s:%s", goodwe_host, goodwe_port)
+        _LOGGER.info(
+            "Initializing GoodWe coordinator: %s:%s%s",
+            goodwe_host, goodwe_port,
+            f" (EMS relay via '{goodwe_ems_prefix}' entities)" if goodwe_ems_prefix else "",
+        )
         goodwe_coordinator = GoodWeEnergyCoordinator(
             hass,
             goodwe_host,
             port=goodwe_port,
             entry_id=entry.entry_id,
+            ems_entity_prefix=goodwe_ems_prefix,
         )
     elif is_alphaess:
         _LOGGER.info("Running in AlphaESS mode - Tesla credentials not required")

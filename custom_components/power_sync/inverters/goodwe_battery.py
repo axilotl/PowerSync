@@ -7,11 +7,13 @@ Separate from inverters/goodwe.py which handles AC-coupled curtailment via pymod
 """
 import asyncio
 import logging
+import time
 from typing import Any
 
 _LOGGER = logging.getLogger(__name__)
 
 _GOODWE_UDP_PORT = 8899
+_UDP_FAILURE_CACHE_SECONDS = 300  # re-try UDP no more than once every 5 min
 
 
 class GoodWeBatteryController:
@@ -23,6 +25,7 @@ class GoodWeBatteryController:
         self.comm_addr = comm_addr
         self._inverter = None  # goodwe.Inverter instance (data / TCP)
         self._lock = asyncio.Lock()
+        self._udp_unavailable_until: float = 0.0  # epoch time; 0 = never tried
 
     async def connect(self) -> bool:
         """Connect to inverter and auto-detect model family."""
@@ -57,6 +60,20 @@ class GoodWeBatteryController:
             return await self._verify_mode(self._inverter, mode)
 
         # TCP/Modbus data connection — open a fresh UDP connection for the write.
+        # Skip the attempt if UDP has recently proven unreachable (avoids a 10s
+        # timeout stall on every force-charge call when port 8899 is blocked).
+        now = time.monotonic()
+        if now < self._udp_unavailable_until:
+            remaining = int(self._udp_unavailable_until - now)
+            _LOGGER.warning(
+                "GoodWe UDP control skipped (port %d unreachable, retry in %ds) — "
+                "TCP write attempted but will not take effect. Ensure UDP port %d "
+                "is reachable from Home Assistant at %s.",
+                _GOODWE_UDP_PORT, remaining, _GOODWE_UDP_PORT, self.host,
+            )
+            await self._inverter.set_operation_mode(mode, **kwargs)
+            return await self._verify_mode(self._inverter, mode)
+
         try:
             udp_inv = await asyncio.wait_for(
                 goodwe.connect(
@@ -66,11 +83,17 @@ class GoodWeBatteryController:
                 ),
                 timeout=10.0,
             )
+            # Reset failure cache on successful connection.
+            self._udp_unavailable_until = 0.0
         except Exception as exc:
+            self._udp_unavailable_until = time.monotonic() + _UDP_FAILURE_CACHE_SECONDS
             _LOGGER.warning(
                 "GoodWe UDP control connection to %s:%d failed: %s — "
-                "trying TCP write (may not take effect on some firmware)",
-                self.host, _GOODWE_UDP_PORT, exc,
+                "trying TCP write (will not take effect). "
+                "If using a Modbus TCP gateway, the inverter's direct network IP "
+                "may differ from the gateway IP; UDP port %d must be reachable "
+                "from Home Assistant for force charge/discharge to work.",
+                self.host, _GOODWE_UDP_PORT, exc, _GOODWE_UDP_PORT,
             )
             # Fall back: write via TCP and verify via TCP.
             await self._inverter.set_operation_mode(mode, **kwargs)

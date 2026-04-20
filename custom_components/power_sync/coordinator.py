@@ -4340,6 +4340,7 @@ class GoodWeEnergyCoordinator(DataUpdateCoordinator):
         port: int = 8899,
         comm_addr: int = 0,
         entry_id: str = "",
+        ems_entity_prefix: str | None = None,
     ) -> None:
         """Initialize the coordinator."""
         from .inverters.goodwe_battery import GoodWeBatteryController
@@ -4347,6 +4348,13 @@ class GoodWeEnergyCoordinator(DataUpdateCoordinator):
         self.host = host
         self.port = port
         self._entry_id = entry_id
+        # When ems_entity_prefix is set (e.g. "goodwe"), control commands are
+        # relayed through the community GoodWe HA integration's EMS entities
+        # (select.<prefix>_ems_mode, number.<prefix>_ems_power_limit) instead of
+        # opening a direct UDP connection.  This is necessary when the inverter is
+        # only reachable via a Modbus TCP gateway — the EMS mode registers accept
+        # Modbus TCP writes whereas the standard operation-mode registers do not.
+        self._ems_prefix = ems_entity_prefix
         self._controller = GoodWeBatteryController(
             host=host, port=port, comm_addr=comm_addr
         )
@@ -4425,18 +4433,53 @@ class GoodWeEnergyCoordinator(DataUpdateCoordinator):
             self._connected = False
             raise UpdateFailed(f"Error fetching GoodWe data: {err}") from err
 
+    async def _ems_set_mode(self, ems_option: str, power_w: float) -> bool:
+        """Control via the community GoodWe HA integration's EMS entities.
+
+        Uses select.<prefix>_ems_mode and number.<prefix>_ems_power_limit.
+        These registers accept Modbus TCP writes, unlike the standard
+        operation-mode / work-mode registers which require UDP.
+        """
+        p = self._ems_prefix
+        mode_entity = f"select.{p}_ems_mode"
+        power_entity = f"number.{p}_ems_power_limit"
+
+        try:
+            if power_w > 0:
+                await self.hass.services.async_call(
+                    "number", "set_value",
+                    {"entity_id": power_entity, "value": int(power_w)},
+                    blocking=True,
+                )
+            await self.hass.services.async_call(
+                "select", "select_option",
+                {"entity_id": mode_entity, "option": ems_option},
+                blocking=True,
+            )
+            _LOGGER.info(
+                "GoodWe EMS control: set %s=%s power_limit=%sW",
+                mode_entity, ems_option, int(power_w) if power_w > 0 else "unchanged",
+            )
+            return True
+        except Exception as exc:
+            _LOGGER.error("GoodWe EMS control failed (%s=%s): %s", mode_entity, ems_option, exc)
+            return False
+
     async def force_charge(self, duration_minutes: int = 30, power_w: float = 0) -> bool:
-        """Set GoodWe to force charge mode via ECO_CHARGE."""
+        """Set GoodWe to force charge mode."""
+        if self._ems_prefix:
+            return await self._ems_set_mode("buy_power", power_w)
         if not self._connected:
             await self._controller.connect()
             self._connected = True
-        # Convert power_w to percentage of rated power
         rated = (self.data or {}).get("rated_power_w", 5000)
         pct = min(100, max(10, int((power_w / rated) * 100))) if power_w > 0 else 100
         return await self._controller.force_charge(power_pct=pct)
 
     async def force_discharge(self, duration_minutes: int = 30, power_w: float = 0) -> bool:
-        """Set GoodWe to force discharge mode via ECO_DISCHARGE."""
+        """Set GoodWe to force discharge mode."""
+        if self._ems_prefix:
+            return await self._ems_set_mode("sell_power", power_w)
         if not self._connected:
             await self._controller.connect()
             self._connected = True
@@ -4445,7 +4488,9 @@ class GoodWeEnergyCoordinator(DataUpdateCoordinator):
         return await self._controller.force_discharge(power_pct=pct)
 
     async def restore_normal(self) -> bool:
-        """Restore GoodWe to normal (GENERAL) operation."""
+        """Restore GoodWe to normal operation."""
+        if self._ems_prefix:
+            return await self._ems_set_mode("auto", 0)
         if not self._connected:
             await self._controller.connect()
             self._connected = True

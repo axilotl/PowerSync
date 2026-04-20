@@ -319,6 +319,7 @@ from .const import (
     CONF_GOODWE_HOST,
     CONF_GOODWE_PORT,
     CONF_GOODWE_PROTOCOL,
+    CONF_GOODWE_EMS_ENTITY_PREFIX,
     DEFAULT_GOODWE_PORT_UDP,
     DEFAULT_GOODWE_PORT_TCP,
     BATTERY_SYSTEM_GOODWE,
@@ -3743,6 +3744,11 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 new_data[CONF_GOODWE_PROTOCOL] = user_input.get(
                     CONF_GOODWE_PROTOCOL, "udp"
                 )
+                ems_prefix = user_input.get(CONF_GOODWE_EMS_ENTITY_PREFIX, "").strip()
+                if ems_prefix:
+                    new_data[CONF_GOODWE_EMS_ENTITY_PREFIX] = ems_prefix
+                else:
+                    new_data.pop(CONF_GOODWE_EMS_ENTITY_PREFIX, None)
 
                 self.hass.config_entries.async_update_entry(
                     self.config_entry, data=new_data
@@ -3754,6 +3760,7 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
         current_host = self._get_option(CONF_GOODWE_HOST, "")
         current_port = self._get_option(CONF_GOODWE_PORT, DEFAULT_GOODWE_PORT_UDP)
         current_protocol = self._get_option(CONF_GOODWE_PROTOCOL, "udp")
+        current_ems_prefix = self._get_option(CONF_GOODWE_EMS_ENTITY_PREFIX, "")
 
         goodwe_protocols = {
             "udp": "UDP (WiFi dongle, port 8899)",
@@ -3784,6 +3791,11 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     ): NumberSelector(NumberSelectorConfig(
                         min=1, max=65535, step=1, mode=NumberSelectorMode.BOX,
                     )),
+                    vol.Optional(
+                        CONF_GOODWE_EMS_ENTITY_PREFIX,
+                        default=current_ems_prefix,
+                        description={"suggested_value": current_ems_prefix},
+                    ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
                 }
             ),
             errors=errors,
@@ -4759,6 +4771,11 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 new_data[CONF_GOODWE_PROTOCOL] = user_input.get(
                     CONF_GOODWE_PROTOCOL, "udp"
                 )
+                ems_prefix = user_input.get(CONF_GOODWE_EMS_ENTITY_PREFIX, "").strip()
+                if ems_prefix:
+                    new_data[CONF_GOODWE_EMS_ENTITY_PREFIX] = ems_prefix
+                else:
+                    new_data.pop(CONF_GOODWE_EMS_ENTITY_PREFIX, None)
 
                 # Optimization provider settings
                 optimization_provider = user_input.get(
@@ -4797,6 +4814,7 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
         current_host = self._get_option(CONF_GOODWE_HOST, "")
         current_port = self._get_option(CONF_GOODWE_PORT, DEFAULT_GOODWE_PORT_UDP)
         current_protocol = self._get_option(CONF_GOODWE_PROTOCOL, "udp")
+        current_ems_prefix_init = self._get_option(CONF_GOODWE_EMS_ENTITY_PREFIX, "")
         current_opt_provider = self.config_entry.data.get(
             CONF_OPTIMIZATION_PROVIDER, OPT_PROVIDER_NATIVE
         )
@@ -4867,6 +4885,11 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     ): NumberSelector(NumberSelectorConfig(
                         min=1, max=65535, step=1, mode=NumberSelectorMode.BOX,
                     )),
+                    vol.Optional(
+                        CONF_GOODWE_EMS_ENTITY_PREFIX,
+                        default=current_ems_prefix_init,
+                        description={"suggested_value": current_ems_prefix_init},
+                    ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
                 }
             ),
             errors=errors,
