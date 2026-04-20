@@ -4468,6 +4468,8 @@ class GoodWeEnergyCoordinator(DataUpdateCoordinator):
     async def force_charge(self, duration_minutes: int = 30, power_w: float = 0) -> bool:
         """Set GoodWe to force charge mode."""
         if self._ems_prefix:
+            if power_w <= 0:
+                power_w = (self.data or {}).get("rated_power_w", 5000)
             return await self._ems_set_mode("buy_power", power_w)
         if not self._connected:
             await self._controller.connect()
@@ -4479,6 +4481,8 @@ class GoodWeEnergyCoordinator(DataUpdateCoordinator):
     async def force_discharge(self, duration_minutes: int = 30, power_w: float = 0) -> bool:
         """Set GoodWe to force discharge mode."""
         if self._ems_prefix:
+            if power_w <= 0:
+                power_w = (self.data or {}).get("rated_power_w", 5000)
             return await self._ems_set_mode("sell_power", power_w)
         if not self._connected:
             await self._controller.connect()
