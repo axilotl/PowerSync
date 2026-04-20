@@ -529,20 +529,26 @@ class PowerSyncStrategy {
       if (isAvailable(direct)) return direct;
       const prefix = `${domain}.`;
       const tail = `_${suffix}`;
-      const exact = `${domain}.${suffix}`;
-      // First pass: prefer available states in hass.states
+      // Fallback only matches entities that look Tesla/Powerwall/energy-site related
+      // to avoid grabbing unrelated entities from GoodWe, Sigenergy, etc.
+      const isTeslaLike = (key) =>
+        key.startsWith(`${domain}.power_sync_`) ||
+        key.includes('powerwall') ||
+        key.includes('tesla') ||
+        key.includes('energy_site') ||
+        key.includes('teslemetry');
+      // First pass: prefer available Tesla-like states
       for (const key of Object.keys(hass.states || {})) {
         if (!key.startsWith(prefix)) continue;
-        if (key !== exact && !key.endsWith(tail)) continue;
+        if (!key.endsWith(tail)) continue;
+        if (!isTeslaLike(key)) continue;
         if (isAvailable(key)) return key;
       }
-      // Second pass: fall back to any matching state (temporarily unavailable
-      // during coordinator startup), but still skip orphans that exist only in
-      // the registry — those are the "phantom unavailable" entities we want
-      // to hide from the dashboard.
+      // Second pass: fall back to temporarily unavailable Tesla-like states
+      // (coordinator startup), but never match unrelated integrations.
       for (const key of Object.keys(hass.states || {})) {
         if (!key.startsWith(prefix)) continue;
-        if (key === exact || key.endsWith(tail)) return key;
+        if (key.endsWith(tail) && isTeslaLike(key)) return key;
       }
       return null;
     };
@@ -579,9 +585,21 @@ class PowerSyncStrategy {
     // card. Each row is only added if the corresponding entity exists, so the
     // section gracefully scales from a basic Powerwall (4 rows) to a US site
     // with VPP enrollment (8+ rows).
-    const teslaSection = _teslaEnergySiteControls(findEntity, findVppSwitches);
-    if (teslaSection) {
-      left.push(teslaSection);
+    //
+    // Gated on power_sync_backup_reserve or power_sync_operation_mode — these
+    // are only created for Tesla setups. Without this guard, findEntity's broad
+    // suffix-match fallback picks up unrelated entities from GoodWe, Sigenergy,
+    // etc. and incorrectly renders the Tesla section for non-Tesla users.
+    {
+      const _s = hass.states || {};
+      const _hasTesla = !!(
+        _s['number.power_sync_backup_reserve'] ||
+        _s['select.power_sync_operation_mode']
+      );
+      if (_hasTesla) {
+        const teslaSection = _teslaEnergySiteControls(findEntity, findVppSwitches);
+        if (teslaSection) left.push(teslaSection);
+      }
     }
 
     // --- Left Column: Optimizer Status (requires button-card) ---

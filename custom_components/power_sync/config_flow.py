@@ -1058,7 +1058,7 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 get_tariff_codes_for_network, current_fp_network
             )
             if codes:
-                tariff_code_options = codes
+                tariff_code_options = {"": "— (skip)", **codes}
 
         return self.async_show_form(
             step_id="flow_power_tariff",
@@ -6337,7 +6337,7 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 get_tariff_codes_for_network, current_fp_network
             )
             if codes:
-                tariff_code_options = codes
+                tariff_code_options = {"": "— (skip)", **codes}
 
         current_region_for_markup = self._get_option(CONF_FLOW_POWER_STATE, "NSW1")
         default_markup = DEFAULT_FP_AMBER_MARKUP.get(current_region_for_markup, 4.0)
