@@ -316,7 +316,10 @@ class BatteryOptimizer:
             if export_prices[t] > 0:
                 c[n + t] = -(export_prices[t] + eps * (n - t)) * dt  # grid_export: prefer earlier
             else:
-                c[n + t] = 0.01 * dt                # chip-suppressed: small cost to avoid free exports
+                # Exporting at 0c costs the same as importing — any energy pushed out
+                # at 0c must be bought back at the import rate, so it's never worthwhile
+                # to intentionally discharge for 0c export (e.g. Flow Power non-happy-hour).
+                c[n + t] = max(0.01, import_prices[t]) * dt
 
             # Free electricity: strongly incentivize charging.
             # Without this, the LP may idle during free windows because
