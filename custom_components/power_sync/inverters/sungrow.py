@@ -150,7 +150,7 @@ class SungrowController(InverterController):
             slave_id: Modbus slave ID (default: 1)
             model: Sungrow model (e.g., 'sg10rs', 'sg5.0rs')
         """
-        super().__init__(host, port, slave_id, model)
+        super().__init__(host, int(port), int(slave_id), model)
         self._client: Optional[AsyncModbusTcpClient] = None
         self._lock = asyncio.Lock()
 

@@ -93,7 +93,7 @@ class GoodWeController(InverterController):
             slave_id: Modbus slave ID (default: 247 for GoodWe)
             model: GoodWe model (e.g., 'et', 'eh', 'bt', 'bh')
         """
-        super().__init__(host, port, slave_id, model)
+        super().__init__(host, int(port), int(slave_id), model)
         self._client: Optional[AsyncModbusTcpClient] = None
         self._lock = asyncio.Lock()
 

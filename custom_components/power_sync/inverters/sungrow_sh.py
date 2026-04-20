@@ -147,7 +147,7 @@ class SungrowSHController(InverterController):
             slave_id: Modbus slave ID (default: 1)
             model: Sungrow model (e.g., 'sh10rt')
         """
-        super().__init__(host, port, slave_id, model)
+        super().__init__(host, int(port), int(slave_id), model)
         self._client: Optional[AsyncModbusTcpClient] = None
         self._lock = asyncio.Lock()
         self._battery_voltage: float = self.BATTERY_VOLTAGE_FALLBACK
