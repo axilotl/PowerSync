@@ -10377,31 +10377,33 @@ class OCPPChargersView(HomeAssistantView):
     async def get(self, request):
         """Get OCPP charger list and status."""
         import re
+        from homeassistant.helpers import entity_registry as er
+
+        entity_reg = er.async_get(self._hass)
+
+        # Detect OCPP chargers from the HACS OCPP integration via entity registry.
+        # Non-greedy (\w+?) with end anchor ensures the prefix is everything before
+        # the matched suffix — e.g. switch.evse001_charge_control → prefix "evse001",
+        # not "evse001_charge" (which rsplit("_",1) would incorrectly produce).
+        suffix_pattern = re.compile(
+            r"^(sensor|switch|number)\.(\w+?)_(status|availability|charge_control|current_power|energy_meter)$",
+            re.IGNORECASE,
+        )
+        charger_ids = set()
+        for reg_entry in entity_reg.entities.values():
+            if reg_entry.platform != "ocpp":
+                continue
+            m = suffix_pattern.match(reg_entry.entity_id)
+            if m:
+                charger_ids.add(m.group(2))
+
+        _LOGGER.debug(
+            "OCPP charger detection: %d platform=ocpp entities, prefixes=%s",
+            sum(1 for e in entity_reg.entities.values() if e.platform == "ocpp"),
+            sorted(charger_ids),
+        )
 
         chargers = []
-        all_states = self._hass.states.async_all()
-
-        # Detect OCPP chargers from the HACS OCPP integration entities
-        # The integration creates entities like:
-        #   sensor.<charger_id>_status, sensor.<charger_id>_current_power
-        #   switch.<charger_id>_availability, switch.<charger_id>_charge_control
-        charger_ids = set()
-        for state in all_states:
-            eid = state.entity_id
-            # Match OCPP integration entities (e.g. sensor.my_charger_status)
-            if re.match(r"(sensor|switch|number)\.\w+_(status|availability|charge_control|current_power|energy_meter)", eid, re.IGNORECASE):
-                # Check if this entity belongs to the OCPP integration
-                from homeassistant.helpers import entity_registry as er
-                entity_reg = er.async_get(self._hass)
-                if entity_reg:
-                    entry = entity_reg.async_get(eid)
-                    if entry and entry.platform == "ocpp":
-                        # Extract charger ID prefix (everything before the last _suffix)
-                        parts = eid.split(".")[-1].rsplit("_", 1)
-                        if len(parts) >= 1:
-                            charger_ids.add(parts[0])
-
-        # Also check for OCPP chargers via the automation store
         entry_data = self._hass.data.get(DOMAIN, {}).get(self._entry.entry_id, {})
         ocpp_enabled = self._entry.options.get(
             CONF_OCPP_ENABLED,

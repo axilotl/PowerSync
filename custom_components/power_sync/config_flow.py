@@ -6306,7 +6306,8 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
         if current_combined not in fp_combined_options:
             current_combined = ""
 
-        hour_options = [
+        valid_hours = {f"{h:02d}:00" for h in range(24)}
+        hour_options = [SelectOptionDict(value="", label="—")] + [
             SelectOptionDict(value=f"{h:02d}:00", label=f"{h:02d}:00")
             for h in range(24)
         ]
@@ -6390,28 +6391,28 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     )),
                     vol.Optional(
                         CONF_NETWORK_PEAK_START,
-                        default=self._get_option(CONF_NETWORK_PEAK_START, "16:00"),
+                        default=self._get_option(CONF_NETWORK_PEAK_START, "16:00") if self._get_option(CONF_NETWORK_PEAK_START, "16:00") in valid_hours else "16:00",
                     ): SelectSelector(SelectSelectorConfig(
                         options=hour_options,
                         mode=SelectSelectorMode.DROPDOWN,
                     )),
                     vol.Optional(
                         CONF_NETWORK_PEAK_END,
-                        default=self._get_option(CONF_NETWORK_PEAK_END, "21:00"),
+                        default=self._get_option(CONF_NETWORK_PEAK_END, "21:00") if self._get_option(CONF_NETWORK_PEAK_END, "21:00") in valid_hours else "21:00",
                     ): SelectSelector(SelectSelectorConfig(
                         options=hour_options,
                         mode=SelectSelectorMode.DROPDOWN,
                     )),
                     vol.Optional(
                         CONF_NETWORK_OFFPEAK_START,
-                        default=self._get_option(CONF_NETWORK_OFFPEAK_START, "10:00"),
+                        default=self._get_option(CONF_NETWORK_OFFPEAK_START, "10:00") if self._get_option(CONF_NETWORK_OFFPEAK_START, "10:00") in valid_hours else "10:00",
                     ): SelectSelector(SelectSelectorConfig(
                         options=hour_options,
                         mode=SelectSelectorMode.DROPDOWN,
                     )),
                     vol.Optional(
                         CONF_NETWORK_OFFPEAK_END,
-                        default=self._get_option(CONF_NETWORK_OFFPEAK_END, "15:00"),
+                        default=self._get_option(CONF_NETWORK_OFFPEAK_END, "15:00") if self._get_option(CONF_NETWORK_OFFPEAK_END, "15:00") in valid_hours else "15:00",
                     ): SelectSelector(SelectSelectorConfig(
                         options=hour_options,
                         mode=SelectSelectorMode.DROPDOWN,
