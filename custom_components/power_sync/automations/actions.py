@@ -1082,8 +1082,8 @@ async def _action_force_discharge(
     params: Dict[str, Any]
 ) -> bool:
     """Force battery discharge for a specified duration."""
-    # Accept both "duration" and "duration_minutes" for flexibility
-    duration = params.get("duration") or params.get("duration_minutes", 30)
+    # Web app stores as "minutes", mobile app as "duration_minutes", HA automations as "duration"
+    duration = params.get("duration") or params.get("duration_minutes") or params.get("minutes", 30)
 
     if _is_sigenergy(config_entry):
         # Sigenergy: Enable Remote EMS + force discharge mode
@@ -1133,8 +1133,8 @@ async def _action_force_charge(
     params: Dict[str, Any]
 ) -> bool:
     """Force battery charge for a specified duration."""
-    # Accept both "duration" and "duration_minutes" for flexibility
-    duration = params.get("duration") or params.get("duration_minutes", 60)
+    # Web app stores as "minutes", mobile app as "duration_minutes", HA automations as "duration"
+    duration = params.get("duration") or params.get("duration_minutes") or params.get("minutes", 60)
 
     if _is_sigenergy(config_entry):
         # Sigenergy: Enable Remote EMS + force charge mode
