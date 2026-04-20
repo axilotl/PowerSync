@@ -1546,3 +1546,145 @@ SENSOR_TYPE_AMBER_USAGE_YESTERDAY_COST = "amber_usage_yesterday_cost"
 SENSOR_TYPE_AMBER_USAGE_YESTERDAY_SAVINGS = "amber_usage_yesterday_savings"
 SENSOR_TYPE_AMBER_USAGE_MONTH_COST = "amber_usage_month_cost"
 SENSOR_TYPE_AMBER_USAGE_MONTH_SAVINGS = "amber_usage_month_savings"
+
+# ============================================================
+# Device Family Grouping
+# Each family maps to a HA sub-device linked via via_device to the parent
+# entry device, so sensors appear in logical groups rather than one flat list.
+# ============================================================
+SENSOR_FAMILY_LP_OPTIMIZER = "lp_optimizer"
+SENSOR_FAMILY_BATTERY = "battery"
+SENSOR_FAMILY_SOLAR_INVERTER = "solar_inverter"
+SENSOR_FAMILY_GRID_HOME = "grid_home"
+SENSOR_FAMILY_PRICING = "pricing"
+SENSOR_FAMILY_FLOW_POWER = "flow_power"
+SENSOR_FAMILY_AEMO = "aemo"
+SENSOR_FAMILY_EV_CHARGING = "ev_charging"
+SENSOR_FAMILY_OCTOPUS = "octopus"
+SENSOR_FAMILY_CONTROLS = "controls"
+
+FAMILY_DISPLAY_NAMES: dict[str, str] = {
+    SENSOR_FAMILY_LP_OPTIMIZER: "LP Optimizer",
+    SENSOR_FAMILY_BATTERY: "Battery",
+    SENSOR_FAMILY_SOLAR_INVERTER: "Solar & Inverter",
+    SENSOR_FAMILY_GRID_HOME: "Grid & Home",
+    SENSOR_FAMILY_PRICING: "Pricing & Cost",
+    SENSOR_FAMILY_FLOW_POWER: "Flow Power",
+    SENSOR_FAMILY_AEMO: "AEMO",
+    SENSOR_FAMILY_EV_CHARGING: "EV Charging",
+    SENSOR_FAMILY_OCTOPUS: "Octopus",
+    SENSOR_FAMILY_CONTROLS: "Controls",
+}
+
+SENSOR_KEY_TO_FAMILY: dict[str, str] = {
+    # LP Optimizer
+    "optimization_status": SENSOR_FAMILY_LP_OPTIMIZER,
+    "optimization_next_action": SENSOR_FAMILY_LP_OPTIMIZER,
+    "optimization_savings": SENSOR_FAMILY_LP_OPTIMIZER,
+    "lp_solar_forecast": SENSOR_FAMILY_LP_OPTIMIZER,
+    "lp_load_forecast": SENSOR_FAMILY_LP_OPTIMIZER,
+    "lp_import_price_forecast": SENSOR_FAMILY_LP_OPTIMIZER,
+    "lp_export_price_forecast": SENSOR_FAMILY_LP_OPTIMIZER,
+    "load_forecast_today_remaining": SENSOR_FAMILY_LP_OPTIMIZER,
+    "load_forecast_tomorrow": SENSOR_FAMILY_LP_OPTIMIZER,
+    "tariff_schedule": SENSOR_FAMILY_LP_OPTIMIZER,
+    # Battery
+    "battery_power": SENSOR_FAMILY_BATTERY,
+    "battery_level": SENSOR_FAMILY_BATTERY,
+    "battery_level_1": SENSOR_FAMILY_BATTERY,
+    "battery_level_2": SENSOR_FAMILY_BATTERY,
+    "battery_max_charge_power": SENSOR_FAMILY_BATTERY,
+    "battery_max_discharge_power": SENSOR_FAMILY_BATTERY,
+    "battery_health": SENSOR_FAMILY_BATTERY,
+    "battery_mode": SENSOR_FAMILY_BATTERY,
+    "min_soc": SENSOR_FAMILY_BATTERY,
+    "daily_battery_charge": SENSOR_FAMILY_BATTERY,
+    "daily_battery_discharge": SENSOR_FAMILY_BATTERY,
+    "daily_battery_charge_foxess": SENSOR_FAMILY_BATTERY,
+    "daily_battery_discharge_foxess": SENSOR_FAMILY_BATTERY,
+    # Solar & Inverter
+    "solar_power": SENSOR_FAMILY_SOLAR_INVERTER,
+    "daily_solar_energy": SENSOR_FAMILY_SOLAR_INVERTER,
+    "pv1_power": SENSOR_FAMILY_SOLAR_INVERTER,
+    "pv2_power": SENSOR_FAMILY_SOLAR_INVERTER,
+    "ct2_power": SENSOR_FAMILY_SOLAR_INVERTER,
+    "pv_dc_power": SENSOR_FAMILY_SOLAR_INVERTER,
+    "pv_ac_power": SENSOR_FAMILY_SOLAR_INVERTER,
+    "work_mode": SENSOR_FAMILY_SOLAR_INVERTER,
+    "firmware": SENSOR_FAMILY_SOLAR_INVERTER,
+    "solar_curtailment": SENSOR_FAMILY_SOLAR_INVERTER,
+    "inverter_status": SENSOR_FAMILY_SOLAR_INVERTER,
+    "solcast_today_forecast": SENSOR_FAMILY_SOLAR_INVERTER,
+    "solcast_tomorrow_forecast": SENSOR_FAMILY_SOLAR_INVERTER,
+    "solcast_current_estimate": SENSOR_FAMILY_SOLAR_INVERTER,
+    # Grid & Home
+    "grid_power": SENSOR_FAMILY_GRID_HOME,
+    "grid_status": SENSOR_FAMILY_GRID_HOME,
+    "home_load": SENSOR_FAMILY_GRID_HOME,
+    "daily_grid_import": SENSOR_FAMILY_GRID_HOME,
+    "daily_grid_export": SENSOR_FAMILY_GRID_HOME,
+    "daily_load": SENSOR_FAMILY_GRID_HOME,
+    "grid_import_power": SENSOR_FAMILY_GRID_HOME,
+    # Pricing & Cost
+    "current_price": SENSOR_FAMILY_PRICING,
+    "current_import_price": SENSOR_FAMILY_PRICING,
+    "current_export_price": SENSOR_FAMILY_PRICING,
+    "forecast_price": SENSOR_FAMILY_PRICING,
+    "daily_import_cost": SENSOR_FAMILY_PRICING,
+    "daily_export_earnings": SENSOR_FAMILY_PRICING,
+    "daily_avg_cost_per_kwh": SENSOR_FAMILY_PRICING,
+    "mtd_avg_cost_per_kwh": SENSOR_FAMILY_PRICING,
+    "in_demand_charge_period": SENSOR_FAMILY_PRICING,
+    "peak_demand_this_cycle": SENSOR_FAMILY_PRICING,
+    "demand_charge_cost": SENSOR_FAMILY_PRICING,
+    "days_until_demand_reset": SENSOR_FAMILY_PRICING,
+    "daily_supply_charge_cost": SENSOR_FAMILY_PRICING,
+    "monthly_supply_charge": SENSOR_FAMILY_PRICING,
+    "total_monthly_cost": SENSOR_FAMILY_PRICING,
+    "amber_usage_yesterday_cost": SENSOR_FAMILY_PRICING,
+    "amber_usage_yesterday_savings": SENSOR_FAMILY_PRICING,
+    "amber_usage_month_cost": SENSOR_FAMILY_PRICING,
+    "amber_usage_month_savings": SENSOR_FAMILY_PRICING,
+    # Flow Power
+    "flow_power_price": SENSOR_FAMILY_FLOW_POWER,
+    "flow_power_export_price": SENSOR_FAMILY_FLOW_POWER,
+    "flow_power_twap": SENSOR_FAMILY_FLOW_POWER,
+    "flow_power_network_tariff": SENSOR_FAMILY_FLOW_POWER,
+    "flow_power_amber_comparison": SENSOR_FAMILY_FLOW_POWER,
+    "fp_account_pea": SENSOR_FAMILY_FLOW_POWER,
+    "fp_account_pea_30d": SENSOR_FAMILY_FLOW_POWER,
+    "fp_account_bpea": SENSOR_FAMILY_FLOW_POWER,
+    "fp_account_cpea": SENSOR_FAMILY_FLOW_POWER,
+    "fp_account_pea_import": SENSOR_FAMILY_FLOW_POWER,
+    "fp_account_lwap": SENSOR_FAMILY_FLOW_POWER,
+    "fp_account_lwap_actual": SENSOR_FAMILY_FLOW_POWER,
+    "fp_account_twap": SENSOR_FAMILY_FLOW_POWER,
+    "fp_account_avg_rrp": SENSOR_FAMILY_FLOW_POWER,
+    "fp_account_dlf": SENSOR_FAMILY_FLOW_POWER,
+    "fp_account_avg_usage": SENSOR_FAMILY_FLOW_POWER,
+    "fp_account_max_usage": SENSOR_FAMILY_FLOW_POWER,
+    # AEMO
+    "aemo_price": SENSOR_FAMILY_AEMO,
+    "aemo_spike_status": SENSOR_FAMILY_AEMO,
+    # EV Charging
+    "ev_power": SENSOR_FAMILY_EV_CHARGING,
+    "ev_battery_level": SENSOR_FAMILY_EV_CHARGING,
+    "ev_charging_status": SENSOR_FAMILY_EV_CHARGING,
+    "ev_next_charge_window": SENSOR_FAMILY_EV_CHARGING,
+    # Octopus
+    "saving_session_active": SENSOR_FAMILY_OCTOPUS,
+    "next_saving_session": SENSOR_FAMILY_OCTOPUS,
+    "saving_session_rate": SENSOR_FAMILY_OCTOPUS,
+}
+
+
+def family_device_info(entry_id: str, family: str) -> dict:
+    """Return device_info dict for a sub-device family, linked to the parent entry device."""
+    display = FAMILY_DISPLAY_NAMES.get(family, family)
+    return {
+        "identifiers": {(DOMAIN, f"{entry_id}_{family}")},
+        "name": f"PowerSync {display}",
+        "manufacturer": "PowerSync",
+        "model": display,
+        "via_device": (DOMAIN, entry_id),
+    }

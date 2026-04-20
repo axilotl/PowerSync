@@ -157,6 +157,16 @@ from .const import (
     ATTR_AEMO_REGION,
     ATTR_AEMO_THRESHOLD,
     ATTR_SPIKE_START_TIME,
+    family_device_info,
+    SENSOR_KEY_TO_FAMILY,
+    SENSOR_FAMILY_LP_OPTIMIZER,
+    SENSOR_FAMILY_BATTERY,
+    SENSOR_FAMILY_SOLAR_INVERTER,
+    SENSOR_FAMILY_PRICING,
+    SENSOR_FAMILY_FLOW_POWER,
+    SENSOR_FAMILY_AEMO,
+    SENSOR_FAMILY_EV_CHARGING,
+    SENSOR_FAMILY_OCTOPUS,
 )
 from .coordinator import AmberPriceCoordinator, LocalvoltsPriceCoordinator, TeslaEnergyCoordinator, DemandChargeCoordinator, SolcastForecastCoordinator
 
@@ -1251,10 +1261,10 @@ class AmberPriceSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def device_info(self):
-        """Return device info to link to the PowerSync device."""
-        return {
-            "identifiers": {(DOMAIN, self._entry.entry_id)},
-        }
+        return family_device_info(
+            self._entry.entry_id,
+            SENSOR_KEY_TO_FAMILY.get(self.entity_description.key, SENSOR_FAMILY_PRICING),
+        )
 
     @property
     def native_value(self) -> Any:
@@ -1295,10 +1305,10 @@ class TeslaEnergySensor(CoordinatorEntity, SensorEntity):
 
     @property
     def device_info(self):
-        """Return device info to link to the PowerSync device."""
-        return {
-            "identifiers": {(DOMAIN, self._entry.entry_id)},
-        }
+        return family_device_info(
+            self._entry.entry_id,
+            SENSOR_KEY_TO_FAMILY.get(self.entity_description.key, SENSOR_FAMILY_BATTERY),
+        )
 
     @property
     def native_value(self) -> Any:
@@ -1329,10 +1339,7 @@ class OptimizerActionSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def device_info(self):
-        """Return device info to link to the PowerSync device."""
-        return {
-            "identifiers": {(DOMAIN, self._entry.entry_id)},
-        }
+        return family_device_info(self._entry.entry_id, SENSOR_FAMILY_LP_OPTIMIZER)
 
     @property
     def native_value(self) -> Any:
@@ -1371,10 +1378,7 @@ class DemandChargeSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def device_info(self):
-        """Return device info to link to the PowerSync device."""
-        return {
-            "identifiers": {(DOMAIN, self._entry.entry_id)},
-        }
+        return family_device_info(self._entry.entry_id, SENSOR_FAMILY_PRICING)
 
     @property
     def native_value(self) -> Any:
@@ -1432,10 +1436,7 @@ class AEMOSpikeSensor(SensorEntity):
 
     @property
     def device_info(self):
-        """Return device info to link to the PowerSync device."""
-        return {
-            "identifiers": {(DOMAIN, self._entry.entry_id)},
-        }
+        return family_device_info(self._entry.entry_id, SENSOR_FAMILY_AEMO)
 
     @property
     def native_value(self) -> Any:
@@ -1473,10 +1474,7 @@ class SavingSessionSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def device_info(self):
-        """Return device info to link to the PowerSync device."""
-        return {
-            "identifiers": {(DOMAIN, self._entry.entry_id)},
-        }
+        return family_device_info(self._entry.entry_id, SENSOR_FAMILY_OCTOPUS)
 
     @property
     def native_value(self) -> Any:
@@ -1515,10 +1513,7 @@ class SolcastForecastSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def device_info(self):
-        """Return device info to link to the PowerSync device."""
-        return {
-            "identifiers": {(DOMAIN, self._entry.entry_id)},
-        }
+        return family_device_info(self._entry.entry_id, SENSOR_FAMILY_SOLAR_INVERTER)
 
     @property
     def native_value(self) -> Any:
@@ -1661,10 +1656,7 @@ class LPForecastSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def device_info(self):
-        """Return device info to link to the PowerSync device."""
-        return {
-            "identifiers": {(DOMAIN, self._entry.entry_id)},
-        }
+        return family_device_info(self._entry.entry_id, SENSOR_FAMILY_LP_OPTIMIZER)
 
     @property
     def _forecast_data(self) -> dict[str, Any]:
@@ -1713,10 +1705,7 @@ class TariffScheduleSensor(SensorEntity):
 
     @property
     def device_info(self):
-        """Return device info to link to the PowerSync device."""
-        return {
-            "identifiers": {(DOMAIN, self._entry.entry_id)},
-        }
+        return family_device_info(self._entry.entry_id, SENSOR_FAMILY_LP_OPTIMIZER)
 
     async def async_added_to_hass(self) -> None:
         """Run when entity is added to hass."""
@@ -1947,10 +1936,7 @@ class TariffPriceSensor(SensorEntity):
 
     @property
     def device_info(self):
-        """Return device info to link to the PowerSync device."""
-        return {
-            "identifiers": {(DOMAIN, self._entry.entry_id)},
-        }
+        return family_device_info(self._entry.entry_id, SENSOR_FAMILY_PRICING)
 
     async def async_added_to_hass(self) -> None:
         """Run when entity is added to hass."""
@@ -2061,10 +2047,7 @@ class SolarCurtailmentSensor(SensorEntity):
 
     @property
     def device_info(self):
-        """Return device info to link to the PowerSync device."""
-        return {
-            "identifiers": {(DOMAIN, self._entry.entry_id)},
-        }
+        return family_device_info(self._entry.entry_id, SENSOR_FAMILY_SOLAR_INVERTER)
 
     async def async_added_to_hass(self) -> None:
         """Run when entity is added to hass."""
@@ -2191,10 +2174,7 @@ class InverterStatusSensor(SensorEntity):
 
     @property
     def device_info(self):
-        """Return device info to link to the PowerSync device."""
-        return {
-            "identifiers": {(DOMAIN, self._entry.entry_id)},
-        }
+        return family_device_info(self._entry.entry_id, SENSOR_FAMILY_SOLAR_INVERTER)
 
     async def async_added_to_hass(self) -> None:
         """Run when entity is added to hass."""
@@ -2503,10 +2483,7 @@ class FlowPowerPriceSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def device_info(self):
-        """Return device info to link to the PowerSync device."""
-        return {
-            "identifiers": {(DOMAIN, self._entry.entry_id)},
-        }
+        return family_device_info(self._entry.entry_id, SENSOR_FAMILY_FLOW_POWER)
 
     def _get_config_value(self, key: str, default=None):
         """Get config value from options first, then data."""
@@ -2726,10 +2703,7 @@ class FlowPowerTWAPSensor(SensorEntity):
 
     @property
     def device_info(self):
-        """Return device info to link to the PowerSync device."""
-        return {
-            "identifiers": {(DOMAIN, self._entry.entry_id)},
-        }
+        return family_device_info(self._entry.entry_id, SENSOR_FAMILY_FLOW_POWER)
 
     def _get_config_value(self, key: str, default=None):
         """Get config value from options first, then data."""
@@ -2798,10 +2772,7 @@ class FlowPowerNetworkTariffSensor(SensorEntity):
 
     @property
     def device_info(self):
-        """Return device info to link to the PowerSync device."""
-        return {
-            "identifiers": {(DOMAIN, self._entry.entry_id)},
-        }
+        return family_device_info(self._entry.entry_id, SENSOR_FAMILY_FLOW_POWER)
 
     def _get_config_value(self, key: str, default=None):
         """Get config value from options first, then data."""
@@ -2857,10 +2828,7 @@ class FlowPowerAmberComparisonSensor(SensorEntity):
 
     @property
     def device_info(self):
-        """Return device info to link to the PowerSync device."""
-        return {
-            "identifiers": {(DOMAIN, self._entry.entry_id)},
-        }
+        return family_device_info(self._entry.entry_id, SENSOR_FAMILY_FLOW_POWER)
 
     def _get_config_value(self, key: str, default=None):
         """Get config value from options first, then data."""
@@ -2965,6 +2933,10 @@ class FlowPowerPortalSensor(SensorEntity):
         self._attr_state_class = SensorStateClass.MEASUREMENT if unit else None
 
     @property
+    def device_info(self):
+        return family_device_info(self._entry.entry_id, SENSOR_FAMILY_FLOW_POWER)
+
+    @property
     def native_value(self) -> float | None:
         domain_data = self.hass.data.get(DOMAIN, {}).get(self._entry.entry_id, {})
         portal_data = domain_data.get("flow_power_portal_data")
@@ -3032,10 +3004,7 @@ class BatteryHealthSensor(SensorEntity):
 
     @property
     def device_info(self):
-        """Return device info to link to the PowerSync device."""
-        return {
-            "identifiers": {(DOMAIN, self._entry.entry_id)},
-        }
+        return family_device_info(self._entry.entry_id, SENSOR_FAMILY_BATTERY)
 
     async def async_added_to_hass(self) -> None:
         """Subscribe to battery health updates when added to hass."""
@@ -3203,10 +3172,7 @@ class EVStatusSensor(SensorEntity):
 
     @property
     def device_info(self):
-        """Return device info to link to the PowerSync device."""
-        return {
-            "identifiers": {(DOMAIN, self._entry.entry_id)},
-        }
+        return family_device_info(self._entry.entry_id, SENSOR_FAMILY_EV_CHARGING)
 
     async def async_added_to_hass(self) -> None:
         """Start polling when added to hass."""
@@ -3309,10 +3275,7 @@ class BatteryModeSensor(SensorEntity):
 
     @property
     def device_info(self):
-        """Return device info to link to the PowerSync device."""
-        return {
-            "identifiers": {(DOMAIN, self._entry.entry_id)},
-        }
+        return family_device_info(self._entry.entry_id, SENSOR_FAMILY_BATTERY)
 
     async def async_added_to_hass(self) -> None:
         """Run when entity is added to hass."""
@@ -3484,10 +3447,7 @@ class AmberUsageSensor(SensorEntity):
 
     @property
     def device_info(self):
-        """Return device info to link to the PowerSync device."""
-        return {
-            "identifiers": {(DOMAIN, self._entry.entry_id)},
-        }
+        return family_device_info(self._entry.entry_id, SENSOR_FAMILY_PRICING)
 
     async def async_added_to_hass(self) -> None:
         """Start periodic updates when added to HA."""

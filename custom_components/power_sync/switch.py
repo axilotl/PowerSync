@@ -27,6 +27,10 @@ from .const import (
     DEFAULT_DISCHARGE_DURATION,
     ATTR_LAST_SYNC,
     ATTR_SYNC_STATUS,
+    family_device_info,
+    SENSOR_FAMILY_LP_OPTIMIZER,
+    SENSOR_FAMILY_BATTERY,
+    SENSOR_FAMILY_CONTROLS,
 )
 
 # Providers that use TOU schedule syncing (Amber, Octopus, Flow Power)
@@ -199,10 +203,7 @@ class AutoSyncSwitch(SwitchEntity):
 
     @property
     def device_info(self):
-        """Return device info to link to the PowerSync device."""
-        return {
-            "identifiers": {(DOMAIN, self._entry.entry_id)},
-        }
+        return family_device_info(self._entry.entry_id, SENSOR_FAMILY_LP_OPTIMIZER)
 
     @property
     def is_on(self) -> bool:
@@ -294,10 +295,7 @@ class ForceDischargeSwitch(SwitchEntity):
 
     @property
     def device_info(self):
-        """Return device info to link to the PowerSync device."""
-        return {
-            "identifiers": {(DOMAIN, self._entry.entry_id)},
-        }
+        return family_device_info(self._entry.entry_id, SENSOR_FAMILY_BATTERY)
 
     @property
     def is_on(self) -> bool:
@@ -438,10 +436,7 @@ class ForceChargeSwitch(SwitchEntity):
 
     @property
     def device_info(self):
-        """Return device info to link to the PowerSync device."""
-        return {
-            "identifiers": {(DOMAIN, self._entry.entry_id)},
-        }
+        return family_device_info(self._entry.entry_id, SENSOR_FAMILY_BATTERY)
 
     @property
     def is_on(self) -> bool:
@@ -575,10 +570,7 @@ class MonitoringModeSwitch(SwitchEntity):
 
     @property
     def device_info(self):
-        """Return device info to link to the PowerSync device."""
-        return {
-            "identifiers": {(DOMAIN, self._entry.entry_id)},
-        }
+        return family_device_info(self._entry.entry_id, SENSOR_FAMILY_CONTROLS)
 
     @property
     def is_on(self) -> bool:
@@ -633,8 +625,7 @@ class AwayModeSwitch(SwitchEntity):
 
     @property
     def device_info(self):
-        """Return device info."""
-        return {"identifiers": {(DOMAIN, self._entry.entry_id)}}
+        return family_device_info(self._entry.entry_id, SENSOR_FAMILY_CONTROLS)
 
     @property
     def is_on(self) -> bool:
@@ -672,7 +663,7 @@ class _TeslaSiteSwitchBase(SwitchEntity):
 
     @property
     def device_info(self):
-        return {"identifiers": {(DOMAIN, self._entry.entry_id)}}
+        return family_device_info(self._entry.entry_id, SENSOR_FAMILY_BATTERY)
 
     def _tesla_coord(self):
         return self.hass.data.get(DOMAIN, {}).get(self._entry.entry_id, {}).get("tesla_coordinator")
@@ -836,7 +827,7 @@ class OffGridSwitch(SwitchEntity):
 
     @property
     def device_info(self):
-        return {"identifiers": {(DOMAIN, self._entry.entry_id)}}
+        return family_device_info(self._entry.entry_id, SENSOR_FAMILY_BATTERY)
 
     @property
     def is_on(self) -> bool | None:

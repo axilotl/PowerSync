@@ -13,6 +13,9 @@ from .const import (
     CONF_FORCE_DISCHARGE_DURATION,
     DEFAULT_DISCHARGE_DURATION,
     DISCHARGE_DURATIONS,
+    family_device_info,
+    SENSOR_FAMILY_BATTERY,
+    SENSOR_FAMILY_GRID_HOME,
 )
 
 
@@ -113,10 +116,7 @@ class PowerSyncDurationSelect(SelectEntity):
 
     @property
     def device_info(self):
-        """Return device info to link to the PowerSync device."""
-        return {
-            "identifiers": {(DOMAIN, self._entry_id)},
-        }
+        return family_device_info(self._entry_id, SENSOR_FAMILY_BATTERY)
 
     def _get_entry(self) -> ConfigEntry | None:
         """Get the current config entry (not a stale reference)."""
@@ -170,7 +170,7 @@ class _TeslaSiteSelectBase(SelectEntity):
 
     @property
     def device_info(self):
-        return {"identifiers": {(DOMAIN, self._entry.entry_id)}}
+        return family_device_info(self._entry.entry_id, SENSOR_FAMILY_BATTERY)
 
     def _tesla_coord(self):
         return (
@@ -222,6 +222,10 @@ class TeslaGridExportRuleSelect(_TeslaSiteSelectBase):
             icon="mdi:transmission-tower-export",
             options=self._OPTIONS,
         )
+
+    @property
+    def device_info(self):
+        return family_device_info(self._entry.entry_id, SENSOR_FAMILY_GRID_HOME)
 
     @property
     def current_option(self) -> str | None:

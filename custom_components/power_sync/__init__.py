@@ -12320,6 +12320,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     _LOGGER.info("Entry state: %s", entry.state)
     _LOGGER.info("=" * 60)
 
+    # Register the parent (hub) device so sub-devices can link to it via via_device.
+    dev_reg = dr.async_get(hass)
+    dev_reg.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={(DOMAIN, entry.entry_id)},
+        name=entry.title or "PowerSync",
+        manufacturer="PowerSync",
+        model="Hub",
+    )
+
     # Self-heal: detect inconsistent state where the saved Tesla provider
     # doesn't match the saved token format. This happens to users who
     # pasted a psync_ token into the old "Update Teslemetry Token" inline
@@ -15157,6 +15167,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 return
             _LOGGER.info("🔀 Using Sigenergy Cloud API for tariff sync")
             await _sync_tariff_to_sigenergy(forecast_data, sync_mode, current_actual_interval)
+            if general_price is not None or feedin_price is not None:
+                coordinator.record_synced_price(general_price, feedin_price)
             return
 
         # FoxESS: sync to Cloud API if configured, otherwise store for sensors only

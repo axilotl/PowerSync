@@ -14,7 +14,13 @@ from homeassistant.const import EntityCategory, PERCENTAGE
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN, CONF_TESLA_ENERGY_SITE_ID
+from .const import (
+    DOMAIN,
+    CONF_TESLA_ENERGY_SITE_ID,
+    family_device_info,
+    SENSOR_FAMILY_BATTERY,
+    SENSOR_FAMILY_EV_CHARGING,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -79,7 +85,7 @@ class _TeslaSiteNumberBase(NumberEntity):
 
     @property
     def device_info(self):
-        return {"identifiers": {(DOMAIN, self._entry.entry_id)}}
+        return family_device_info(self._entry.entry_id, SENSOR_FAMILY_BATTERY)
 
     def _tesla_coord(self):
         return (
@@ -125,6 +131,10 @@ class OffGridEvReserveNumber(_TeslaSiteNumberBase):
             name="Off-Grid EV Reserve",
             icon="mdi:car-electric",
         )
+
+    @property
+    def device_info(self):
+        return family_device_info(self._entry.entry_id, SENSOR_FAMILY_EV_CHARGING)
 
     @property
     def native_value(self) -> float | None:

@@ -18,6 +18,10 @@ from .const import (
     DOMAIN,
     CONF_TESLA_ENERGY_SITE_ID,
     CONF_POWERWALL_LOCAL_PAIRED,
+    family_device_info,
+    SENSOR_FAMILY_BATTERY,
+    SENSOR_FAMILY_CONTROLS,
+    SENSOR_FAMILY_GRID_HOME,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -81,7 +85,7 @@ class _TeslaBinarySensorBase(BinarySensorEntity):
 
     @property
     def device_info(self):
-        return {"identifiers": {(DOMAIN, self._entry.entry_id)}}
+        return family_device_info(self._entry.entry_id, SENSOR_FAMILY_BATTERY)
 
     def _tesla_coord(self):
         return (
@@ -133,6 +137,10 @@ class ManualExportOverrideBinarySensor(_TeslaBinarySensorBase):
         )
 
     @property
+    def device_info(self):
+        return family_device_info(self._entry.entry_id, SENSOR_FAMILY_CONTROLS)
+
+    @property
     def is_on(self) -> bool | None:
         entry_data = self.hass.data.get(DOMAIN, {}).get(self._entry.entry_id, {})
         return bool(entry_data.get("manual_export_override", False))
@@ -164,6 +172,10 @@ class PowerwallLocalPairedBinarySensor(_TeslaBinarySensorBase):
         )
 
     @property
+    def device_info(self):
+        return family_device_info(self._entry.entry_id, SENSOR_FAMILY_GRID_HOME)
+
+    @property
     def is_on(self) -> bool | None:
         return bool(self._entry.data.get(CONF_POWERWALL_LOCAL_PAIRED, False))
 
@@ -185,6 +197,10 @@ class PowerwallLocalIslandedBinarySensor(_TeslaBinarySensorBase):
             name="Powerwall Off-Grid",
             icon="mdi:transmission-tower-off",
         )
+
+    @property
+    def device_info(self):
+        return family_device_info(self._entry.entry_id, SENSOR_FAMILY_GRID_HOME)
 
     @property
     def is_on(self) -> bool | None:
