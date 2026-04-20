@@ -34,6 +34,7 @@ CONF_BATTERY_CURTAILMENT_ENABLED = "battery_curtailment_enabled"
 # Automations - OpenWeatherMap API for weather triggers
 CONF_OPENWEATHERMAP_API_KEY = "openweathermap_api_key"
 CONF_WEATHER_LOCATION = "weather_location"
+CONF_WEATHER_ENTITY = "weather_entity"
 
 # EV Charging configuration
 CONF_EV_CHARGING_ENABLED = "ev_charging_enabled"
@@ -977,6 +978,7 @@ SWITCH_TYPE_AUTO_SYNC = "auto_sync"
 SWITCH_TYPE_FORCE_DISCHARGE = "force_discharge"
 SWITCH_TYPE_FORCE_CHARGE = "force_charge"
 SWITCH_TYPE_MONITORING_MODE = "monitoring_mode"
+SWITCH_TYPE_AWAY_MODE = "away_mode"
 
 # Monitoring mode — blocks all battery/inverter control commands
 CONF_MONITORING_MODE = "monitoring_mode"
@@ -1481,6 +1483,8 @@ SENSOR_TYPE_LP_SOLAR_FORECAST = "lp_solar_forecast"
 SENSOR_TYPE_LP_LOAD_FORECAST = "lp_load_forecast"
 SENSOR_TYPE_LP_IMPORT_PRICE_FORECAST = "lp_import_price_forecast"
 SENSOR_TYPE_LP_EXPORT_PRICE_FORECAST = "lp_export_price_forecast"
+SENSOR_TYPE_LOAD_FORECAST_TODAY_REMAINING = "load_forecast_today_remaining"
+SENSOR_TYPE_LOAD_FORECAST_TOMORROW = "load_forecast_tomorrow"
 
 # ============================================================
 # EV Smart Charging Configuration

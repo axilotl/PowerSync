@@ -10,6 +10,7 @@ but falls back to local estimation if HAFO is not installed.
 """
 from __future__ import annotations
 
+import bisect
 import logging
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -271,6 +272,7 @@ class LoadEstimator:
         hass: HomeAssistant,
         load_entity_id: str | None = None,
         interval_minutes: int = 5,
+        weather_entity_id: str | None = None,
     ):
         """
         Initialize the load estimator.
@@ -279,13 +281,22 @@ class LoadEstimator:
             hass: Home Assistant instance
             load_entity_id: Entity ID for load sensor (e.g., sensor.power_sync_home_load)
             interval_minutes: Forecast interval in minutes
+            weather_entity_id: Optional HA weather entity for temperature-aware forecasting
         """
         self.hass = hass
         self.load_entity_id = load_entity_id
         self.interval_minutes = interval_minutes
+        self.weather_entity_id = weather_entity_id
+        self.away_mode: bool = False
         self._history_cache: dict[str, list[tuple[datetime, float]]] = {}
         self._cache_time: datetime | None = None
         self._cache_duration = timedelta(hours=1)
+
+        # Temperature sensitivity cache
+        self._temp_alpha: float | None = None
+        self._temp_alpha_fitted: bool = False  # True once fitting has run (even if α=None)
+        self._temp_cache_time: datetime | None = None
+        self._get_forecasts_unsupported: bool = False  # Latched when service is missing
 
         # Initialize HAFO forecaster
         self._hafo = HAFOForecaster(hass, load_entity_id, interval_minutes)
@@ -320,8 +331,8 @@ class LoadEstimator:
 
         n_intervals = horizon_hours * 60 // self.interval_minutes
 
-        # Try HAFO first (ML-based forecasting)
-        if self.hafo_available:
+        # Away mode: skip HAFO — it relies on recent history which was near-zero during vacation
+        if self.hafo_available and not self.away_mode:
             try:
                 hafo_forecast = await self._hafo.get_forecast(horizon_hours, start_time)
                 if hafo_forecast and len(hafo_forecast) >= n_intervals * 0.5:
@@ -333,15 +344,30 @@ class LoadEstimator:
             except Exception as e:
                 _LOGGER.warning(f"HAFO forecast failed: {e}")
 
-        # Fallback to historical pattern
+        # Fallback to historical pattern (with optional temperature adjustment)
         try:
-            history = await self._get_load_history(days=7)
+            history = await self._get_load_history()
             if history:
-                forecast = self._forecast_from_history(history, start_time, n_intervals)
+                # Fetch temperature data and fit sensitivity if weather entity configured
+                forecast_temps: list[tuple[datetime, float]] | None = None
+                bucket_temp_avgs: dict | None = None
+                alpha: float | None = None
+                if self.weather_entity_id:
+                    forecast_temps, bucket_temp_avgs, alpha = await self._get_temperature_adjustment(
+                        history, horizon_hours
+                    )
+                forecast = self._forecast_from_history(
+                    history, start_time, n_intervals,
+                    forecast_temps=forecast_temps,
+                    bucket_temp_averages=bucket_temp_avgs,
+                    alpha=alpha,
+                )
                 avg_w = sum(forecast) / len(forecast) if forecast else 0
                 _LOGGER.info(
-                    "Using historical load forecast (%d history points, avg %.0fW)",
+                    "Using historical load forecast (%d history points, avg %.0fW%s%s)",
                     len(history), avg_w,
+                    ", temperature-adjusted" if alpha is not None else "",
+                    ", away-mode (pre-vacation history)" if self.away_mode else "",
                 )
                 return forecast
         except Exception as e:
@@ -356,28 +382,27 @@ class LoadEstimator:
         )
         return self._simple_forecast(current_load, start_time, n_intervals)
 
-    async def _get_load_history(self, days: int = 7) -> list[tuple[datetime, float]]:
-        """
-        Get historical load data from Home Assistant recorder.
+    async def _get_load_history(self) -> list[tuple[datetime, float]]:
+        """Get historical load data from Home Assistant recorder.
 
-        Args:
-            days: Number of days of history to fetch
-
-        Returns:
-            List of (timestamp, load_watts) tuples
+        In away mode, fetches 28 days but excludes the most recent 7 to use
+        pre-vacation behaviour for post-return forecasting.
         """
         if not self.load_entity_id:
             _LOGGER.debug("No load entity ID configured, skipping history")
             return []
+
+        days = 28 if self.away_mode else 7
+        cache_key = f"{self.load_entity_id}:away={self.away_mode}"
 
         # Check cache
         now = dt_util.utcnow()
         if (
             self._cache_time
             and now - self._cache_time < self._cache_duration
-            and self.load_entity_id in self._history_cache
+            and cache_key in self._history_cache
         ):
-            return self._history_cache[self.load_entity_id]
+            return self._history_cache[cache_key]
 
         # Determine unit multiplier from current state
         multiplier = 1.0
@@ -415,25 +440,31 @@ class LoadEstimator:
 
             # Parse states into (timestamp, value_watts) tuples
             result = []
+            recent_cutoff = now - timedelta(days=7) if self.away_mode else None
             for state in history[self.load_entity_id]:
                 try:
                     value = float(state.state)
                     value_watts = value * multiplier
                     # Filter invalid values: must be positive and < 100kW residential max
                     if 0 < value_watts < 100_000:
-                        result.append((state.last_changed, value_watts))
+                        ts = state.last_changed
+                        # Away mode: exclude recent 7 days (vacation-distorted data)
+                        if recent_cutoff is not None and ts > recent_cutoff:
+                            continue
+                        result.append((ts, value_watts))
                 except (ValueError, TypeError):
                     continue
 
             # Cache the result
-            self._history_cache[self.load_entity_id] = result
+            self._history_cache[cache_key] = result
             self._cache_time = now
 
             if result:
                 avg_w = sum(v for _, v in result) / len(result)
                 _LOGGER.info(
-                    "Loaded %d history points for %s (avg %.0fW, %.1f days)",
+                    "Loaded %d history points for %s (avg %.0fW, %.1f days%s)",
                     len(result), self.load_entity_id, avg_w, days,
+                    ", excluding last 7 days (away mode)" if self.away_mode else "",
                 )
             else:
                 _LOGGER.warning(
@@ -454,12 +485,15 @@ class LoadEstimator:
         history: list[tuple[datetime, float]],
         start_time: datetime,
         n_intervals: int,
+        forecast_temps: list[tuple[datetime, float]] | None = None,
+        bucket_temp_averages: dict | None = None,
+        alpha: float | None = None,
     ) -> list[float]:
-        """
-        Generate forecast using historical pattern matching.
+        """Generate forecast using historical pattern matching with optional temperature scaling.
 
-        Groups historical data by day-of-week and time-of-day, then
-        generates forecast by looking up the average for each future interval.
+        forecast_temps: hourly (datetime, temp_c) pairs for the forecast horizon
+        bucket_temp_averages: (dow, hour, half_hour) -> historical avg temp_c
+        alpha: sensitivity coefficient — load changes alpha*100% per °C deviation
         """
         # Group by (day_of_week, hour, half_hour)
         pattern: dict[tuple[int, int, int], list[float]] = defaultdict(list)
@@ -479,18 +513,27 @@ class LoadEstimator:
             if values:
                 averages[key] = sum(values) / len(values)
 
+        # Build hourly forecast-temp lookup (slot_local_hour -> temp_c) for O(1) per slot
+        temp_map: dict[datetime, float] = {}
+        if forecast_temps and alpha is not None and bucket_temp_averages is not None:
+            for ft_ts, ft_temp in forecast_temps:
+                local_ft = dt_util.as_local(ft_ts) if ft_ts.tzinfo else ft_ts
+                slot_hour = local_ft.replace(minute=0, second=0, microsecond=0)
+                temp_map[slot_hour] = ft_temp
+
         # Generate forecast
         forecast = []
         current_time = start_time
 
         for _ in range(n_intervals):
-            dow = current_time.weekday()
-            hour = current_time.hour
-            half_hour = 0 if current_time.minute < 30 else 1
+            local_cur = dt_util.as_local(current_time) if current_time.tzinfo else current_time
+            dow = local_cur.weekday()
+            hour = local_cur.hour
+            half_hour = 0 if local_cur.minute < 30 else 1
             key = (dow, hour, half_hour)
 
             if key in averages:
-                forecast.append(averages[key])
+                base = averages[key]
             else:
                 # Fallback: use same time any day
                 fallback_values = [
@@ -499,20 +542,273 @@ class LoadEstimator:
                     if (d, hour, half_hour) in averages
                 ]
                 if fallback_values:
-                    forecast.append(sum(fallback_values) / len(fallback_values))
+                    base = sum(fallback_values) / len(fallback_values)
+                elif averages:
+                    base = sum(averages.values()) / len(averages)
                 else:
-                    # Last resort: use overall average or default
-                    if averages:
-                        forecast.append(sum(averages.values()) / len(averages))
-                    else:
-                        forecast.append(500.0)  # Default 500W
+                    base = 500.0
 
+            # Temperature scaling
+            if temp_map and bucket_temp_averages is not None and alpha is not None:
+                slot_hour = local_cur.replace(minute=0, second=0, microsecond=0)
+                t_cast = temp_map.get(slot_hour)
+                mu_temp = bucket_temp_averages.get(key)
+                if t_cast is not None and mu_temp is not None:
+                    delta_t = t_cast - mu_temp
+                    scale = max(0.5, min(2.5, 1.0 + alpha * delta_t))
+                    base = base * scale
+
+            forecast.append(base)
             current_time += timedelta(minutes=self.interval_minutes)
 
         # Apply smoothing
         forecast = self._smooth_forecast(forecast)
 
         return forecast
+
+    async def _get_temperature_adjustment(
+        self,
+        history: list[tuple[datetime, float]],
+        horizon_hours: int,
+    ) -> tuple[list[tuple[datetime, float]] | None, dict | None, float | None]:
+        """Fetch temperature data and return (forecast_temps, bucket_temp_avgs, alpha).
+
+        Uses a 1-hour cache for the fitted alpha.  Returns (None, None, None) if
+        temperature data is unavailable or the fit is too weak to be useful.
+        """
+        now = dt_util.utcnow()
+
+        # Use cached alpha if still warm (re-fetch forecast temps each time — cheap)
+        if (
+            self._temp_alpha_fitted
+            and self._temp_cache_time
+            and now - self._temp_cache_time < self._cache_duration
+        ):
+            if self._temp_alpha is None:
+                return None, None, None
+            forecast_temps = await self._fetch_forecast_temperatures(horizon_hours)
+            # Rebuild bucket_temp_averages from cached alpha context isn't available —
+            # return None so scaling is skipped if cache regenerated below
+            return forecast_temps or None, None, None
+
+        # Fetch historical temperatures for the same window as load history
+        if self.away_mode:
+            hist_start = now - timedelta(days=28)
+            hist_end = now - timedelta(days=7)
+        else:
+            hist_start = now - timedelta(days=7)
+            hist_end = now
+
+        temp_history = await self._fetch_historical_temperatures(hist_start, hist_end)
+        if not temp_history:
+            self._temp_alpha = None
+            self._temp_alpha_fitted = True
+            self._temp_cache_time = now
+            return None, None, None
+
+        # Build load bucket averages
+        load_pattern: dict[tuple[int, int, int], list[float]] = defaultdict(list)
+        for ts, val in history:
+            local_ts = dt_util.as_local(ts) if ts.tzinfo else ts
+            key = (local_ts.weekday(), local_ts.hour, 0 if local_ts.minute < 30 else 1)
+            load_pattern[key].append(val)
+        bucket_averages = {k: sum(v) / len(v) for k, v in load_pattern.items()}
+
+        # Build temperature bucket averages
+        bucket_temp_avgs = self._compute_bucket_temp_averages(temp_history)
+
+        # Fit global sensitivity coefficient
+        alpha = self._fit_temperature_sensitivity(
+            history, temp_history, bucket_averages, bucket_temp_avgs
+        )
+
+        self._temp_alpha = alpha
+        self._temp_alpha_fitted = True
+        self._temp_cache_time = now
+
+        if alpha is None:
+            return None, None, None
+
+        # Fetch forecast temperatures
+        forecast_temps = await self._fetch_forecast_temperatures(horizon_hours)
+        return forecast_temps or None, bucket_temp_avgs, alpha
+
+    async def _fetch_historical_temperatures(
+        self,
+        start: datetime,
+        end: datetime,
+    ) -> list[tuple[datetime, float]]:
+        """Query recorder for outdoor temperature from the configured weather entity."""
+        if not self.weather_entity_id:
+            return []
+        try:
+            from homeassistant.components.recorder import get_instance
+            from homeassistant.components.recorder.history import get_significant_states
+
+            instance = get_instance(self.hass)
+            history = await instance.async_add_executor_job(
+                get_significant_states,
+                self.hass,
+                start,
+                end,
+                [self.weather_entity_id],
+            )
+            if not history or self.weather_entity_id not in history:
+                return []
+
+            result = []
+            for state in history[self.weather_entity_id]:
+                temp = state.attributes.get("temperature")
+                if temp is not None:
+                    try:
+                        result.append((state.last_changed, float(temp)))
+                    except (ValueError, TypeError):
+                        continue
+            return sorted(result, key=lambda x: x[0])
+        except Exception as e:
+            _LOGGER.warning("Failed to fetch temperature history from %s: %s", self.weather_entity_id, e)
+            return []
+
+    async def _fetch_forecast_temperatures(
+        self,
+        horizon_hours: int = 48,
+    ) -> list[tuple[datetime, float]]:
+        """Fetch hourly forecast temperature via weather.get_forecasts service."""
+        if not self.weather_entity_id or self._get_forecasts_unsupported:
+            return []
+        try:
+            resp = await self.hass.services.async_call(
+                "weather",
+                "get_forecasts",
+                {"entity_id": self.weather_entity_id, "type": "hourly"},
+                blocking=True,
+                return_response=True,
+            )
+            if not resp or self.weather_entity_id not in resp:
+                return []
+            forecasts = resp[self.weather_entity_id].get("forecast", [])
+            cutoff = dt_util.utcnow() + timedelta(hours=horizon_hours)
+            result = []
+            for entry in forecasts:
+                dt_str = entry.get("datetime")
+                temp = entry.get("temperature")
+                if dt_str is None or temp is None:
+                    continue
+                try:
+                    from datetime import datetime as _dt
+                    ft = _dt.fromisoformat(dt_str)
+                    if ft.tzinfo is None:
+                        ft = dt_util.as_utc(ft)
+                    if ft > cutoff:
+                        break
+                    result.append((ft, float(temp)))
+                except (ValueError, TypeError):
+                    continue
+            return result
+        except Exception as e:
+            _LOGGER.warning(
+                "weather.get_forecasts unsupported for %s — temperature forecast disabled: %s",
+                self.weather_entity_id, e,
+            )
+            self._get_forecasts_unsupported = True
+            return []
+
+    def _compute_bucket_temp_averages(
+        self,
+        temp_history: list[tuple[datetime, float]],
+    ) -> dict[tuple[int, int, int], float]:
+        """Group temperature history into (dow, hour, half_hour) buckets and average."""
+        bucket: dict[tuple[int, int, int], list[float]] = defaultdict(list)
+        for ts, temp_c in temp_history:
+            local_ts = dt_util.as_local(ts) if ts.tzinfo else ts
+            key = (local_ts.weekday(), local_ts.hour, 0 if local_ts.minute < 30 else 1)
+            bucket[key].append(temp_c)
+        return {k: sum(v) / len(v) for k, v in bucket.items()}
+
+    def _fit_temperature_sensitivity(
+        self,
+        history: list[tuple[datetime, float]],
+        temp_history: list[tuple[datetime, float]],
+        bucket_averages: dict[tuple[int, int, int], float],
+        bucket_temp_averages: dict[tuple[int, int, int], float],
+    ) -> float | None:
+        """Fit a global linear sensitivity coefficient α.
+
+        α is the fraction of bucket-average load that changes per °C of temperature
+        deviation from the bucket-average temperature:
+            load_adj = bucket_avg × (1 + α × ΔT)
+
+        Uses closed-form regression through the origin on (ΔT, fractional_load_deviation).
+        Returns None if data is insufficient or the fit is too weak.
+        """
+        if not temp_history:
+            return None
+
+        # Build sorted temp list for nearest-neighbour lookup
+        sorted_temps = sorted(temp_history, key=lambda x: x[0])
+        sorted_timestamps = [t for t, _ in sorted_temps]
+
+        sum_xy = 0.0
+        sum_xx = 0.0
+        n_pairs = 0
+
+        for ts, load_w in history:
+            local_ts = dt_util.as_local(ts) if ts.tzinfo else ts
+            key = (local_ts.weekday(), local_ts.hour, 0 if local_ts.minute < 30 else 1)
+            mu_load = bucket_averages.get(key)
+            mu_temp = bucket_temp_averages.get(key)
+            if mu_load is None or mu_temp is None or mu_load <= 0:
+                continue
+
+            # Find nearest temperature reading within a 2-hour window
+            idx = bisect.bisect_left(sorted_timestamps, ts)
+            temp_c = None
+            best_gap = 7200  # 2-hour tolerance in seconds
+            for i in [idx - 1, idx]:
+                if 0 <= i < len(sorted_temps):
+                    t, tc = sorted_temps[i]
+                    gap = abs((ts - t).total_seconds())
+                    if gap < best_gap:
+                        best_gap = gap
+                        temp_c = tc
+
+            if temp_c is None:
+                continue
+
+            y = (load_w - mu_load) / mu_load  # Fractional load deviation
+            x = temp_c - mu_temp              # °C deviation from slot avg
+
+            sum_xy += x * y
+            sum_xx += x * x
+            n_pairs += 1
+
+        if n_pairs < 50 or sum_xx < 0.1:
+            _LOGGER.debug(
+                "Temperature sensitivity: insufficient data (%d pairs, sum_xx=%.3f), skipping",
+                n_pairs, sum_xx,
+            )
+            return None
+
+        alpha = sum_xy / sum_xx
+        # Clamp: load rarely drops below 50% in cold; AC can scale 2.5× in heat
+        alpha = max(-0.02, min(0.15, alpha))
+
+        if abs(alpha) < 0.005:
+            _LOGGER.debug("Temperature sensitivity too weak (α=%.4f), skipping", alpha)
+            return None
+
+        _LOGGER.info(
+            "Temperature sensitivity fitted: α=%.4f/°C from %d data pairs",
+            alpha, n_pairs,
+        )
+        return alpha
+
+    def invalidate_cache(self) -> None:
+        """Invalidate history and temperature caches (e.g. when away_mode changes)."""
+        self._history_cache.clear()
+        self._cache_time = None
+        self._temp_alpha_fitted = False
+        self._temp_cache_time = None
 
     def _get_current_load(self) -> float:
         """Get current load from Home Assistant state."""
@@ -587,7 +883,7 @@ class LoadEstimator:
 
     async def get_average_daily_load(self) -> float:
         """Get average daily load in kWh."""
-        history = await self._get_load_history(days=7)
+        history = await self._get_load_history()
         if not history:
             return 15.0  # Default 15 kWh/day
 

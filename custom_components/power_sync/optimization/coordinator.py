@@ -250,6 +250,96 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Get the current optimization schedule."""
         return self._current_schedule
 
+    @property
+    def away_mode(self) -> bool:
+        """Return whether away mode is active."""
+        return self._load_estimator.away_mode if self._load_estimator else False
+
+    def set_away_mode(self, enabled: bool) -> None:
+        """Enable or disable away mode and invalidate the load forecast cache."""
+        if self._load_estimator:
+            if self._load_estimator.away_mode != enabled:
+                self._load_estimator.away_mode = enabled
+                self._load_estimator.invalidate_cache()
+                _LOGGER.info("Away mode %s — load forecast cache cleared", "enabled" if enabled else "disabled")
+
+    def _summarise_load_forecast(self) -> dict | None:
+        """Slice the cached load forecast into today-remaining and tomorrow kWh totals."""
+        if not self._last_load_forecast:
+            return None
+
+        now = dt_util.now()
+        dt_h = self._config.interval_minutes / 60
+        interval_minutes = self._config.interval_minutes
+
+        # Build per-slot timestamps starting from the most recent optimizer run
+        # The forecast was generated at _last_update_time (or now if not set)
+        forecast_start = self._last_update_time or now
+        # Align to interval boundary
+        elapsed_intervals = int(
+            (now - forecast_start).total_seconds() / 60 / interval_minutes
+        )
+
+        today_remaining_w = []
+        tomorrow_w = []
+        slot_time = forecast_start + elapsed_intervals * timedelta(minutes=interval_minutes)
+        local_midnight_today = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+        local_midnight_tomorrow = local_midnight_today + timedelta(days=1)
+
+        hourly_remaining: list[dict] = []
+        hourly_tomorrow: list[dict] = []
+        current_hour_vals: list[float] = []
+        current_hour_ts: datetime | None = None
+
+        def _flush_hour(vals: list[float], ts: datetime | None, target: list) -> None:
+            if vals and ts is not None:
+                avg_kw = (sum(vals) / len(vals)) / 1000
+                target.append({"period_start": ts.isoformat(), "load_kwh": round(avg_kw * 1, 3)})
+
+        for i, load_w in enumerate(self._last_load_forecast[elapsed_intervals:], start=elapsed_intervals):
+            if i >= len(self._last_load_forecast):
+                break
+            load_w = self._last_load_forecast[i]
+            local_slot = dt_util.as_local(slot_time)
+
+            slot_hour_ts = local_slot.replace(minute=0, second=0, microsecond=0)
+            if current_hour_ts is None:
+                current_hour_ts = slot_hour_ts
+            if slot_hour_ts != current_hour_ts:
+                if local_midnight_today > now and slot_time <= local_midnight_today:
+                    _flush_hour(current_hour_vals, current_hour_ts, hourly_remaining)
+                else:
+                    _flush_hour(current_hour_vals, current_hour_ts, hourly_tomorrow)
+                current_hour_vals = []
+                current_hour_ts = slot_hour_ts
+
+            current_hour_vals.append(load_w)
+            if slot_time <= local_midnight_today:
+                today_remaining_w.append(load_w)
+            elif slot_time <= local_midnight_tomorrow:
+                tomorrow_w.append(load_w)
+            else:
+                break
+
+            slot_time += timedelta(minutes=interval_minutes)
+
+        today_remaining_kwh = sum(today_remaining_w) * dt_h / 1000 if today_remaining_w else 0
+        tomorrow_kwh = sum(tomorrow_w) * dt_h / 1000 if tomorrow_w else 0
+        all_forecast_kw = [w / 1000 for w in self._last_load_forecast]
+
+        return {
+            "today_remaining_kwh": round(today_remaining_kwh, 2),
+            "tomorrow_kwh": round(tomorrow_kwh, 2),
+            "peak_kw": round(max(all_forecast_kw) if all_forecast_kw else 0, 2),
+            "hourly_today_remaining": hourly_remaining,
+            "hourly_tomorrow": hourly_tomorrow,
+            "temperature_adjusted": (
+                self._load_estimator._temp_alpha is not None
+                if self._load_estimator else False
+            ),
+            "away_mode": self.away_mode,
+        }
+
     async def async_setup(self) -> bool:
         """Set up the optimization coordinator with built-in LP optimizer."""
         _LOGGER.info("Setting up optimization coordinator (built-in LP)")
@@ -274,10 +364,18 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         # Initialize load estimator
         load_entity = self._get_load_entity_id()
+        from ..const import CONF_WEATHER_ENTITY
+        weather_entity = None
+        if self._entry:
+            weather_entity = self._entry.options.get(
+                CONF_WEATHER_ENTITY,
+                self._entry.data.get(CONF_WEATHER_ENTITY),
+            ) or None
         self._load_estimator = LoadEstimator(
             self.hass,
             load_entity_id=load_entity,
             interval_minutes=self._config.interval_minutes,
+            weather_entity_id=weather_entity,
         )
 
         # Initialize solar forecaster
@@ -3605,6 +3703,14 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             data["load_forecast_kwh"] = sum(self._last_load_forecast) * dt_h
             data["load_peak_kw"] = max(self._last_load_forecast)
             data["load_forecast"] = self._last_load_forecast
+            load_summary = self._summarise_load_forecast()
+            if load_summary:
+                data["load_today_remaining_kwh"] = load_summary["today_remaining_kwh"]
+                data["load_tomorrow_kwh"] = load_summary["tomorrow_kwh"]
+                data["load_hourly_today_remaining"] = load_summary["hourly_today_remaining"]
+                data["load_hourly_tomorrow"] = load_summary["hourly_tomorrow"]
+                data["load_temperature_adjusted"] = load_summary["temperature_adjusted"]
+                data["load_away_mode"] = load_summary["away_mode"]
 
         # Use actual tariff prices for display (not LP-adjusted values)
         disp_import = self._last_display_import_prices or self._last_import_prices
@@ -3713,6 +3819,17 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             },
             "warnings": self._get_warnings(),
         }
+
+        # Add load forecast summary for mobile app
+        load_summary = self._summarise_load_forecast()
+        if load_summary:
+            data["forecast_summary"] = {
+                "load_today_remaining_kwh": load_summary["today_remaining_kwh"],
+                "load_tomorrow_kwh": load_summary["tomorrow_kwh"],
+                "load_peak_kw": load_summary["peak_kw"],
+                "temperature_adjusted": load_summary["temperature_adjusted"],
+                "away_mode": load_summary["away_mode"],
+            }
 
         # Add daily cost breakdown (actual + predicted remaining)
         pred_remaining, baseline_remaining = self._get_predicted_cost_to_midnight()

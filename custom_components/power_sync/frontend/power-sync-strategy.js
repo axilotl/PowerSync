@@ -611,6 +611,38 @@ class PowerSyncStrategy {
       center.push(_lpForecastSummary(e, has));
     }
 
+    // --- Center Column: Load Forecast Today/Tomorrow ---
+    if (hasE('load_forecast_today_remaining') || hasE('load_forecast_tomorrow')) {
+      const loadForecastEntities = [];
+      if (hasE('load_forecast_today_remaining')) {
+        loadForecastEntities.push({
+          entity: e('load_forecast_today_remaining'),
+          name: 'Usage Today (Remaining)',
+          icon: 'mdi:home-lightning-bolt-outline',
+        });
+      }
+      if (hasE('load_forecast_tomorrow')) {
+        loadForecastEntities.push({
+          entity: e('load_forecast_tomorrow'),
+          name: 'Usage Tomorrow',
+          icon: 'mdi:home-clock-outline',
+        });
+      }
+      if (hasE('away_mode')) {
+        loadForecastEntities.push({
+          entity: e('away_mode'),
+          name: 'Away Mode',
+          icon: 'mdi:home-export-outline',
+        });
+      }
+      center.push({
+        type: 'entities',
+        title: 'Load Forecast',
+        show_header_toggle: false,
+        entities: loadForecastEntities,
+      });
+    }
+
     // --- Center Column: LP Price Chart (48h) ---
     if (hasE('lp_import_price_forecast')) {
       center.push(_lpPriceChart(e));

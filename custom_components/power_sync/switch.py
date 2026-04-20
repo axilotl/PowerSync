@@ -23,6 +23,7 @@ from .const import (
     SWITCH_TYPE_FORCE_DISCHARGE,
     SWITCH_TYPE_FORCE_CHARGE,
     SWITCH_TYPE_MONITORING_MODE,
+    SWITCH_TYPE_AWAY_MODE,
     DEFAULT_DISCHARGE_DURATION,
     ATTR_LAST_SYNC,
     ATTR_SYNC_STATUS,
@@ -115,6 +116,13 @@ async def async_setup_entry(
     # Off-grid switch — available when Powerwall is paired for local control
     if is_tesla and entry.data.get(CONF_POWERWALL_LOCAL_PAIRED):
         entities.append(OffGridSwitch(hass=hass, entry=entry))
+
+    # Away Mode switch — available when the LP optimizer is active
+    optimization_coordinator = hass.data.get(DOMAIN, {}).get(entry.entry_id, {}).get(
+        "optimization_coordinator"
+    )
+    if optimization_coordinator is not None:
+        entities.append(AwayModeSwitch(hass=hass, entry=entry, coordinator=optimization_coordinator))
 
     async_add_entities(entities)
 
@@ -603,6 +611,48 @@ class MonitoringModeSwitch(SwitchEntity):
             options=new_options,
         )
 
+        self.async_write_ha_state()
+
+
+class AwayModeSwitch(SwitchEntity):
+    """Switch to activate away mode — makes the load forecaster use pre-vacation history."""
+
+    _attr_has_entity_name = True
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry, coordinator: Any) -> None:
+        """Initialize the switch."""
+        self.hass = hass
+        self._entry = entry
+        self._coordinator = coordinator
+        self._attr_unique_id = f"{entry.entry_id}_{SWITCH_TYPE_AWAY_MODE}"
+        self._attr_suggested_object_id = f"power_sync_{SWITCH_TYPE_AWAY_MODE}"
+        self._attr_name = "Away Mode"
+        self._attr_icon = "mdi:home-export-outline"
+        self._attr_is_on = False
+
+    @property
+    def device_info(self):
+        """Return device info."""
+        return {"identifiers": {(DOMAIN, self._entry.entry_id)}}
+
+    @property
+    def is_on(self) -> bool:
+        """Return True if away mode is active."""
+        return self._attr_is_on
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Enable away mode."""
+        _LOGGER.info("Away mode ENABLED — load forecaster will use pre-vacation history")
+        self._attr_is_on = True
+        self._coordinator.set_away_mode(True)
+        self.async_write_ha_state()
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Disable away mode."""
+        _LOGGER.info("Away mode DISABLED — load forecaster using recent history")
+        self._attr_is_on = False
+        self._coordinator.set_away_mode(False)
         self.async_write_ha_state()
 
 

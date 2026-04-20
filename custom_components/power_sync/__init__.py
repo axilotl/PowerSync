@@ -16902,6 +16902,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 state = force_charge_state if mode == "charge" else force_discharge_state
                 state["active"] = True
                 state["expires_at"] = expires_at
+                state["source"] = persisted_force_state.get("source", "user")
                 state["saved_tariff"] = saved_tariff
                 state["saved_operation_mode"] = persisted_force_state.get("saved_operation_mode")
                 state["saved_backup_reserve"] = saved_backup_reserve

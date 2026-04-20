@@ -16,6 +16,8 @@ from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import (
     BooleanSelector,
+    EntitySelector,
+    EntitySelectorConfig,
     NumberSelector,
     NumberSelectorConfig,
     NumberSelectorMode,
@@ -214,6 +216,7 @@ from .const import (
     # Automations - OpenWeatherMap API for weather triggers
     CONF_OPENWEATHERMAP_API_KEY,
     CONF_WEATHER_LOCATION,
+    CONF_WEATHER_ENTITY,
     # EV Charging and OCPP configuration
     CONF_EV_CHARGING_ENABLED,
     CONF_EV_PROVIDER,
@@ -5423,6 +5426,7 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 CONF_OPENWEATHERMAP_API_KEY: user_input.get(
                     CONF_OPENWEATHERMAP_API_KEY, ""
                 ),
+                CONF_WEATHER_ENTITY: user_input.get(CONF_WEATHER_ENTITY) or None,
                 CONF_SOLCAST_ENABLED: user_input.get(CONF_SOLCAST_ENABLED, False),
                 CONF_SOLCAST_API_KEY: user_input.get(CONF_SOLCAST_API_KEY, ""),
                 CONF_SOLCAST_RESOURCE_ID: user_input.get(CONF_SOLCAST_RESOURCE_ID, ""),
@@ -5464,6 +5468,10 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                         CONF_OPENWEATHERMAP_API_KEY,
                         default=self._get_option(CONF_OPENWEATHERMAP_API_KEY, ""),
                     ): TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD)),
+                    vol.Optional(
+                        CONF_WEATHER_ENTITY,
+                        default=self._get_option(CONF_WEATHER_ENTITY, None),
+                    ): EntitySelector(EntitySelectorConfig(domain="weather")),
                     vol.Optional(
                         CONF_SOLCAST_ENABLED,
                         default=self._get_option(CONF_SOLCAST_ENABLED, False),
