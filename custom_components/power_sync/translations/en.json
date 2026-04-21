@@ -37,7 +37,7 @@
           "fp_network_tariff_combined": "Network & tariff code"
         },
         "data_description": {
-          "fp_network_tariff_combined": "Your DNSP and tariff code combined (e.g. 'Ausgrid \u2014 RESELE'). Filtered by your NEM region. Select None to use the simple formula."
+          "fp_network_tariff_combined": "Your DNSP and tariff code combined (e.g. 'Ausgrid — RESELE'). Filtered by your NEM region. Select None to use the simple formula."
         },
         "submit": "Next"
       },
@@ -696,7 +696,7 @@
           "solax_max_discharge_current_a": "Max discharge current"
         },
         "data_description": {
-          "solax_entity_prefix": "The entity prefix used by the solax_modbus integration (e.g. 'solax' \u2192 sensor.solax_battery_capacity). Check Developer Tools > States if unsure.",
+          "solax_entity_prefix": "The prefix used by the solax_modbus integration for its entities. To find it: open Developer Tools > States and search for 'charger_use_mode' — the part before '_charger_use_mode' is your prefix (e.g. 'solax_modbus' if the entity is 'select.solax_modbus_charger_use_mode'). This may differ from 'solax' if you have another Solax integration installed.",
           "solax_battery_capacity_kwh": "Usable battery capacity in kWh. Used by the LP optimizer.",
           "solax_battery_nominal_v": "Nominal battery voltage in V (51.2 for LFP T-BAT, 102.4 for high-voltage packs).",
           "solax_max_charge_current_a": "Maximum charge current your battery supports (A).",
@@ -1181,7 +1181,7 @@
           "network_include_gst": "Include GST (10%)"
         },
         "data_description": {
-          "fp_network_tariff_combined": "Your DNSP and tariff code (e.g. 'Ausgrid \u2014 RESELE'). Filtered by your NEM region. Select None for the simple formula.",
+          "fp_network_tariff_combined": "Your DNSP and tariff code (e.g. 'Ausgrid — RESELE'). Filtered by your NEM region. Select None for the simple formula.",
           "fp_twap_override": "Override the dynamic 30-day TWAP with a fixed value. Set to 0 for automatic rolling average.",
           "fp_amber_markup": "Retailer margin for the Amber comparison sensor. Regional default is pre-filled.",
           "pea_custom_value": "Override the calculated PEA with a fixed amount. Set to 0 for automatic calculation.",
