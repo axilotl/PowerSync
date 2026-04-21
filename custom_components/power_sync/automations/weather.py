@@ -107,7 +107,15 @@ def _weather_from_ha_entity(hass: HomeAssistant) -> Optional[Dict[str, Any]]:
     if not weather_entities:
         return None
 
-    state = weather_entities[0]
+    # Find the first weather entity with a valid state
+    state = None
+    for entity in weather_entities:
+        if entity.state not in (None, "unknown", "unavailable"):
+            state = entity
+            break
+    if state is None:
+        return None
+
     condition = _HA_WEATHER_TO_CONDITION.get(state.state, "partly_sunny")
     attrs = state.attributes or {}
     return {
