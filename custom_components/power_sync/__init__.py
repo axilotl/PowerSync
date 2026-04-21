@@ -12321,7 +12321,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     _LOGGER.info("Entry state: %s", entry.state)
     _LOGGER.info("=" * 60)
 
-    # Register the parent (hub) device so sub-devices can link to it via via_device.
+    # Register the parent (hub) device.
     dev_reg = dr.async_get(hass)
     dev_reg.async_get_or_create(
         config_entry_id=entry.entry_id,
@@ -12330,6 +12330,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         manufacturer="PowerSync",
         model="Hub",
     )
+
+    # Clean up orphaned sub-devices left behind from when family grouping was
+    # active (v2.12.97–v2.12.100). Those devices had identifiers of the form
+    # (DOMAIN, "<entry_id>_<family>") and are now empty — HA won't remove them
+    # automatically, so we do it here on every setup.
+    _sub_device_suffixes = {
+        "_lp_optimizer", "_battery", "_solar_inverter", "_grid_home",
+        "_pricing", "_flow_power", "_aemo", "_ev_charging", "_octopus", "_controls",
+    }
+    for _dev in list(dev_reg.devices.values()):
+        for _domain, _ident in _dev.identifiers:
+            if (
+                _domain == DOMAIN
+                and isinstance(_ident, str)
+                and any(_ident == f"{entry.entry_id}{sfx}" for sfx in _sub_device_suffixes)
+            ):
+                dev_reg.async_remove_device(_dev.id)
+                break
 
     # Self-heal: detect inconsistent state where the saved Tesla provider
     # doesn't match the saved token format. This happens to users who
