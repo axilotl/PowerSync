@@ -344,8 +344,9 @@ class PowerwallPairStartView(HomeAssistantView):
         try:
             status = await mgr.start()
         except PowerwallPairingError as err:
+            _LOGGER.error("Pairing start failed: %s", err)
             return web.json_response(
-                {"success": False, "error": str(err)}, status=409
+                {"success": False, "error": "Pairing failed"}, status=409
             )
 
         return web.json_response({"success": True, "status": status.to_dict()})
@@ -520,15 +521,17 @@ class PowerwallOffGridView(HomeAssistantView):
             try:
                 ok = await coordinator.client.go_off_grid()
             except PowerwallLocalError as err:
+                _LOGGER.error("Go off-grid failed: %s", err)
                 return web.json_response(
-                    {"success": False, "error": str(err)}, status=502
+                    {"success": False, "error": "Off-grid command failed"}, status=502
                 )
         else:
             try:
                 ok = await coordinator.client.reconnect_grid()
             except PowerwallLocalError as err:
+                _LOGGER.error("Reconnect grid failed: %s", err)
                 return web.json_response(
-                    {"success": False, "error": str(err)}, status=502
+                    {"success": False, "error": "Reconnect command failed"}, status=502
                 )
 
         # Refresh coordinator to pick up new state from cloud
@@ -674,7 +677,8 @@ class PowerwallCloudProbeView(HomeAssistantView):
                         "request_body": body, "body": text[:2000],
                     })
         except aiohttp.ClientError as err:
-            return web.json_response({"error": str(err)}, status=502)
+            _LOGGER.error("Proxy request failed: %s", err)
+            return web.json_response({"error": "Proxy request failed"}, status=502)
 
 
 class PowerwallLocalStatusView(HomeAssistantView):
@@ -799,9 +803,9 @@ class PowerwallGatewayInfoView(HomeAssistantView):
                     data = await resp.json()
                     site_info = data.get("response", {}) if isinstance(data, dict) else {}
             except Exception as err:
-                _LOGGER.debug("gateway_info fetch error: %s", err)
+                _LOGGER.error("gateway_info fetch error: %s", err)
                 return web.json_response(
-                    {"success": False, "error": str(err)},
+                    {"success": False, "error": "Gateway info fetch failed"},
                     status=502,
                 )
 
