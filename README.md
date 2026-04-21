@@ -14,7 +14,7 @@
 
 </div>
 
-> **Disclaimer:** This is an unofficial integration and is not affiliated with or endorsed by Tesla, Sigenergy, Sungrow, FoxESS, GoodWe, AlphaESS, ESY Sunhome, Amber Electric, Localvolts, Octopus Energy, or EPEX/ENTSO-E. Use at your own risk.
+> **Disclaimer:** This is an unofficial integration and is not affiliated with or endorsed by Tesla, Sigenergy, Sungrow, FoxESS, GoodWe, AlphaESS, ESY Sunhome, Solax, Amber Electric, Localvolts, Octopus Energy, or EPEX/ENTSO-E. Use at your own risk.
 
 ---
 
@@ -27,7 +27,7 @@
 | **Tesla Powerwall** | PowerSync.cc, Fleet API, or Teslemetry | TOU tariff sync, force charge/discharge, export rules, **off-grid/reconnect** |
 | **FoxESS** (H1, H3, H3-Pro, H3 Smart, KH + OEM rebrands) | Modbus TCP or RS485 | Work mode, force charge/discharge, backup reserve |
 | **Sigenergy** | Cloud API + Modbus TCP | Remote EMS control, force charge/discharge, DC solar curtailment |
-| **Solax** | Modbus TCP or HA entity | Export control, curtailment (GEN2-GEN6) |
+| **Solax Hybrid** (X1/X3, Gen4/Gen5/Gen6, AC Retro-Fit) | Via [Solax Modbus](https://github.com/wills106/homeassistant-solax-modbus) integration (HACS) | LP optimizer, force charge/discharge, backup reserve, export control |
 | **GoodWe** (ET, EH, BT, BH, ES, EM, BP) | UDP or TCP (local), or Modbus TCP gateway via EMS mode | Force charge/discharge, backup reserve, export limit |
 | **Sungrow SH-series** | Modbus TCP | Force charge/discharge, rate limiting, export control, dual inverter |
 | **AlphaESS** (SMILE5, SMILE-Hi5/Hi10, SMILE-B3, SMILE-T10, SMILE-G3, Storion-T30) | Modbus TCP + optional Cloud API | Force charge/discharge, dispatch SOC targeting, DC solar curtailment |
@@ -105,7 +105,7 @@ Or manually:
 
 | Feature | Description | Wiki |
 |---------|-------------|------|
-| **Battery System Setup** | Tesla, FoxESS, Sigenergy, GoodWe, Sungrow, AlphaESS, ESY Sunhome connection guides | [Setup Guide](https://github.com/bolagnaise/PowerSync/wiki/Battery-System-Setup) |
+| **Battery System Setup** | Tesla, FoxESS, Sigenergy, GoodWe, Sungrow, AlphaESS, ESY Sunhome, Solax Hybrid connection guides | [Setup Guide](https://github.com/bolagnaise/PowerSync/wiki/Battery-System-Setup) |
 | **Smart Optimization** | Built-in LP optimizer calculates optimal charge/discharge schedule using prices, solar, and load. **Solar forecasting (Solcast) must be configured for accurate scheduling.** | [Details](https://github.com/bolagnaise/PowerSync/wiki/Smart-Optimization) |
 | **EV Smart Charging** | Coordinate EV charging with battery optimization — Solar, Cheapest, Deadline modes | [Details](https://github.com/bolagnaise/PowerSync/wiki/EV-Smart-Charging) |
 | **Advanced Features** | AEMO spike detection, solar curtailment, spike protection, export boost, **off-grid control** | [Details](https://github.com/bolagnaise/PowerSync/wiki/Advanced-Features) |
