@@ -160,4 +160,8 @@ Remote monitoring and control via iOS and Android.
 
 ## License
 
-[PolyForm Noncommercial 1.0.0](LICENSE) — free for personal and noncommercial use. Commercial use requires separate permission from the author.
+Copyright (c) 2024–2026 Ben Boller. All rights reserved.
+
+Licensed under [PolyForm Noncommercial 1.0.0](LICENSE) — free for personal, hobby, and noncommercial use.
+
+**Commercial use is prohibited without prior written permission from the copyright holder.** This includes use within a commercial organisation, integration into a paid product or service, and redistribution as part of a commercial system. To enquire about a commercial licence, open an issue or contact via [GitHub](https://github.com/bolagnaise).
