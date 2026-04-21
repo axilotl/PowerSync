@@ -12408,7 +12408,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.config_entries.async_update_entry(entry, title=expected_title)
 
     # Check pricing source configuration
-    has_amber = bool(entry.data.get(CONF_AMBER_API_TOKEN))
     aemo_spike_enabled = entry.options.get(
         CONF_AEMO_SPIKE_ENABLED,
         entry.data.get(CONF_AEMO_SPIKE_ENABLED, False)
@@ -12418,6 +12417,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     electricity_provider = entry.options.get(
         CONF_ELECTRICITY_PROVIDER,
         entry.data.get(CONF_ELECTRICITY_PROVIDER, "amber")
+    )
+
+    # Only treat stored Amber token as active when the provider actually uses Amber prices.
+    # GloBird / AEMO VPP / other custom-tariff entries may have a stale token from a prior
+    # configuration; creating an AmberPriceCoordinator for them causes a 403 on first
+    # refresh → ConfigEntryNotReady → "Failed setup, will retry".
+    has_amber = (
+        bool(entry.data.get(CONF_AMBER_API_TOKEN))
+        and electricity_provider not in ("globird", "aemo_vpp", "tou_only", "other", "nz")
     )
     flow_power_price_source = entry.options.get(
         CONF_FLOW_POWER_PRICE_SOURCE,

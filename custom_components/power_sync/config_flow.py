@@ -5110,26 +5110,43 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         """Step 2a: Amber Electric specific options."""
-        # Check if Tesla is selected (force mode toggle only applies to Tesla)
         battery_system = self.config_entry.data.get(
             CONF_BATTERY_SYSTEM, BATTERY_SYSTEM_TESLA
         )
         is_tesla = battery_system == BATTERY_SYSTEM_TESLA
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            new_amber_token = user_input.get("update_amber_token", "").strip()
+            # Validate new token immediately and re-render so the site picker appears
+            if new_amber_token:
+                try:
+                    result = await validate_amber_token(self.hass, new_amber_token)
+                    if result["success"]:
+                        new_data = dict(self.config_entry.data)
+                        new_data[CONF_AMBER_API_TOKEN] = new_amber_token
+                        self.hass.config_entries.async_update_entry(
+                            self.config_entry, data=new_data
+                        )
+                        _LOGGER.info("Amber API token updated via options flow")
+                        self._opt_amber_sites = result.get("sites", [])
+                        user_input = None  # Re-render with site dropdown now visible
+                    else:
+                        errors["base"] = "invalid_auth"
+                        user_input = None
+                except Exception:
+                    errors["base"] = "cannot_connect"
+                    user_input = None
 
         if user_input is not None:
             # Handle site selection before popping other fields
             new_site_id = user_input.pop(CONF_AMBER_SITE_ID, None)
+            user_input.pop("update_amber_token", None)
 
-            # Update Amber API token if provided
-            new_amber_token = user_input.pop("update_amber_token", "").strip()
             new_data = dict(self.config_entry.data)
-            if new_amber_token:
-                new_data[CONF_AMBER_API_TOKEN] = new_amber_token
-                _LOGGER.info("Amber API token updated via options flow")
             if new_site_id:
                 new_data[CONF_AMBER_SITE_ID] = new_site_id
                 _LOGGER.info("Amber site ID updated to %s via options flow", new_site_id)
-            if new_amber_token or new_site_id:
                 self.hass.config_entries.async_update_entry(
                     self.config_entry, data=new_data
                 )
@@ -5149,7 +5166,7 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             # Route to demand charge options page
             return await self.async_step_demand_charge_options()
 
-        # Fetch sites from existing token to populate the site selector
+        # Fetch sites from current stored token (skipped if already cached or just refreshed)
         if not hasattr(self, "_opt_amber_sites"):
             existing_token = self.config_entry.data.get(CONF_AMBER_API_TOKEN, "")
             if existing_token:
@@ -5312,6 +5329,7 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
         return self.async_show_form(
             step_id="amber_options",
             data_schema=vol.Schema(schema_dict),
+            errors=errors,
         )
 
     async def async_step_demand_charge_options(
