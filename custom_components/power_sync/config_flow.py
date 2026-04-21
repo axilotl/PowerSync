@@ -5128,15 +5128,22 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
         is_tesla = battery_system == BATTERY_SYSTEM_TESLA
 
         if user_input is not None:
+            # Handle site selection before popping other fields
+            new_site_id = user_input.pop(CONF_AMBER_SITE_ID, None)
+
             # Update Amber API token if provided
             new_amber_token = user_input.pop("update_amber_token", "").strip()
+            new_data = dict(self.config_entry.data)
             if new_amber_token:
-                new_data = dict(self.config_entry.data)
                 new_data[CONF_AMBER_API_TOKEN] = new_amber_token
+                _LOGGER.info("Amber API token updated via options flow")
+            if new_site_id:
+                new_data[CONF_AMBER_SITE_ID] = new_site_id
+                _LOGGER.info("Amber site ID updated to %s via options flow", new_site_id)
+            if new_amber_token or new_site_id:
                 self.hass.config_entries.async_update_entry(
                     self.config_entry, data=new_data
                 )
-                _LOGGER.info("Amber API token updated via options flow")
 
             # Store amber options temporarily
             self._amber_options = user_input
@@ -5153,6 +5160,18 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             # Route to demand charge options page
             return await self.async_step_demand_charge_options()
 
+        # Fetch sites from existing token to populate the site selector
+        if not hasattr(self, "_opt_amber_sites"):
+            existing_token = self.config_entry.data.get(CONF_AMBER_API_TOKEN, "")
+            if existing_token:
+                try:
+                    result = await validate_amber_token(self.hass, existing_token)
+                    self._opt_amber_sites = result.get("sites", []) if result["success"] else []
+                except Exception:
+                    self._opt_amber_sites = []
+            else:
+                self._opt_amber_sites = []
+
         # Build schema dict - conditionally include force mode toggle for Tesla only
         amber_forecast_types = {
             "predicted": "Predicted (Default)",
@@ -5165,6 +5184,27 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 "update_amber_token",
                 default="",
             ): TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD)),
+        }
+
+        # Show site selector when account has multiple sites
+        opt_sites = getattr(self, "_opt_amber_sites", [])
+        if len(opt_sites) > 1:
+            current_site_id = self.config_entry.data.get(CONF_AMBER_SITE_ID, "")
+            amber_site_list: list[SelectOptionDict] = []
+            for site in opt_sites:
+                sid = site["id"]
+                nmi = site.get("nmi", sid)
+                status = site.get("status", "unknown")
+                label = f"{nmi} ({'Active' if status == 'active' else status})"
+                amber_site_list.append(SelectOptionDict(value=sid, label=label))
+            schema_dict[
+                vol.Optional(CONF_AMBER_SITE_ID, default=current_site_id or amber_site_list[0]["value"])
+            ] = SelectSelector(SelectSelectorConfig(
+                options=amber_site_list,
+                mode=SelectSelectorMode.DROPDOWN,
+            ))
+
+        schema_dict.update({
             vol.Optional(
                 CONF_AUTO_SYNC_ENABLED,
                 default=self._get_option(CONF_AUTO_SYNC_ENABLED, True),
@@ -5201,7 +5241,7 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 min=0.0, max=100.0, step=0.1, unit_of_measurement="c/kWh",
                 mode=NumberSelectorMode.BOX,
             )),
-        }
+        })
 
         # Only show force mode toggle for Tesla (it's a Tesla-specific feature)
         if is_tesla:
