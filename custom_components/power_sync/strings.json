@@ -1030,6 +1030,7 @@
         "description": "Configure TOU sync, export boost, spike protection, and curtailment. Changes apply after the next sync cycle.",
         "data": {
           "update_amber_token": "Update Amber API token",
+          "amber_site_id": "Amber site (NMI)",
           "auto_sync_enabled": "Enable automatic TOU sync",
           "amber_forecast_type": "Amber forecast type",
           "battery_curtailment_enabled": "Stop export at negative prices",

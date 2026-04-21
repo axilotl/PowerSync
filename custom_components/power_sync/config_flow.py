@@ -1291,19 +1291,8 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     active_sites = [
                         s for s in self._amber_sites if s.get("status") == "active"
                     ]
-                    candidate_sites = active_sites if active_sites else self._amber_sites
-                    if len(candidate_sites) == 1:
-                        # Only one choice — auto-select silently
-                        amber_site_id = candidate_sites[0]["id"]
-                        self._site_data = {
-                            CONF_AMBER_SITE_ID: amber_site_id,
-                            CONF_AUTO_SYNC_ENABLED: True,
-                            CONF_AMBER_FORECAST_TYPE: "predicted",
-                        }
-                        _LOGGER.info(f"Auto-selected Amber site: {amber_site_id}")
-                    else:
-                        # Multiple sites — ask the user to pick
-                        return await self.async_step_amber_site_selection()
+                    # Always show site picker so user can confirm/change the NMI
+                    return await self.async_step_amber_site_selection()
                 # Route to battery system selection
                 return await self.async_step_battery_system()
             else:
@@ -5186,9 +5175,9 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             ): TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD)),
         }
 
-        # Show site selector when account has multiple sites
+        # Show site selector whenever we have at least one site (confirms selection for all users)
         opt_sites = getattr(self, "_opt_amber_sites", [])
-        if len(opt_sites) > 1:
+        if len(opt_sites) >= 1:
             current_site_id = self.config_entry.data.get(CONF_AMBER_SITE_ID, "")
             amber_site_list: list[SelectOptionDict] = []
             for site in opt_sites:
