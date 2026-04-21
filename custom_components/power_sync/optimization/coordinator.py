@@ -4194,6 +4194,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         entity_id: str,
         name: str | None = None,
         max_power_w: int = 7400,
+        min_power_w: int = 1400,
         target_soc: float = 0.8,
         departure_time: str | None = None,
         price_threshold: float | None = None,
@@ -4204,6 +4205,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             entity_id: HA entity ID of the EV charger
             name: Friendly name for the charger
             max_power_w: Maximum charging power in watts
+            min_power_w: Minimum charging power in watts (vehicle-specific)
             target_soc: Target state of charge (0-1)
             departure_time: Time when car needs to be ready (HH:MM)
             price_threshold: Max $/kWh for smart charging
@@ -4215,6 +4217,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             entity_id=entity_id,
             name=name or entity_id.split(".")[-1],
             max_charging_power_w=max_power_w,
+            min_charging_power_w=min_power_w,
             target_soc=target_soc,
             departure_time=departure_time,
             price_threshold=price_threshold,
