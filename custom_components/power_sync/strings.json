@@ -93,6 +93,17 @@
         },
         "submit": "Connect"
       },
+      "amber_site_selection": {
+        "title": "Select your Amber site",
+        "description": "Your Amber account has multiple sites. Select the NMI associated with this location.",
+        "data": {
+          "amber_site_id": "Amber site"
+        },
+        "data_description": {
+          "amber_site_id": "Choose the NMI at this address. Closed sites will not receive price updates."
+        },
+        "submit": "Continue"
+      },
       "localvolts": {
         "title": "Localvolts API credentials",
         "description": "Connect your Localvolts account for real-time 5-minute NEM wholesale pricing.",

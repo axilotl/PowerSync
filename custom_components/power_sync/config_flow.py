@@ -1283,7 +1283,7 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if validation_result["success"]:
                 self._amber_data = user_input
                 self._amber_sites = validation_result.get("sites", [])
-                # Auto-select Amber site for non-Tesla batteries
+                # For non-Tesla batteries, select the Amber site
                 if (
                     self._selected_battery_system != BATTERY_SYSTEM_TESLA
                     and self._amber_sites
@@ -1291,16 +1291,19 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     active_sites = [
                         s for s in self._amber_sites if s.get("status") == "active"
                     ]
-                    if active_sites:
-                        amber_site_id = active_sites[0]["id"]
+                    candidate_sites = active_sites if active_sites else self._amber_sites
+                    if len(candidate_sites) == 1:
+                        # Only one choice — auto-select silently
+                        amber_site_id = candidate_sites[0]["id"]
+                        self._site_data = {
+                            CONF_AMBER_SITE_ID: amber_site_id,
+                            CONF_AUTO_SYNC_ENABLED: True,
+                            CONF_AMBER_FORECAST_TYPE: "predicted",
+                        }
+                        _LOGGER.info(f"Auto-selected Amber site: {amber_site_id}")
                     else:
-                        amber_site_id = self._amber_sites[0]["id"]
-                    self._site_data = {
-                        CONF_AMBER_SITE_ID: amber_site_id,
-                        CONF_AUTO_SYNC_ENABLED: True,
-                        CONF_AMBER_FORECAST_TYPE: "predicted",
-                    }
-                    _LOGGER.info(f"Auto-selected Amber site: {amber_site_id}")
+                        # Multiple sites — ask the user to pick
+                        return await self.async_step_amber_site_selection()
                 # Route to battery system selection
                 return await self.async_step_battery_system()
             else:
@@ -1321,6 +1324,53 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             description_placeholders={
                 "amber_url": "https://app.amber.com.au/developers",
             },
+        )
+
+    async def async_step_amber_site_selection(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Handle Amber site selection for non-Tesla users with multiple sites."""
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            amber_site_id = user_input.get(CONF_AMBER_SITE_ID)
+            if not amber_site_id:
+                errors["base"] = "no_site_selected"
+            else:
+                self._site_data[CONF_AMBER_SITE_ID] = amber_site_id
+                self._site_data.setdefault(CONF_AUTO_SYNC_ENABLED, True)
+                self._site_data.setdefault(CONF_AMBER_FORECAST_TYPE, "predicted")
+                return await self.async_step_battery_system()
+
+        amber_site_list: list[SelectOptionDict] = []
+        default_amber_site = None
+        for site in self._amber_sites:
+            site_id = site["id"]
+            site_nmi = site.get("nmi", site_id)
+            site_status = site.get("status", "unknown")
+            if site_status == "active":
+                label = f"{site_nmi} (Active)"
+                if default_amber_site is None:
+                    default_amber_site = site_id
+            elif site_status == "closed":
+                label = f"{site_nmi} (Closed)"
+            else:
+                label = f"{site_nmi} ({site_status})"
+            amber_site_list.append(SelectOptionDict(value=site_id, label=label))
+
+        data_schema = vol.Schema({
+            vol.Required(CONF_AMBER_SITE_ID, default=default_amber_site): SelectSelector(
+                SelectSelectorConfig(
+                    options=amber_site_list,
+                    mode=SelectSelectorMode.DROPDOWN,
+                )
+            ),
+        })
+
+        return self.async_show_form(
+            step_id="amber_site_selection",
+            data_schema=data_schema,
+            errors=errors,
         )
 
     async def async_step_epex(
