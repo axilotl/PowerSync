@@ -4162,6 +4162,7 @@ class FoxESSEnergyCoordinator(DataUpdateCoordinator):
                 "max_charge_current_a": attrs.get("max_charge_current_a"),
                 "max_discharge_current_a": attrs.get("max_discharge_current_a"),
                 "battery_voltage_v": attrs.get("battery_voltage_v"),
+                "battery_temperature": attrs.get("battery_temperature"),
                 "model_family": attrs.get("model_family"),
                 "energy_summary": acc,
             }

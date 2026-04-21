@@ -3722,15 +3722,76 @@ class BatteryHealthView(HomeAssistantView):
         """Initialize the view."""
         self._hass = hass
 
-    def _get_coordinator_soh(self, entry) -> float | None:
-        """Get battery_soh from the energy coordinator for non-Tesla systems."""
+    def _get_coordinator_bms(self, entry) -> tuple[str, dict] | None:
+        """Extract BMS telemetry from the active coordinator for non-Tesla systems.
+
+        Returns (brand, bms_dict) with normalised snake_case keys, or None.
+        """
         entry_data = self._hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
-        for key in ("sungrow_coordinator", "sigenergy_coordinator", "goodwe_coordinator", "alphaess_coordinator", "solax_coordinator"):
-            coord = entry_data.get(key)
-            if coord and coord.data:
-                soh = coord.data.get("battery_soh")
-                if soh is not None and soh > 0:
-                    return soh
+
+        brand_map = {
+            "sungrow_coordinator": "sungrow",
+            "sigenergy_coordinator": "sigenergy",
+            "goodwe_coordinator": "goodwe",
+            "alphaess_coordinator": "alphaess",
+            "foxess_coordinator": "foxess",
+        }
+
+        for coord_key, brand in brand_map.items():
+            coord = entry_data.get(coord_key)
+            if not coord or not coord.data:
+                continue
+
+            d = coord.data
+            bms: dict = {}
+
+            if brand == "sungrow":
+                if (v := d.get("battery_soh")) is not None: bms["soh_percent"] = round(float(v), 1)
+                if (v := d.get("battery_temp")) is not None: bms["temperature_c"] = round(float(v), 1)
+                if (v := d.get("battery_voltage")) is not None: bms["voltage_v"] = round(float(v), 1)
+                if (v := d.get("battery_current")) is not None: bms["current_a"] = round(float(v), 1)
+                if (v := d.get("battery_level")) is not None: bms["soc_percent"] = round(float(v), 1)
+                if (v := d.get("min_soc")) is not None: bms["min_soc_percent"] = round(float(v), 1)
+                if (v := d.get("max_soc")) is not None: bms["max_soc_percent"] = round(float(v), 1)
+                if (v := d.get("battery_max_charge_power_w")) is not None: bms["max_charge_power_w"] = int(v)
+                if (v := d.get("battery_max_discharge_power_w")) is not None: bms["max_discharge_power_w"] = int(v)
+
+            elif brand == "sigenergy":
+                if (v := d.get("battery_soh")) is not None: bms["soh_percent"] = round(float(v), 1)
+                if (v := d.get("battery_capacity_kwh")) is not None: bms["rated_capacity_kwh"] = round(float(v), 2)
+                if (v := d.get("battery_level")) is not None: bms["soc_percent"] = round(float(v), 1)
+                if (v := d.get("battery_max_charge_power_w")) is not None: bms["max_charge_power_w"] = int(v)
+                if (v := d.get("battery_max_discharge_power_w")) is not None: bms["max_discharge_power_w"] = int(v)
+
+            elif brand == "goodwe":
+                if (v := d.get("battery_soh")) is not None: bms["soh_percent"] = round(float(v), 1)
+                if (v := d.get("battery_temperature")) is not None: bms["temperature_c"] = round(float(v), 1)
+                if (v := d.get("battery_max_charge_power_w")) is not None: bms["max_charge_power_w"] = int(v)
+                if (v := d.get("battery_max_discharge_power_w")) is not None: bms["max_discharge_power_w"] = int(v)
+                if (v := d.get("model_name")) is not None: bms["model_name"] = str(v)
+                if (v := d.get("serial_number")) is not None: bms["serial_number"] = str(v)
+
+            elif brand == "alphaess":
+                if (v := d.get("battery_soh")) is not None: bms["soh_percent"] = round(float(v), 1)
+                if (v := d.get("battery_capacity_kwh")) is not None: bms["rated_capacity_kwh"] = round(float(v), 2)
+                if (v := d.get("battery_level")) is not None: bms["soc_percent"] = round(float(v), 1)
+                if (v := d.get("battery_max_charge_power_w")) is not None: bms["max_charge_power_w"] = int(v)
+                if (v := d.get("battery_max_discharge_power_w")) is not None: bms["max_discharge_power_w"] = int(v)
+
+            elif brand == "foxess":
+                # FoxESS has no SOH on any model — excluded intentionally
+                if (v := d.get("battery_temperature")) is not None: bms["temperature_c"] = round(float(v), 1)
+                if (v := d.get("battery_level")) is not None: bms["soc_percent"] = round(float(v), 1)
+                if (v := d.get("battery_voltage_v")) is not None: bms["voltage_v"] = round(float(v), 1)
+                if (v := d.get("min_soc")) is not None: bms["min_soc_percent"] = round(float(v), 1)
+                if (v := d.get("max_charge_current_a")) is not None: bms["max_charge_current_a"] = round(float(v), 1)
+                if (v := d.get("max_discharge_current_a")) is not None: bms["max_discharge_current_a"] = round(float(v), 1)
+                if (v := d.get("battery_max_charge_power_w")) is not None: bms["max_charge_power_w"] = int(v)
+                if (v := d.get("battery_max_discharge_power_w")) is not None: bms["max_discharge_power_w"] = int(v)
+
+            if bms:
+                return brand, bms
+
         return None
 
     async def get(self, request: web.Request) -> web.Response:
@@ -3763,14 +3824,16 @@ class BatteryHealthView(HomeAssistantView):
                     battery_health = stored_data.get("battery_health")
 
             if not battery_health:
-                # Fall back to coordinator battery_soh for non-Tesla systems
-                soh = self._get_coordinator_soh(entry)
-                if soh is not None and soh > 0:
+                # Try to get BMS telemetry from coordinator for non-Tesla systems
+                bms_result = self._get_coordinator_bms(entry)
+                if bms_result:
+                    brand, bms = bms_result
                     return web.json_response({
                         "success": True,
                         "available": True,
-                        "health_percent": round(float(soh), 1),
+                        "brand": brand,
                         "source": "inverter_modbus",
+                        "bms": bms,
                     })
 
                 return web.json_response({
@@ -3784,9 +3847,16 @@ class BatteryHealthView(HomeAssistantView):
             current = battery_health.get("current_capacity_wh", 0)
             health_percent = round((current / original) * 100, 1) if original > 0 else 0
 
-            return web.json_response({
+            # Unified BMS summary block (mirrors non-Tesla shape for app consumers)
+            tesla_bms: dict = {}
+            if health_percent: tesla_bms["soh_percent"] = health_percent
+            if original > 0: tesla_bms["rated_capacity_kwh"] = round(original / 1000, 2)
+            if current > 0: tesla_bms["current_capacity_kwh"] = round(current / 1000, 2)
+
+            response = {
                 "success": True,
                 "available": True,
+                "brand": "tesla",
                 "health_percent": health_percent,
                 "original_capacity_wh": battery_health.get("original_capacity_wh"),
                 "current_capacity_wh": battery_health.get("current_capacity_wh"),
@@ -3796,8 +3866,13 @@ class BatteryHealthView(HomeAssistantView):
                 "battery_count": battery_health.get("battery_count", 1),
                 "last_scan": battery_health.get("scanned_at"),
                 "individual_batteries": battery_health.get("individual_batteries"),
-                "source": "mobile_app_tedapi",
-            })
+                "source": battery_health.get("source", "mobile_app_tedapi"),
+            }
+            if tesla_bms:
+                response["bms"] = tesla_bms
+            if battery_health.get("site"):
+                response["site"] = battery_health["site"]
+            return web.json_response(response)
 
         except Exception as e:
             _LOGGER.error(f"Error fetching battery health: {e}", exc_info=True)
@@ -3831,6 +3906,12 @@ class BatteryHealthView(HomeAssistantView):
             battery_count = data.get("battery_count", 1)
             scanned_at = data.get("scanned_at", datetime.now().isoformat())
             individual_batteries = data.get("individual_batteries")
+            # Extended fields (cloud RSA path provides richer metadata)
+            source = data.get("source") or "mobile_app"
+            gateway_din = data.get("gateway_din")
+            energy_site_id = data.get("energy_site_id")
+            site_name = data.get("site_name")
+            raw_vitals = data.get("raw_vitals")
 
             # Validate required fields
             if original_capacity_wh is None or current_capacity_wh is None or degradation_percent is None:
@@ -3842,7 +3923,7 @@ class BatteryHealthView(HomeAssistantView):
             health_percent = round((current_capacity_wh / original_capacity_wh) * 100, 1) if original_capacity_wh > 0 else 0
 
             _LOGGER.info(
-                f"🔋 Battery health received: {health_percent}% health ({current_capacity_wh}Wh / {original_capacity_wh}Wh, {battery_count} units)"
+                f"🔋 Battery health received ({source}): {health_percent}% health ({current_capacity_wh}Wh / {original_capacity_wh}Wh, {battery_count} units)"
             )
 
             # Build battery health data
@@ -3852,11 +3933,23 @@ class BatteryHealthView(HomeAssistantView):
                 "degradation_percent": degradation_percent,
                 "battery_count": battery_count,
                 "scanned_at": scanned_at,
+                "source": source,
             }
 
             if individual_batteries:
                 battery_health_data["individual_batteries"] = individual_batteries
                 _LOGGER.info(f"  Individual batteries: {len(individual_batteries)} units")
+
+            site_info: dict = {}
+            if gateway_din: site_info["gateway_din"] = gateway_din
+            if energy_site_id is not None: site_info["energy_site_id"] = energy_site_id
+            if site_name: site_info["site_name"] = site_name
+            if site_info:
+                battery_health_data["site"] = site_info
+                _LOGGER.info(f"  Site: {site_info}")
+
+            if raw_vitals is not None:
+                battery_health_data["raw_vitals"] = raw_vitals
 
             # Store in hass.data
             self._hass.data[DOMAIN][entry.entry_id]["battery_health"] = battery_health_data
