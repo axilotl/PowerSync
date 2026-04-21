@@ -250,6 +250,31 @@ class GoodWeBatteryController:
         _LOGGER.info("GoodWe export limit set to %dW", watts)
         return True
 
+    async def curtail(self) -> bool:
+        """Zero-export curtailment: block all grid export via export limit register."""
+        try:
+            if not await self.connect():
+                return False
+            await self._inverter.set_grid_export_limit(0)
+            _LOGGER.info("GoodWe curtailed: export limit set to 0W")
+            return True
+        except Exception as e:
+            _LOGGER.error("GoodWe curtail() failed: %s", e)
+            return False
+
+    async def restore(self) -> bool:
+        """Remove export limit to restore normal grid export."""
+        try:
+            if not await self.connect():
+                return False
+            # 99999W effectively removes the limit for any consumer-grade inverter
+            await self._inverter.set_grid_export_limit(99999)
+            _LOGGER.info("GoodWe restore: export limit removed")
+            return True
+        except Exception as e:
+            _LOGGER.error("GoodWe restore() failed: %s", e)
+            return False
+
     async def disconnect(self) -> None:
         """No persistent connection to close (UDP is stateless)."""
         self._inverter = None

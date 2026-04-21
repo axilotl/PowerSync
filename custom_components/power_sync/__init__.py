@@ -16140,6 +16140,75 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         except Exception as e:
             _LOGGER.error("AlphaESS curtailment error: %s", e, exc_info=True)
 
+    async def handle_goodwe_curtailment(feedin_price=None, import_price=None) -> None:
+        """Handle GoodWe DC curtailment via export limit register.
+
+        Sets export limit to 0W when export price < 1c/kWh; removes the limit
+        (sets to 99999W) when export is valuable again.
+        """
+        entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+        current_state = entry_data.get("goodwe_curtailment_state", "normal")
+
+        if feedin_price is None:
+            _price_coord = (
+                amber_coordinator or localvolts_coordinator
+                or aemo_sensor_coordinator or octopus_coordinator
+            )
+            if _price_coord and _price_coord.data:
+                current_prices = _price_coord.data.get("current", [])
+                for price_data in current_prices:
+                    if price_data.get("channelType") == "feedIn":
+                        feedin_price = price_data.get("perKwh", 0)
+                    elif price_data.get("channelType") == "general":
+                        import_price = price_data.get("perKwh", 0)
+
+        if feedin_price is None:
+            _LOGGER.warning("GoodWe curtailment: no feed-in price available")
+            return
+
+        export_earnings = -feedin_price
+        _LOGGER.info(
+            "GoodWe curtailment check: export_earnings=%.2fc/kWh, import=%.2fc/kWh, state=%s",
+            export_earnings, import_price or 0, current_state,
+        )
+
+        gw_coord = entry_data.get("goodwe_coordinator")
+        if not gw_coord or not hasattr(gw_coord, "_controller") or not gw_coord._controller:
+            _LOGGER.debug("GoodWe curtailment: no controller available")
+            return
+
+        controller = gw_coord._controller
+
+        try:
+            if export_earnings < 1:
+                if current_state == "normal":
+                    _LOGGER.info(
+                        "GoodWe curtailment TRIGGERED: export_earnings=%.2fc (<1c) → zero export",
+                        export_earnings,
+                    )
+                    success = await controller.curtail()
+                    if success:
+                        hass.data[DOMAIN][entry.entry_id]["goodwe_curtailment_state"] = "curtailed"
+                    else:
+                        _LOGGER.error("GoodWe curtail() failed")
+                else:
+                    _LOGGER.debug("GoodWe already curtailed, no action needed")
+            else:
+                if current_state != "normal":
+                    _LOGGER.info(
+                        "GoodWe curtailment RESTORED: export_earnings=%.2fc (>=1c) → normal export",
+                        export_earnings,
+                    )
+                    success = await controller.restore()
+                    if success:
+                        hass.data[DOMAIN][entry.entry_id]["goodwe_curtailment_state"] = "normal"
+                    else:
+                        _LOGGER.error("GoodWe restore() failed")
+                else:
+                    _LOGGER.debug("GoodWe already in normal mode, no action needed")
+        except Exception as e:
+            _LOGGER.error("GoodWe curtailment error: %s", e, exc_info=True)
+
     async def handle_solar_curtailment_check(call: ServiceCall = None) -> None:
         """
         Check export prices and curtail solar export when price is below 1c/kWh.
@@ -16185,6 +16254,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # AlphaESS uses Modbus-based curtailment, not Tesla API
         if is_alphaess:
             await handle_alphaess_curtailment()
+            return
+
+        # GoodWe uses export limit register for curtailment, not Tesla API
+        if is_goodwe:
+            await handle_goodwe_curtailment()
             return
 
         # Find an available price coordinator (Amber, AEMO, or Octopus)
@@ -16524,6 +16598,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             feedin_price = websocket_data.get('feedIn', {}).get('perKwh') if websocket_data else None
             import_price = websocket_data.get('general', {}).get('perKwh') if websocket_data else None
             await handle_alphaess_curtailment(feedin_price=feedin_price, import_price=import_price)
+            return
+
+        # GoodWe uses export limit register for curtailment, not Tesla API
+        if is_goodwe:
+            feedin_price = websocket_data.get('feedIn', {}).get('perKwh') if websocket_data else None
+            import_price = websocket_data.get('general', {}).get('perKwh') if websocket_data else None
+            await handle_goodwe_curtailment(feedin_price=feedin_price, import_price=import_price)
             return
 
         _LOGGER.info("=== Starting solar curtailment check (WebSocket event-driven) ===")
