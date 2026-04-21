@@ -14507,6 +14507,74 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         return None
 
+    def _apply_provider_tariff_adjustments(tariff: dict, forecast_data: list, electricity_provider: str) -> dict:
+        """Apply provider-specific rate adjustments to a raw wholesale tariff.
+
+        Called from battery-system early-return paths (FoxESS, Sungrow) that build
+        the tariff for sensor display but exit before the main Flow Power PEA block.
+        Without this, Flow Power users on non-Tesla batteries see raw wholesale prices
+        (~0.08 c/kWh) instead of the actual retail rate in Current Import Price and
+        daily cost sensors.
+        """
+        if electricity_provider != "flow_power":
+            return tariff
+
+        from .tariff_converter import apply_flow_power_pea, get_wholesale_lookup, apply_flow_power_export
+
+        pea_enabled = entry.options.get(CONF_PEA_ENABLED, True)
+        if pea_enabled:
+            base_rate = entry.options.get(CONF_FLOW_POWER_BASE_RATE, FLOW_POWER_DEFAULT_BASE_RATE)
+            custom_pea = entry.options.get(CONF_PEA_CUSTOM_VALUE)
+            wholesale_prices = get_wholesale_lookup(forecast_data)
+
+            twap_override = entry.options.get(CONF_FP_TWAP_OVERRIDE)
+            twap_value = None
+            if twap_override not in (None, ""):
+                try:
+                    twap_value = float(twap_override)
+                except (ValueError, TypeError):
+                    pass
+            if twap_value is None:
+                portal_data = hass.data[DOMAIN][entry.entry_id].get("flow_power_portal_data")
+                if portal_data and portal_data.get("twap") is not None:
+                    twap_value = portal_data["twap"]
+            if twap_value is None:
+                fp_tracker = hass.data[DOMAIN][entry.entry_id].get("flow_power_twap_tracker")
+                twap_value = fp_tracker.twap if fp_tracker else None
+
+            fp_tariff_rate_lookup = None
+            fp_avg_daily = hass.data[DOMAIN][entry.entry_id].get("fp_avg_daily_tariff")
+            fp_network_name = entry.options.get(CONF_FP_NETWORK, entry.data.get(CONF_FP_NETWORK))
+            fp_tc = entry.options.get(CONF_FP_TARIFF_CODE, entry.data.get(CONF_FP_TARIFF_CODE))
+            if fp_network_name and fp_tc and fp_avg_daily is not None:
+                from .const import NETWORK_API_NAME
+                from .tariff_utils import get_network_tariff_rate as _gnt
+                import datetime as _dt
+                _api = NETWORK_API_NAME.get(fp_network_name, fp_network_name.lower())
+                fp_tariff_rate_lookup = {}
+                base_dt = _dt.datetime.now(tz=_dt.timezone(_dt.timedelta(hours=10)))
+                base_dt = base_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+                for slot in range(48):
+                    slot_dt = base_dt + _dt.timedelta(minutes=slot * 30)
+                    h, m = slot_dt.hour, slot_dt.minute
+                    period_key = f"PERIOD_{h:02d}_{m:02d}"
+                    rate = _gnt(slot_dt, _api, fp_tc)
+                    if rate is not None:
+                        fp_tariff_rate_lookup[period_key] = rate
+
+            tariff = apply_flow_power_pea(
+                tariff, wholesale_prices, base_rate, custom_pea, twap=twap_value,
+                tariff_rate_lookup=fp_tariff_rate_lookup,
+                avg_daily_tariff=fp_avg_daily,
+            )
+
+        flow_power_state = entry.options.get(CONF_FLOW_POWER_STATE, entry.data.get(CONF_FLOW_POWER_STATE, ""))
+        if flow_power_state:
+            from .tariff_converter import apply_flow_power_export
+            tariff = apply_flow_power_export(tariff, flow_power_state)
+
+        return tariff
+
     async def _sync_tariff_to_sigenergy(forecast_data: list, sync_mode: str, current_actual_interval: dict = None) -> None:
         """Sync Amber prices to Sigenergy Cloud API.
 
@@ -15338,6 +15406,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 export_min_price=export_min_price,
             )
             if tariff:
+                tariff = _apply_provider_tariff_adjustments(tariff, forecast_data, electricity_provider)
                 from datetime import datetime as dt
                 from homeassistant.helpers.dispatcher import async_dispatcher_send
                 buy_prices = tariff.get("energy_charges", {}).get("Summer", {}).get("rates", {})
@@ -15376,6 +15445,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 export_min_price=export_min_price,
             )
             if tariff:
+                tariff = _apply_provider_tariff_adjustments(tariff, forecast_data, electricity_provider)
                 from datetime import datetime as dt
                 from homeassistant.helpers.dispatcher import async_dispatcher_send
                 buy_prices = tariff.get("energy_charges", {}).get("Summer", {}).get("rates", {})
