@@ -892,12 +892,15 @@ function _batteryControls(hass) {
   return {
     type: 'vertical-stack',
     cards: [
-      // Power slider — only shown when the ForcePowerNumber entity exists
+      // Power slider — only shown when the ForcePowerNumber entity exists.
+      // Uses entities card (not tile) so the number entity's native slider renders.
+      // 0 kW = auto (uses inverter rated/BMS max at dispatch).
       ...(hasForcePower ? [{
-        type: 'tile',
-        entity: 'number.power_sync_force_power_kw',
-        name: "[[[ return states['number.power_sync_force_power_kw']?.state == '0' ? 'Force Power — Auto (Max)' : 'Force Power'; ]]]",
-        features: [{ type: 'numeric-input', style: 'slider' }],
+        type: 'entities',
+        entities: [{
+          entity: 'number.power_sync_force_power_kw',
+          name: 'Force Power (0 = Max)',
+        }],
       }] : []),
       {
         square: false,
