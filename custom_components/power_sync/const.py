@@ -1680,12 +1680,7 @@ SENSOR_KEY_TO_FAMILY: dict[str, str] = {
 
 
 def family_device_info(entry_id: str, family: str) -> dict:
-    """Return device_info dict for a sub-device family, linked to the parent entry device."""
-    display = FAMILY_DISPLAY_NAMES.get(family, family)
+    """Return device_info dict pointing all entities at the single parent device."""
     return {
-        "identifiers": {(DOMAIN, f"{entry_id}_{family}")},
-        "name": f"PowerSync {display}",
-        "manufacturer": "PowerSync",
-        "model": display,
-        "via_device": (DOMAIN, entry_id),
+        "identifiers": {(DOMAIN, entry_id)},
     }
