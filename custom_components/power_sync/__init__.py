@@ -7983,8 +7983,8 @@ class WeatherSolcastSettingsView(HomeAssistantView):
 
             return web.json_response({"success": True})
         except Exception as e:
-            _LOGGER.error(f"Error updating weather/solcast settings: {e}", exc_info=True)
-            return web.json_response({"success": False, "error": str(e)}, status=500)
+            _LOGGER.error("Error updating weather/solcast settings: %s", e, exc_info=True)
+            return web.json_response({"success": False, "error": "Settings update failed"}, status=500)
 
 
 class EVStatusView(HomeAssistantView):
