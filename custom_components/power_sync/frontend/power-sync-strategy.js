@@ -690,7 +690,7 @@ class PowerSyncStrategy {
 
     // --- Left Column: Battery Health (requires button-card) ---
     if (hasButton && hasE('battery_health')) {
-      left.push(_batteryHealth(e));
+      left.push(_batteryHealth(e, hass));
     }
 
     // --- Center Column: Combined Energy Chart ---
@@ -1827,8 +1827,16 @@ function _foxessSensors(e) {
   };
 }
 
-function _batteryHealth(e) {
+function _batteryHealth(e, hass) {
   const healthEntity = e('battery_health');
+
+  // Determine how many individual battery gauges to show. Read battery_count from
+  // current state at render time so the grid expands for stacked PW3 systems.
+  const stateObj = hass?.states?.[healthEntity];
+  const batteryCount = Number(stateObj?.attributes?.battery_count || 0);
+  // Show at least 1 individual gauge slot, cap at 8. If we have no count data yet,
+  // default to 3 so the card isn't empty on first load.
+  const numSlots = batteryCount > 0 ? Math.min(batteryCount, 8) : 3;
 
   const healthGauge = (name, attrPath) => ({
     type: 'custom:button-card',
@@ -1839,7 +1847,7 @@ function _batteryHealth(e) {
     show_state: true,
     state_display: `[[[
       const v = ${attrPath};
-      if (!v || ['unknown','unavailable','none'].includes(String(v).toLowerCase())) return '';
+      if (v == null || ['unknown','unavailable','none'].includes(String(v).toLowerCase())) return '';
       const n = Number(v);
       if (!Number.isFinite(n)) return '';
       return n.toFixed(1) + ' %';
@@ -1852,7 +1860,7 @@ function _batteryHealth(e) {
         {
           display: `[[[
             const v = ${attrPath};
-            if (!v || ['unknown','unavailable','none'].includes(String(v).toLowerCase())) return 'none';
+            if (v == null || ['unknown','unavailable','none'].includes(String(v).toLowerCase())) return 'none';
             const n = Number(v);
             return Number.isFinite(n) ? 'block' : 'none';
           ]]]`,
@@ -1869,6 +1877,59 @@ function _batteryHealth(e) {
       ],
     },
   });
+
+  // Build individual battery gauge cards. Followers get a distinct label so it's
+  // clear their capacity is inferred from the aggregate rather than directly measured.
+  const individualGauges = [];
+  for (let n = 1; n <= numSlots; n++) {
+    const attrPath = `states['${healthEntity}']?.attributes?.battery_${n}_health_percent`;
+    const followerPath = `states['${healthEntity}']?.attributes?.battery_${n}_is_follower`;
+    individualGauges.push({
+      type: 'custom:button-card',
+      entity: healthEntity,
+      show_icon: false,
+      show_name: true,
+      show_state: true,
+      name: `[[[
+        const isFollower = ${followerPath};
+        return isFollower ? 'Follower ${n}' : 'Battery ${n}';
+      ]]]`,
+      state_display: `[[[
+        const v = ${attrPath};
+        if (v == null || ['unknown','unavailable','none'].includes(String(v).toLowerCase())) return '';
+        const n = Number(v);
+        if (!Number.isFinite(n)) return '';
+        return n.toFixed(1) + ' %';
+      ]]]`,
+      styles: {
+        card: [
+          { height: '70px' },
+          { 'border-radius': '12px' },
+          { padding: '6px' },
+          {
+            display: `[[[
+              const v = ${attrPath};
+              if (v == null || ['unknown','unavailable','none'].includes(String(v).toLowerCase())) return 'none';
+              const num = Number(v);
+              return Number.isFinite(num) ? 'block' : 'none';
+            ]]]`,
+          },
+        ],
+        name: [
+          { 'font-weight': '700' },
+          { 'font-size': '13px' },
+        ],
+        state: [
+          { 'font-size': '18px' },
+          { 'font-weight': '800' },
+          { 'margin-top': '2px' },
+        ],
+      },
+    });
+  }
+
+  // Grid columns: Overall + individual gauges. Use 4 columns for ≤3 slots, else match count.
+  const gridColumns = numSlots <= 3 ? 4 : Math.min(numSlots + 1, 5);
 
   return {
     type: 'vertical-stack',
@@ -1895,13 +1956,11 @@ function _batteryHealth(e) {
       },
       {
         type: 'grid',
-        columns: 4,
+        columns: gridColumns,
         square: false,
         cards: [
           healthGauge('Overall', `states['${healthEntity}']?.state`),
-          healthGauge('Battery 1', `states['${healthEntity}']?.attributes?.battery_1_health_percent`),
-          healthGauge('Battery 2', `states['${healthEntity}']?.attributes?.battery_2_health_percent`),
-          healthGauge('Battery 3', `states['${healthEntity}']?.attributes?.battery_3_health_percent`),
+          ...individualGauges,
         ],
       },
       {
@@ -1911,8 +1970,10 @@ function _batteryHealth(e) {
 {% set current = state_attr('${healthEntity}', 'current_capacity_kwh') %}
 {% set scan = state_attr('${healthEntity}', 'last_scan') %}
 {% set soh = state_attr('${healthEntity}', 'state_of_health_percent') %}
-{%- if source == 'mobile_app_tedapi' %}
+{% set has_follower = state_attr('${healthEntity}', 'battery_1_is_follower') or state_attr('${healthEntity}', 'battery_2_is_follower') or state_attr('${healthEntity}', 'battery_3_is_follower') or state_attr('${healthEntity}', 'battery_4_is_follower') %}
+{%- if source in ('mobile_app_tedapi', 'mobile_app', 'fleet_api') %}
 **Capacity:** {{ current }} / {{ original }} kWh | **Last scan:** {{ scan[:10] if scan else 'N/A' }}
+{%- if has_follower %} *(follower capacity inferred from aggregate)*{%- endif %}
 {%- elif source == 'inverter_modbus' %}
 **State of Health:** {{ soh }}% (from inverter)
 {%- elif states('${healthEntity}') not in ['unavailable', 'unknown'] %}

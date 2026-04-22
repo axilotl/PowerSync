@@ -3212,6 +3212,8 @@ class BatteryHealthSensor(SensorEntity):
                         attributes[f"{prefix}_health_percent"] = health
                     if battery.get("isExpansion") is not None:
                         attributes[f"{prefix}_is_expansion"] = battery.get("isExpansion")
+                    if battery.get("isFollower") is not None:
+                        attributes[f"{prefix}_is_follower"] = battery.get("isFollower")
 
         # Source attribution
         if self._original_capacity_wh is not None:
