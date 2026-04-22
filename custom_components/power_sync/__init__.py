@@ -3911,8 +3911,9 @@ class BatteryHealthView(HomeAssistantView):
             if "BMS_nominalFullPackEnergy" not in sigs:
                 continue  # skip non-BMS components (PVS, PVAC, etc.) — they have no BMS signal key
             bms_module_count += 1
-            pack_full_wh = sigs.get("BMS_nominalFullPackEnergy") or 0
-            pack_rem_wh = sigs.get("BMS_nominalEnergyRemaining") or 0
+            # BMS_nominalFullPackEnergy is in kWh; convert to Wh for the app.
+            pack_full_wh = (sigs.get("BMS_nominalFullPackEnergy") or 0) * 1000
+            pack_rem_wh = (sigs.get("BMS_nominalEnergyRemaining") or 0) * 1000
             individual.append({
                 "nominalFullPackEnergyWh": pack_full_wh,
                 "nominalEnergyRemainingWh": pack_rem_wh,
