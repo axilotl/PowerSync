@@ -439,6 +439,19 @@
         },
         "submit": "Connect"
       },
+      "saj_h2_battery": {
+        "title": "SAJ H2 connection",
+        "description": "PowerSync bridges through the SAJ H2 Modbus integration. Install it from HACS (search 'SAJ H2 Inverter Modbus') and configure your inverter, then return here.",
+        "data": {
+          "saj_config_entry_id": "SAJ H2 integration",
+          "saj_battery_capacity_kwh": "Battery capacity"
+        },
+        "data_description": {
+          "saj_config_entry_id": "The saj_h2_modbus integration entry to read sensors and send passive charge/discharge commands through.",
+          "saj_battery_capacity_kwh": "Usable battery capacity in kWh. Used by the LP optimizer."
+        },
+        "submit": "Connect"
+      },
       "sigenergy_credentials": {
         "title": "Sigenergy Cloud login",
         "description": "Enter your Sigenergy Cloud API credentials to connect your system.",
@@ -741,7 +754,9 @@
       "invalid_token_format": "Token format is not recognised. PowerSync tokens start with 'psync_' -- make sure you copied the full string.",
       "unknown": "An unexpected error occurred. Check the Home Assistant logs for details and try again.",
       "solax_missing_entities": "Could not find the required solax_modbus entities. The first missing entity was: {first_missing}. Open Developer Tools > States and search for 'charger_use_mode' — the part before '_charger_use_mode' (or '_inverter_charger_use_mode' on some firmware versions) is your prefix. If you have multiple Solax integrations installed, the wills106 prefix may differ from 'solax'.",
-      "solax_connect_failed": "Failed to validate Solax entities. Check the entity prefix and try again."
+      "solax_connect_failed": "Failed to validate Solax entities. Check the entity prefix and try again.",
+      "saj_missing_entities": "Could not find the required SAJ H2 entities in the selected saj_h2_modbus integration entry. Make sure the integration is installed, the inverter is online, and its entities have been created in Home Assistant.",
+      "saj_connect_failed": "Failed to validate SAJ H2 entities. Check the selected integration entry and try again."
     },
     "abort": {
       "already_configured": "PowerSync is already configured. To change settings, use the Configure button on the integration card.",
@@ -750,7 +765,8 @@
       "reauth_successful": "Token updated -- PowerSync is reconnected.",
       "reauth_failed": "Re-authentication failed. Remove the integration and set it up again.",
       "reauth_fleet_api_use_tesla_fleet": "PowerSync reads tokens from your Tesla Fleet integration. Go to Settings > Devices & Services > Tesla Fleet and re-authenticate there. PowerSync will pick up the new tokens automatically.",
-      "esy_sunhome_not_installed": "The ESY Sunhome integration is not installed. Install it via HACS (search 'ESY Sunhome') and add a device before continuing."
+      "esy_sunhome_not_installed": "The ESY Sunhome integration is not installed. Install it via HACS (search 'ESY Sunhome') and add a device before continuing.",
+      "saj_h2_not_installed": "The SAJ H2 Modbus integration is not installed. Install it via HACS (search 'SAJ H2 Inverter Modbus') and add your inverter before continuing."
     }
   },
   "options": {
@@ -766,6 +782,7 @@
           "foxess_connection_options": "FoxESS connection",
           "goodwe_connection_options": "GoodWe connection",
           "esy_sunhome_connection": "ESY Sunhome connection",
+          "saj_h2_connection": "SAJ H2 connection",
           "optimization": "Optimization mode",
           "inverter": "AC inverter curtailment",
           "curtailment": "Curtailment settings",
@@ -897,6 +914,19 @@
         },
         "data_description": {
           "esy_config_entry_id": "The ESY Sunhome integration entry to read sensors and send mode commands through."
+        },
+        "submit": "Save"
+      },
+      "saj_h2_connection": {
+        "title": "SAJ H2 connection",
+        "description": "Update the SAJ H2 Modbus integration entry and battery capacity PowerSync bridges through.",
+        "data": {
+          "saj_config_entry_id": "SAJ H2 integration",
+          "saj_battery_capacity_kwh": "Battery capacity"
+        },
+        "data_description": {
+          "saj_config_entry_id": "The saj_h2_modbus integration entry to read sensors and send passive charge/discharge commands through.",
+          "saj_battery_capacity_kwh": "Usable battery capacity in kWh."
         },
         "submit": "Save"
       },

@@ -4609,6 +4609,83 @@ class SolaxBatteryEnergyCoordinator(DataUpdateCoordinator):
         await self._controller.disconnect()
 
 
+class SajH2EnergyCoordinator(DataUpdateCoordinator):
+    """Bridge coordinator for SAJ H2 / HS2 via the saj_h2_modbus integration."""
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        saj_entry_id: str,
+        battery_capacity_kwh: float = 10.0,
+        entry_id: str = "",
+    ) -> None:
+        from .inverters.saj_h2 import SajH2BatteryController
+
+        self._entry_id = entry_id
+        self._controller = SajH2BatteryController(
+            hass,
+            saj_entry_id=saj_entry_id,
+            battery_capacity_kwh=battery_capacity_kwh,
+        )
+        self._energy_acc = EnergyAccumulator(hass, "saj_h2")
+
+        super().__init__(
+            hass,
+            _LOGGER,
+            name=f"{DOMAIN}_saj_h2_energy",
+            update_interval=timedelta(seconds=30),
+        )
+
+    async def _async_update_data(self) -> dict[str, Any]:
+        """Return SAJ data assembled from HA entity states."""
+        if not self._energy_acc._last_update:
+            await self._energy_acc.async_restore()
+
+        try:
+            status = self._controller.get_status()
+        except Exception as exc:
+            if self.data:
+                _LOGGER.warning("SAJ H2 entity read failed, returning stale data: %s", exc)
+                return self.data
+            raise UpdateFailed(f"SAJ H2 entity read failed: {exc}") from exc
+
+        solar_kw = status.get("solar_power", 0.0) or 0.0
+        grid_kw = status.get("grid_power", 0.0) or 0.0
+        battery_kw = status.get("battery_power", 0.0) or 0.0
+        load_kw = status.get("load_power", 0.0) or 0.0
+        soc = status.get("battery_level", 0.0) or 0.0
+
+        buy, sell = _get_current_prices(self.hass, self._entry_id)
+        self._energy_acc.update(max(0.0, solar_kw), grid_kw, battery_kw, load_kw, buy, sell)
+
+        result = {
+            "solar_power": solar_kw,
+            "grid_power": grid_kw,
+            "battery_power": battery_kw,
+            "load_power": load_kw,
+            "battery_level": soc,
+            "battery_temperature": status.get("battery_temperature"),
+            "battery_capacity_kwh": status.get("battery_capacity_kwh"),
+            "battery_max_charge_power_w": status.get("battery_max_charge_power_w"),
+            "battery_max_discharge_power_w": status.get("battery_max_discharge_power_w"),
+            "app_mode": status.get("app_mode"),
+        }
+        result.update(self._energy_acc.totals())
+        return result
+
+    async def force_charge(self, duration_minutes: int, power_w: int) -> bool:
+        return await self._controller.force_charge(duration_minutes, power_w)
+
+    async def force_discharge(self, duration_minutes: int, power_w: int) -> bool:
+        return await self._controller.force_discharge(duration_minutes, power_w)
+
+    async def restore_normal(self) -> bool:
+        return await self._controller.restore_normal()
+
+    async def async_shutdown(self) -> None:
+        await self._controller.disconnect()
+
+
 class ESYSunhomeEnergyCoordinator(DataUpdateCoordinator):
     """Bridge coordinator for ESY Sunhome via the upstream esy_sunhome integration.
 

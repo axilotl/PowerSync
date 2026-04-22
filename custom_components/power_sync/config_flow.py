@@ -74,6 +74,7 @@ from .const import (
     BATTERY_SYSTEM_ALPHAESS,
     BATTERY_SYSTEM_ESY_SUNHOME,
     BATTERY_SYSTEM_SOLAX,
+    BATTERY_SYSTEM_SAJ_H2,
     BATTERY_SYSTEMS,
     CONF_ESY_CONFIG_ENTRY_ID,
     # Solax battery system configuration
@@ -87,6 +88,10 @@ from .const import (
     DEFAULT_SOLAX_BATTERY_NOMINAL_V,
     DEFAULT_SOLAX_MAX_CHARGE_CURRENT_A,
     DEFAULT_SOLAX_MAX_DISCHARGE_CURRENT_A,
+    # SAJ H2 battery system configuration
+    CONF_SAJ_CONFIG_ENTRY_ID,
+    CONF_SAJ_BATTERY_CAPACITY_KWH,
+    DEFAULT_SAJ_BATTERY_CAPACITY_KWH,
     # AlphaESS battery system configuration
     CONF_ALPHAESS_MODBUS_HOST,
     CONF_ALPHAESS_MODBUS_PORT,
@@ -1098,6 +1103,8 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return await self.async_step_esy_sunhome()
         elif self._selected_battery_system == BATTERY_SYSTEM_SOLAX:
             return await self.async_step_solax_battery()
+        elif self._selected_battery_system == BATTERY_SYSTEM_SAJ_H2:
+            return await self.async_step_saj_h2_battery()
         else:
             return await self.async_step_tesla_provider()
 
@@ -1124,6 +1131,7 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             **getattr(self, "_alphaess_data", {}),
             **getattr(self, "_esy_sunhome_data", {}),
             **getattr(self, "_solax_data", {}),
+            **getattr(self, "_saj_h2_data", {}),
             CONF_ELECTRICITY_PROVIDER: self._selected_electricity_provider,
         }
 
@@ -1163,6 +1171,7 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             BATTERY_SYSTEM_ALPHAESS: "AlphaESS",
             BATTERY_SYSTEM_ESY_SUNHOME: "ESY Sunhome",
             BATTERY_SYSTEM_SOLAX: "Solax",
+            BATTERY_SYSTEM_SAJ_H2: "SAJ H2",
         }.get(self._selected_battery_system, "")
 
         if battery_label:
@@ -2118,6 +2127,101 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             }),
             errors=errors,
             description_placeholders=description_placeholders or None,
+        )
+
+    async def async_step_saj_h2_battery(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Configure SAJ H2 bridge via the saj_h2_modbus integration."""
+        from .inverters.saj_h2 import SajH2BatteryController
+
+        saj_entries = self.hass.config_entries.async_entries("saj_h2_modbus")
+        if not saj_entries:
+            return self.async_abort(reason="saj_h2_not_installed")
+
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            if len(saj_entries) == 1:
+                selected_entry_id = saj_entries[0].entry_id
+            else:
+                selected_entry_id = user_input.get(CONF_SAJ_CONFIG_ENTRY_ID, "")
+
+            capacity_kwh = user_input.get(
+                CONF_SAJ_BATTERY_CAPACITY_KWH,
+                DEFAULT_SAJ_BATTERY_CAPACITY_KWH,
+            )
+
+            try:
+                ctrl = SajH2BatteryController(
+                    self.hass,
+                    saj_entry_id=selected_entry_id,
+                    battery_capacity_kwh=float(capacity_kwh),
+                )
+                await ctrl.connect()
+                self._saj_h2_data = {
+                    CONF_SAJ_CONFIG_ENTRY_ID: selected_entry_id,
+                    CONF_SAJ_BATTERY_CAPACITY_KWH: float(capacity_kwh),
+                }
+                return self._create_final_entry()
+            except ValueError as exc:
+                if "saj_missing_entities:" in str(exc):
+                    errors["base"] = "saj_missing_entities"
+                else:
+                    errors["base"] = "saj_connect_failed"
+            except Exception as exc:
+                _LOGGER.error("SAJ H2 setup error: %s", exc)
+                errors["base"] = "saj_connect_failed"
+
+        if len(saj_entries) == 1:
+            data_schema = vol.Schema(
+                {
+                    vol.Required(
+                        CONF_SAJ_BATTERY_CAPACITY_KWH,
+                        default=DEFAULT_SAJ_BATTERY_CAPACITY_KWH,
+                    ): NumberSelector(
+                        NumberSelectorConfig(
+                            min=1,
+                            max=100,
+                            step=0.1,
+                            mode=NumberSelectorMode.BOX,
+                            unit_of_measurement="kWh",
+                        )
+                    ),
+                }
+            )
+        else:
+            entry_options = {e.entry_id: e.title or e.entry_id for e in saj_entries}
+            data_schema = vol.Schema(
+                {
+                    vol.Required(CONF_SAJ_CONFIG_ENTRY_ID): SelectSelector(
+                        SelectSelectorConfig(
+                            options=[
+                                SelectOptionDict(value=k, label=v)
+                                for k, v in entry_options.items()
+                            ],
+                            mode=SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
+                    vol.Required(
+                        CONF_SAJ_BATTERY_CAPACITY_KWH,
+                        default=DEFAULT_SAJ_BATTERY_CAPACITY_KWH,
+                    ): NumberSelector(
+                        NumberSelectorConfig(
+                            min=1,
+                            max=100,
+                            step=0.1,
+                            mode=NumberSelectorMode.BOX,
+                            unit_of_measurement="kWh",
+                        )
+                    ),
+                }
+            )
+
+        return self.async_show_form(
+            step_id="saj_h2_battery",
+            data_schema=data_schema,
+            errors=errors,
         )
 
     async def async_step_sungrow(
@@ -3390,6 +3494,8 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             menu_options.append("esy_sunhome_connection")
         elif battery_system == BATTERY_SYSTEM_SOLAX:
             menu_options.append("solax_battery_options")
+        elif battery_system == BATTERY_SYSTEM_SAJ_H2:
+            menu_options.append("saj_h2_connection")
 
         menu_options.extend([
             "optimization",
@@ -4124,6 +4230,89 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             }),
             errors=errors,
             description_placeholders=description_placeholders or None,
+        )
+
+    async def async_step_saj_h2_connection(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Menu handler: SAJ H2 bridge settings."""
+        from .inverters.saj_h2 import SajH2BatteryController
+
+        saj_entries = self.hass.config_entries.async_entries("saj_h2_modbus")
+        if not saj_entries:
+            return self.async_abort(reason="saj_h2_not_installed")
+
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            selected_entry_id = user_input.get(CONF_SAJ_CONFIG_ENTRY_ID, "")
+            capacity_kwh = user_input.get(
+                CONF_SAJ_BATTERY_CAPACITY_KWH,
+                DEFAULT_SAJ_BATTERY_CAPACITY_KWH,
+            )
+            try:
+                ctrl = SajH2BatteryController(
+                    self.hass,
+                    saj_entry_id=selected_entry_id,
+                    battery_capacity_kwh=float(capacity_kwh),
+                )
+                await ctrl.connect()
+                new_data = dict(self.config_entry.data)
+                new_data[CONF_SAJ_CONFIG_ENTRY_ID] = selected_entry_id
+                new_data[CONF_SAJ_BATTERY_CAPACITY_KWH] = float(capacity_kwh)
+                self.hass.config_entries.async_update_entry(self.config_entry, data=new_data)
+                return self.async_create_entry(title="", data=dict(self.config_entry.options))
+            except ValueError as exc:
+                if "saj_missing_entities:" in str(exc):
+                    errors["base"] = "saj_missing_entities"
+                else:
+                    errors["base"] = "saj_connect_failed"
+            except Exception as exc:
+                _LOGGER.error("SAJ H2 options error: %s", exc)
+                errors["base"] = "saj_connect_failed"
+
+        entry_options = {e.entry_id: e.title or e.entry_id for e in saj_entries}
+        current_entry_id = self._get_option(
+            CONF_SAJ_CONFIG_ENTRY_ID,
+            self.config_entry.data.get(CONF_SAJ_CONFIG_ENTRY_ID, ""),
+        )
+        current_capacity = self._get_option(
+            CONF_SAJ_BATTERY_CAPACITY_KWH,
+            self.config_entry.data.get(
+                CONF_SAJ_BATTERY_CAPACITY_KWH,
+                DEFAULT_SAJ_BATTERY_CAPACITY_KWH,
+            ),
+        )
+
+        return self.async_show_form(
+            step_id="saj_h2_connection",
+            data_schema=vol.Schema({
+                vol.Required(
+                    CONF_SAJ_CONFIG_ENTRY_ID,
+                    default=current_entry_id,
+                ): SelectSelector(
+                    SelectSelectorConfig(
+                        options=[
+                            SelectOptionDict(value=k, label=v)
+                            for k, v in entry_options.items()
+                        ],
+                        mode=SelectSelectorMode.DROPDOWN,
+                    )
+                ),
+                vol.Required(
+                    CONF_SAJ_BATTERY_CAPACITY_KWH,
+                    default=current_capacity,
+                ): NumberSelector(
+                    NumberSelectorConfig(
+                        min=1,
+                        max=100,
+                        step=0.1,
+                        mode=NumberSelectorMode.BOX,
+                        unit_of_measurement="kWh",
+                    )
+                ),
+            }),
+            errors=errors,
         )
 
     async def async_step_optimization(

@@ -129,6 +129,7 @@ BATTERY_SYSTEM_GOODWE = "goodwe"
 BATTERY_SYSTEM_ALPHAESS = "alphaess"
 BATTERY_SYSTEM_ESY_SUNHOME = "esy_sunhome"
 BATTERY_SYSTEM_SOLAX = "solax"
+BATTERY_SYSTEM_SAJ_H2 = "saj_h2"
 
 BATTERY_SYSTEMS = {
     BATTERY_SYSTEM_TESLA: "Tesla Powerwall — Fleet API or Teslemetry",
@@ -139,6 +140,7 @@ BATTERY_SYSTEMS = {
     BATTERY_SYSTEM_ALPHAESS: "AlphaESS SMILE/Storion — Modbus TCP + optional Cloud API",
     BATTERY_SYSTEM_ESY_SUNHOME: "ESY Sunhome — via esy_sunhome companion integration",
     BATTERY_SYSTEM_SOLAX: "Solax Hybrid — via Solax Modbus integration",
+    BATTERY_SYSTEM_SAJ_H2: "SAJ H2/HS2 — via SAJ H2 Modbus integration",
 }
 
 # Sungrow SH-series Battery System Configuration (Modbus TCP)
@@ -395,6 +397,12 @@ DEFAULT_SOLAX_BATTERY_CAPACITY_KWH = 11.6   # T-BAT-SYS-HV 11.6 kWh
 DEFAULT_SOLAX_BATTERY_NOMINAL_V = 51.2      # LFP T-BAT; override to 102.4 for HV packs
 DEFAULT_SOLAX_MAX_CHARGE_CURRENT_A = 25
 DEFAULT_SOLAX_MAX_DISCHARGE_CURRENT_A = 25
+
+# SAJ H2 / HS2 battery system — bridges via stanus74/home-assistant-saj-h2-modbus
+# Install saj_h2_modbus from HACS first; PowerSync reads/writes its entities.
+CONF_SAJ_CONFIG_ENTRY_ID = "saj_config_entry_id"
+CONF_SAJ_BATTERY_CAPACITY_KWH = "saj_battery_capacity_kwh"
+DEFAULT_SAJ_BATTERY_CAPACITY_KWH = 10.0
 
 # Demand charge configuration
 CONF_DEMAND_CHARGE_ENABLED = "demand_charge_enabled"
