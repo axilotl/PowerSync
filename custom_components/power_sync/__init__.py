@@ -3960,11 +3960,6 @@ class BatteryHealthView(HomeAssistantView):
                if s["name"] in ("BMS_nominalFullPackEnergy", "BMS_nominalEnergyRemaining")})
              for c in all_comps],
         )
-        # Dump esCan.bus.POD — per-Powerwall Over CAN telemetry — to inspect follower shape.
-        _LOGGER.debug(
-            "fleet_api_bms: esCan.bus.POD=%s",
-            (data.get("esCan") or {}).get("bus", {}).get("POD"),
-        )
         individual = []
         bms_module_count = 0
         for pack in all_comps:
@@ -3984,6 +3979,43 @@ class BatteryHealthView(HomeAssistantView):
                 "isExpansion": len(individual) > 0 and not is_follower,
                 "isFollower": is_follower,
             })
+
+        # Follower units report None BMS signals — their contribution is inferable from the
+        # aggregate systemStatus total minus the sum of leader packs. The serial number comes
+        # from batteryBlocks[].din (format: "partNum--serial"). For multiple followers the
+        # remaining energy is split evenly among them.
+        follower_indices = [
+            i for i, p in enumerate(individual)
+            if p.get("isFollower") and p.get("nominalFullPackEnergyWh") == 0
+        ]
+        if follower_indices and current_wh:
+            leader_full_wh = sum(
+                p["nominalFullPackEnergyWh"] for p in individual if not p.get("isFollower")
+            )
+            leader_rem_wh = sum(
+                p["nominalEnergyRemainingWh"] for p in individual if not p.get("isFollower")
+            )
+            n_followers = len(follower_indices)
+            inferred_full_wh = max(0.0, current_wh - leader_full_wh) / n_followers
+            inferred_rem_wh = max(0.0, rem_wh - leader_rem_wh) / n_followers
+            follower_dins = [
+                block.get("din") for block in battery_blocks
+                if block.get("din") and block.get("din") != din
+            ]
+            for seq, idx in enumerate(follower_indices):
+                f_din = follower_dins[seq] if seq < len(follower_dins) else None
+                serial = f_din.split("--")[1] if f_din and "--" in f_din else None
+                individual[idx] = {
+                    "nominalFullPackEnergyWh": inferred_full_wh,
+                    "nominalEnergyRemainingWh": inferred_rem_wh,
+                    "serialNumber": serial,
+                    "isExpansion": False,
+                    "isFollower": True,
+                }
+            _LOGGER.debug(
+                "fleet_api_bms: inferred follower data: %d unit(s), %.0f Wh each",
+                n_followers, inferred_full_wh,
+            )
 
         # Module count: BMS signal presence is the most accurate count (includes follower packs
         # that report the signal key but have None values). batteryBlocks counts inverter units
