@@ -696,7 +696,7 @@
           "solax_max_discharge_current_a": "Max discharge current"
         },
         "data_description": {
-          "solax_entity_prefix": "The prefix used by the solax_modbus integration for its entities. To find it: open Developer Tools > States and search for 'charger_use_mode' — the part before '_charger_use_mode' is your prefix (e.g. 'solax_modbus' if the entity is 'select.solax_modbus_charger_use_mode'). This may differ from 'solax' if you have another Solax integration installed.",
+          "solax_entity_prefix": "The prefix used by the solax_modbus integration for its entities. To find it: open Developer Tools > States and search for 'charger_use_mode' — the part before '_charger_use_mode' (or '_inverter_charger_use_mode' on some firmware versions) is your prefix. This may differ from 'solax' if you have another Solax integration installed.",
           "solax_battery_capacity_kwh": "Usable battery capacity in kWh. Used by the LP optimizer.",
           "solax_battery_nominal_v": "Nominal battery voltage in V (51.2 for LFP T-BAT, 102.4 for high-voltage packs).",
           "solax_max_charge_current_a": "Maximum charge current your battery supports (A).",
@@ -740,7 +740,7 @@
       "invalid_tariff": "This tariff code is not recognised for the selected network distributor. Check the code on your electricity bill.",
       "invalid_token_format": "Token format is not recognised. PowerSync tokens start with 'psync_' -- make sure you copied the full string.",
       "unknown": "An unexpected error occurred. Check the Home Assistant logs for details and try again.",
-      "solax_missing_entities": "Could not find the required solax_modbus entities. The first missing entity was: {first_missing}. Open Developer Tools > States and search for 'charger_use_mode' — the part before '_charger_use_mode' is your prefix. If you have multiple Solax integrations installed, the wills106 prefix may differ from 'solax'.",
+      "solax_missing_entities": "Could not find the required solax_modbus entities. The first missing entity was: {first_missing}. Open Developer Tools > States and search for 'charger_use_mode' — the part before '_charger_use_mode' (or '_inverter_charger_use_mode' on some firmware versions) is your prefix. If you have multiple Solax integrations installed, the wills106 prefix may differ from 'solax'.",
       "solax_connect_failed": "Failed to validate Solax entities. Check the entity prefix and try again."
     },
     "abort": {

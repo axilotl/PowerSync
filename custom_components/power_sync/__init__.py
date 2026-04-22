@@ -3905,22 +3905,25 @@ class BatteryHealthView(HomeAssistantView):
              for c in all_comps],
         )
         individual = []
+        bms_module_count = 0
         for pack in all_comps:
             sigs = {s["name"]: s.get("value") for s in (pack.get("signals") or [])}
+            if "BMS_nominalFullPackEnergy" not in sigs:
+                continue  # skip non-BMS components (PVS, PVAC, etc.) — they have no BMS signal key
+            bms_module_count += 1
             pack_full_wh = sigs.get("BMS_nominalFullPackEnergy") or 0
             pack_rem_wh = sigs.get("BMS_nominalEnergyRemaining") or 0
-            if not pack_full_wh:
-                continue  # skip non-BMS components (PVS, PVAC, etc.)
             individual.append({
                 "nominalFullPackEnergyWh": pack_full_wh,
                 "nominalEnergyRemainingWh": pack_rem_wh,
-                "serialNumber": pack.get("serialNumber"),
+                "serialNumber": pack.get("serialNumber") or None,
                 "isExpansion": len(individual) > 0,
             })
 
-        # Module count: prefer per-pack data (granular) over batteryBlocks (inverter-level).
-        # Never let an incomplete individual list shrink below bb_count.
-        batt_count = max(len(individual), bb_count) if individual else bb_count
+        # Module count: BMS signal presence is the most accurate count (includes follower packs
+        # that report the signal key but have None values). batteryBlocks counts inverter units
+        # (one per PW3 stack), not individual battery modules — use it only as a floor.
+        batt_count = max(bms_module_count, bb_count) if bms_module_count else bb_count
 
         # Rated capacity: 13.5 kWh per battery module.
         original_wh = 13500 * batt_count

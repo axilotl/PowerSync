@@ -67,6 +67,10 @@ _OP_MODE_MAP = {
 class SolaxBatteryController:
     """Battery controller for Solax Hybrid inverters via homeassistant-solax-modbus entities."""
 
+    # Some wills106 firmware versions use "inverter_charger_use_mode" instead of
+    # "charger_use_mode" — detected at connect() time and stored per-instance.
+    _MODE_SUFFIX_VARIANTS = ("charger_use_mode", "inverter_charger_use_mode")
+
     def __init__(
         self,
         hass: Any,
@@ -81,6 +85,7 @@ class SolaxBatteryController:
         self._max_charge_a = max_charge_current_a
         self._max_discharge_a = max_discharge_current_a
         self._timer_cancel = None  # unsub from async_call_later
+        self._mode_suffix = _WRITE_ENTITIES["charger_use_mode"]  # resolved in connect()
 
     # ── Entity ID helpers ───────────────────────────────────────────────────
 
@@ -93,28 +98,34 @@ class SolaxBatteryController:
     def _select(self, suffix: str) -> str:
         return f"select.{self._prefix}_{suffix}"
 
+    def _mode_select(self) -> str:
+        """Entity ID for the charger_use_mode select (variant-aware)."""
+        return self._select(self._mode_suffix)
+
     # ── Prefix discovery ────────────────────────────────────────────────────
 
     @staticmethod
     def discover_prefixes(hass: Any) -> list[str]:
         """Scan HA states for wills106 hybrid inverter entity prefixes.
 
-        Requires BOTH select.*_charger_use_mode AND sensor.*_battery_capacity
-        to exist for the same prefix — this filters out Solax EV chargers and
-        other Solax integrations that have charger_use_mode but no battery sensor.
+        Requires BOTH a select.*_charger_use_mode (or *_inverter_charger_use_mode)
+        AND sensor.*_battery_capacity to exist for the same prefix — this filters
+        out Solax EV chargers and other Solax integrations.
 
         Returns candidate prefixes sorted alphabetically.
         """
-        mode_suffix = f"_{_WRITE_ENTITIES['charger_use_mode']}"    # "_charger_use_mode"
-        batt_suffix = f"_{_READ_ENTITIES['battery_level']}"         # "_battery_capacity"
+        batt_suffix = f"_{_READ_ENTITIES['battery_level']}"  # "_battery_capacity"
+        mode_suffixes = [f"_{v}" for v in SolaxBatteryController._MODE_SUFFIX_VARIANTS]
 
         mode_prefixes = set()
         for state in hass.states.async_all("select"):
             eid = state.entity_id
-            if eid.endswith(mode_suffix):
-                prefix = eid[len("select."):-len(mode_suffix)]
-                if prefix:
-                    mode_prefixes.add(prefix)
+            for mode_suffix in mode_suffixes:
+                if eid.endswith(mode_suffix):
+                    prefix = eid[len("select."):-len(mode_suffix)]
+                    if prefix:
+                        mode_prefixes.add(prefix)
+                    break
 
         prefixes = []
         for prefix in mode_prefixes:
@@ -127,14 +138,23 @@ class SolaxBatteryController:
     async def connect(self) -> bool:
         """Validate that all required wills106 entities exist in HA state machine.
 
+        Auto-detects the charger_use_mode entity suffix variant used by this
+        firmware version (some use 'inverter_charger_use_mode').
+
         Raises ValueError with a list of missing entity IDs on failure so the
         config-flow step can surface a clear error to the user.
         """
+        # Detect which charger_use_mode suffix variant this install uses.
+        for variant in self._MODE_SUFFIX_VARIANTS:
+            if self.hass.states.get(self._select(variant)) is not None:
+                self._mode_suffix = variant
+                break
+
         required = [
             self._sensor(_READ_ENTITIES["battery_level"]),
             self._sensor(_READ_ENTITIES["battery_power_raw"]),
             self._sensor(_READ_ENTITIES["grid_power"]),
-            self._select(_WRITE_ENTITIES["charger_use_mode"]),
+            self._mode_select(),
             self._select(_WRITE_ENTITIES["manual_mode"]),
             self._number(_WRITE_ENTITIES["charge_current"]),
             self._number(_WRITE_ENTITIES["discharge_current"]),
@@ -143,7 +163,7 @@ class SolaxBatteryController:
         missing = [eid for eid in required if self.hass.states.get(eid) is None]
         if missing:
             raise ValueError(f"solax_missing_entities:{','.join(missing)}")
-        _LOGGER.info("Solax entities validated (prefix=%s)", self._prefix)
+        _LOGGER.info("Solax entities validated (prefix=%s, mode_suffix=%s)", self._prefix, self._mode_suffix)
         return True
 
     # ── Status ──────────────────────────────────────────────────────────────
@@ -168,7 +188,7 @@ class SolaxBatteryController:
         solar_kw = max(0.0, (pv1_w + pv2_w) / 1000.0)
         load_kw = max(0.0, load_w / 1000.0)
 
-        mode_state = self.hass.states.get(self._select(_WRITE_ENTITIES["charger_use_mode"]))
+        mode_state = self.hass.states.get(self._mode_select())
         mode = mode_state.state if mode_state else None
 
         return {
@@ -196,7 +216,7 @@ class SolaxBatteryController:
         )
 
         await self._set_number(_WRITE_ENTITIES["charge_current"], amps)
-        await self._set_select(_WRITE_ENTITIES["charger_use_mode"], _MODE_MANUAL)
+        await self._set_select(self._mode_suffix, _MODE_MANUAL)
         await self._set_select(_WRITE_ENTITIES["manual_mode"], _MANUAL_CHARGE)
 
         self._cancel_timer()
@@ -218,7 +238,7 @@ class SolaxBatteryController:
         )
 
         await self._set_number(_WRITE_ENTITIES["discharge_current"], amps)
-        await self._set_select(_WRITE_ENTITIES["charger_use_mode"], _MODE_MANUAL)
+        await self._set_select(self._mode_suffix, _MODE_MANUAL)
         await self._set_select(_WRITE_ENTITIES["manual_mode"], _MANUAL_DISCHARGE)
 
         self._cancel_timer()
@@ -231,7 +251,7 @@ class SolaxBatteryController:
         """Restore to Self Use / stop manual mode."""
         self._cancel_timer()
         await self._set_select(_WRITE_ENTITIES["manual_mode"], _MANUAL_STOP)
-        await self._set_select(_WRITE_ENTITIES["charger_use_mode"], _MODE_SELF_USE)
+        await self._set_select(self._mode_suffix, _MODE_SELF_USE)
         _LOGGER.info("Solax restored to Self Use mode")
         return True
 
@@ -250,7 +270,7 @@ class SolaxBatteryController:
         if not option:
             _LOGGER.warning("Solax: unknown operation mode '%s'", mode)
             return False
-        await self._set_select(_WRITE_ENTITIES["charger_use_mode"], option)
+        await self._set_select(self._mode_suffix, option)
         _LOGGER.info("Solax operation mode set to '%s' (%s)", option, mode)
         return True
 
