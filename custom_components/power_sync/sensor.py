@@ -880,7 +880,7 @@ async def async_setup_entry(
             CONF_ELECTRICITY_PROVIDER,
             entry.data.get(CONF_ELECTRICITY_PROVIDER, ""),
         )
-        tou_providers = ("globird", "aemo_vpp", "other", "tou_only", "octopus", "flow_power")
+        tou_providers = ("globird", "aemo_vpp", "other", "tou_only", "octopus")
         tariff_schedule = domain_data.get("tariff_schedule")
         if tariff_schedule or electricity_provider in tou_providers:
             _LOGGER.info(
@@ -1189,6 +1189,23 @@ async def async_setup_entry(
         # Get the price coordinator (Amber or AEMO)
         price_coordinator = amber_coordinator or domain_data.get("aemo_sensor_coordinator")
         if price_coordinator:
+            # Publish Flow Power-adjusted rates under the standard current_* sensor
+            # ids so the mobile app and default dashboard read the retail price
+            # instead of the generic tariff-schedule value.
+            entities.append(
+                FlowPowerPriceSensor(
+                    coordinator=price_coordinator,
+                    entry=entry,
+                    sensor_type=SENSOR_TYPE_CURRENT_IMPORT_PRICE,
+                )
+            )
+            entities.append(
+                FlowPowerPriceSensor(
+                    coordinator=price_coordinator,
+                    entry=entry,
+                    sensor_type=SENSOR_TYPE_CURRENT_EXPORT_PRICE,
+                )
+            )
             # Add import price sensor
             entities.append(
                 FlowPowerPriceSensor(
@@ -2518,9 +2535,23 @@ class FlowPowerPriceSensor(CoordinatorEntity, SensorEntity):
         self._attr_suggested_object_id = f"power_sync_{sensor_type}"
 
         # Configure based on sensor type
+        if sensor_type in (
+            SENSOR_TYPE_FLOW_POWER_PRICE,
+            SENSOR_TYPE_CURRENT_IMPORT_PRICE,
+        ):
+            self._is_import_sensor = True
+        else:
+            self._is_import_sensor = False
+
         if sensor_type == SENSOR_TYPE_FLOW_POWER_PRICE:
             self._attr_name = "Flow Power Import Price"
             self._attr_icon = "mdi:lightning-bolt"
+        elif sensor_type == SENSOR_TYPE_CURRENT_IMPORT_PRICE:
+            self._attr_name = "Current Import Price"
+            self._attr_icon = "mdi:currency-usd"
+        elif sensor_type == SENSOR_TYPE_CURRENT_EXPORT_PRICE:
+            self._attr_name = "Current Export Price"
+            self._attr_icon = "mdi:transmission-tower-export"
         else:
             self._attr_name = "Flow Power Export Price"
             self._attr_icon = "mdi:solar-power"
@@ -2686,7 +2717,7 @@ class FlowPowerPriceSensor(CoordinatorEntity, SensorEntity):
     @property
     def native_value(self) -> float | None:
         """Return the current price in $/kWh."""
-        if self._sensor_type == SENSOR_TYPE_FLOW_POWER_PRICE:
+        if self._is_import_sensor:
             return self._calculate_import_price()
         else:
             return self._calculate_export_price()
@@ -2706,7 +2737,7 @@ class FlowPowerPriceSensor(CoordinatorEntity, SensorEntity):
             "base_rate_cents": base_rate,
         }
 
-        if self._sensor_type == SENSOR_TYPE_FLOW_POWER_PRICE:
+        if self._is_import_sensor:
             # Import price attributes
             tracker = self._get_twap_tracker()
             twap = self._get_effective_twap()

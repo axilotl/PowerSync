@@ -37,7 +37,8 @@ _READ_ENTITIES = {
 
 _WRITE_ENTITIES = {
     "charger_use_mode":      "charger_use_mode",       # select
-    "manual_mode":           "manual_mode",            # select
+    "manual_mode_select":    "manual_mode_select",     # select
+    "manual_mode_control":   "manual_mode_control",    # select on some models
     "charge_current":        "battery_charge_max_current",     # number, A
     "discharge_current":     "battery_discharge_max_current",  # number, A
     "backup_reserve":        "battery_minimum_capacity",       # number, %
@@ -51,9 +52,11 @@ _MODE_BACKUP    = "Back Up Mode"
 _MODE_MANUAL    = "Manual Mode"
 _MODE_SMART     = "Smart Schedule"
 
-_MANUAL_STOP      = "Stop"
+_MANUAL_STOP      = "Stop Charge and Discharge"
 _MANUAL_CHARGE    = "Force Charge"
 _MANUAL_DISCHARGE = "Force Discharge"
+_MANUAL_CONTROL_ON = "On"
+_MANUAL_CONTROL_OFF = "Off"
 
 # PowerSync operation-mode → Solax charger_use_mode option
 _OP_MODE_MAP = {
@@ -101,6 +104,10 @@ class SolaxBatteryController:
     def _mode_select(self) -> str:
         """Entity ID for the charger_use_mode select (variant-aware)."""
         return self._select(self._mode_suffix)
+
+    def _manual_mode_control_entity(self) -> str:
+        """Entity ID for the optional manual_mode_control select."""
+        return self._select(_WRITE_ENTITIES["manual_mode_control"])
 
     # ── Prefix discovery ────────────────────────────────────────────────────
 
@@ -155,7 +162,7 @@ class SolaxBatteryController:
             self._sensor(_READ_ENTITIES["battery_power_raw"]),
             self._sensor(_READ_ENTITIES["grid_power"]),
             self._mode_select(),
-            self._select(_WRITE_ENTITIES["manual_mode"]),
+            self._select(_WRITE_ENTITIES["manual_mode_select"]),
             self._number(_WRITE_ENTITIES["charge_current"]),
             self._number(_WRITE_ENTITIES["discharge_current"]),
             self._number(_WRITE_ENTITIES["backup_reserve"]),
@@ -217,7 +224,8 @@ class SolaxBatteryController:
 
         await self._set_number(_WRITE_ENTITIES["charge_current"], amps)
         await self._set_select(self._mode_suffix, _MODE_MANUAL)
-        await self._set_select(_WRITE_ENTITIES["manual_mode"], _MANUAL_CHARGE)
+        await self._set_select(_WRITE_ENTITIES["manual_mode_select"], _MANUAL_CHARGE)
+        await self._set_manual_mode_control(_MANUAL_CONTROL_ON)
 
         self._cancel_timer()
         self._timer_cancel = async_call_later(
@@ -239,7 +247,8 @@ class SolaxBatteryController:
 
         await self._set_number(_WRITE_ENTITIES["discharge_current"], amps)
         await self._set_select(self._mode_suffix, _MODE_MANUAL)
-        await self._set_select(_WRITE_ENTITIES["manual_mode"], _MANUAL_DISCHARGE)
+        await self._set_select(_WRITE_ENTITIES["manual_mode_select"], _MANUAL_DISCHARGE)
+        await self._set_manual_mode_control(_MANUAL_CONTROL_ON)
 
         self._cancel_timer()
         self._timer_cancel = async_call_later(
@@ -250,7 +259,8 @@ class SolaxBatteryController:
     async def restore_normal(self) -> bool:
         """Restore to Self Use / stop manual mode."""
         self._cancel_timer()
-        await self._set_select(_WRITE_ENTITIES["manual_mode"], _MANUAL_STOP)
+        await self._set_select(_WRITE_ENTITIES["manual_mode_select"], _MANUAL_STOP)
+        await self._set_manual_mode_control(_MANUAL_CONTROL_OFF)
         await self._set_select(self._mode_suffix, _MODE_SELF_USE)
         _LOGGER.info("Solax restored to Self Use mode")
         return True
@@ -331,6 +341,13 @@ class SolaxBatteryController:
                 "Solax: could not set %s to '%s': %s — check wills106 entity labels",
                 entity_id, option, exc,
             )
+
+    async def _set_manual_mode_control(self, option: str) -> None:
+        """Toggle manual mode where wills106 exposes a dedicated control select."""
+        entity_id = self._manual_mode_control_entity()
+        if self.hass.states.get(entity_id) is None:
+            return
+        await self._set_select(_WRITE_ENTITIES["manual_mode_control"], option)
 
     def _cancel_timer(self) -> None:
         if self._timer_cancel:
