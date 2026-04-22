@@ -3914,11 +3914,14 @@ class BatteryHealthView(HomeAssistantView):
             # BMS_nominalFullPackEnergy is in kWh; convert to Wh for the app.
             pack_full_wh = (sigs.get("BMS_nominalFullPackEnergy") or 0) * 1000
             pack_rem_wh = (sigs.get("BMS_nominalEnergyRemaining") or 0) * 1000
+            # Follower PW3 base modules report the BMS signal key but with None values.
+            is_follower = pack_full_wh == 0 and sigs.get("BMS_nominalFullPackEnergy") is None
             individual.append({
                 "nominalFullPackEnergyWh": pack_full_wh,
                 "nominalEnergyRemainingWh": pack_rem_wh,
                 "serialNumber": pack.get("serialNumber") or None,
-                "isExpansion": len(individual) > 0,
+                "isExpansion": len(individual) > 0 and not is_follower,
+                "isFollower": is_follower,
             })
 
         # Module count: BMS signal presence is the most accurate count (includes follower packs
