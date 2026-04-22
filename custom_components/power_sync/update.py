@@ -148,7 +148,7 @@ class PowerSyncUpdateEntity(CoordinatorEntity, UpdateEntity):
             return self.coordinator.data.get("release_url")
         return None
 
-    def release_notes(self) -> str | None:
+    async def async_release_notes(self) -> str | None:
         """Return the release notes."""
         if self.coordinator.data:
             return self.coordinator.data.get("release_notes")
