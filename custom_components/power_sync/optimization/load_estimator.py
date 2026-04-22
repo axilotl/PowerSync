@@ -676,16 +676,43 @@ class LoadEstimator:
         """Fetch hourly forecast temperature via weather.get_forecasts service."""
         if not self.weather_entity_id or self._get_forecasts_unsupported:
             return []
+
+        # Determine which forecast types the entity supports before calling the service.
+        # WeatherEntityFeature: FORECAST_DAILY=1, FORECAST_HOURLY=2
+        state = self.hass.states.get(self.weather_entity_id)
+        supported = int((state.attributes.get("supported_features") or 0) if state else 0)
+        FORECAST_HOURLY = 2
+        FORECAST_DAILY = 1
+        if supported and not (supported & (FORECAST_HOURLY | FORECAST_DAILY)):
+            _LOGGER.debug(
+                "%s reports no forecast support (supported_features=%d) — temperature forecast disabled",
+                self.weather_entity_id, supported,
+            )
+            self._get_forecasts_unsupported = True
+            return []
+
+        forecast_type = "hourly" if (not supported or supported & FORECAST_HOURLY) else "daily"
+
         try:
             resp = await self.hass.services.async_call(
                 "weather",
                 "get_forecasts",
-                {"entity_id": self.weather_entity_id, "type": "hourly"},
+                {"entity_id": self.weather_entity_id, "type": forecast_type},
                 blocking=True,
                 return_response=True,
             )
             if not resp or self.weather_entity_id not in resp:
-                return []
+                # Try daily as fallback if hourly was attempted and returned nothing.
+                if forecast_type == "hourly" and supported & FORECAST_DAILY:
+                    resp = await self.hass.services.async_call(
+                        "weather",
+                        "get_forecasts",
+                        {"entity_id": self.weather_entity_id, "type": "daily"},
+                        blocking=True,
+                        return_response=True,
+                    )
+                if not resp or self.weather_entity_id not in resp:
+                    return []
             forecasts = resp[self.weather_entity_id].get("forecast", [])
             cutoff = dt_util.utcnow() + timedelta(hours=horizon_hours)
             result = []
@@ -706,7 +733,7 @@ class LoadEstimator:
                     continue
             return result
         except Exception as e:
-            _LOGGER.warning(
+            _LOGGER.debug(
                 "weather.get_forecasts unsupported for %s — temperature forecast disabled: %s",
                 self.weather_entity_id, e,
             )
