@@ -3350,6 +3350,8 @@ class BatteryModeSensor(SensorEntity):
         self._attr_icon = "mdi:battery-sync"
         self._unsub_force_charge = None
         self._unsub_force_discharge = None
+        self._unsub_hold_soc = None
+        self._unsub_self_consumption = None
 
     @property
     def device_info(self):
@@ -3381,6 +3383,16 @@ class BatteryModeSensor(SensorEntity):
             f"{DOMAIN}_force_discharge_state",
             _handle_mode_update,
         )
+        self._unsub_hold_soc = async_dispatcher_connect(
+            self.hass,
+            f"{DOMAIN}_hold_soc_state",
+            _handle_mode_update,
+        )
+        self._unsub_self_consumption = async_dispatcher_connect(
+            self.hass,
+            f"{DOMAIN}_self_consumption_state",
+            _handle_mode_update,
+        )
 
     async def async_will_remove_from_hass(self) -> None:
         """Run when entity is removed from hass."""
@@ -3388,6 +3400,10 @@ class BatteryModeSensor(SensorEntity):
             self._unsub_force_charge()
         if self._unsub_force_discharge:
             self._unsub_force_discharge()
+        if self._unsub_hold_soc:
+            self._unsub_hold_soc()
+        if self._unsub_self_consumption:
+            self._unsub_self_consumption()
 
     def _get_current_mode(self) -> str:
         """Determine current battery mode from hass.data state."""
