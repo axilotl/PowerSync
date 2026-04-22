@@ -240,6 +240,7 @@ class TeslaSignalingClient:
         # Cached hermes JWT
         self._hermes_jwt: str | None = None
         self._hermes_jwt_obtained_at: float = 0
+        self._hermes_jwt_is_fallback = False  # True when using raw token, not a real JWT
         self._working_jwt_url: str | None = None
         self._auth_denied = False
 
@@ -394,6 +395,7 @@ class TeslaSignalingClient:
 
                         self._hermes_jwt = jwt
                         self._hermes_jwt_obtained_at = time.monotonic()
+                        self._hermes_jwt_is_fallback = False
                         self._working_jwt_url = url
                         _LOGGER.info(
                             "signaling: hermes JWT obtained from %s", url
@@ -418,6 +420,7 @@ class TeslaSignalingClient:
         )
         self._hermes_jwt = access_token
         self._hermes_jwt_obtained_at = time.monotonic()
+        self._hermes_jwt_is_fallback = True
         return access_token
 
     # ------------------------------------------------------------------
@@ -587,16 +590,29 @@ class TeslaSignalingClient:
             except Exception:
                 payload_text = payload_bytes.hex()[:40]
 
-        # Detect authorization denied — stop reconnecting uselessly
+        # Detect authorization denied from the Hermes server.
+        # If we fell back to a raw token (JWT exchange failed), the denial is
+        # expected — clear the cached token so the next reconnect tries the
+        # exchange again. Only treat as permanent when a real JWT was rejected.
         if "authorization denied" in payload_text.lower():
-            self._auth_denied = True
-            _LOGGER.error(
-                "signaling: HermesServer returned 'authorization denied' — "
-                "the access token is not valid for hermes signaling. "
-                "An owner-api token (client_id='ownerapi') may be required. "
-                "Signaling will stop retrying."
-            )
-            self._stop_event.set()
+            if self._hermes_jwt_is_fallback:
+                _LOGGER.warning(
+                    "signaling: HermesServer rejected raw token fallback — "
+                    "the JWT exchange endpoints were unavailable. "
+                    "Clearing cached token and will retry."
+                )
+                self._hermes_jwt = None
+                self._hermes_jwt_obtained_at = 0
+                self._hermes_jwt_is_fallback = False
+            else:
+                self._auth_denied = True
+                _LOGGER.error(
+                    "signaling: HermesServer returned 'authorization denied' — "
+                    "the access token is not valid for hermes signaling. "
+                    "An owner-api token (client_id='ownerapi') may be required. "
+                    "Signaling will stop retrying."
+                )
+                self._stop_event.set()
             return
 
         cmd_name = "unknown"
