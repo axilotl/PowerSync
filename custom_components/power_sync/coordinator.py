@@ -4525,6 +4525,7 @@ class SolaxBatteryEnergyCoordinator(DataUpdateCoordinator):
     def __init__(
         self,
         hass: HomeAssistant,
+        solax_entry_id: str | None = None,
         entity_prefix: str = "solax",
         battery_nominal_v: float = 51.2,
         max_charge_current_a: float = 25.0,
@@ -4536,6 +4537,7 @@ class SolaxBatteryEnergyCoordinator(DataUpdateCoordinator):
         self._entry_id = entry_id
         self._controller = SolaxBatteryController(
             hass,
+            solax_entry_id=solax_entry_id,
             entity_prefix=entity_prefix,
             battery_nominal_v=battery_nominal_v,
             max_charge_current_a=max_charge_current_a,

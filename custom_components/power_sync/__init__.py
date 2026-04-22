@@ -202,6 +202,7 @@ from .const import (
     BATTERY_SYSTEM_ESY_SUNHOME,
     CONF_ESY_CONFIG_ENTRY_ID,
     BATTERY_SYSTEM_SOLAX,
+    CONF_SOLAX_CONFIG_ENTRY_ID,
     BATTERY_SYSTEM_SAJ_H2,
     CONF_SOLAX_ENTITY_PREFIX,
     CONF_SOLAX_BATTERY_NOMINAL_V,
@@ -12997,7 +12998,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     is_goodwe = bool(entry.data.get(CONF_GOODWE_HOST))
     is_alphaess = bool(entry.data.get(CONF_ALPHAESS_MODBUS_HOST))
     is_esy_sunhome = bool(entry.data.get(CONF_ESY_CONFIG_ENTRY_ID))
-    is_solax = bool(entry.data.get(CONF_SOLAX_ENTITY_PREFIX))
+    is_solax = bool(
+        entry.data.get(CONF_SOLAX_CONFIG_ENTRY_ID)
+        or entry.data.get(CONF_SOLAX_ENTITY_PREFIX)
+    )
     is_saj_h2 = bool(entry.data.get(CONF_SAJ_CONFIG_ENTRY_ID))
     tesla_coordinator = None
     sigenergy_coordinator = None
@@ -13200,14 +13204,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
     elif is_solax:
         _LOGGER.info("Running in Solax mode — bridging via homeassistant-solax-modbus integration")
+        solax_config_entry_id = entry.options.get(
+            CONF_SOLAX_CONFIG_ENTRY_ID,
+            entry.data.get(CONF_SOLAX_CONFIG_ENTRY_ID, ""),
+        )
         solax_prefix = entry.options.get(CONF_SOLAX_ENTITY_PREFIX, entry.data.get(CONF_SOLAX_ENTITY_PREFIX, DEFAULT_SOLAX_ENTITY_PREFIX))
         solax_nominal_v = entry.options.get(CONF_SOLAX_BATTERY_NOMINAL_V, entry.data.get(CONF_SOLAX_BATTERY_NOMINAL_V, DEFAULT_SOLAX_BATTERY_NOMINAL_V))
         solax_max_charge_a = entry.options.get(CONF_SOLAX_MAX_CHARGE_CURRENT_A, entry.data.get(CONF_SOLAX_MAX_CHARGE_CURRENT_A, DEFAULT_SOLAX_MAX_CHARGE_CURRENT_A))
         solax_max_discharge_a = entry.options.get(CONF_SOLAX_MAX_DISCHARGE_CURRENT_A, entry.data.get(CONF_SOLAX_MAX_DISCHARGE_CURRENT_A, DEFAULT_SOLAX_MAX_DISCHARGE_CURRENT_A))
-        _LOGGER.info("Initializing Solax coordinator: prefix=%s", solax_prefix)
+        _LOGGER.info(
+            "Initializing Solax coordinator: %s",
+            f"config_entry={solax_config_entry_id}" if solax_config_entry_id else f"prefix={solax_prefix}",
+        )
         solax_coordinator = SolaxBatteryEnergyCoordinator(
             hass,
-            entity_prefix=solax_prefix,
+            solax_entry_id=solax_config_entry_id or None,
+            entity_prefix="" if solax_config_entry_id else solax_prefix,
             battery_nominal_v=float(solax_nominal_v),
             max_charge_current_a=float(solax_max_charge_a),
             max_discharge_current_a=float(solax_max_discharge_a),
@@ -18176,7 +18188,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 return
 
         # Check if this is a Solax system
-        is_solax_local = bool(entry.data.get(CONF_SOLAX_ENTITY_PREFIX))
+        is_solax_local = bool(
+            entry.data.get(CONF_SOLAX_CONFIG_ENTRY_ID)
+            or entry.data.get(CONF_SOLAX_ENTITY_PREFIX)
+        )
         if is_solax_local:
             try:
                 entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
@@ -19203,7 +19218,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 return
 
         # Check if this is a Solax system
-        is_solax_local = bool(entry.data.get(CONF_SOLAX_ENTITY_PREFIX))
+        is_solax_local = bool(
+            entry.data.get(CONF_SOLAX_CONFIG_ENTRY_ID)
+            or entry.data.get(CONF_SOLAX_ENTITY_PREFIX)
+        )
         if is_solax_local:
             try:
                 entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
@@ -20067,7 +20085,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 return
 
         # Check if this is a Solax system
-        is_solax_local = bool(entry.data.get(CONF_SOLAX_ENTITY_PREFIX))
+        is_solax_local = bool(
+            entry.data.get(CONF_SOLAX_CONFIG_ENTRY_ID)
+            or entry.data.get(CONF_SOLAX_ENTITY_PREFIX)
+        )
         if is_solax_local:
             try:
                 entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})

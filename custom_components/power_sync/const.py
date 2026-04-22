@@ -387,6 +387,7 @@ CONF_ESY_CONFIG_ENTRY_ID = "esy_config_entry_id"  # UUID of the upstream esy_sun
 # Solax Hybrid battery system — bridges via wills106/homeassistant-solax-modbus integration
 # Install solax_modbus from HACS first; PowerSync reads/writes its entities.
 # Supports Gen4/Gen5/Gen6 Hybrid and AC Retro-Fit (X1/X3 families).
+CONF_SOLAX_CONFIG_ENTRY_ID = "solax_config_entry_id"
 CONF_SOLAX_ENTITY_PREFIX = "solax_entity_prefix"          # e.g. "solax" → sensor.solax_battery_capacity
 CONF_SOLAX_BATTERY_CAPACITY_KWH = "solax_battery_capacity_kwh"   # kWh, for LP optimizer
 CONF_SOLAX_BATTERY_NOMINAL_V = "solax_battery_nominal_v"         # V, for current→power conversion

@@ -719,14 +719,14 @@
         "title": "Solax Hybrid connection",
         "description": "PowerSync bridges through the homeassistant-solax-modbus integration. Install it from HACS (search 'Solax Modbus') and configure your inverter, then return here.",
         "data": {
-          "solax_entity_prefix": "Entity prefix",
+          "solax_config_entry_id": "Solax integration",
           "solax_battery_capacity_kwh": "Battery capacity",
           "solax_battery_nominal_v": "Battery nominal voltage",
           "solax_max_charge_current_a": "Max charge current",
           "solax_max_discharge_current_a": "Max discharge current"
         },
         "data_description": {
-          "solax_entity_prefix": "The prefix used by the solax_modbus integration for its entities. To find it: open Developer Tools > States and search for 'charger_use_mode' — the part before '_charger_use_mode' (or '_inverter_charger_use_mode' on some firmware versions) is your prefix. This may differ from 'solax' if you have another Solax integration installed.",
+          "solax_config_entry_id": "The solax_modbus integration entry to read sensors and send charge/discharge commands through.",
           "solax_battery_capacity_kwh": "Usable battery capacity in kWh. Used by the LP optimizer.",
           "solax_battery_nominal_v": "Nominal battery voltage in V (51.2 for LFP T-BAT, 102.4 for high-voltage packs).",
           "solax_max_charge_current_a": "Maximum charge current your battery supports (A).",
@@ -770,8 +770,8 @@
       "invalid_tariff": "This tariff code is not recognised for the selected network distributor. Check the code on your electricity bill.",
       "invalid_token_format": "Token format is not recognised. PowerSync tokens start with 'psync_' -- make sure you copied the full string.",
       "unknown": "An unexpected error occurred. Check the Home Assistant logs for details and try again.",
-      "solax_missing_entities": "Could not find the required solax_modbus entities. The first missing entity was: {first_missing}. Open Developer Tools > States and search for 'charger_use_mode' — the part before '_charger_use_mode' (or '_inverter_charger_use_mode' on some firmware versions) is your prefix. If you have multiple Solax integrations installed, the wills106 prefix may differ from 'solax'.",
-      "solax_connect_failed": "Failed to validate Solax entities. Check the entity prefix and try again.",
+      "solax_missing_entities": "Could not find the required solax_modbus entities in the selected integration entry. The first missing entity was: {first_missing}. Make sure you selected the correct Solax Modbus integration and that its entities have been created in Home Assistant.",
+      "solax_connect_failed": "Failed to validate Solax entities. Check the selected integration entry and try again.",
       "saj_missing_entities": "Could not find the required SAJ H2 entities in the selected saj_h2_modbus integration entry. Make sure the integration is installed, the inverter is online, and its entities have been created in Home Assistant.",
       "saj_connect_failed": "Failed to validate SAJ H2 entities. Check the selected integration entry and try again."
     },
@@ -783,7 +783,8 @@
       "reauth_failed": "Re-authentication failed. Remove the integration and set it up again.",
       "reauth_fleet_api_use_tesla_fleet": "PowerSync reads tokens from your Tesla Fleet integration. Go to Settings > Devices & Services > Tesla Fleet and re-authenticate there. PowerSync will pick up the new tokens automatically.",
       "esy_sunhome_not_installed": "The ESY Sunhome integration is not installed. Install it via HACS (search 'ESY Sunhome') and add a device before continuing.",
-      "saj_h2_not_installed": "The SAJ H2 Modbus integration is not installed. Install it via HACS (search 'SAJ H2 Inverter Modbus') and add your inverter before continuing."
+      "saj_h2_not_installed": "The SAJ H2 Modbus integration is not installed. Install it via HACS (search 'SAJ H2 Inverter Modbus') and add your inverter before continuing.",
+      "solax_not_installed": "The Solax Modbus integration is not installed. Install it via HACS (search 'Solax Modbus') and add your inverter before continuing."
     }
   },
   "options": {
@@ -1613,16 +1614,16 @@
       },
       "solax_battery_options": {
         "title": "Solax connection settings",
-        "description": "Update the Solax Modbus integration entity prefix and battery parameters.",
+        "description": "Update the Solax Modbus integration selection and battery parameters.",
         "data": {
-          "solax_entity_prefix": "Entity prefix",
+          "solax_config_entry_id": "Solax integration",
           "solax_battery_capacity_kwh": "Battery capacity",
           "solax_battery_nominal_v": "Battery nominal voltage",
           "solax_max_charge_current_a": "Max charge current",
           "solax_max_discharge_current_a": "Max discharge current"
         },
         "data_description": {
-          "solax_entity_prefix": "The entity prefix used by the solax_modbus integration.",
+          "solax_config_entry_id": "The solax_modbus integration entry PowerSync should bridge through.",
           "solax_battery_capacity_kwh": "Usable battery capacity in kWh.",
           "solax_battery_nominal_v": "Nominal battery voltage in V (51.2 for LFP, 102.4 for HV packs).",
           "solax_max_charge_current_a": "Maximum charge current (A).",
