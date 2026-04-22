@@ -253,6 +253,10 @@ class PowerwallPairStartView(HomeAssistantView):
         except Exception:
             payload = {}
 
+        # Pairing is entirely cloud-based (Fleet API key registration + physical
+        # toggle verification). No gateway IP is needed for the handshake itself.
+        # If the app provides one, store it for legacy local REST use; otherwise
+        # preserve any IP already in the config entry.
         gateway_ip = payload.get("gateway_ip") or payload.get("ip")
         customer_password = (
             payload.get("customer_password")
@@ -263,37 +267,22 @@ class PowerwallPairStartView(HomeAssistantView):
         wifi_ssid = payload.get("wifi_ssid") or payload.get("wifi_name")
         wifi_password = payload.get("wifi_password")
 
-        if not gateway_ip:
-            return web.json_response(
-                {"success": False, "error": "gateway_ip is required"}, status=400
-            )
-
         try:
             version = PowerwallVersion(version_str)
         except ValueError:
             version = PowerwallVersion.PW3
 
-        # Auto-derive customer password from the WiFi password if the user
-        # didn't provide one explicitly. The Powerwall REST login at
-        # /api/login/Basic accepts the last 5 characters of the gateway WiFi
-        # AP password (what pypowerwall calls gw_pwd) as the "customer
-        # password". The mobile app already collects this WiFi password for
-        # battery health scanning, so for most users the derivation is free
-        # — they never have to look up a separate password.
-        if not customer_password and wifi_password and len(wifi_password) >= 5:
-            customer_password = wifi_password[-5:]
-            _LOGGER.info(
-                "Derived customer password from WiFi password (last 5 chars)"
-            )
-
         # Mirror app-supplied creds into the entry so HA holds authoritative
-        # config independent of the phone that initiated pairing.
+        # config. Only overwrite gateway IP if one was explicitly provided —
+        # don't clear an IP the user set via Gateway Connection.
         new_data = {
             **entry.data,
-            CONF_POWERWALL_LOCAL_IP: gateway_ip,
             CONF_POWERWALL_LOCAL_VERSION: version.value,
-            CONF_POWERWALL_LOCAL_CUSTOMER_PASSWORD: customer_password,
         }
+        if gateway_ip:
+            new_data[CONF_POWERWALL_LOCAL_IP] = gateway_ip
+        if customer_password:
+            new_data[CONF_POWERWALL_LOCAL_CUSTOMER_PASSWORD] = customer_password
         if wifi_ssid:
             new_data[CONF_POWERWALL_LOCAL_WIFI_SSID] = wifi_ssid
         if wifi_password:

@@ -3913,6 +3913,7 @@ class BatteryHealthView(HomeAssistantView):
         if original_wh: bms["rated_capacity_kwh"] = round(original_wh / 1000, 2)
         if current_wh: bms["current_capacity_kwh"] = round(current_wh / 1000, 2)
 
+        from datetime import datetime as _dt
         response: dict = {
             "success": True,
             "available": True,
@@ -3924,7 +3925,7 @@ class BatteryHealthView(HomeAssistantView):
             "original_capacity_kwh": round(original_wh / 1000, 2),
             "current_capacity_kwh": round(current_wh / 1000, 2),
             "battery_count": batt_count,
-            "last_scan": None,
+            "last_scan": _dt.now().isoformat(),
             "site": {"gateway_din": din, "energy_site_id": fleet_site_id},
         }
         if bms:
@@ -3957,98 +3958,54 @@ class BatteryHealthView(HomeAssistantView):
             )
 
         try:
-            # Get stored battery health data
+            import time as _t
+
             domain_data = self._hass.data.get(DOMAIN, {})
             entry_data = domain_data.get(entry.entry_id, {})
-            battery_health = entry_data.get("battery_health")
+            battery_system = entry.data.get(CONF_BATTERY_SYSTEM, "tesla")
 
-            if not battery_health:
-                # Try loading from persistent storage
-                store = entry_data.get("store")
-                if store:
-                    stored_data = await store.async_load() or {}
-                    battery_health = stored_data.get("battery_health")
-
-            if not battery_health:
-                import time as _t
-
-                battery_system = entry.data.get(CONF_BATTERY_SYSTEM, "tesla")
-
-                # Tesla Fleet API tier: paired site with RSA key → signed DeviceControllerQuery
-                if battery_system == "tesla":
-                    refresh = request.query.get("refresh") == "1"
-                    entry_data = self._hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
-                    cache = entry_data.get("battery_health_cloud")
-                    now = _t.monotonic()
-                    if not refresh and cache and cache.get("expires_at", 0) > now:
-                        return web.json_response(cache["value"])
-                    fleet_result = await self._try_fleet_api_bms_fetch(entry)
-                    if fleet_result:
-                        entry_data["battery_health_cloud"] = {
-                            "value": fleet_result,
-                            "expires_at": now + 3600,
-                        }
-                        return web.json_response(fleet_result)
-                    # No RSA key or Fleet API unavailable — fall through to "not available" message
-                    return web.json_response({
-                        "success": True,
-                        "available": False,
-                        "brand": "tesla",
-                        "message": (
-                            "Powerwall not paired. Complete pairing in Local Control "
-                            "to enable Battery Health."
-                        ),
-                    })
-
-                # Non-Tesla: return live BMS telemetry from modbus coordinator
-                bms_result = self._get_coordinator_bms(entry)
-                if bms_result:
-                    brand, bms = bms_result
-                    return web.json_response({
-                        "success": True,
-                        "available": True,
-                        "brand": brand,
-                        "source": "inverter_modbus",
-                        "bms": bms,
-                    })
-
+            # Tesla: always go via Fleet API (with 1-hour cache). Never use stale
+            # WiFi-scan data from storage — the Fleet API path supersedes it.
+            if battery_system == "tesla":
+                refresh = request.query.get("refresh") == "1"
+                cache = entry_data.get("battery_health_cloud")
+                now = _t.monotonic()
+                if not refresh and cache and cache.get("expires_at", 0) > now:
+                    return web.json_response(cache["value"])
+                fleet_result = await self._try_fleet_api_bms_fetch(entry)
+                if fleet_result:
+                    entry_data["battery_health_cloud"] = {
+                        "value": fleet_result,
+                        "expires_at": now + 3600,
+                    }
+                    return web.json_response(fleet_result)
                 return web.json_response({
                     "success": True,
                     "available": False,
-                    "message": "No battery health data available.",
+                    "brand": "tesla",
+                    "message": (
+                        "Powerwall not paired. Complete pairing in Local Control "
+                        "to enable Battery Health."
+                    ),
                 })
 
-            # Calculate health percentage
-            original = battery_health.get("original_capacity_wh", 0)
-            current = battery_health.get("current_capacity_wh", 0)
-            health_percent = round((current / original) * 100, 1) if original > 0 else 0
+            # Non-Tesla: live BMS telemetry from the modbus coordinator
+            bms_result = self._get_coordinator_bms(entry)
+            if bms_result:
+                brand, bms = bms_result
+                return web.json_response({
+                    "success": True,
+                    "available": True,
+                    "brand": brand,
+                    "source": "inverter_modbus",
+                    "bms": bms,
+                })
 
-            # Unified BMS summary block (mirrors non-Tesla shape for app consumers)
-            tesla_bms: dict = {}
-            if health_percent: tesla_bms["soh_percent"] = health_percent
-            if original > 0: tesla_bms["rated_capacity_kwh"] = round(original / 1000, 2)
-            if current > 0: tesla_bms["current_capacity_kwh"] = round(current / 1000, 2)
-
-            response = {
+            return web.json_response({
                 "success": True,
-                "available": True,
-                "brand": "tesla",
-                "health_percent": health_percent,
-                "original_capacity_wh": battery_health.get("original_capacity_wh"),
-                "current_capacity_wh": battery_health.get("current_capacity_wh"),
-                "original_capacity_kwh": round(battery_health.get("original_capacity_wh", 0) / 1000, 2),
-                "current_capacity_kwh": round(battery_health.get("current_capacity_wh", 0) / 1000, 2),
-                "degradation_percent": battery_health.get("degradation_percent"),
-                "battery_count": battery_health.get("battery_count", 1),
-                "last_scan": battery_health.get("scanned_at"),
-                "individual_batteries": battery_health.get("individual_batteries"),
-                "source": battery_health.get("source", "mobile_app_tedapi"),
-            }
-            if tesla_bms:
-                response["bms"] = tesla_bms
-            if battery_health.get("site"):
-                response["site"] = battery_health["site"]
-            return web.json_response(response)
+                "available": False,
+                "message": "No battery health data available.",
+            })
 
         except Exception as e:
             _LOGGER.error(f"Error fetching battery health: {e}", exc_info=True)
