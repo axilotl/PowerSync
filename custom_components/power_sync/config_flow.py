@@ -1524,7 +1524,9 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                                 SelectOptionDict(value=k, label=v)
                                 for k, v in BATTERY_SYSTEMS.items()
                             ],
-                            mode=SelectSelectorMode.LIST,
+                            # Keep this as a dropdown so newer battery systems
+                            # do not get pushed below the fold in the setup UI.
+                            mode=SelectSelectorMode.DROPDOWN,
                         )
                     ),
                 }
