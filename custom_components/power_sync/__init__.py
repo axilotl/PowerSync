@@ -3925,6 +3925,97 @@ class BatteryHealthView(HomeAssistantView):
                 "isFollower": is_follower,
             })
 
+        # Query follower DINs: batteryBlocks contains one entry per inverter stack. In a
+        # leader+follower PW3 system the leader's msa response has None-valued BMS signals for
+        # the follower's base module. Send a second signed query to each non-leader DIN to get
+        # the follower's real per-pack telemetry. Falls back silently if the query fails.
+        follower_dins = [
+            block.get("din") for block in battery_blocks
+            if block.get("din") and block.get("din") != din
+        ]
+        for f_din in follower_dins:
+            try:
+                f_envelope = build_device_controller_query_envelope(f_din)
+                def _sign_follower(f_d=f_din, f_env=f_envelope):
+                    return build_signed_routable_message(f_env, f_d, key_bytes, ttl_seconds=300)
+                f_signed = await self._hass.async_add_executor_job(_sign_follower)
+            except Exception as err:
+                _LOGGER.warning("fleet_api_bms: follower %s signing failed: %s", f_din, err)
+                continue
+
+            f_payload = {
+                "data": {
+                    "target_id": f_din,
+                    "routable_message": _b64.b64encode(f_signed).decode(),
+                    "command_timeout_s": 10,
+                    "identifier_type": 1,
+                }
+            }
+            try:
+                async with _aio.ClientSession() as sess:
+                    async with sess.post(
+                        url, json=f_payload, headers=headers,
+                        timeout=_aio.ClientTimeout(total=35),
+                    ) as resp:
+                        if resp.status != 200:
+                            body_text = await resp.text()
+                            _LOGGER.warning(
+                                "fleet_api_bms: follower %s HTTP %d — %s",
+                                f_din, resp.status, body_text[:400],
+                            )
+                            continue
+                        f_body = await resp.json()
+            except Exception as err:
+                _LOGGER.warning("fleet_api_bms: follower %s request error: %s", f_din, err)
+                continue
+
+            f_env_b64 = (f_body.get("response") or {}).get("message_envelope_as_bytes")
+            if not f_env_b64:
+                _LOGGER.warning(
+                    "fleet_api_bms: follower %s no envelope in response: %s",
+                    f_din, str(f_body)[:400],
+                )
+                continue
+            try:
+                f_data = parse_device_controller_response(_b64.b64decode(f_env_b64))
+            except Exception as err:
+                _LOGGER.warning("fleet_api_bms: follower %s decode error: %s", f_din, err)
+                continue
+            if f_data is None:
+                continue
+
+            f_comps = (f_data.get("components") or {}).get("msa") or []
+            _LOGGER.debug("fleet_api_bms: follower %s msa=%d entries", f_din, len(f_comps))
+            for pack in f_comps:
+                sigs = {s["name"]: s.get("value") for s in (pack.get("signals") or [])}
+                if "BMS_nominalFullPackEnergy" not in sigs:
+                    continue
+                pack_full_wh = (sigs.get("BMS_nominalFullPackEnergy") or 0) * 1000
+                pack_rem_wh = (sigs.get("BMS_nominalEnergyRemaining") or 0) * 1000
+                # Replace the first placeholder follower entry (0 Wh, isFollower) with real data.
+                # If no placeholder exists, append as a new entry (additional follower expansion).
+                replaced = False
+                for idx, existing in enumerate(individual):
+                    if existing.get("isFollower") and existing.get("nominalFullPackEnergyWh") == 0:
+                        individual[idx] = {
+                            "nominalFullPackEnergyWh": pack_full_wh,
+                            "nominalEnergyRemainingWh": pack_rem_wh,
+                            "serialNumber": pack.get("serialNumber") or None,
+                            "isExpansion": False,
+                            "isFollower": True,
+                        }
+                        replaced = True
+                        break
+                if not replaced:
+                    individual.append({
+                        "nominalFullPackEnergyWh": pack_full_wh,
+                        "nominalEnergyRemainingWh": pack_rem_wh,
+                        "serialNumber": pack.get("serialNumber") or None,
+                        "isExpansion": False,
+                        "isFollower": True,
+                    })
+                    bms_module_count += 1
+
         # Module count: BMS signal presence is the most accurate count (includes follower packs
         # that report the signal key but have None values). batteryBlocks counts inverter units
         # (one per PW3 stack), not individual battery modules — use it only as a floor.
