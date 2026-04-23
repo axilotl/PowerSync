@@ -908,8 +908,8 @@ import {
     'ev2-guide': Object.freeze({ x: 106, y: 316 })
   });
 
-  function normalizeGeneratedSceneComponentMap(sceneMap) {
-    const normalized = {};
+  function absolutizeRelativeSceneComponentMap(sceneMap) {
+    const absolute = {};
     Object.entries(sceneMap || {}).forEach(([sceneKey, profile]) => {
       if (!profile || typeof profile !== 'object') return;
       const nextProfile = {};
@@ -922,20 +922,20 @@ import {
         }
         const nextValues = { ...values };
         ['x', 'x1', 'x2'].forEach((attr) => {
-          if (typeof nextValues[attr] === 'number') nextValues[attr] -= offset.x;
+          if (typeof nextValues[attr] === 'number') nextValues[attr] += offset.x;
         });
         ['y', 'y1', 'y2'].forEach((attr) => {
-          if (typeof nextValues[attr] === 'number') nextValues[attr] -= offset.y;
+          if (typeof nextValues[attr] === 'number') nextValues[attr] += offset.y;
         });
         nextProfile[componentKey] = nextValues;
       });
-      normalized[sceneKey] = Object.freeze(nextProfile);
+      absolute[sceneKey] = Object.freeze(nextProfile);
     });
-    return Object.freeze(normalized);
+    return Object.freeze(absolute);
   }
 
-  const NORMALIZED_GENERATED_SCENE_FLOW_COMPONENT_MAP = normalizeGeneratedSceneComponentMap(
-    GENERATED_SCENE_FLOW_COMPONENT_MAP
+  const ABSOLUTE_LEGACY_SCENE_FLOW_COMPONENT_MAP = absolutizeRelativeSceneComponentMap(
+    SCENE_FLOW_COMPONENT_MAP
   );
 
   const DEFAULT_CONFIG = Object.freeze({
@@ -1476,7 +1476,10 @@ import {
     }
 
     _sceneFlowComponentMap() {
-      return deepMerge(NORMALIZED_GENERATED_SCENE_FLOW_COMPONENT_MAP, this._config.scene_component_map || {});
+      return deepMerge(
+        deepMerge(ABSOLUTE_LEGACY_SCENE_FLOW_COMPONENT_MAP, GENERATED_SCENE_FLOW_COMPONENT_MAP),
+        this._config.scene_component_map || {}
+      );
     }
 
     _resolveBackground(evCharging, hasSecondaryEv = false) {
@@ -1882,12 +1885,12 @@ import {
                 <path id="line-solar-battery" class="flow-line" d="${pathD('line-solar-battery', 'line_solar_battery')}"></path>
                 <path id="line-grid-battery" class="flow-line" d="${pathD('line-grid-battery', 'line_grid_battery')}"></path>
 
-                <g class="flow-node" transform="translate(286, 155)">
-                  <circle class="flow-node-bg" id="node-solar-bg" cx="0" cy="0" r="5"></circle>
-                  <line class="flow-node-guide" id="flow-solar-guide" x1="0" y1="-92" x2="0" y2="-12"></line>
-                  <text class="flow-label" id="flow-solar-label" x="0" y="-96">${this._t('card.node.solar', 'Solare')}</text>
-                  <text class="flow-power" id="flow-solar-power" x="0" y="-78">0.0 kW</text>
-                  <text class="flow-status" id="flow-solar-status" x="0" y="-62">${this._t('card.status.inactive', 'INATTIVO')}</text>
+                <g class="flow-node">
+                  <circle class="flow-node-bg" id="node-solar-bg" cx="286" cy="155" r="5"></circle>
+                  <line class="flow-node-guide" id="flow-solar-guide" x1="320" y1="94" x2="320" y2="166"></line>
+                  <text class="flow-label" id="flow-solar-label" x="329" y="60">${this._t('card.node.solar', 'Solare')}</text>
+                  <text class="flow-power" id="flow-solar-power" x="329" y="84">0.0 kW</text>
+                  <text class="flow-status" id="flow-solar-status" x="329" y="100">${this._t('card.status.inactive', 'INATTIVO')}</text>
                 </g>
 
                 <g id="roof-array-a-group">
@@ -1904,48 +1907,48 @@ import {
                   <text class="roof-meta roof-meta-value" id="flow-roof-b-current" x="334" y="248">0 A</text>
                 </g>
 
-                <g class="flow-node" transform="translate(448, 336)">
-                  <circle class="flow-node-bg" id="node-grid-bg" cx="0" cy="0" r="5"></circle>
-                  <line class="flow-node-guide" id="flow-grid-guide" x1="0" y1="12" x2="0" y2="42"></line>
-                  <text class="flow-label" id="flow-grid-label" x="6" y="67">${this._t('card.node.grid', 'Rete')}</text>
-                  <text class="flow-power" id="flow-grid-power" x="6" y="85">0.0 kW</text>
-                  <text class="flow-status" id="flow-grid-status" x="6" y="100">${this._t('card.status.connected', 'CONNESSA')}</text>
+                <g class="flow-node">
+                  <circle class="flow-node-bg" id="node-grid-bg" cx="448" cy="336" r="5"></circle>
+                  <line class="flow-node-guide" id="flow-grid-guide" x1="418" y1="392" x2="418" y2="350"></line>
+                  <text class="flow-label" id="flow-grid-label" x="425" y="420">${this._t('card.node.grid', 'Rete')}</text>
+                  <text class="flow-power" id="flow-grid-power" x="425" y="440">0.0 kW</text>
+                  <text class="flow-status" id="flow-grid-status" x="425" y="455">${this._t('card.status.connected', 'CONNESSA')}</text>
                 </g>
 
-                <g class="flow-node" transform="translate(465, 247)">
-                  <circle class="flow-node-bg" id="node-load-bg" cx="0" cy="0" r="5"></circle>
-                  <line class="flow-node-guide" id="flow-load-guide" x1="0" y1="-84" x2="0" y2="-12"></line>
-                  <text class="flow-label" id="flow-load-label" x="0" y="-96">${this._t('card.node.home', 'Casa')}</text>
-                  <text class="flow-power" id="flow-load-power" x="0" y="-78">0.0 kW</text>
-                  <text class="flow-status" id="flow-load-status" x="0" y="-62">${this._t('card.status.consuming', 'IN CONSUMO')}</text>
+                <g class="flow-node">
+                  <circle class="flow-node-bg" id="node-load-bg" cx="465" cy="247" r="5"></circle>
+                  <line class="flow-node-guide" id="flow-load-guide" x1="406" y1="242" x2="406" y2="314"></line>
+                  <text class="flow-label" id="flow-load-label" x="394" y="216">${this._t('card.node.home', 'Casa')}</text>
+                  <text class="flow-power" id="flow-load-power" x="394" y="238">0.0 kW</text>
+                  <text class="flow-status" id="flow-load-status" x="394" y="254">${this._t('card.status.consuming', 'IN CONSUMO')}</text>
                 </g>
 
-                <g class="flow-node" id="battery-node-group" transform="translate(314, 330)">
-                  <circle class="flow-node-bg" id="node-battery-bg" cx="0" cy="0" r="5"></circle>
-                  <line class="flow-node-guide" id="flow-battery-guide" x1="0" y1="12" x2="0" y2="42"></line>
-                  <text class="flow-label" id="flow-battery-label" x="0" y="67">${this._t('card.node.battery', 'Batteria')}</text>
-                  <text class="flow-power" id="flow-battery-power" x="-2" y="97" text-anchor="end">0.0 kW</text>
-                  <text class="flow-pct" id="flow-battery-pct" x="4" y="97" text-anchor="start">--%</text>
-                  <text class="flow-battery-arrow" id="flow-battery-direction" x="28" y="97">▲</text>
-                  <text class="flow-status" id="flow-battery-status" x="0" y="118">${this._t('card.status.waiting', 'IN ATTESA')}</text>
+                <g class="flow-node" id="battery-node-group">
+                  <circle class="flow-node-bg" id="node-battery-bg" cx="314" cy="330" r="5"></circle>
+                  <line class="flow-node-guide" id="flow-battery-guide" x1="270" y1="446" x2="270" y2="388"></line>
+                  <text class="flow-label" id="flow-battery-label" x="279" y="430">${this._t('card.node.battery', 'Batteria')}</text>
+                  <text class="flow-power" id="flow-battery-power" x="279" y="447" text-anchor="middle">0.0 kW</text>
+                  <text class="flow-pct" id="flow-battery-pct" x="279" y="412" text-anchor="middle">--%</text>
+                  <text class="flow-battery-arrow" id="flow-battery-direction" x="332" y="440">▲</text>
+                  <text class="flow-status" id="flow-battery-status" x="332" y="456">${this._t('card.status.waiting', 'IN ATTESA')}</text>
                 </g>
 
-                <g class="flow-node" id="ev-node-group" transform="translate(184, 332)">
-                  <circle class="flow-node-bg" id="node-ev-bg" cx="0" cy="0" r="5"></circle>
-                  <line class="flow-node-guide" id="flow-ev-guide" x1="0" y1="12" x2="0" y2="42"></line>
-                  <text class="flow-label" id="flow-ev-label" x="0" y="61">${this._t('card.node.ev', 'EV')}</text>
-                  <text class="flow-power" id="flow-ev-power" x="0" y="79">0.0 kW</text>
-                  <text class="flow-pct" id="flow-ev-pct" x="0" y="95">--%</text>
-                  <text class="flow-status" id="flow-ev-status" x="0" y="110">${this._t('card.status.off', 'OFF')}</text>
+                <g class="flow-node" id="ev-node-group">
+                  <circle class="flow-node-bg" id="node-ev-bg" cx="184" cy="332" r="5"></circle>
+                  <line class="flow-node-guide" id="flow-ev-guide" x1="162" y1="232" x2="162" y2="302"></line>
+                  <text class="flow-label" id="flow-ev-label" x="162" y="177">${this._t('card.node.ev', 'EV')}</text>
+                  <text class="flow-power" id="flow-ev-power" x="178" y="205">0.0 kW</text>
+                  <text class="flow-pct" id="flow-ev-pct" x="176" y="321">--%</text>
+                  <text class="flow-status" id="flow-ev-status" x="176" y="338">${this._t('card.status.off', 'OFF')}</text>
                 </g>
 
-                <g class="flow-node ev-hidden" id="ev2-node-group" transform="translate(106, 316)">
-                  <circle class="flow-node-bg" id="node-ev2-bg" cx="0" cy="0" r="5"></circle>
-                  <line class="flow-node-guide" id="flow-ev2-guide" x1="0" y1="-18" x2="0" y2="12"></line>
-                  <text class="flow-label" id="flow-ev2-label" x="0" y="-26">EV 2</text>
-                  <text class="flow-power" id="flow-ev2-power" x="0" y="-8">0.0 kW</text>
-                  <text class="flow-pct" id="flow-ev2-pct" x="0" y="8">--%</text>
-                  <text class="flow-status" id="flow-ev2-status" x="0" y="24">${this._t('card.status.off', 'OFF')}</text>
+                <g class="flow-node ev-hidden" id="ev2-node-group">
+                  <circle class="flow-node-bg" id="node-ev2-bg" cx="106" cy="316" r="5"></circle>
+                  <line class="flow-node-guide" id="flow-ev2-guide" x1="106" y1="298" x2="106" y2="328"></line>
+                  <text class="flow-label" id="flow-ev2-label" x="106" y="290">EV 2</text>
+                  <text class="flow-power" id="flow-ev2-power" x="106" y="308">0.0 kW</text>
+                  <text class="flow-pct" id="flow-ev2-pct" x="106" y="324">--%</text>
+                  <text class="flow-status" id="flow-ev2-status" x="106" y="340">${this._t('card.status.off', 'OFF')}</text>
                 </g>
               </svg>
             </div>
