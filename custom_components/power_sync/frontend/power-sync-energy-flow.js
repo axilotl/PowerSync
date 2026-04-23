@@ -881,6 +881,63 @@ import {
     'roof-b-current': Object.freeze({ id: 'flow-roof-b-current', attrs: Object.freeze(['x', 'y']) })
   });
 
+  const FLOW_COMPONENT_GROUP_OFFSETS = Object.freeze({
+    'solar-label': Object.freeze({ x: 286, y: 155 }),
+    'solar-power': Object.freeze({ x: 286, y: 155 }),
+    'solar-guide': Object.freeze({ x: 286, y: 155 }),
+    'grid-label': Object.freeze({ x: 448, y: 336 }),
+    'grid-power': Object.freeze({ x: 448, y: 336 }),
+    'grid-status': Object.freeze({ x: 448, y: 336 }),
+    'grid-guide': Object.freeze({ x: 448, y: 336 }),
+    'load-label': Object.freeze({ x: 465, y: 247 }),
+    'load-power': Object.freeze({ x: 465, y: 247 }),
+    'load-guide': Object.freeze({ x: 465, y: 247 }),
+    'battery-label': Object.freeze({ x: 314, y: 330 }),
+    'battery-power': Object.freeze({ x: 314, y: 330 }),
+    'battery-pct': Object.freeze({ x: 314, y: 330 }),
+    'battery-direction-arrow': Object.freeze({ x: 314, y: 330 }),
+    'battery-status': Object.freeze({ x: 314, y: 330 }),
+    'battery-guide': Object.freeze({ x: 314, y: 330 }),
+    'ev-label': Object.freeze({ x: 184, y: 332 }),
+    'ev-power': Object.freeze({ x: 184, y: 332 }),
+    'ev-pct': Object.freeze({ x: 184, y: 332 }),
+    'ev-guide': Object.freeze({ x: 184, y: 332 }),
+    'ev2-label': Object.freeze({ x: 106, y: 316 }),
+    'ev2-power': Object.freeze({ x: 106, y: 316 }),
+    'ev2-pct': Object.freeze({ x: 106, y: 316 }),
+    'ev2-guide': Object.freeze({ x: 106, y: 316 })
+  });
+
+  function normalizeGeneratedSceneComponentMap(sceneMap) {
+    const normalized = {};
+    Object.entries(sceneMap || {}).forEach(([sceneKey, profile]) => {
+      if (!profile || typeof profile !== 'object') return;
+      const nextProfile = {};
+      Object.entries(profile).forEach(([componentKey, values]) => {
+        if (!values || typeof values !== 'object') return;
+        const offset = FLOW_COMPONENT_GROUP_OFFSETS[componentKey];
+        if (!offset) {
+          nextProfile[componentKey] = values;
+          return;
+        }
+        const nextValues = { ...values };
+        ['x', 'x1', 'x2'].forEach((attr) => {
+          if (typeof nextValues[attr] === 'number') nextValues[attr] -= offset.x;
+        });
+        ['y', 'y1', 'y2'].forEach((attr) => {
+          if (typeof nextValues[attr] === 'number') nextValues[attr] -= offset.y;
+        });
+        nextProfile[componentKey] = nextValues;
+      });
+      normalized[sceneKey] = Object.freeze(nextProfile);
+    });
+    return Object.freeze(normalized);
+  }
+
+  const NORMALIZED_GENERATED_SCENE_FLOW_COMPONENT_MAP = normalizeGeneratedSceneComponentMap(
+    GENERATED_SCENE_FLOW_COMPONENT_MAP
+  );
+
   const DEFAULT_CONFIG = Object.freeze({
     type: `custom:${CARD_TYPE}`,
     title: 'Tesla Style Energy Flow',
@@ -1419,7 +1476,7 @@ import {
     }
 
     _sceneFlowComponentMap() {
-      return deepMerge(GENERATED_SCENE_FLOW_COMPONENT_MAP, this._config.scene_component_map || {});
+      return deepMerge(NORMALIZED_GENERATED_SCENE_FLOW_COMPONENT_MAP, this._config.scene_component_map || {});
     }
 
     _resolveBackground(evCharging, hasSecondaryEv = false) {
