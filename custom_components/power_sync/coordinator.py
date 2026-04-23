@@ -4362,6 +4362,7 @@ class GoodWeEnergyCoordinator(DataUpdateCoordinator):
         )
         self._connected = False
         self._energy_acc = EnergyAccumulator(hass, "goodwe")
+        self._discharge_floor_pct: int = 10  # updated by set_backup_reserve
 
         super().__init__(
             hass,
@@ -4491,7 +4492,7 @@ class GoodWeEnergyCoordinator(DataUpdateCoordinator):
             self._connected = True
         rated = (self.data or {}).get("rated_power_w", 5000)
         pct = min(100, max(10, int((power_w / rated) * 100))) if power_w > 0 else 100
-        return await self._controller.force_discharge(power_pct=pct)
+        return await self._controller.force_discharge(power_pct=pct, soc_floor=self._discharge_floor_pct)
 
     async def restore_normal(self) -> bool:
         """Restore GoodWe to normal operation."""
@@ -4507,6 +4508,7 @@ class GoodWeEnergyCoordinator(DataUpdateCoordinator):
         if not self._connected:
             await self._controller.connect()
             self._connected = True
+        self._discharge_floor_pct = max(10, percent)
         return await self._controller.set_backup_reserve(percent)
 
     async def async_shutdown(self) -> None:

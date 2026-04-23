@@ -6,7 +6,7 @@ import asyncio
 import json
 import logging
 import pathlib
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 # Module-level state for alert cooldowns (keyed by entry_id)
@@ -15,6 +15,39 @@ _discrepancy_alert_count: dict[str, int] = {}
 _discrepancy_alert_date: dict[str, str] = {}
 DISCREPANCY_ALERT_COOLDOWN = timedelta(minutes=30)
 DISCREPANCY_ALERT_DAILY_MAX = 4
+
+
+def _parse_battery_health_timestamp(value: Any) -> datetime | None:
+    """Parse a battery-health scan timestamp into a comparable datetime."""
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        text = str(value).strip()
+        if not text:
+            return None
+        if text.endswith("Z"):
+            text = f"{text[:-1]}+00:00"
+        try:
+            dt = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+
+def _battery_health_payload_is_newer(candidate_ts: Any, current_ts: Any) -> bool:
+    """Return True when the candidate battery-health result is newer."""
+    candidate = _parse_battery_health_timestamp(candidate_ts)
+    current = _parse_battery_health_timestamp(current_ts)
+    if current is None:
+        return candidate is not None
+    if candidate is None:
+        return False
+    return candidate >= current
 
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState
 import homeassistant.helpers.config_validation as cv
@@ -3729,6 +3762,55 @@ class BatteryHealthView(HomeAssistantView):
         """Initialize the view."""
         self._hass = hass
 
+    async def _sync_live_battery_health_to_sensor(self, entry, payload: dict[str, Any]) -> None:
+        """Mirror live Tesla battery-health payloads into the HA sensor state."""
+        if not payload or not payload.get("available"):
+            return
+
+        entry_data = self._hass.data[DOMAIN][entry.entry_id]
+        current = entry_data.get("battery_health") or {}
+        if current and not _battery_health_payload_is_newer(
+            payload.get("last_scan"),
+            current.get("scanned_at"),
+        ):
+            return
+
+        health_percent = payload.get("health_percent")
+        battery_health_data = {
+            "original_capacity_wh": payload.get("original_capacity_wh"),
+            "current_capacity_wh": payload.get("current_capacity_wh"),
+            "degradation_percent": (
+                round(100 - float(health_percent), 1)
+                if health_percent is not None
+                else None
+            ),
+            "battery_count": payload.get("battery_count", 1),
+            "scanned_at": payload.get("last_scan", datetime.now().isoformat()),
+            "source": payload.get("source", "ha_local_tedapi"),
+        }
+
+        if payload.get("individual_batteries"):
+            battery_health_data["individual_batteries"] = payload.get("individual_batteries")
+        if payload.get("site"):
+            battery_health_data["site"] = payload.get("site")
+        if payload.get("raw_vitals") is not None:
+            battery_health_data["raw_vitals"] = payload.get("raw_vitals")
+
+        entry_data["battery_health"] = battery_health_data
+
+        store = entry_data.get("store")
+        if store:
+            stored_data = await store.async_load() or {}
+            stored_data["battery_health"] = battery_health_data
+            await store.async_save(stored_data)
+
+        from homeassistant.helpers.dispatcher import async_dispatcher_send
+        async_dispatcher_send(
+            self._hass,
+            f"{DOMAIN}_battery_health_update_{entry.entry_id}",
+            battery_health_data,
+        )
+
     def _get_coordinator_bms(self, entry) -> tuple[str, dict] | None:
         """Extract BMS telemetry from the active coordinator for non-Tesla systems.
 
@@ -4098,6 +4180,7 @@ class BatteryHealthView(HomeAssistantView):
                 cache = entry_data.get("battery_health_cloud")
                 now = _t.monotonic()
                 if not refresh and cache and cache.get("expires_at", 0) > now:
+                    await self._sync_live_battery_health_to_sensor(entry, cache["value"])
                     return web.json_response(cache["value"])
                 fleet_result = await self._try_fleet_api_bms_fetch(entry)
                 if fleet_result:
@@ -4105,6 +4188,7 @@ class BatteryHealthView(HomeAssistantView):
                         "value": fleet_result,
                         "expires_at": now + 3600,
                     }
+                    await self._sync_live_battery_health_to_sensor(entry, fleet_result)
                     return web.json_response(fleet_result)
                 return web.json_response({
                     "success": True,
@@ -5777,19 +5861,21 @@ class ConfigView(HomeAssistantView):
             battery_health = None
             domain_data = self._hass.data.get(DOMAIN, {})
             entry_data = domain_data.get(entry.entry_id, {})
+            health_data = entry_data.get("battery_health")
 
             # Tesla: prefer live RSA/TEDAPI BMS data from the cloud cache over
-            # any stored WiFi-scan data. The cloud cache is populated by GET
-            # requests to /api/power_sync/battery_health and expires after 1 h.
+            # stale WiFi-scan data when it is newer. The cloud cache is populated
+            # by GET requests to /api/power_sync/battery_health and expires after 1 h.
             import time as _bh_time
             bms_cloud = entry_data.get("battery_health_cloud")
+            cloud_health = None
             if (
                 battery_system == "tesla"
                 and bms_cloud
                 and bms_cloud.get("expires_at", 0) > _bh_time.monotonic()
             ):
                 bms_val = bms_cloud.get("value", {})
-                battery_health = {
+                cloud_health = {
                     "health_percent": bms_val.get("health_percent"),
                     "original_capacity_kwh": bms_val.get("original_capacity_kwh"),
                     "current_capacity_kwh": bms_val.get("current_capacity_kwh"),
@@ -5797,13 +5883,12 @@ class ConfigView(HomeAssistantView):
                     "last_scan": bms_val.get("last_scan"),
                     "source": bms_val.get("source", "rsa_bms"),
                 }
-            else:
-                health_data = entry_data.get("battery_health")
-            if not battery_health and health_data:
+
+            if health_data:
                 # Stored WiFi-scan / mobile-app POST data
                 original = health_data.get("original_capacity_wh", 0)
                 current = health_data.get("current_capacity_wh", 0)
-                battery_health = {
+                stored_health = {
                     "health_percent": round((current / original) * 100, 1) if original > 0 else 0,
                     "original_capacity_kwh": round(original / 1000, 2),
                     "current_capacity_kwh": round(current / 1000, 2),
@@ -5812,6 +5897,19 @@ class ConfigView(HomeAssistantView):
                     "last_scan": health_data.get("scanned_at"),
                     "source": health_data.get("source", "mobile_app_wifi_scan"),
                 }
+                if (
+                    cloud_health
+                    and _battery_health_payload_is_newer(
+                        cloud_health.get("last_scan"),
+                        stored_health.get("last_scan"),
+                    )
+                ):
+                    battery_health = cloud_health
+                else:
+                    battery_health = stored_health
+            elif cloud_health:
+                battery_health = cloud_health
+
             if not battery_health:
                 # Fall back to coordinator battery_soh (Sungrow, Sigenergy, GoodWe)
                 for key in ("sungrow_coordinator", "sigenergy_coordinator", "goodwe_coordinator", "alphaess_coordinator", "solax_coordinator"):

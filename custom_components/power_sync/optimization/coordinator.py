@@ -1283,6 +1283,24 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         )
                         effective_action = "self_consumption"
 
+            # Block EXPORT/discharge when SOC is at or below backup reserve.
+            # The LP lowers its effective reserve to current SOC when already
+            # below reserve, which can produce an EXPORT plan that drains the
+            # battery further each cycle. Catch it here as a safety net.
+            if effective_action in ("discharge", "export"):
+                try:
+                    soc_now, _ = await self._get_battery_state()
+                    opt_reserve = self._config.backup_reserve
+                    if soc_now is not None and soc_now <= opt_reserve:
+                        _LOGGER.warning(
+                            "Optimizer: Blocking %s — SOC %.1f%% at/below "
+                            "backup reserve %.0f%%",
+                            effective_action, soc_now * 100, opt_reserve * 100,
+                        )
+                        effective_action = "self_consumption"
+                except Exception:
+                    pass
+
             # When transitioning from IDLE to another action, we need to
             # undo what IDLE did (restore work mode and backup_reserve).
             # However, the LP can oscillate between IDLE and self_consumption

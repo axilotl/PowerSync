@@ -257,7 +257,10 @@ class BatteryOptimizer:
         _soc_below_reserve = soc_0 < self.backup_reserve
         _saved_reserve = self.backup_reserve
         if _soc_below_reserve:
-            effective_reserve = max(0.0, soc_0 - 0.01)
+            # Use current SOC as the floor (no further discharge allowed).
+            # Using soc-1% caused cascading drain: each cycle allowed 1% more
+            # discharge, so the battery drained 3%+ per 5-minute LP cycle.
+            effective_reserve = soc_0
             _LOGGER.warning(
                 "SOC (%.1f%%) below backup reserve (%.0f%%) — using effective "
                 "reserve %.1f%% to avoid infeasibility",
