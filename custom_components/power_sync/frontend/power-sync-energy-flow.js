@@ -1688,7 +1688,7 @@ import {
           .flow-status {
             fill: #f8fafc;
             text-shadow: 0 1px 2px rgba(2, 6, 23, 0.55);
-            text-anchor: middle;
+            text-anchor: start;
             font-family: sans-serif;
             filter: drop-shadow(0 0 4px rgba(0, 0, 0, 0.95))
                     drop-shadow(0 0 10px rgba(0, 0, 0, 0.78))
@@ -1728,7 +1728,7 @@ import {
           .roof-meta {
             fill: #f8fafc;
             text-shadow: 0 1px 2px rgba(2, 6, 23, 0.55);
-            text-anchor: middle;
+            text-anchor: start;
             font-family: sans-serif;
             filter: drop-shadow(0 0 4px rgba(0, 0, 0, 0.95))
                     drop-shadow(0 0 10px rgba(0, 0, 0, 0.78))
