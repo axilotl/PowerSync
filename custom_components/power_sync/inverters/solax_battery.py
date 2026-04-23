@@ -55,10 +55,14 @@ _WRITE_ENTITIES = {
         "manual_mode_control",
         "inverter_manual_mode_control",
     ),
-    "charge_current": ("battery_charge_max_current",),         # number, A
-    "discharge_current": ("battery_discharge_max_current",),   # number, A
-    "backup_reserve": ("battery_minimum_capacity",),           # number, %
-    "export_limit": ("export_control_user_limit",),            # number, W
+    "charge_current": ("battery_charge_max_current",),                             # number, A
+    "discharge_current": ("battery_discharge_max_current",),                       # number, A
+    "backup_reserve": (
+        "battery_minimum_capacity",       # older wills106 naming
+        "selfuse_discharge_min_soc",      # Gen4/Gen5/Gen6: self-use mode floor SOC
+        "selfuse_backup_soc",             # Gen4/Gen5/Gen6: self-use backup reservation
+    ),
+    "export_limit": ("export_control_user_limit",),                                # number, W
 }
 
 
