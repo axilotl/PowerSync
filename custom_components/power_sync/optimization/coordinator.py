@@ -2760,19 +2760,27 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         # Apply demand charge penalty to LP import prices
                         import_prices = self._apply_demand_charge_penalty(import_prices)
 
-                        # Apply confidence decay for LP input
-                        import_prices, export_prices = self._apply_confidence_decay(
-                            import_prices, export_prices
-                        )
+                        # Apply confidence decay for LP input.
+                        # Flow Power is skipped: Happy Hour export (45c) and the
+                        # base-rate import (34c) are contractual fixed rates, not
+                        # speculative spot prices. Decaying them toward the median
+                        # (0c export, ~26c import) makes overnight charging appear
+                        # unprofitable, causing the LP to undercharge the battery
+                        # before a Happy Hour window that is 18-24h away.
+                        if not is_flow_power:
+                            import_prices, export_prices = self._apply_confidence_decay(
+                                import_prices, export_prices
+                            )
 
                         _price_label = "Flow Power" if is_flow_power else "Dynamic"
                         _LOGGER.debug(
                             "%s prices: %d steps, display %.1fc-%.1fc, "
-                            "LP (decayed) %.1fc-%.1fc",
+                            "LP %s %.1fc-%.1fc",
                             _price_label,
                             len(import_prices),
                             min(self._last_display_import_prices) * 100,
                             max(self._last_display_import_prices) * 100,
+                            "(no decay)" if is_flow_power else "(decayed)",
                             min(import_prices) * 100,
                             max(import_prices) * 100,
                         )
