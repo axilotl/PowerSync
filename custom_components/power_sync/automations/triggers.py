@@ -638,7 +638,14 @@ def _evaluate_weather_trigger(
     if not current_weather:
         return TriggerResult(triggered=False, reason="Weather data unavailable")
 
-    weather_values = {"sunny": 3.0, "partly_sunny": 2.0, "cloudy": 1.0}
+    weather_values = {
+        "sunny": 6.0,
+        "partly_sunny": 5.0,
+        "cloudy": 4.0,
+        "rainy": 3.0,
+        "snowy": 2.0,
+        "stormy": 1.0,
+    }
     current_value = weather_values.get(current_weather, 0.0)
     target_value = weather_values.get(condition, 0.0)
 

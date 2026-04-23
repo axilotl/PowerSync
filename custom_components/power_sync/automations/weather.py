@@ -3,8 +3,11 @@ OpenWeatherMap integration for weather-based automation triggers.
 
 Provides weather condition classification:
 - sunny: Clear sky, few clouds
-- partly_sunny: Scattered/broken clouds
-- cloudy: Overcast, rain, storms
+- partly_sunny: Light cloud cover
+- cloudy: Overcast, fog, wind
+- rainy: Rain and drizzle
+- snowy: Snow, sleet, hail
+- stormy: Thunderstorms and severe weather
 """
 
 import logging
@@ -31,16 +34,16 @@ _location_cache: Dict[str, Tuple[float, float]] = {}
 # Weather condition ID ranges from OpenWeatherMap
 # https://openweathermap.org/weather-conditions
 WEATHER_CONDITION_MAP = {
-    # Thunderstorm (2xx) -> cloudy
-    range(200, 300): "cloudy",
-    # Drizzle (3xx) -> cloudy
-    range(300, 400): "cloudy",
-    # Rain (5xx) -> cloudy
-    range(500, 600): "cloudy",
-    # Snow (6xx) -> cloudy
-    range(600, 700): "cloudy",
-    # Atmosphere (7xx) - mist, fog, etc. -> partly_sunny
-    range(700, 800): "partly_sunny",
+    # Thunderstorm (2xx)
+    range(200, 300): "stormy",
+    # Drizzle (3xx)
+    range(300, 400): "rainy",
+    # Rain (5xx)
+    range(500, 600): "rainy",
+    # Snow (6xx)
+    range(600, 700): "snowy",
+    # Atmosphere (7xx) - mist, fog, etc.
+    range(700, 800): "cloudy",
     # Clear (800) -> sunny
     range(800, 801): "sunny",
     # Clouds (801-804)
@@ -67,18 +70,18 @@ _HA_WEATHER_TO_CONDITION = {
     "sunny": "sunny",
     "clear-night": "sunny",
     "partlycloudy": "partly_sunny",
-    "windy": "partly_sunny",
-    "windy-variant": "partly_sunny",
-    "lightning": "partly_sunny",
+    "windy": "cloudy",
+    "windy-variant": "cloudy",
+    "lightning": "stormy",
     "cloudy": "cloudy",
     "fog": "cloudy",
-    "hail": "cloudy",
-    "lightning-rainy": "cloudy",
-    "pouring": "cloudy",
-    "rainy": "cloudy",
-    "snowy": "cloudy",
-    "snowy-rainy": "cloudy",
-    "exceptional": "cloudy",
+    "hail": "snowy",
+    "lightning-rainy": "stormy",
+    "pouring": "rainy",
+    "rainy": "rainy",
+    "snowy": "snowy",
+    "snowy-rainy": "snowy",
+    "exceptional": "stormy",
 }
 
 
@@ -101,7 +104,7 @@ def _weather_from_ha_entity(hass: HomeAssistant) -> Optional[Dict[str, Any]]:
     Most HA installs ship weather.forecast_home (met.no by default);
     others use AccuWeather, Pirate Weather, BOM, etc. All expose the same
     standard state + attribute schema which we translate to the PowerSync
-    shape (sunny / partly_sunny / cloudy + temperature_c + humidity).
+    shape (sunny / partly_sunny / cloudy / rainy / snowy / stormy).
     """
     weather_entities = hass.states.async_all("weather")
     if not weather_entities:
@@ -116,7 +119,7 @@ def _weather_from_ha_entity(hass: HomeAssistant) -> Optional[Dict[str, Any]]:
     if state is None:
         return None
 
-    condition = _HA_WEATHER_TO_CONDITION.get(state.state, "partly_sunny")
+    condition = _HA_WEATHER_TO_CONDITION.get(state.state, "cloudy")
     attrs = state.attributes or {}
     return {
         "condition": condition,
@@ -201,7 +204,7 @@ async def async_get_current_weather(
     Returns:
         Dict with weather data:
         {
-            'condition': 'sunny' | 'partly_sunny' | 'cloudy',
+            'condition': 'sunny' | 'partly_sunny' | 'cloudy' | 'rainy' | 'snowy' | 'stormy',
             'description': str,
             'temperature_c': float,
             'humidity': int,
@@ -388,11 +391,12 @@ def _classify_weather_condition(weather_id: int) -> str:
         weather_id: OpenWeatherMap condition ID
 
     Returns:
-        'sunny', 'partly_sunny', or 'cloudy'
+        'sunny', 'partly_sunny', 'cloudy', 'rainy', 'snowy', or 'stormy'
     """
     for id_range, condition in WEATHER_CONDITION_MAP.items():
         if weather_id in id_range:
             return condition
 
-    # Default to partly_sunny for unknown conditions
-    return "partly_sunny"
+    # Default to cloudy for unknown conditions so we avoid falsely presenting
+    # extreme or ambiguous conditions as sunny.
+    return "cloudy"

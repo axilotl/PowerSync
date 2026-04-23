@@ -1,6 +1,14 @@
 /* Tesla Style Energy Flow
  * Public Home Assistant custom card with configurable sensors, background, and flow paths.
  */
+import {
+  DUAL_CHARGING_SCENE_IMAGE_MAP as GENERATED_DUAL_CHARGING_SCENE_IMAGE_MAP,
+  LEGACY_SCENE_IMAGES as GENERATED_LEGACY_SCENE_IMAGES,
+  SCENE_FLOW_COMPONENT_MAP as GENERATED_SCENE_FLOW_COMPONENT_MAP,
+  SCENE_FLOW_PATH_MAP as GENERATED_SCENE_FLOW_PATH_MAP,
+  SCENE_IMAGE_MAP as GENERATED_SCENE_IMAGE_MAP
+} from './scene-layout-data.js';
+
 (function () {
   const CARD_TYPE = 'power-sync-energy-flow';
   const FLOW_MIN_W = 50;
@@ -852,6 +860,7 @@
     'battery-label': Object.freeze({ id: 'flow-battery-label', attrs: Object.freeze(['x', 'y']) }),
     'battery-power': Object.freeze({ id: 'flow-battery-power', attrs: Object.freeze(['x', 'y']) }),
     'battery-pct': Object.freeze({ id: 'flow-battery-pct', attrs: Object.freeze(['x', 'y']) }),
+    'battery-direction-arrow': Object.freeze({ id: 'flow-battery-direction', attrs: Object.freeze(['x', 'y']) }),
     'battery-status': Object.freeze({ id: 'flow-battery-status', attrs: Object.freeze(['x', 'y']) }),
     'battery-guide': Object.freeze({ id: 'flow-battery-guide', attrs: Object.freeze(['x1', 'y1', 'x2', 'y2']) }),
     'ev-label': Object.freeze({ id: 'flow-ev-label', attrs: Object.freeze(['x', 'y']) }),
@@ -1357,7 +1366,7 @@
 
     _weatherGroup(weatherState) {
       const s = String(weatherState || '').toLowerCase();
-      if (s === 'lightning') return 'storm';
+      if (s === 'lightning' || s === 'exceptional') return 'storm';
       if (s === 'rainy' || s === 'pouring' || s === 'lightning-rainy') return 'rain';
       if (s === 'snowy' || s === 'snowy-rainy' || s === 'hail') return 'snow';
       if (s === 'cloudy' || s === 'partlycloudy' || s === 'fog' || s === 'windy' || s === 'windy-variant') return 'cloudy';
@@ -1380,10 +1389,10 @@
     _defaultBackgroundMap() {
       const base = this._config.background_asset_base || '/power_sync/frontend/backgrounds';
       const out = {};
-      Object.entries(SCENE_IMAGE_MAP).forEach(([k, v]) => {
+      Object.entries(GENERATED_SCENE_IMAGE_MAP).forEach(([k, v]) => {
         out[k] = joinAsset(base, v);
       });
-      Object.entries(DUAL_CHARGING_SCENE_IMAGE_MAP).forEach(([k, v]) => {
+      Object.entries(GENERATED_DUAL_CHARGING_SCENE_IMAGE_MAP).forEach(([k, v]) => {
         out[k] = joinAsset(base, v);
       });
 
@@ -1406,11 +1415,11 @@
     }
 
     _sceneFlowPathMap() {
-      return deepMerge(SCENE_FLOW_PATH_MAP, this._config.scene_path_map || {});
+      return deepMerge(GENERATED_SCENE_FLOW_PATH_MAP, this._config.scene_path_map || {});
     }
 
     _sceneFlowComponentMap() {
-      return deepMerge(SCENE_FLOW_COMPONENT_MAP, this._config.scene_component_map || {});
+      return deepMerge(GENERATED_SCENE_FLOW_COMPONENT_MAP, this._config.scene_component_map || {});
     }
 
     _resolveBackground(evCharging, hasSecondaryEv = false) {
@@ -1439,7 +1448,7 @@
       const exactKey = `${period}_${weatherGroup}_${chargeState}`;
       const exactUrl = String(map[exactKey] || '').trim();
       const exactFile = sceneFileName(exactUrl);
-      const isNightLegacy = period === 'night' && LEGACY_SCENE_IMAGES.has(exactFile);
+      const isNightLegacy = period === 'night' && GENERATED_LEGACY_SCENE_IMAGES.has(exactFile);
       if (exactUrl && !isNightLegacy) return exactUrl;
 
       const clearKey = `${period}_clear_${chargeState}`;
@@ -1453,8 +1462,8 @@
       if (defaultUrl) return defaultUrl;
 
       const fallbackFile = chargeState === 'charging'
-        ? (hasSecondaryEv ? DUAL_CHARGING_SCENE_IMAGE_MAP.day_clear_dual_charging : SCENE_IMAGE_MAP.day_clear_charging)
-        : SCENE_IMAGE_MAP.day_clear_idle;
+        ? (hasSecondaryEv ? GENERATED_DUAL_CHARGING_SCENE_IMAGE_MAP.day_clear_dual_charging : GENERATED_SCENE_IMAGE_MAP.day_clear_charging)
+        : GENERATED_SCENE_IMAGE_MAP.day_clear_idle;
       const legacyFallback = joinAsset(
         cfg.background_asset_base || '/power_sync/frontend/backgrounds',
         fallbackFile
@@ -1663,6 +1672,17 @@
             opacity: 0.9;
             display: none;
           }
+          .flow-battery-arrow {
+            fill: #4ade80;
+            font-size: calc(16px * var(--flow-font-scale));
+            font-weight: 900;
+            text-anchor: start;
+            text-shadow: 0 1px 2px rgba(2, 6, 23, 0.55);
+            filter: drop-shadow(0 0 4px rgba(0, 0, 0, 0.95))
+                    drop-shadow(0 0 10px rgba(0, 0, 0, 0.78))
+                    drop-shadow(0 0 16px rgba(0, 0, 0, 0.52));
+            display: none;
+          }
           .roof-meta {
             fill: #f8fafc;
             text-shadow: 0 1px 2px rgba(2, 6, 23, 0.55);
@@ -1849,6 +1869,7 @@
                   <text class="flow-label" id="flow-battery-label" x="0" y="67">${this._t('card.node.battery', 'Batteria')}</text>
                   <text class="flow-power" id="flow-battery-power" x="-2" y="97" text-anchor="end">0.0 kW</text>
                   <text class="flow-pct" id="flow-battery-pct" x="4" y="97" text-anchor="start">--%</text>
+                  <text class="flow-battery-arrow" id="flow-battery-direction" x="28" y="97">▲</text>
                   <text class="flow-status" id="flow-battery-status" x="0" y="118">${this._t('card.status.waiting', 'IN ATTESA')}</text>
                 </g>
 
@@ -1959,6 +1980,25 @@
       this._setText('#flow-ev2-label', ev2.labelText || 'EV 2');
       this._setText('#flow-ev2-power', this._formatKW(ev2.power || 0));
       this._setText('#flow-ev2-pct', ev2.batteryText || '--%');
+
+      const batteryArrowEl = this.shadowRoot.querySelector('#flow-battery-direction');
+      if (batteryArrowEl) {
+        if (!batteryConfigured || Math.abs(batteryPower) <= batteryMin) {
+          batteryArrowEl.textContent = '';
+          batteryArrowEl.style.display = 'none';
+        } else if (batteryPower > batteryMin) {
+          batteryArrowEl.textContent = '▲';
+          batteryArrowEl.style.fill = '#4ade80';
+          batteryArrowEl.style.display = 'inline';
+        } else if (batteryPower < -batteryMin) {
+          batteryArrowEl.textContent = '▼';
+          batteryArrowEl.style.fill = '#ff5d73';
+          batteryArrowEl.style.display = 'inline';
+        } else {
+          batteryArrowEl.textContent = '';
+          batteryArrowEl.style.display = 'none';
+        }
+      }
 
       const batteryStatusEl = this.shadowRoot.querySelector('#flow-battery-status');
       if (batteryStatusEl) {
@@ -2467,12 +2507,20 @@
               <input data-path="background_map.day_cloudy" value="${b.day_cloudy || ''}">
               <label>background_map.day_rain</label>
               <input data-path="background_map.day_rain" value="${b.day_rain || ''}">
+              <label>background_map.day_snow</label>
+              <input data-path="background_map.day_snow" value="${b.day_snow || ''}">
+              <label>background_map.day_storm</label>
+              <input data-path="background_map.day_storm" value="${b.day_storm || ''}">
               <label>background_map.night_clear</label>
               <input data-path="background_map.night_clear" value="${b.night_clear || ''}">
               <label>background_map.night_cloudy</label>
               <input data-path="background_map.night_cloudy" value="${b.night_cloudy || ''}">
               <label>background_map.night_rain</label>
               <input data-path="background_map.night_rain" value="${b.night_rain || ''}">
+              <label>background_map.night_snow</label>
+              <input data-path="background_map.night_snow" value="${b.night_snow || ''}">
+              <label>background_map.night_storm</label>
+              <input data-path="background_map.night_storm" value="${b.night_storm || ''}">
               <label>background_map.day_clear_idle</label>
               <input data-path="background_map.day_clear_idle" value="${b.day_clear_idle || ''}">
               <label>background_map.day_clear_charging</label>
