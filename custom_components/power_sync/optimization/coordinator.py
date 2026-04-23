@@ -1517,54 +1517,6 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     self._last_executed_action = effective_action
                     return
 
-                # Only IDLE when current import price is below median (genuinely
-                # cheap). If we're paying average or above-average prices, the
-                # battery should serve home load (self_consumption) rather than
-                # importing from grid for a marginal future gain.
-                if self._last_import_prices:
-                    current_price = self._last_import_prices[0]
-                    median_price = sorted(self._last_import_prices)[len(self._last_import_prices) // 2]
-                    if current_price >= median_price * 0.9:  # Within 10% of median or above
-                        effective_action = "self_consumption"
-                        # Restore pre-IDLE backup reserve if still pending
-                        if self._pre_idle_backup_reserve is not None and hasattr(battery, "set_backup_reserve"):
-                            _LOGGER.info(
-                                "Optimizer: Restoring backup reserve to %d%% (was elevated by IDLE)",
-                                self._pre_idle_backup_reserve,
-                            )
-                            try:
-                                await battery.set_backup_reserve(self._pre_idle_backup_reserve)
-                                self._pre_idle_backup_reserve = None  # Only clear on success
-                            except Exception as e:
-                                _LOGGER.warning("Failed to restore backup reserve to %d%%: %s (will retry)", self._pre_idle_backup_reserve, e)
-                        if self._last_executed_action == "self_consumption":
-                            _LOGGER.debug(
-                                "Optimizer: IDLE overridden — import %.1fc >= median %.1fc, already in SC",
-                                current_price * 100, median_price * 100,
-                            )
-                            return
-                        _LOGGER.info(
-                            "Optimizer: IDLE overridden to self_consumption — current import "
-                            "%.1fc/kWh >= median %.1fc (not cheap enough to justify grid import)",
-                            current_price * 100, median_price * 100,
-                        )
-                        # Restore from IDLE if needed
-                        if self._last_executed_action == "idle":
-                            if (
-                                self.energy_coordinator
-                                and hasattr(self.energy_coordinator, "restore_work_mode_from_idle")
-                            ):
-                                await self.energy_coordinator.restore_work_mode_from_idle()
-                            if hasattr(battery, "set_backup_reserve") and self._pre_idle_backup_reserve is not None:
-                                await battery.set_backup_reserve(self._pre_idle_backup_reserve)
-                                self._pre_idle_backup_reserve = None
-                        if hasattr(battery, "set_self_consumption_mode"):
-                            await battery.set_self_consumption_mode()
-                        elif hasattr(battery, "restore_normal"):
-                            await battery.restore_normal()
-                        self._last_executed_action = effective_action
-                        return
-
                 # Use the startup-captured backup reserve as the restore value.
                 # Don't read from the API here — it may already show an
                 # IDLE-elevated value from a previous cycle.
@@ -1615,23 +1567,23 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         soc_pct,
                     )
                 elif hasattr(battery, "set_backup_reserve"):
-                    # Tesla IDLE: always use self_consumption mode.
-                    # Autonomous (TOU) mode with grid_charging enabled and
-                    # a TOU tariff showing cheap overnight / expensive peak
-                    # causes Tesla firmware to charge from grid at 5kW
-                    # independently — the optimizer wants HOLD but Tesla
-                    # sees arbitrage and charges. Self_consumption mode
-                    # prevents TOU-based grid charging entirely.
-                    # backup_reserve acts as a soft floor (minor SOC drift
-                    # is acceptable — LP re-evaluates every 5 minutes).
-                    # Tesla API constraint: backup_reserve accepts 0-80%
-                    # or 100%. Values 81-99% are clamped to 80%.
-                    # Never set reserve below configured backup_reserve —
-                    # that is the user's hard floor.
                     configured_reserve_pct = int(self._config.backup_reserve * 100)
-                    reserve = min(max(soc_pct, configured_reserve_pct), 80)
                     if hasattr(battery, "set_self_consumption_mode"):
+                        # Tesla IDLE: self_consumption mode prevents TOU-based
+                        # grid charging (autonomous+TOU charges independently).
+                        # Tesla API constraint: backup_reserve accepts 0-80% or
+                        # 100%; values 81-99% are clamped to 80%.
+                        reserve = min(max(soc_pct, configured_reserve_pct), 80)
                         await battery.set_self_consumption_mode()
+                    elif hasattr(battery, "restore_normal"):
+                        # GoodWe (and similar): must exit ECO_CHARGE/ECO_DISCHARGE
+                        # before setting the DOD floor, otherwise the inverter
+                        # ignores the floor and continues the forced mode.
+                        # No 80% cap — GoodWe DOD range goes up to 89%.
+                        reserve = max(soc_pct, configured_reserve_pct)
+                        await battery.restore_normal()
+                    else:
+                        reserve = max(soc_pct, configured_reserve_pct)
                     self._idle_reserve_adjustment = True
                     try:
                         await battery.set_backup_reserve(reserve)

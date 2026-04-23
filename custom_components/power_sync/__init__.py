@@ -20797,6 +20797,44 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 _LOGGER.error(f"Error setting AlphaESS self-consumption: {e}", exc_info=True)
                 return
 
+        # Check if this is an ESY Sunhome system
+        is_esy_sunhome_sc = bool(entry.data.get(CONF_ESY_CONFIG_ENTRY_ID))
+        if is_esy_sunhome_sc:
+            try:
+                entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+                esy_coord = entry_data.get("esy_sunhome_coordinator")
+                if not esy_coord:
+                    _LOGGER.error("Self-consumption: ESY Sunhome coordinator not available")
+                    return
+                success = await esy_coord.restore_normal()
+                if success:
+                    _LOGGER.info("ESY Sunhome self-consumption mode set (Regular Mode)")
+                else:
+                    _LOGGER.error("Failed to set ESY Sunhome self-consumption mode")
+                return
+            except Exception as e:
+                _LOGGER.error(f"Error setting ESY Sunhome self-consumption: {e}", exc_info=True)
+                return
+
+        # Check if this is a SAJ H2 system
+        is_saj_h2_sc = bool(entry.data.get(CONF_SAJ_CONFIG_ENTRY_ID))
+        if is_saj_h2_sc:
+            try:
+                entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+                saj_coord = entry_data.get("saj_h2_coordinator")
+                if not saj_coord:
+                    _LOGGER.error("Self-consumption: SAJ H2 coordinator not available")
+                    return
+                success = await saj_coord.restore_normal()
+                if success:
+                    _LOGGER.info("SAJ H2 self-consumption mode set (passive mode disabled)")
+                else:
+                    _LOGGER.error("Failed to set SAJ H2 self-consumption mode")
+                return
+            except Exception as e:
+                _LOGGER.error(f"Error setting SAJ H2 self-consumption: {e}", exc_info=True)
+                return
+
         # Tesla Powerwall
         try:
             site_configs = _get_tesla_site_configs(hass, entry)
@@ -20847,7 +20885,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         is_sigenergy = bool(entry.data.get(CONF_SIGENERGY_STATION_ID))
         is_goodwe = bool(entry.data.get(CONF_GOODWE_HOST))
         is_alphaess = bool(entry.data.get(CONF_ALPHAESS_MODBUS_HOST))
-        if is_foxess or is_sungrow or is_sigenergy or is_goodwe or is_alphaess:
+        is_esy_sunhome_auto = bool(entry.data.get(CONF_ESY_CONFIG_ENTRY_ID))
+        is_saj_h2_auto = bool(entry.data.get(CONF_SAJ_CONFIG_ENTRY_ID))
+        if is_foxess or is_sungrow or is_sigenergy or is_goodwe or is_alphaess or is_esy_sunhome_auto or is_saj_h2_auto:
             _LOGGER.debug("Non-Tesla system — autonomous mode is implicit, skipping")
             return
 
@@ -21007,6 +21047,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
             except Exception as e:
                 _LOGGER.error(f"Error setting SigEnergy backup reserve: {e}", exc_info=True)
+        elif bool(entry.data.get(CONF_ESY_CONFIG_ENTRY_ID)):
+            # ESY Sunhome: no backup reserve register — no-op
+            _LOGGER.debug("ESY Sunhome does not support backup reserve (no-op)")
+        elif bool(entry.data.get(CONF_SAJ_CONFIG_ENTRY_ID)):
+            # SAJ H2: no backup reserve register — no-op
+            _LOGGER.debug("SAJ H2 does not support backup reserve (no-op)")
         else:
             # Tesla Powerwall via Fleet API
             try:

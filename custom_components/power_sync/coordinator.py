@@ -4920,9 +4920,6 @@ class ESYSunhomeEnergyCoordinator(DataUpdateCoordinator):
         }
         return await self._set_mode(_mode_map.get(mode.lower(), "Regular Mode"))
 
-    async def set_backup_mode(self) -> bool:
-        return await self._set_mode("Emergency Mode")
-
     async def restore_work_mode_from_idle(self) -> bool:
         return await self._set_mode("Regular Mode")
 
