@@ -838,6 +838,8 @@ async def execute_actions(
             if result:
                 success_count += 1
                 _LOGGER.info(f"Executed action '{action_type}'")
+            elif result is None:
+                _LOGGER.debug(f"Action '{action_type}' skipped (not applicable for this system)")
             else:
                 _LOGGER.warning(f"Action '{action_type}' returned False")
                 try:
@@ -1023,7 +1025,7 @@ async def _action_preserve_charge(
     from ..const import CONF_BATTERY_SYSTEM, BATTERY_SYSTEM_TESLA, DOMAIN, SERVICE_SET_GRID_EXPORT
     if config_entry.data.get(CONF_BATTERY_SYSTEM) != BATTERY_SYSTEM_TESLA:
         _LOGGER.debug("preserve_charge via grid export not supported for non-Tesla systems")
-        return False
+        return None
 
     try:
         await hass.services.async_call(
@@ -1401,7 +1403,7 @@ async def _action_set_grid_export(
     from ..const import CONF_BATTERY_SYSTEM, BATTERY_SYSTEM_TESLA, DOMAIN, SERVICE_SET_GRID_EXPORT
     if config_entry.data.get(CONF_BATTERY_SYSTEM) != BATTERY_SYSTEM_TESLA:
         _LOGGER.debug("set_grid_export not supported for non-Tesla systems")
-        return False
+        return None
 
     # Accept both "rule" and "grid_export_rule" for flexibility
     rule = params.get("rule") or params.get("grid_export_rule")
