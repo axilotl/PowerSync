@@ -5777,9 +5777,30 @@ class ConfigView(HomeAssistantView):
             battery_health = None
             domain_data = self._hass.data.get(DOMAIN, {})
             entry_data = domain_data.get(entry.entry_id, {})
-            health_data = entry_data.get("battery_health")
-            if health_data:
-                # TEDAPI scan data (Tesla / blueprint)
+
+            # Tesla: prefer live RSA/TEDAPI BMS data from the cloud cache over
+            # any stored WiFi-scan data. The cloud cache is populated by GET
+            # requests to /api/power_sync/battery_health and expires after 1 h.
+            import time as _bh_time
+            bms_cloud = entry_data.get("battery_health_cloud")
+            if (
+                battery_system == "tesla"
+                and bms_cloud
+                and bms_cloud.get("expires_at", 0) > _bh_time.monotonic()
+            ):
+                bms_val = bms_cloud.get("value", {})
+                battery_health = {
+                    "health_percent": bms_val.get("health_percent"),
+                    "original_capacity_kwh": bms_val.get("original_capacity_kwh"),
+                    "current_capacity_kwh": bms_val.get("current_capacity_kwh"),
+                    "battery_count": bms_val.get("battery_count"),
+                    "last_scan": bms_val.get("last_scan"),
+                    "source": bms_val.get("source", "rsa_bms"),
+                }
+            else:
+                health_data = entry_data.get("battery_health")
+            if not battery_health and health_data:
+                # Stored WiFi-scan / mobile-app POST data
                 original = health_data.get("original_capacity_wh", 0)
                 current = health_data.get("current_capacity_wh", 0)
                 battery_health = {
@@ -5789,9 +5810,9 @@ class ConfigView(HomeAssistantView):
                     "degradation_percent": health_data.get("degradation_percent"),
                     "battery_count": health_data.get("battery_count", 1),
                     "last_scan": health_data.get("scanned_at"),
-                    "source": "mobile_app_tedapi",
+                    "source": health_data.get("source", "mobile_app_wifi_scan"),
                 }
-            else:
+            if not battery_health:
                 # Fall back to coordinator battery_soh (Sungrow, Sigenergy, GoodWe)
                 for key in ("sungrow_coordinator", "sigenergy_coordinator", "goodwe_coordinator", "alphaess_coordinator", "solax_coordinator"):
                     coord = entry_data.get(key)
