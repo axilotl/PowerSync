@@ -276,7 +276,6 @@ REGISTER_MAPS: dict[FoxESSModelFamily, FoxESSRegisterMap] = {
         battery_voltage_gain=10,
         battery_current=37610,    # BMS1 Current
         battery_temperature=37611,  # BMS1 Ambient Temperature
-        internal_temperature=39141,  # Inverter internal temperature, scale 0.1
         nominal_power_w=39053,    # 32-bit: 39053 (high) + 39054 (low), scale 1.0
         soh=37624,                # state of health %, scale 1.0
         nominal_energy_kwh=37635, # scale 0.01
