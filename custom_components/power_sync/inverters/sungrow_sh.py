@@ -1044,11 +1044,20 @@ class SungrowSHController(InverterController):
                 if voltage > 0:
                     self._battery_voltage = voltage
                 data["battery_current"] = round(self._to_signed16(battery_regs[1]) * 0.1, 1)
+                # Prefer the S32 register (5214-5215) which is always signed; fall back to S16 (13022)
                 data["battery_power"] = self._to_signed16(battery_regs[2])
                 data["battery_soc"] = round(battery_regs[3] * 0.1, 1)
                 data["battery_soh"] = round(battery_regs[4] * 0.1, 1)
                 data["battery_temp"] = round(self._to_signed16(battery_regs[5]) * 0.1, 1)
                 data["daily_battery_discharge"] = round(battery_regs[6] * 0.1, 2)
+
+            # Override battery_power with the S32 signed register (5214-5215).
+            # Register 13022 can report unsigned on some SH-series firmware, making
+            # charge/discharge indistinguishable. Register 5214 is S32 word-swapped
+            # and is the authoritative signed value used by the reference Sungrow integration.
+            batt_power_s32 = await self._read_input_register(self.REG_BATTERY_POWER_S32, 2)
+            if batt_power_s32 and len(batt_power_s32) >= 2:
+                data["battery_power"] = self._to_signed32(batt_power_s32[0], batt_power_s32[1])
 
             # Read daily battery charge
             daily_charge = await self._read_input_register(self.REG_DAILY_BATTERY_CHARGE, 1)
