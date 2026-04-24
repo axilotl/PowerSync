@@ -4447,11 +4447,14 @@ class GoodWeEnergyCoordinator(DataUpdateCoordinator):
         mode_entity = f"select.{p}_ems_mode"
         power_entity = f"number.{p}_ems_power_limit"
 
+        # GoodWe EMS power limit register is 16-bit unsigned, max 32768 W
+        GOODWE_EMS_MAX_W = 32768
         try:
             if power_w > 0:
+                capped_w = min(int(power_w), GOODWE_EMS_MAX_W)
                 await self.hass.services.async_call(
                     "number", "set_value",
-                    {"entity_id": power_entity, "value": int(power_w)},
+                    {"entity_id": power_entity, "value": capped_w},
                     blocking=True,
                 )
             await self.hass.services.async_call(
@@ -4461,7 +4464,7 @@ class GoodWeEnergyCoordinator(DataUpdateCoordinator):
             )
             _LOGGER.info(
                 "GoodWe EMS control: set %s=%s power_limit=%sW",
-                mode_entity, ems_option, int(power_w) if power_w > 0 else "unchanged",
+                mode_entity, ems_option, min(int(power_w), GOODWE_EMS_MAX_W) if power_w > 0 else "unchanged",
             )
             return True
         except Exception as exc:
