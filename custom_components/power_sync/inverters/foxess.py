@@ -6,7 +6,6 @@ Control includes force charge/discharge, work mode switching, backup reserve, an
 Reference: https://github.com/nathanmarlor/foxess_modbus
 """
 import asyncio
-import inspect
 import logging
 from dataclasses import dataclass
 from enum import Enum
@@ -68,12 +67,11 @@ class FoxESSRegisterMap:
     battery_power: int          # Scaled by battery_pv_gain, signed (neg=charge, pos=discharge)
     battery_power_is_32bit: bool = False  # H3-Pro uses 32-bit battery power
     battery_voltage: int = 0
-    battery_voltage_gain: int = GAIN_VOLTAGE   # default scale 0.1; H3-Smart uses 100 (scale 0.01)
+    battery_voltage_gain: int = GAIN_VOLTAGE   # default scale 0.1 V; H3-Smart uses 100 (scale 0.01 V)
     battery_current: int = 0
     battery_temperature: int = 0
 
     # Static battery/inverter info (H3-Smart only)
-    internal_temperature: int = 0    # Inverter internal temperature, scale 0.1
     nominal_power_w: int = 0         # Rated inverter power, 32-bit high word, scale 1.0
     soh: int = 0                     # State of health %, scale 1.0
     nominal_energy_kwh: int = 0      # Nominal battery capacity, scale 0.01
@@ -273,7 +271,7 @@ REGISTER_MAPS: dict[FoxESSModelFamily, FoxESSRegisterMap] = {
         battery_power=39238,      # 32-bit: scale 0.001
         battery_power_is_32bit=True,
         battery_voltage=39227,    # pack voltage, scale 0.01 (gain 100)
-        battery_voltage_gain=10,
+        battery_voltage_gain=100,
         battery_current=37610,    # BMS1 Current
         battery_temperature=37611,  # BMS1 Ambient Temperature
         nominal_power_w=39053,    # 32-bit: 39053 (high) + 39054 (low), scale 1.0
@@ -477,16 +475,6 @@ class FoxESSController(InverterController):
         """Write a single holding register."""
         if not self._client or not self._connected:
             return False
-        if _LOGGER.isEnabledFor(logging.DEBUG):
-            caller_frame = inspect.currentframe().f_back
-            caller_name = caller_frame.f_code.co_name
-            method = getattr(type(self), caller_name, None)
-            doc = inspect.getdoc(method) if method else None
-            intent = f" — {doc.split(chr(10))[0]}" if doc else ""
-            _LOGGER.debug(
-                "Modbus WRITE  reg=%d  val=%d (0x%04X)  caller=%s%s",
-                address, value, value, caller_name, intent,
-            )
         try:
             result = await self._client.write_register(
                 address=address, value=value, **{_SLAVE_KWARG: self.slave_id}
@@ -503,17 +491,6 @@ class FoxESSController(InverterController):
         """Write multiple holding registers."""
         if not self._client or not self._connected:
             return False
-        if _LOGGER.isEnabledFor(logging.DEBUG):
-            caller_frame = inspect.currentframe().f_back
-            caller_name = caller_frame.f_code.co_name
-            method = getattr(type(self), caller_name, None)
-            doc = inspect.getdoc(method) if method else None
-            intent = f" — {doc.split(chr(10))[0]}" if doc else ""
-            vals_fmt = ", ".join(f"{v} (0x{v:04X})" for v in values)
-            _LOGGER.debug(
-                "Modbus WRITE  reg=%d  vals=[%s]  caller=%s%s",
-                address, vals_fmt, caller_name, intent,
-            )
         try:
             result = await self._client.write_registers(
                 address=address, values=values, **{_SLAVE_KWARG: self.slave_id}
@@ -799,12 +776,6 @@ class FoxESSController(InverterController):
             attrs["battery_temperature"] = battery_temp
 
             # H3-Smart extended registers
-            if reg.internal_temperature:
-                it_raw = await self._read_data_register(reg.internal_temperature, 1)
-                attrs["internal_temperature"] = (
-                    self._to_signed16(it_raw[0]) / GAIN_TEMPERATURE if it_raw else None
-                )
-
             if reg.soh:
                 soh_raw = await self._read_data_register(reg.soh, 1)
                 attrs["soh"] = soh_raw[0] if soh_raw else None

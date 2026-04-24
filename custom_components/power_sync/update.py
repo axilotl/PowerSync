@@ -146,7 +146,10 @@ class PowerSyncUpdateEntity(CoordinatorEntity, UpdateEntity):
             if Version(latest) <= Version(self._installed):
                 return
         except Exception:
-            if latest <= self._installed:
+            try:
+                if tuple(int(x) for x in latest.split(".")) <= tuple(int(x) for x in self._installed.split(".")):
+                    return
+            except ValueError:
                 return
         self._notified_version = latest
         release_url = self.coordinator.data.get("release_url", "")

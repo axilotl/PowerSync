@@ -4170,7 +4170,6 @@ class FoxESSEnergyCoordinator(DataUpdateCoordinator):
                 "nominal_power_w": attrs.get("nominal_power_w"),
                 "nominal_energy_kwh": attrs.get("nominal_energy_kwh"),
                 "total_charged_energy_kwh": attrs.get("total_charged_energy_kwh"),
-                "internal_temperature": attrs.get("internal_temperature"),
             }
 
             # Max charge/discharge power is taken directly from nominal_power_w
