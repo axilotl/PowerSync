@@ -4267,6 +4267,11 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self.hass.config_entries.async_update_entry(self._entry, data=new_data)
             response["changes"].append(f"hardware_backup_reserve: {hw_int}%")
 
+        # Handle profit maximisation mode toggle
+        if "profit_max_enabled" in settings:
+            self.set_profit_max_mode(bool(settings["profit_max_enabled"]))
+            response["changes"].append(f"profit_max_enabled: {settings['profit_max_enabled']}")
+
         # Handle EV integration toggle
         if "ev_integration" in settings:
             ev_enabled = settings["ev_integration"]

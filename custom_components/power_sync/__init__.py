@@ -23807,6 +23807,7 @@ class OptimizationSettingsView(HomeAssistantView):
             "optimiser_available": opt_coordinator.optimiser_available,
             "cost_function": opt_coordinator._cost_function.value,
             "ev_integration": opt_coordinator._ev_integration_enabled,
+            "profit_max_enabled": opt_coordinator.profit_max_mode,
             "config": {
                 "battery_capacity_wh": opt_coordinator._config.battery_capacity_wh,
                 "max_charge_w": opt_coordinator._config.max_charge_w,
