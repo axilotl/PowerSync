@@ -1127,9 +1127,13 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                                     _extend_hardware=True,
                                 )
                             else:
+                                # Match normal EXPORT execution below: the LP's
+                                # interval power can be only the predicted
+                                # surplus, which is too low to cover sudden
+                                # home-load spikes during export bonus windows.
                                 await battery.force_discharge(
                                     duration_minutes=extend_mins,
-                                    power_w=action.power_w,
+                                    power_w=self._config.max_discharge_w,
                                     _extend_hardware=True,
                                 )
                             _LOGGER.debug(
