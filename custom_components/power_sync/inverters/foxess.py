@@ -6,6 +6,7 @@ Control includes force charge/discharge, work mode switching, backup reserve, an
 Reference: https://github.com/nathanmarlor/foxess_modbus
 """
 import asyncio
+import inspect
 import logging
 from dataclasses import dataclass
 from enum import Enum
@@ -463,6 +464,16 @@ class FoxESSController(InverterController):
         """Write a single holding register."""
         if not self._client or not self._connected:
             return False
+        if _LOGGER.isEnabledFor(logging.DEBUG):
+            caller_frame = inspect.currentframe().f_back
+            caller_name = caller_frame.f_code.co_name
+            method = getattr(type(self), caller_name, None)
+            doc = inspect.getdoc(method) if method else None
+            intent = f" — {doc.split(chr(10))[0]}" if doc else ""
+            _LOGGER.debug(
+                "Modbus WRITE  reg=%d  val=%d (0x%04X)  caller=%s%s",
+                address, value, value, caller_name, intent,
+            )
         try:
             result = await self._client.write_register(
                 address=address, value=value, **{_SLAVE_KWARG: self.slave_id}
@@ -479,6 +490,17 @@ class FoxESSController(InverterController):
         """Write multiple holding registers."""
         if not self._client or not self._connected:
             return False
+        if _LOGGER.isEnabledFor(logging.DEBUG):
+            caller_frame = inspect.currentframe().f_back
+            caller_name = caller_frame.f_code.co_name
+            method = getattr(type(self), caller_name, None)
+            doc = inspect.getdoc(method) if method else None
+            intent = f" — {doc.split(chr(10))[0]}" if doc else ""
+            vals_fmt = ", ".join(f"{v} (0x{v:04X})" for v in values)
+            _LOGGER.debug(
+                "Modbus WRITE  reg=%d  vals=[%s]  caller=%s%s",
+                address, vals_fmt, caller_name, intent,
+            )
         try:
             result = await self._client.write_registers(
                 address=address, values=values, **{_SLAVE_KWARG: self.slave_id}
@@ -828,7 +850,7 @@ class FoxESSController(InverterController):
                 # H3-Smart silently clears reg 46003/4 if the power setpoint
                 # arrives before the inverter finishes processing remote_enable.
                 # A brief sleep prevents this race condition.
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(1.0)
 
             # Write active power
             write_val = power_val
