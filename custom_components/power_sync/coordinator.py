@@ -4166,9 +4166,10 @@ class FoxESSEnergyCoordinator(DataUpdateCoordinator):
                 "battery_temperature": attrs.get("battery_temperature"),
                 "model_family": attrs.get("model_family"),
                 "energy_summary": acc,
-                "soh": attrs.get("soh"),
+                "battery_soh": attrs.get("soh"),
                 "nominal_power_w": attrs.get("nominal_power_w"),
                 "nominal_energy_kwh": attrs.get("nominal_energy_kwh"),
+                "total_charged_energy_kwh": attrs.get("total_charged_energy_kwh"),
                 "internal_temperature": attrs.get("internal_temperature"),
             }
 

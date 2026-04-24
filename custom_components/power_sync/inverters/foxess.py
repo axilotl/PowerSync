@@ -77,6 +77,7 @@ class FoxESSRegisterMap:
     nominal_power_w: int = 0         # Rated inverter power, 32-bit high word, scale 1.0
     soh: int = 0                     # State of health %, scale 1.0
     nominal_energy_kwh: int = 0      # Nominal battery capacity, scale 0.01
+    total_charged_energy_kwh: int = 0  # Lifetime charge energy, 32-bit high word, scale 0.01
 
     # PV registers
     pv1_power: int = 0         # Scaled by battery_pv_gain
@@ -272,13 +273,13 @@ REGISTER_MAPS: dict[FoxESSModelFamily, FoxESSRegisterMap] = {
         battery_power=39238,      # 32-bit: scale 0.001
         battery_power_is_32bit=True,
         battery_voltage=39227,    # pack voltage, scale 0.01 (gain 100)
-        battery_voltage_gain=100,
+        battery_voltage_gain=10,
         battery_current=37611,
-        battery_temperature=37613,
-        internal_temperature=39141,  # scale 0.1
+        battery_temperature=39141,
         nominal_power_w=39053,    # 32-bit: 39053 (high) + 39054 (low), scale 1.0
         soh=37624,                # state of health %, scale 1.0
         nominal_energy_kwh=37635, # scale 0.01
+        total_charged_energy_kwh=39625, # 32-bit: 39625 (high) + 39626 (low), scale 0.01
         pv1_power=39280,          # 32-bit: 39279 (high) + 39280 (low), scale 0.001
         pv2_power=39282,          # 32-bit: 39281 (high) + 39282 (low), scale 0.001
         pv_power_is_32bit=True,
@@ -817,6 +818,12 @@ class FoxESSController(InverterController):
             if reg.nominal_energy_kwh:
                 ne_raw = await self._read_data_register(reg.nominal_energy_kwh, 1)
                 attrs["nominal_energy_kwh"] = ne_raw[0] / 100.0 if ne_raw else None
+
+            if reg.total_charged_energy_kwh:
+                tc_raw = await self._read_data_register(reg.total_charged_energy_kwh, 2)
+                attrs["total_charged_energy_kwh"] = (
+                    ((tc_raw[0] << 16) | tc_raw[1]) / 100.0 if tc_raw and len(tc_raw) == 2 else None
+                )
 
             is_curtailed = False  # Determined by export limit state if tracked
 

@@ -3868,7 +3868,7 @@ class BatteryHealthView(HomeAssistantView):
                 if (v := d.get("battery_max_discharge_power_w")) is not None: bms["max_discharge_power_w"] = int(v)
 
             elif brand == "foxess":
-                if (v := d.get("soh")) is not None: bms["soh_percent"] = round(float(v), 1)
+                if (v := d.get("battery_soh")) is not None: bms["soh_percent"] = round(float(v), 1)
                 if (v := d.get("battery_temperature")) is not None: bms["temperature_c"] = round(float(v), 1)
                 if (v := d.get("battery_level")) is not None: bms["soc_percent"] = round(float(v), 1)
                 if (v := d.get("battery_voltage_v")) is not None: bms["voltage_v"] = round(float(v), 1)
