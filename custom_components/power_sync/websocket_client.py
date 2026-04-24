@@ -465,7 +465,9 @@ class AmberWebSocketClient:
             if price_received:
                 _LOGGER.info(f"Price fetch #{self._fetch_count} successful")
             else:
-                _LOGGER.warning(f"Price fetch #{self._fetch_count} completed without price update")
+                _LOGGER.debug(
+                    f"Price fetch #{self._fetch_count} completed without price update; REST API fallback will be used"
+                )
 
         except Exception as e:
             self._connection_status = "disconnected"

@@ -18,10 +18,51 @@ from typing import Optional, List, Dict, Any, Tuple, Iterator
 from enum import Enum
 
 import aiohttp
+import re
 
 from ..const import TESLA_INTEGRATIONS
 
+
+class SensitiveDataFilter(logging.Filter):
+    """Logging filter that obfuscates VINs in EV planner logs."""
+
+    @staticmethod
+    def _obfuscate(value: str, show_chars: int = 4) -> str:
+        if len(value) <= show_chars * 2:
+            return "*" * len(value)
+        return f"{value[:show_chars]}{'*' * (len(value) - show_chars * 2)}{value[-show_chars:]}"
+
+    def _obfuscate_string(self, text: str) -> str:
+        if not text:
+            return text
+
+        return re.sub(
+            r"(\bvin[\s:=]+)([A-HJ-NPR-Z0-9]{17})\b",
+            lambda m: m.group(1) + self._obfuscate(m.group(2)),
+            text,
+            flags=re.IGNORECASE,
+        )
+
+    def _obfuscate_arg(self, arg: Any) -> Any:
+        str_value = str(arg)
+        obfuscated = self._obfuscate_string(str_value)
+        return obfuscated if obfuscated != str_value else arg
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.msg:
+            record.msg = self._obfuscate_string(str(record.msg))
+
+        if record.args:
+            if isinstance(record.args, dict):
+                record.args = {k: self._obfuscate_arg(v) for k, v in record.args.items()}
+            elif isinstance(record.args, tuple):
+                record.args = tuple(self._obfuscate_arg(a) for a in record.args)
+
+        return True
+
+
 _LOGGER = logging.getLogger(__name__)
+_LOGGER.addFilter(SensitiveDataFilter())
 
 # Minimum power (kW) required to start/continue EV charging.
 # Default 1.4 kW ≈ 6A @ 230V single-phase. Override per-vehicle
