@@ -93,6 +93,10 @@ class BatteryOptimizer:
         self.interval_minutes = interval_minutes
         self.horizon_hours = horizon_hours
         self.terminal_weight = terminal_weight
+        # Set by coordinator when a user-triggered force discharge is active so
+        # that the below-reserve adjustment fires at INFO instead of WARNING.
+        # (SOC below reserve is expected during intentional force discharge.)
+        self.suppress_reserve_warning: bool = False
 
         # Derived
         self.capacity_kwh = capacity_wh / 1000.0
@@ -263,7 +267,8 @@ class BatteryOptimizer:
             # Using soc-1% caused cascading drain: each cycle allowed 1% more
             # discharge, so the battery drained 3%+ per 5-minute LP cycle.
             effective_reserve = soc_0
-            _LOGGER.warning(
+            log = _LOGGER.info if self.suppress_reserve_warning else _LOGGER.warning
+            log(
                 "SOC (%.1f%%) below backup reserve (%.0f%%) — using effective "
                 "reserve %.1f%% to avoid infeasibility",
                 soc_0 * 100, self.backup_reserve * 100, effective_reserve * 100,

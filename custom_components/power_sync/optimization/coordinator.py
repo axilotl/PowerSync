@@ -1003,6 +1003,20 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     else 0.0
                 )
 
+            # Suppress the below-reserve WARNING when a user-triggered force
+            # discharge is active — draining past the LP reserve is intentional
+            # in that case, so the adjustment should log at INFO not WARNING.
+            if self._force_state_getter:
+                _fs = self._force_state_getter()
+                self._optimizer.suppress_reserve_warning = bool(
+                    _fs
+                    and _fs.get("active")
+                    and _fs.get("type") == "discharge"
+                    and _fs.get("source") != "optimizer"
+                )
+            else:
+                self._optimizer.suppress_reserve_warning = False
+
             # Run LP in executor thread to avoid blocking event loop
             result: OptimizerResult = await self.hass.async_add_executor_job(
                 self._optimizer.optimize,
