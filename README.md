@@ -16,6 +16,9 @@
 
 > **Disclaimer:** This is an unofficial integration and is not affiliated with or endorsed by Tesla, Sigenergy, Sungrow, FoxESS, GoodWe, AlphaESS, ESY Sunhome, Solax, Amber Electric, Localvolts, Octopus Energy, or EPEX/ENTSO-E. Use at your own risk.
 
+> [!WARNING]
+> **The built-in optimizer is actively under development.** You should expect occasional bugs and schedules that don't behave as expected — particularly on unusual tariffs, battery configurations, or edge cases. If you see something odd, please report it on [Discord](https://discord.gg/eaWDWxEWE3) or open a [GitHub issue](https://github.com/bolagnaise/PowerSync/issues) with your tariff details and the action plan it generated.
+
 ---
 
 ## Supported Systems
