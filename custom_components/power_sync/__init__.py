@@ -23481,7 +23481,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     for desc in OPTIMIZER_ACTION_SENSORS
                 ]
                 sensor_add_entities(deferred_sensors)
-                _LOGGER.info("LP optimizer active - adding forecast + action sensors (deferred)")
+                _LOGGER.info("LP optimizer active - adding forecast + action/window sensors (deferred)")
 
             # If using Globird/AEMO VPP provider, set up AEMO price fetching and spike response
             # This handles Globird VPP spike detection - discharge at $3000/MWh
@@ -23635,7 +23635,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         # Clean up stale optimizer/LP forecast entities from the registry
         _optimizer_sensor_keys = {
-            "optimization_status", "optimization_next_action", "optimization_savings",
+            "optimization_status", "optimization_next_action",
+            "optimization_force_charge_windows", "optimization_savings",
             "lp_solar_forecast", "lp_load_forecast",
             "lp_import_price_forecast", "lp_export_price_forecast",
         }

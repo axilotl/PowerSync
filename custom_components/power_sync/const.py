@@ -1515,6 +1515,7 @@ SERVICE_OPTIMIZATION_REFRESH = "optimization_refresh"
 SENSOR_TYPE_OPTIMIZATION_STATUS = "optimization_status"
 SENSOR_TYPE_OPTIMIZATION_SAVINGS = "optimization_savings"
 SENSOR_TYPE_OPTIMIZATION_NEXT_ACTION = "optimization_next_action"
+SENSOR_TYPE_OPTIMIZATION_FORCE_CHARGE_WINDOWS = "optimization_force_charge_windows"
 
 # LP forecast sensors (populated from built-in optimizer data each cycle)
 SENSOR_TYPE_LP_SOLAR_FORECAST = "lp_solar_forecast"
@@ -1618,6 +1619,7 @@ SENSOR_KEY_TO_FAMILY: dict[str, str] = {
     # LP Optimizer
     "optimization_status": SENSOR_FAMILY_LP_OPTIMIZER,
     "optimization_next_action": SENSOR_FAMILY_LP_OPTIMIZER,
+    "optimization_force_charge_windows": SENSOR_FAMILY_LP_OPTIMIZER,
     "optimization_savings": SENSOR_FAMILY_LP_OPTIMIZER,
     "lp_solar_forecast": SENSOR_FAMILY_LP_OPTIMIZER,
     "lp_load_forecast": SENSOR_FAMILY_LP_OPTIMIZER,

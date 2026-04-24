@@ -604,7 +604,7 @@ class PowerSyncStrategy {
 
     // --- Left Column: Optimizer Status (requires button-card) ---
     if (hasButton && hasE('optimization_status')) {
-      left.push(_optimizerStatus(e));
+      left.push(_optimizerStatus(e, hasE('optimization_force_charge_windows')));
     }
 
     // --- Center Column: Power Flow ---
@@ -1176,10 +1176,11 @@ function _teslaEnergySiteControls(findEntity, findVppSwitches) {
   };
 }
 
-function _optimizerStatus(e) {
+function _optimizerStatus(e, showForceChargeWindows = false) {
   const statusEntity = e('optimization_status');
   const nextEntity = e('optimization_next_action');
-  return {
+  const forceChargeWindowsEntity = e('optimization_force_charge_windows');
+  const cards = [{
     type: 'custom:button-card',
     entity: statusEntity,
     name: 'Optimizer',
@@ -1261,6 +1262,23 @@ function _optimizerStatus(e) {
       ],
     },
     tap_action: { action: 'more-info' },
+  }];
+
+  if (showForceChargeWindows) {
+    cards.push({
+      type: 'entities',
+      show_header_toggle: false,
+      entities: [{
+        entity: forceChargeWindowsEntity,
+        name: 'Future Force Charge',
+        icon: 'mdi:battery-clock',
+      }],
+    });
+  }
+
+  return {
+    type: 'vertical-stack',
+    cards,
   };
 }
 

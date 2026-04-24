@@ -99,6 +99,7 @@ from .const import (
     SENSOR_TYPE_BATTERY_LEVEL_2,
     SENSOR_TYPE_OPTIMIZATION_STATUS,
     SENSOR_TYPE_OPTIMIZATION_NEXT_ACTION,
+    SENSOR_TYPE_OPTIMIZATION_FORCE_CHARGE_WINDOWS,
     SENSOR_TYPE_LP_SOLAR_FORECAST,
     SENSOR_TYPE_LP_LOAD_FORECAST,
     SENSOR_TYPE_LP_IMPORT_PRICE_FORECAST,
@@ -616,6 +617,91 @@ ESY_SUNHOME_SENSORS: tuple[PowerSyncSensorEntityDescription, ...] = (
     ),
 )
 
+
+def _parse_optimizer_time(value: Any) -> datetime | None:
+    """Parse an optimizer ISO timestamp."""
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _format_optimizer_window(start: datetime | None, end: datetime | None) -> str:
+    """Format a compact time range for HA state display."""
+    if not start or not end:
+        return "unknown"
+
+    start_local = dt_util.as_local(start)
+    end_local = dt_util.as_local(end)
+    prefix = "" if start_local.date() == dt_util.now().date() else f"{start_local:%a} "
+    return f"{prefix}{start_local:%H:%M}-{end_local:%H:%M}"
+
+
+def _future_optimizer_action_windows(data: dict[str, Any] | None, action: str) -> list[dict[str, Any]]:
+    """Return future consolidated optimizer windows for an action."""
+    if not data:
+        return []
+
+    windows: list[dict[str, Any]] = []
+    now = dt_util.now()
+    for item in data.get("next_actions") or []:
+        if item.get("action") != action:
+            continue
+
+        start = _parse_optimizer_time(item.get("timestamp"))
+        end = _parse_optimizer_time(item.get("end_time"))
+        if end and end <= now:
+            continue
+
+        window: dict[str, Any] = {
+            "start_time": item.get("timestamp"),
+            "end_time": item.get("end_time"),
+            "label": _format_optimizer_window(start, end),
+            "power_w": item.get("power_w"),
+            "soc": item.get("soc"),
+        }
+
+        if start and end:
+            window["duration_minutes"] = round((end - start).total_seconds() / 60)
+
+        windows.append(window)
+
+    return windows
+
+
+def _optimizer_window_state(data: dict[str, Any] | None, action: str) -> str:
+    """Return a short sensor state for upcoming optimizer windows."""
+    windows = _future_optimizer_action_windows(data, action)
+    if not windows:
+        return "none"
+
+    labels = [w["label"] for w in windows if w.get("label")]
+    state = ", ".join(labels)
+    if len(state) <= 255:
+        return state
+
+    return f"{labels[0]} (+{len(labels) - 1} more)"
+
+
+def _optimizer_window_attributes(data: dict[str, Any] | None, action: str) -> dict[str, Any]:
+    """Return attributes for upcoming optimizer windows."""
+    windows = _future_optimizer_action_windows(data, action)
+    total_minutes = sum(w.get("duration_minutes", 0) or 0 for w in windows)
+    attrs: dict[str, Any] = {
+        "count": len(windows),
+        "total_minutes": total_minutes,
+        "windows": windows,
+    }
+    if windows:
+        attrs["next_start"] = windows[0].get("start_time")
+        attrs["next_end"] = windows[0].get("end_time")
+        attrs["next_label"] = windows[0].get("label")
+        attrs["next_power_w"] = windows[0].get("power_w")
+    return attrs
+
+
 OPTIMIZER_ACTION_SENSORS: tuple[PowerSyncSensorEntityDescription, ...] = (
     PowerSyncSensorEntityDescription(
         key=SENSOR_TYPE_OPTIMIZATION_STATUS,
@@ -635,7 +721,16 @@ OPTIMIZER_ACTION_SENSORS: tuple[PowerSyncSensorEntityDescription, ...] = (
         attr_fn=lambda data: {
             "time": data.get("next_action_time"),
             "power_w": data.get("next_action_power_w"),
+            "next_actions": data.get("next_actions", []),
+            "force_charge_windows": _future_optimizer_action_windows(data, "charge"),
         } if data else {},
+    ),
+    PowerSyncSensorEntityDescription(
+        key=SENSOR_TYPE_OPTIMIZATION_FORCE_CHARGE_WINDOWS,
+        name="Optimizer Force Charge Windows",
+        icon="mdi:battery-clock",
+        value_fn=lambda data: _optimizer_window_state(data, "charge"),
+        attr_fn=lambda data: _optimizer_window_attributes(data, "charge"),
     ),
 )
 
@@ -1117,7 +1212,7 @@ async def async_setup_entry(
                     entry=entry,
                 )
             )
-        _LOGGER.info("Optimizer action sensors added (current action, next action)")
+        _LOGGER.info("Optimizer action sensors added (current, next, force charge windows)")
     else:
         # Store callback for deferred LP forecast + optimizer action sensor creation
         domain_data["sensor_async_add_entities"] = async_add_entities
