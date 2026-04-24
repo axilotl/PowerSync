@@ -82,6 +82,7 @@ class BatteryOptimizer:
         hardware_reserve: float = 0.0,
         interval_minutes: int = 5,
         horizon_hours: int = 48,
+        terminal_weight: float = 1.0,
     ):
         self.capacity_wh = capacity_wh
         self.max_charge_w = max_charge_w
@@ -91,6 +92,7 @@ class BatteryOptimizer:
         self.hardware_reserve = hardware_reserve
         self.interval_minutes = interval_minutes
         self.horizon_hours = horizon_hours
+        self.terminal_weight = terminal_weight
 
         # Derived
         self.capacity_kwh = capacity_wh / 1000.0
@@ -373,6 +375,8 @@ class BatteryOptimizer:
             if all_nonzero:
                 median_price = sorted(all_nonzero)[len(all_nonzero) // 2]
                 terminal_price = max(terminal_price, median_price * (1 - eff))
+
+        terminal_price *= self.terminal_weight
 
         if terminal_price > 0:
             for t in range(n):

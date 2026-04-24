@@ -24,6 +24,7 @@ from .const import (
     SWITCH_TYPE_FORCE_CHARGE,
     SWITCH_TYPE_MONITORING_MODE,
     SWITCH_TYPE_AWAY_MODE,
+    SWITCH_TYPE_PROFIT_MAX_MODE,
     DEFAULT_DISCHARGE_DURATION,
     ATTR_LAST_SYNC,
     ATTR_SYNC_STATUS,
@@ -121,14 +122,19 @@ async def async_setup_entry(
     if is_tesla and entry.data.get(CONF_POWERWALL_LOCAL_PAIRED):
         entities.append(OffGridSwitch(hass=hass, entry=entry))
 
-    # Away Mode switch — added later via deferred callback once the
-    # OptimizationCoordinator is created (it's set up after platforms start).
+    # Away Mode and Profit Max switches — added later via deferred callbacks once
+    # the OptimizationCoordinator is created (it's set up after platforms start).
     def _add_away_mode_switch(coordinator: Any) -> None:
         async_add_entities([AwayModeSwitch(hass=hass, entry=entry, coordinator=coordinator)])
 
     hass.data.setdefault(DOMAIN, {}).setdefault(entry.entry_id, {})[
         "switch_add_away_mode"
     ] = _add_away_mode_switch
+
+    def _add_profit_max_switch(coordinator: Any) -> None:
+        async_add_entities([ProfitMaxModeSwitch(hass=hass, entry=entry, coordinator=coordinator)])
+
+    hass.data[DOMAIN][entry.entry_id]["switch_add_profit_max"] = _add_profit_max_switch
 
     async_add_entities(entities)
 
@@ -651,6 +657,47 @@ class AwayModeSwitch(SwitchEntity):
         _LOGGER.info("Away mode DISABLED — load forecaster using recent history")
         self._attr_is_on = False
         self._coordinator.set_away_mode(False)
+        self.async_write_ha_state()
+
+
+class ProfitMaxModeSwitch(SwitchEntity):
+    """Switch to activate profit maximisation mode — drives the LP to export more aggressively."""
+
+    _attr_has_entity_name = True
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry, coordinator: Any) -> None:
+        """Initialize the switch."""
+        self.hass = hass
+        self._entry = entry
+        self._coordinator = coordinator
+        self._attr_unique_id = f"{entry.entry_id}_{SWITCH_TYPE_PROFIT_MAX_MODE}"
+        self._attr_suggested_object_id = f"power_sync_{SWITCH_TYPE_PROFIT_MAX_MODE}"
+        self._attr_name = "Profit Maximisation Mode"
+        self._attr_icon = "mdi:cash-plus"
+        from .const import CONF_PROFIT_MAX_ENABLED
+        enabled = entry.options.get(CONF_PROFIT_MAX_ENABLED, False) or entry.data.get(CONF_PROFIT_MAX_ENABLED, False)
+        self._attr_is_on = bool(enabled)
+
+    @property
+    def device_info(self):
+        return family_device_info(self._entry.entry_id, SENSOR_FAMILY_LP_OPTIMIZER)
+
+    @property
+    def is_on(self) -> bool:
+        """Return True if profit maximisation mode is active."""
+        return self._attr_is_on
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Enable profit maximisation mode."""
+        self._attr_is_on = True
+        self._coordinator.set_profit_max_mode(True)
+        self.async_write_ha_state()
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Disable profit maximisation mode."""
+        self._attr_is_on = False
+        self._coordinator.set_profit_max_mode(False)
         self.async_write_ha_state()
 
 

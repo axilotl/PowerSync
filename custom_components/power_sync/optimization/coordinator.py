@@ -56,6 +56,7 @@ class OptimizationConfig:
     interval_minutes: int = 5
     horizon_hours: int = 48
     cost_function: str = "cost"
+    profit_max_enabled: bool = False
 
 
 # Update interval for the coordinator
@@ -301,6 +302,25 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             new_options[CONF_AWAY_DISABLED_AT] = dis.isoformat() if dis else None
             self.hass.config_entries.async_update_entry(self._entry, options=new_options)
 
+    @property
+    def profit_max_mode(self) -> bool:
+        """Return whether profit maximisation mode is active."""
+        return self._config.profit_max_enabled
+
+    def set_profit_max_mode(self, enabled: bool) -> None:
+        """Enable or disable profit maximisation mode."""
+        self._config.profit_max_enabled = enabled
+        if self._optimizer:
+            self._optimizer.terminal_weight = 0.3 if enabled else 1.0
+        if self._load_estimator:
+            self._load_estimator.invalidate_cache()
+        _LOGGER.info("Profit Maximisation mode %s", "ENABLED" if enabled else "DISABLED")
+        if self._entry:
+            from ..const import CONF_PROFIT_MAX_ENABLED
+            new_options = dict(self._entry.options)
+            new_options[CONF_PROFIT_MAX_ENABLED] = enabled
+            self.hass.config_entries.async_update_entry(self._entry, options=new_options)
+
     def _summarise_load_forecast(self) -> dict | None:
         """Slice the cached load forecast into today-remaining and tomorrow kWh totals."""
         if not self._last_load_forecast:
@@ -393,6 +413,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
                 if self._load_estimator and self._load_estimator._in_recovery else None
             ),
+            "profit_max_mode": self.profit_max_mode,
         }
 
     async def async_setup(self) -> bool:
@@ -452,6 +473,15 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     )
             except (ValueError, TypeError) as exc:
                 _LOGGER.warning("Could not restore away mode timestamps: %s", exc)
+
+        if self._entry:
+            from ..const import CONF_PROFIT_MAX_ENABLED
+            profit_max = self._entry.options.get(CONF_PROFIT_MAX_ENABLED, False) or self._entry.data.get(CONF_PROFIT_MAX_ENABLED, False)
+            self._config.profit_max_enabled = bool(profit_max)
+            if self._optimizer:
+                self._optimizer.terminal_weight = 0.3 if profit_max else 1.0
+            if profit_max:
+                _LOGGER.info("Restored profit maximisation mode: ENABLED")
 
         # Initialize solar forecaster
         self._solar_forecaster = SolcastForecaster(
@@ -2844,8 +2874,10 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         # unprofitable, causing the LP to undercharge the battery
                         # before a Happy Hour window that is 18-24h away.
                         if not is_flow_power:
+                            decay_horizon = 12.0 if self._config.profit_max_enabled else 6.0
                             import_prices, export_prices = self._apply_confidence_decay(
-                                import_prices, export_prices
+                                import_prices, export_prices,
+                                confidence_horizon_hours=decay_horizon,
                             )
 
                         _price_label = "Flow Power" if is_flow_power else "Dynamic"
@@ -3805,6 +3837,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 max_discharge_w=self._config.max_discharge_w,
                 backup_reserve=self._config.backup_reserve,
             )
+            self._optimizer.terminal_weight = 0.3 if self._config.profit_max_enabled else 1.0
 
     async def force_reoptimize(self) -> Any:
         """Force immediate re-optimization."""
@@ -3842,6 +3875,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 data["load_away_enabled_at"] = load_summary.get("away_enabled_at")
                 data["load_away_disabled_at"] = load_summary.get("away_disabled_at")
                 data["load_away_recovery_remaining_hours"] = load_summary.get("away_recovery_remaining_hours")
+                data["profit_max_mode"] = load_summary.get("profit_max_mode", False)
 
         # Use actual tariff prices for display (not LP-adjusted values)
         disp_import = self._last_display_import_prices or self._last_import_prices
@@ -3960,6 +3994,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "load_peak_kw": load_summary["peak_kw"],
                 "temperature_adjusted": load_summary["temperature_adjusted"],
                 "away_mode": load_summary["away_mode"],
+                "profit_max_mode": load_summary.get("profit_max_mode", False),
             }
 
         # Add daily cost breakdown (actual + predicted remaining)

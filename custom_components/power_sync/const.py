@@ -1011,6 +1011,7 @@ SWITCH_TYPE_FORCE_DISCHARGE = "force_discharge"
 SWITCH_TYPE_FORCE_CHARGE = "force_charge"
 SWITCH_TYPE_MONITORING_MODE = "monitoring_mode"
 SWITCH_TYPE_AWAY_MODE = "away_mode"
+SWITCH_TYPE_PROFIT_MAX_MODE = "profit_max_mode"
 
 # Monitoring mode — blocks all battery/inverter control commands
 CONF_MONITORING_MODE = "monitoring_mode"
@@ -1477,6 +1478,7 @@ CONF_OPTIMIZATION_MAX_DISCHARGE_W = "optimization_max_discharge_w"
 CONF_OPTIMIZATION_WEATHER_INTEGRATION = "optimization_weather_integration"
 CONF_AWAY_ENABLED_AT = "away_enabled_at"    # ISO timestamp when away mode was turned on
 CONF_AWAY_DISABLED_AT = "away_disabled_at"  # ISO timestamp when away mode was turned off
+CONF_PROFIT_MAX_ENABLED = "profit_max_enabled"  # Whether profit maximisation mode is on
 
 # Optimization cost function (only cost minimization — self-consumption is the battery's native mode)
 COST_FUNCTION_COST = "cost"
