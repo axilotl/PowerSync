@@ -723,14 +723,16 @@
           "solax_battery_capacity_kwh": "Battery capacity",
           "solax_battery_nominal_v": "Battery nominal voltage",
           "solax_max_charge_current_a": "Max charge current",
-          "solax_max_discharge_current_a": "Max discharge current"
+          "solax_max_discharge_current_a": "Max discharge current",
+          "solax_entity_prefix": "Entity prefix override"
         },
         "data_description": {
           "solax_config_entry_id": "The solax_modbus integration entry to read sensors and send charge/discharge commands through.",
           "solax_battery_capacity_kwh": "Usable battery capacity in kWh. Used by the LP optimizer.",
           "solax_battery_nominal_v": "Nominal battery voltage in V (51.2 for LFP T-BAT, 102.4 for high-voltage packs).",
           "solax_max_charge_current_a": "Maximum charge current your battery supports (A).",
-          "solax_max_discharge_current_a": "Maximum discharge current your battery supports (A)."
+          "solax_max_discharge_current_a": "Maximum discharge current your battery supports (A).",
+          "solax_entity_prefix": "Optional. Use when Solax Modbus creates more than one naming group. For entities like select.solax_modbus_charger_use_mode, enter solax_modbus."
         },
         "submit": "Connect"
       }
@@ -770,7 +772,7 @@
       "invalid_tariff": "This tariff code is not recognised for the selected network distributor. Check the code on your electricity bill.",
       "invalid_token_format": "Token format is not recognised. PowerSync tokens start with 'psync_' -- make sure you copied the full string.",
       "unknown": "An unexpected error occurred. Check the Home Assistant logs for details and try again.",
-      "solax_missing_entities": "Could not find the required solax_modbus entities in the selected integration entry. The first missing entity was: {first_missing}. Make sure you selected the correct Solax Modbus integration and that its entities have been created in Home Assistant.",
+      "solax_missing_entities": "Could not find the required solax_modbus entities in the selected integration entry. The first missing entity was: {first_missing}. Make sure you selected the correct Solax Modbus integration. If your entities use a prefix like solax_modbus, enter that in Entity prefix override.",
       "solax_connect_failed": "Failed to validate Solax entities. Check the selected integration entry and try again.",
       "saj_missing_entities": "Could not find the required SAJ H2 entities in the selected saj_h2_modbus integration entry. Make sure the integration is installed, the inverter is online, and its entities have been created in Home Assistant.",
       "saj_connect_failed": "Failed to validate SAJ H2 entities. Check the selected integration entry and try again."
@@ -1620,14 +1622,16 @@
           "solax_battery_capacity_kwh": "Battery capacity",
           "solax_battery_nominal_v": "Battery nominal voltage",
           "solax_max_charge_current_a": "Max charge current",
-          "solax_max_discharge_current_a": "Max discharge current"
+          "solax_max_discharge_current_a": "Max discharge current",
+          "solax_entity_prefix": "Entity prefix override"
         },
         "data_description": {
           "solax_config_entry_id": "The solax_modbus integration entry PowerSync should bridge through.",
           "solax_battery_capacity_kwh": "Usable battery capacity in kWh.",
           "solax_battery_nominal_v": "Nominal battery voltage in V (51.2 for LFP, 102.4 for HV packs).",
           "solax_max_charge_current_a": "Maximum charge current (A).",
-          "solax_max_discharge_current_a": "Maximum discharge current (A)."
+          "solax_max_discharge_current_a": "Maximum discharge current (A).",
+          "solax_entity_prefix": "Optional. Use when Solax Modbus creates more than one naming group. For entities like select.solax_modbus_charger_use_mode, enter solax_modbus."
         },
         "submit": "Save"
       }

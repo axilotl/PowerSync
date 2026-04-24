@@ -6,8 +6,9 @@ PowerSync reads sensor states and writes number/select entities via HA service c
 restriction of the Solax PocketWiFi dongle).
 
 Supported: Gen4, Gen5, Gen6 Hybrid and AC Retro-Fit (X1 and X3 families).
-Gen2/Gen3 use a different control model (Force Time Use windows) and will fail
-at connect() with a clear missing-entity error.
+Gen2/Gen3 use a different control model (Force Time Use windows) and are
+handled when those entities are present instead of the Gen4+ manual-mode
+entities.
 
 Sign conventions (PowerSync internal):
   grid_power_kw   : positive = importing, negative = exporting
@@ -19,10 +20,13 @@ Solax entity conventions (wills106):
   sensor.*_battery_power_charge: positive = charging (OPPOSITE -> negate)
 """
 
+from datetime import timedelta
 import logging
+import re
 from typing import Any
 
 from homeassistant.helpers import entity_registry as er
+from homeassistant.util import dt as dt_util
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -36,7 +40,8 @@ _READ_ENTITIES = {
     "grid_power": ("measured_power",),                 # W, +import/-export
     "pv1_power": ("pv_power_1",),                      # W
     "pv2_power": ("pv_power_2",),                      # W
-    "load_power": ("inverter_power",),                 # W
+    "solar_power": ("solar_power", "pv_total_power"),  # W, Energy Dashboard / AC Retro-Fit
+    "load_power": ("inverter_power", "house_load", "house_load_alt"),  # W
     "battery_temp": ("battery_temperature",),          # C
 }
 
@@ -55,14 +60,23 @@ _WRITE_ENTITIES = {
         "manual_mode_control",
         "inverter_manual_mode_control",
     ),
+    "allow_grid_charge": ("allow_grid_charge",),
+    "charge_start_1": ("charge_start_1",),
+    "charge_end_1": ("charge_end_1",),
     "charge_current": ("battery_charge_max_current",),                             # number, A
     "discharge_current": ("battery_discharge_max_current",),                       # number, A
     "backup_reserve": (
         "battery_minimum_capacity",       # older wills106 naming
+        "battery_minimum_capacity_grid_tied",  # Gen2/Gen3 grid-tied floor SOC
         "selfuse_discharge_min_soc",      # Gen4/Gen5/Gen6: self-use mode floor SOC
         "selfuse_backup_soc",             # Gen4/Gen5/Gen6: self-use backup reservation
     ),
     "export_limit": ("export_control_user_limit",),                                # number, W
+    "export_duration": ("export_duration",),
+    "grid_export_button": ("grid_export",),
+    "grid_export_limit": ("grid_export_limit",),                                   # number, W, Gen3 export
+    "grid_tied_min_soc": ("battery_minimum_capacity_grid_tied",),
+    "forcetime_period_1_max_capacity": ("forcetime_period_1_max_capacity",),
 }
 
 
@@ -72,12 +86,19 @@ _MODE_FEEDIN = "Feedin Priority Mode"
 _MODE_BACKUP = "Back Up Mode"
 _MODE_MANUAL = "Manual Mode"
 _MODE_SMART = "Smart Schedule"
+_MODE_FORCE_TIME_CANDIDATES = ("Force Time Use", "Force Time Use Mode", "Force Time")
 
 _MANUAL_STOP = "Stop Charge and Discharge"
 _MANUAL_CHARGE = "Force Charge"
 _MANUAL_DISCHARGE = "Force Discharge"
 _MANUAL_CONTROL_ON = "On"
 _MANUAL_CONTROL_OFF = "Off"
+_ALLOW_GRID_PERIOD_1_CANDIDATES = (
+    "Period 1 Allowed",
+    "Period 1 Enabled",
+    "Period 1 Enable",
+)
+_EXPORT_DURATION_DEFAULT_CANDIDATES = ("Default", "Disable", "Disabled", "Off")
 
 
 # PowerSync operation-mode -> Solax charger_use_mode option
@@ -109,6 +130,8 @@ class SolaxBatteryController:
         self._max_discharge_a = max_discharge_current_a
         self._timer_cancel = None
         self._entity_map: dict[str, str] = {}
+        self._control_profile = "unknown"
+        self._saved_force_time_states: dict[str, str] | None = None
 
     # -- Entity ID helpers -------------------------------------------------
 
@@ -165,21 +188,45 @@ class SolaxBatteryController:
         """Validate that required Solax entities exist."""
         self._discover_entities()
 
-        required = (
+        base_required = (
             "battery_level",
             "battery_power_raw",
             "grid_power",
             "charger_use_mode",
-            "manual_mode_select",
             "charge_current",
             "discharge_current",
             "backup_reserve",
         )
-        missing = [
-            key for key in required
-            if key not in self._entity_map
-            or self.hass.states.get(self._entity_map.get(key, "")) is None
-        ]
+        manual_required = ("manual_mode_select",)
+        force_time_required = (
+            "allow_grid_charge",
+            "charge_start_1",
+            "charge_end_1",
+            "export_duration",
+            "grid_export_button",
+            "grid_export_limit",
+            "grid_tied_min_soc",
+        )
+
+        base_missing = self._missing_keys(base_required)
+        manual_missing = self._missing_keys(manual_required)
+        force_time_missing = self._missing_keys(force_time_required)
+
+        if not base_missing and not manual_missing:
+            self._control_profile = "manual"
+            missing = []
+        elif not base_missing and not force_time_missing:
+            self._control_profile = "force_time"
+            missing = []
+        else:
+            self._control_profile = "unknown"
+            profile_missing = (
+                force_time_missing
+                if len(force_time_missing) < len(manual_missing)
+                else manual_missing
+            )
+            missing = [*base_missing, *profile_missing]
+
         if missing:
             missing_ids = [
                 self._entity_map.get(key)
@@ -190,12 +237,13 @@ class SolaxBatteryController:
             raise ValueError(f"solax_missing_entities:{','.join(missing_ids)}")
 
         _LOGGER.info(
-            "Solax entities validated (%s, %d mapped)",
+            "Solax entities validated (%s, %s profile, %d mapped)",
             (
                 f"config_entry={self._solax_entry_id}"
                 if self._solax_entry_id
                 else f"prefix={self._prefix}"
             ),
+            self._control_profile,
             len(self._entity_map),
         )
         return True
@@ -209,6 +257,7 @@ class SolaxBatteryController:
         grid_w = self._read_float("grid_power") or 0.0
         pv1_w = self._read_float("pv1_power") or 0.0
         pv2_w = self._read_float("pv2_power") or 0.0
+        solar_total_w = self._read_float("solar_power")
         load_w = self._read_float("load_power") or 0.0
         bat_temp = self._read_float("battery_temp")
 
@@ -219,7 +268,9 @@ class SolaxBatteryController:
         # wills106 measured_power: +import, -export - matches PowerSync
         grid_kw = grid_w / 1000.0
 
-        solar_kw = max(0.0, (pv1_w + pv2_w) / 1000.0)
+        if solar_total_w is None:
+            solar_total_w = pv1_w + pv2_w
+        solar_kw = max(0.0, solar_total_w / 1000.0)
         load_kw = max(0.0, load_w / 1000.0)
 
         mode_state = self.hass.states.get(self._entity_map.get("charger_use_mode", ""))
@@ -241,13 +292,22 @@ class SolaxBatteryController:
         """Force charge from grid for duration_minutes at approximately power_w."""
         from homeassistant.helpers.event import async_call_later
 
-        amps = min(power_w / max(self._nominal_v, 1.0), self._max_charge_a)
+        effective_power_w = power_w or int(self._max_charge_a * self._nominal_v)
+        amps = min(effective_power_w / max(self._nominal_v, 1.0), self._max_charge_a)
         amps = max(0.0, amps)
 
         _LOGGER.info(
             "Solax force charge: %.1f A (%.0f W / %.1f V) for %d min",
-            amps, power_w, self._nominal_v, duration_minutes,
+            amps, effective_power_w, self._nominal_v, duration_minutes,
         )
+
+        if self._control_profile == "force_time":
+            await self._force_time_charge(duration_minutes, amps)
+            self._cancel_timer()
+            self._timer_cancel = async_call_later(
+                self.hass, duration_minutes * 60, self._timer_restore
+            )
+            return True
 
         await self._set_number("charge_current", amps)
         await self._set_select("charger_use_mode", _MODE_MANUAL)
@@ -264,13 +324,22 @@ class SolaxBatteryController:
         """Force discharge to grid for duration_minutes at approximately power_w."""
         from homeassistant.helpers.event import async_call_later
 
-        amps = min(power_w / max(self._nominal_v, 1.0), self._max_discharge_a)
+        effective_power_w = power_w or int(self._max_discharge_a * self._nominal_v)
+        amps = min(effective_power_w / max(self._nominal_v, 1.0), self._max_discharge_a)
         amps = max(0.0, amps)
 
         _LOGGER.info(
             "Solax force discharge: %.1f A (%.0f W / %.1f V) for %d min",
-            amps, power_w, self._nominal_v, duration_minutes,
+            amps, effective_power_w, self._nominal_v, duration_minutes,
         )
+
+        if self._control_profile == "force_time":
+            await self._force_time_export(duration_minutes, effective_power_w, amps)
+            self._cancel_timer()
+            self._timer_cancel = async_call_later(
+                self.hass, duration_minutes * 60, self._timer_restore
+            )
+            return True
 
         await self._set_number("discharge_current", amps)
         await self._set_select("charger_use_mode", _MODE_MANUAL)
@@ -286,6 +355,13 @@ class SolaxBatteryController:
     async def restore_normal(self) -> bool:
         """Restore to Self Use / stop manual mode."""
         self._cancel_timer()
+        if self._control_profile == "force_time":
+            await self._restore_force_time_states()
+            if self._entity_exists("charger_use_mode"):
+                await self._set_select("charger_use_mode", _MODE_SELF_USE)
+            _LOGGER.info("Solax restored to Self Use mode")
+            return True
+
         await self._set_select("manual_mode_select", _MANUAL_STOP)
         await self._set_manual_mode_control(_MANUAL_CONTROL_OFF)
         await self._set_select("charger_use_mode", _MODE_SELF_USE)
@@ -298,6 +374,8 @@ class SolaxBatteryController:
         """Set backup reserve (minimum SOC). Clamped to [15, 100]."""
         clamped = max(15, min(100, int(percent)))
         await self._set_number("backup_reserve", clamped)
+        if self._control_profile == "force_time" and self._entity_exists("grid_tied_min_soc"):
+            await self._set_number("grid_tied_min_soc", clamped)
         _LOGGER.info("Solax backup reserve set to %d%%", clamped)
         return True
 
@@ -343,16 +421,16 @@ class SolaxBatteryController:
             registry = er.async_get(self.hass)
             entries = er.async_entries_for_config_entry(registry, self._solax_entry_id)
             entity_ids = [entry.entity_id for entry in entries if entry.entity_id]
-            if entity_ids and not self._prefix:
-                first_entity = entity_ids[0].split(".", 1)[1]
-                self._prefix = first_entity.rsplit("_", 1)[0]
-            self._discover_entities_from_ids(entity_ids)
+            self._discover_entities_from_ids(
+                entity_ids,
+                legacy_prefix=self._prefix or None,
+            )
             return
 
         entity_ids = [
             state.entity_id
             for state in self.hass.states.async_all()
-            if state.entity_id.startswith(("sensor.", "number.", "select."))
+            if state.entity_id.startswith(("sensor.", "number.", "select.", "time.", "button."))
         ]
         self._discover_entities_from_ids(entity_ids, legacy_prefix=self._prefix)
 
@@ -368,15 +446,12 @@ class SolaxBatteryController:
                 self._entity_map[key] = entity_id
 
         for key, suffixes in _WRITE_ENTITIES.items():
-            domain = "number" if key in (
-                "charge_current",
-                "discharge_current",
-                "backup_reserve",
-                "export_limit",
-            ) else "select"
+            domain = self._write_domain(key)
             entity_id = self._resolve_entity_id(entity_ids, domain, suffixes, legacy_prefix)
             if entity_id:
                 self._entity_map[key] = entity_id
+
+        self._update_prefix_from_map()
 
     def _resolve_entity_id(
         self,
@@ -400,15 +475,55 @@ class SolaxBatteryController:
             return None
         domain = "sensor"
         if key in _WRITE_ENTITIES:
-            domain = "number" if key in (
-                "charge_current",
-                "discharge_current",
-                "backup_reserve",
-                "export_limit",
-            ) else "select"
+            domain = self._write_domain(key)
         if self._prefix:
             return f"{domain}.{self._prefix}_{suffixes[0]}"
         return None
+
+    def _missing_keys(self, keys: tuple[str, ...]) -> list[str]:
+        """Return mapped keys that are missing from HA state."""
+        return [
+            key for key in keys
+            if key not in self._entity_map
+            or self.hass.states.get(self._entity_map.get(key, "")) is None
+        ]
+
+    def _entity_exists(self, key: str) -> bool:
+        entity_id = self._entity_map.get(key)
+        return bool(entity_id and self.hass.states.get(entity_id) is not None)
+
+    @staticmethod
+    def _write_domain(key: str) -> str:
+        """Return the HA domain for a write entity key."""
+        if key in ("charge_start_1", "charge_end_1"):
+            return "time"
+        if key == "grid_export_button":
+            return "button"
+        if key in (
+            "charge_current",
+            "discharge_current",
+            "backup_reserve",
+            "export_limit",
+            "grid_export_limit",
+            "grid_tied_min_soc",
+            "forcetime_period_1_max_capacity",
+        ):
+            return "number"
+        return "select"
+
+    def _update_prefix_from_map(self) -> None:
+        """Use a resolved control entity for better diagnostics."""
+        for key in ("charger_use_mode", "battery_level", "grid_power"):
+            entity_id = self._entity_map.get(key)
+            suffixes = _READ_ENTITIES.get(key) or _WRITE_ENTITIES.get(key)
+            if not entity_id or not suffixes or "." not in entity_id:
+                continue
+            object_id = entity_id.split(".", 1)[1]
+            for suffix in suffixes:
+                tail = f"_{suffix}"
+                if object_id.endswith(tail):
+                    self._prefix = object_id[:-len(tail)]
+                    return
 
     def _read_float(self, key: str) -> float | None:
         entity_id = self._entity_map.get(key)
@@ -433,6 +548,17 @@ class SolaxBatteryController:
             blocking=True,
         )
 
+    async def _set_time(self, key: str, value: str) -> None:
+        entity_id = self._entity_map.get(key)
+        if not entity_id:
+            raise ValueError(f"Missing Solax time entity for {key}")
+        await self.hass.services.async_call(
+            "time",
+            "set_value",
+            {"entity_id": entity_id, "time": value},
+            blocking=True,
+        )
+
     async def _set_select(self, key: str, option: str) -> None:
         entity_id = self._entity_map.get(key)
         if not entity_id:
@@ -452,12 +578,144 @@ class SolaxBatteryController:
                 exc,
             )
 
+    async def _set_select_first_match(self, key: str, candidates: tuple[str, ...]) -> None:
+        option = self._resolve_select_option(key, candidates)
+        await self._set_select(key, option)
+
+    def _resolve_select_option(self, key: str, candidates: tuple[str, ...]) -> str:
+        entity_id = self._entity_map.get(key)
+        state = self.hass.states.get(entity_id) if entity_id else None
+        options = list(state.attributes.get("options", [])) if state else []
+        for candidate in candidates:
+            if candidate in options:
+                return candidate
+
+        normalised = {
+            str(option).strip().lower(): option
+            for option in options
+        }
+        for candidate in candidates:
+            match = normalised.get(candidate.strip().lower())
+            if match:
+                return match
+
+        return candidates[0]
+
+    async def _press_button(self, key: str) -> None:
+        entity_id = self._entity_map.get(key)
+        if not entity_id:
+            raise ValueError(f"Missing Solax button entity for {key}")
+        await self.hass.services.async_call(
+            "button",
+            "press",
+            {"entity_id": entity_id},
+            blocking=True,
+        )
+
     async def _set_manual_mode_control(self, option: str) -> None:
         """Toggle manual mode where wills106 exposes a dedicated control select."""
         entity_id = self._entity_map.get("manual_mode_control")
         if not entity_id or self.hass.states.get(entity_id) is None:
             return
         await self._set_select("manual_mode_control", option)
+
+    async def _force_time_charge(self, duration_minutes: int, amps: float) -> None:
+        """Use Gen2/Gen3 Force Time entities to start grid charging."""
+        self._save_force_time_states((
+            "charger_use_mode",
+            "allow_grid_charge",
+            "charge_start_1",
+            "charge_end_1",
+            "charge_current",
+            "forcetime_period_1_max_capacity",
+        ))
+
+        now = dt_util.now()
+        end = now + timedelta(minutes=max(1, int(duration_minutes)))
+        await self._set_number("charge_current", amps)
+        if self._entity_exists("forcetime_period_1_max_capacity"):
+            await self._set_number("forcetime_period_1_max_capacity", 100)
+        await self._set_time("charge_start_1", now.strftime("%H:%M:%S"))
+        await self._set_time("charge_end_1", end.strftime("%H:%M:%S"))
+        await self._set_select_first_match("allow_grid_charge", _ALLOW_GRID_PERIOD_1_CANDIDATES)
+        await self._set_select_first_match("charger_use_mode", _MODE_FORCE_TIME_CANDIDATES)
+        _LOGGER.info("Solax Force Time charge enabled until %s", end.strftime("%H:%M"))
+
+    async def _force_time_export(self, duration_minutes: int, power_w: int, amps: float) -> None:
+        """Use Gen3 Grid Export entities to force discharge."""
+        self._save_force_time_states((
+            "export_duration",
+            "grid_export_limit",
+            "grid_tied_min_soc",
+            "discharge_current",
+        ))
+
+        await self._set_number("discharge_current", amps)
+        floor = self._read_float("backup_reserve")
+        if floor is not None:
+            await self._set_number("grid_tied_min_soc", max(15, min(100, int(floor))))
+        export_w = abs(power_w) or (self._max_discharge_a * self._nominal_v)
+        await self._set_export_duration(duration_minutes)
+        await self._press_button("grid_export_button")
+        await self._set_number("grid_export_limit", -export_w)
+        _LOGGER.info("Solax Gen3 grid export enabled at %.0fW for %d min", export_w, duration_minutes)
+
+    async def _set_export_duration(self, duration_minutes: int) -> None:
+        """Select the closest Gen3 grid-export duration option."""
+        entity_id = self._entity_map.get("export_duration")
+        state = self.hass.states.get(entity_id) if entity_id else None
+        options = list(state.attributes.get("options", [])) if state else []
+        if not options:
+            await self._set_select("export_duration", str(duration_minutes))
+            return
+
+        best_option = None
+        best_delta = None
+        for option in options:
+            text = str(option)
+            if text.strip().lower() in {"default", "disable", "disabled", "off"}:
+                continue
+            match = re.search(r"\d+", text)
+            if not match:
+                continue
+            minutes = int(match.group(0))
+            delta = abs(minutes - duration_minutes)
+            if best_delta is None or delta < best_delta:
+                best_option = option
+                best_delta = delta
+
+        await self._set_select("export_duration", best_option or options[0])
+
+    def _save_force_time_states(self, keys: tuple[str, ...]) -> None:
+        """Remember Gen2/Gen3 entities so restore_normal can unwind cleanly."""
+        saved: dict[str, str] = {}
+        for key in keys:
+            entity_id = self._entity_map.get(key)
+            state = self.hass.states.get(entity_id) if entity_id else None
+            if state and state.state not in ("unknown", "unavailable", ""):
+                saved[key] = state.state
+        self._saved_force_time_states = saved
+
+    async def _restore_force_time_states(self) -> None:
+        saved = self._saved_force_time_states or {}
+        self._saved_force_time_states = None
+        for key, value in saved.items():
+            try:
+                domain = self._write_domain(key)
+                if domain == "number":
+                    await self._set_number(key, float(value))
+                elif domain == "time":
+                    await self._set_time(key, value)
+                elif domain == "select":
+                    await self._set_select(key, value)
+            except Exception as exc:
+                _LOGGER.debug("Solax: failed to restore %s=%s: %s", key, value, exc)
+
+        if not saved and self._entity_exists("export_duration"):
+            await self._set_select_first_match(
+                "export_duration",
+                _EXPORT_DURATION_DEFAULT_CANDIDATES,
+            )
 
     def _cancel_timer(self) -> None:
         if self._timer_cancel:

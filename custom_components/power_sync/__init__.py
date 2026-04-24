@@ -13346,7 +13346,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             CONF_SOLAX_CONFIG_ENTRY_ID,
             entry.data.get(CONF_SOLAX_CONFIG_ENTRY_ID, ""),
         )
-        solax_prefix = entry.options.get(CONF_SOLAX_ENTITY_PREFIX, entry.data.get(CONF_SOLAX_ENTITY_PREFIX, DEFAULT_SOLAX_ENTITY_PREFIX))
+        solax_prefix = entry.options.get(
+            CONF_SOLAX_ENTITY_PREFIX,
+            entry.data.get(
+                CONF_SOLAX_ENTITY_PREFIX,
+                "" if solax_config_entry_id else DEFAULT_SOLAX_ENTITY_PREFIX,
+            ),
+        )
         solax_nominal_v = entry.options.get(CONF_SOLAX_BATTERY_NOMINAL_V, entry.data.get(CONF_SOLAX_BATTERY_NOMINAL_V, DEFAULT_SOLAX_BATTERY_NOMINAL_V))
         solax_max_charge_a = entry.options.get(CONF_SOLAX_MAX_CHARGE_CURRENT_A, entry.data.get(CONF_SOLAX_MAX_CHARGE_CURRENT_A, DEFAULT_SOLAX_MAX_CHARGE_CURRENT_A))
         solax_max_discharge_a = entry.options.get(CONF_SOLAX_MAX_DISCHARGE_CURRENT_A, entry.data.get(CONF_SOLAX_MAX_DISCHARGE_CURRENT_A, DEFAULT_SOLAX_MAX_DISCHARGE_CURRENT_A))
@@ -13357,7 +13363,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         solax_coordinator = SolaxBatteryEnergyCoordinator(
             hass,
             solax_entry_id=solax_config_entry_id or None,
-            entity_prefix="" if solax_config_entry_id else solax_prefix,
+            entity_prefix=solax_prefix,
             battery_nominal_v=float(solax_nominal_v),
             max_charge_current_a=float(solax_max_charge_a),
             max_discharge_current_a=float(solax_max_discharge_a),

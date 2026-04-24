@@ -2068,11 +2068,12 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             nominal_v = user_input.get(CONF_SOLAX_BATTERY_NOMINAL_V, DEFAULT_SOLAX_BATTERY_NOMINAL_V)
             max_charge_a = user_input.get(CONF_SOLAX_MAX_CHARGE_CURRENT_A, DEFAULT_SOLAX_MAX_CHARGE_CURRENT_A)
             max_discharge_a = user_input.get(CONF_SOLAX_MAX_DISCHARGE_CURRENT_A, DEFAULT_SOLAX_MAX_DISCHARGE_CURRENT_A)
+            entity_prefix = (user_input.get(CONF_SOLAX_ENTITY_PREFIX) or "").strip()
 
             try:
                 ctrl = SolaxBatteryController(
                     self.hass,
-                    entity_prefix="",
+                    entity_prefix=entity_prefix,
                     solax_entry_id=selected_entry_id,
                     battery_nominal_v=float(nominal_v),
                     max_charge_current_a=float(max_charge_a),
@@ -2086,6 +2087,8 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     CONF_SOLAX_MAX_CHARGE_CURRENT_A: float(max_charge_a),
                     CONF_SOLAX_MAX_DISCHARGE_CURRENT_A: float(max_discharge_a),
                 }
+                if entity_prefix:
+                    self._solax_data[CONF_SOLAX_ENTITY_PREFIX] = entity_prefix
                 return self._create_final_entry()
             except ValueError as exc:
                 msg = str(exc)
@@ -2115,6 +2118,9 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required(CONF_SOLAX_MAX_DISCHARGE_CURRENT_A, default=DEFAULT_SOLAX_MAX_DISCHARGE_CURRENT_A): NumberSelector(
                     NumberSelectorConfig(min=1, max=200, step=1, mode=NumberSelectorMode.BOX, unit_of_measurement="A")
                 ),
+                vol.Optional(CONF_SOLAX_ENTITY_PREFIX, default=""): TextSelector(
+                    TextSelectorConfig(type=TextSelectorType.TEXT)
+                ),
             })
         else:
             entry_options = {e.entry_id: e.title or e.entry_id for e in solax_entries}
@@ -2139,6 +2145,9 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 ),
                 vol.Required(CONF_SOLAX_MAX_DISCHARGE_CURRENT_A, default=DEFAULT_SOLAX_MAX_DISCHARGE_CURRENT_A): NumberSelector(
                     NumberSelectorConfig(min=1, max=200, step=1, mode=NumberSelectorMode.BOX, unit_of_measurement="A")
+                ),
+                vol.Optional(CONF_SOLAX_ENTITY_PREFIX, default=""): TextSelector(
+                    TextSelectorConfig(type=TextSelectorType.TEXT)
                 ),
             })
 
@@ -4199,10 +4208,11 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 selected_entry_id = solax_entries[0].entry_id
             else:
                 selected_entry_id = user_input.get(CONF_SOLAX_CONFIG_ENTRY_ID, "")
+            entity_prefix = (user_input.get(CONF_SOLAX_ENTITY_PREFIX) or "").strip()
             try:
                 ctrl = SolaxBatteryController(
                     self.hass,
-                    entity_prefix="",
+                    entity_prefix=entity_prefix,
                     solax_entry_id=selected_entry_id,
                     battery_nominal_v=float(user_input.get(CONF_SOLAX_BATTERY_NOMINAL_V, DEFAULT_SOLAX_BATTERY_NOMINAL_V)),
                     max_charge_current_a=float(user_input.get(CONF_SOLAX_MAX_CHARGE_CURRENT_A, DEFAULT_SOLAX_MAX_CHARGE_CURRENT_A)),
@@ -4211,7 +4221,9 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 await ctrl.connect()
                 new_data = dict(self.config_entry.data)
                 new_data[CONF_SOLAX_CONFIG_ENTRY_ID] = selected_entry_id
-                if CONF_SOLAX_ENTITY_PREFIX in new_data:
+                if entity_prefix:
+                    new_data[CONF_SOLAX_ENTITY_PREFIX] = entity_prefix
+                elif CONF_SOLAX_ENTITY_PREFIX in new_data:
                     del new_data[CONF_SOLAX_ENTITY_PREFIX]
                 new_data[CONF_SOLAX_BATTERY_CAPACITY_KWH] = float(user_input.get(CONF_SOLAX_BATTERY_CAPACITY_KWH, DEFAULT_SOLAX_BATTERY_CAPACITY_KWH))
                 new_data[CONF_SOLAX_BATTERY_NOMINAL_V] = float(user_input.get(CONF_SOLAX_BATTERY_NOMINAL_V, DEFAULT_SOLAX_BATTERY_NOMINAL_V))
@@ -4241,6 +4253,10 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
         current_nominal_v = self._get_option(CONF_SOLAX_BATTERY_NOMINAL_V, self.config_entry.data.get(CONF_SOLAX_BATTERY_NOMINAL_V, DEFAULT_SOLAX_BATTERY_NOMINAL_V))
         current_charge_a = self._get_option(CONF_SOLAX_MAX_CHARGE_CURRENT_A, self.config_entry.data.get(CONF_SOLAX_MAX_CHARGE_CURRENT_A, DEFAULT_SOLAX_MAX_CHARGE_CURRENT_A))
         current_discharge_a = self._get_option(CONF_SOLAX_MAX_DISCHARGE_CURRENT_A, self.config_entry.data.get(CONF_SOLAX_MAX_DISCHARGE_CURRENT_A, DEFAULT_SOLAX_MAX_DISCHARGE_CURRENT_A))
+        current_entity_prefix = self._get_option(
+            CONF_SOLAX_ENTITY_PREFIX,
+            self.config_entry.data.get(CONF_SOLAX_ENTITY_PREFIX, ""),
+        )
 
         entry_options = {e.entry_id: e.title or e.entry_id for e in solax_entries}
         if not current_entry_id and entry_options:
@@ -4269,6 +4285,9 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 ),
                 vol.Required(CONF_SOLAX_MAX_DISCHARGE_CURRENT_A, default=current_discharge_a): NumberSelector(
                     NumberSelectorConfig(min=1, max=200, step=1, mode=NumberSelectorMode.BOX, unit_of_measurement="A")
+                ),
+                vol.Optional(CONF_SOLAX_ENTITY_PREFIX, default=current_entity_prefix): TextSelector(
+                    TextSelectorConfig(type=TextSelectorType.TEXT)
                 ),
             }),
             errors=errors,
