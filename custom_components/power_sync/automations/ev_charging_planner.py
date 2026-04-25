@@ -5585,7 +5585,7 @@ class PriceLevelChargingExecutor:
                 return results
 
             # Also check OCPP
-            from ..const import CONF_OCPP_ENABLED
+            from ..const import CONF_OCPP_ENABLED, CONF_GENERIC_CHARGER_ENABLED
             if opts.get(CONF_OCPP_ENABLED):
                 decision = await self.get_charging_decision(current_price_cents)
                 should_charge, reason, mode = decision
@@ -5595,6 +5595,28 @@ class PriceLevelChargingExecutor:
                 vehicle_state = self._get_or_create_vehicle_state(pseudo_vin)
                 _LOGGER.debug(
                     f"OCPP charger decision: should_charge={should_charge}, reason={reason}"
+                )
+
+                if should_charge and not vehicle_state.is_charging:
+                    await self._start_charging(mode, reason)
+                elif not should_charge and vehicle_state.is_charging:
+                    await self._stop_charging(reason)
+                else:
+                    vehicle_state.last_decision = "charging" if vehicle_state.is_charging else "waiting"
+                    vehicle_state.last_decision_reason = reason
+
+                return results
+
+            # Also check Generic Charger (OCPP via lbbrhzn/ocpp or any switch-based charger)
+            if opts.get(CONF_GENERIC_CHARGER_ENABLED):
+                decision = await self.get_charging_decision(current_price_cents)
+                should_charge, reason, mode = decision
+                pseudo_vin = "generic_ev"
+                results[pseudo_vin] = decision
+
+                vehicle_state = self._get_or_create_vehicle_state(pseudo_vin)
+                _LOGGER.debug(
+                    f"Generic Charger decision: should_charge={should_charge}, reason={reason}"
                 )
 
                 if should_charge and not vehicle_state.is_charging:
