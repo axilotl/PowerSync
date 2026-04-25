@@ -23010,26 +23010,36 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
             live_status = {}
             if tesla_coordinator and tesla_coordinator.data:
+                # Tesla API returns watts; EV planner expects watts.
                 live_status = {
                     "battery_soc": tesla_coordinator.data.get("battery_level", 0),
                     "solar_power": tesla_coordinator.data.get("solar_power", 0),
                     "grid_power": tesla_coordinator.data.get("grid_power", 0),
                     "load_power": tesla_coordinator.data.get("load_power", 0),
                 }
-            elif sigenergy_coordinator and sigenergy_coordinator.data:
-                live_status = {
-                    "battery_soc": sigenergy_coordinator.data.get("battery_level", 0),
-                    "solar_power": sigenergy_coordinator.data.get("solar_power", 0),
-                    "grid_power": sigenergy_coordinator.data.get("grid_power", 0),
-                    "load_power": sigenergy_coordinator.data.get("load_power", 0),
-                }
-            elif sungrow_coordinator and sungrow_coordinator.data:
-                live_status = {
-                    "battery_soc": sungrow_coordinator.data.get("battery_level", 0),
-                    "solar_power": sungrow_coordinator.data.get("solar_power", 0),
-                    "grid_power": sungrow_coordinator.data.get("grid_power", 0),
-                    "load_power": sungrow_coordinator.data.get("load_power", 0),
-                }
+            else:
+                # All non-Tesla coordinators store power in kW; multiply by 1000 to
+                # produce watts so the EV planner's /1000 division gives correct kW values.
+                _kw_coord = None
+                if sigenergy_coordinator and sigenergy_coordinator.data:
+                    _kw_coord = sigenergy_coordinator
+                elif sungrow_coordinator and sungrow_coordinator.data:
+                    _kw_coord = sungrow_coordinator
+                else:
+                    for _key in ("foxess_coordinator", "goodwe_coordinator",
+                                 "alphaess_coordinator", "solax_coordinator"):
+                        _c = entry_data.get(_key)
+                        if _c and _c.data:
+                            _kw_coord = _c
+                            break
+                if _kw_coord:
+                    _d = _kw_coord.data
+                    live_status = {
+                        "battery_soc": _d.get("battery_level", 0),
+                        "solar_power": (_d.get("solar_power", 0) or 0) * 1000,
+                        "grid_power": (_d.get("grid_power", 0) or 0) * 1000,
+                        "load_power": (_d.get("load_power", 0) or 0) * 1000,
+                    }
 
             # Get current price from Amber coordinator if available
             current_price = None

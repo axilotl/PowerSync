@@ -1029,14 +1029,16 @@ class SigenergyController(InverterController):
                 return False
             _LOGGER.info("Remote EMS enabled for force charge")
 
-            # 2. Set control mode to charge (grid first)
+            # 2. Set control mode to charge (PV first — charges from solar and supplements
+            # with grid as needed). CHARGE_GRID (mode 3) suppresses solar generation entirely;
+            # CHARGE_PV (mode 4) uses solar and fills the remainder from the grid.
             mode_result = await self._write_holding_registers(
-                self.REG_REMOTE_EMS_CONTROL_MODE, [self.REMOTE_EMS_MODE_CHARGE_GRID]
+                self.REG_REMOTE_EMS_CONTROL_MODE, [self.REMOTE_EMS_MODE_CHARGE_PV]
             )
             if not mode_result:
                 _LOGGER.error("Failed to set Remote EMS control mode to charge")
                 return False
-            _LOGGER.info("Remote EMS control mode set to CHARGE")
+            _LOGGER.info("Remote EMS control mode set to CHARGE_PV")
 
             # Note: ESS max charge/discharge limits are left at rated capacity.
             # Reducing them would prevent the battery from covering home load.
