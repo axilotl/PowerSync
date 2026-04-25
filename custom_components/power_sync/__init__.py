@@ -4130,7 +4130,29 @@ class BatteryHealthView(HomeAssistantView):
         # (one per PW3 stack), not individual battery modules — use it only as a floor.
         batt_count = max(bms_module_count, bb_count) if bms_module_count else bb_count
 
-        # Rated capacity: 13.5 kWh per battery module.
+        # Cross-validate against Tesla's own site_info battery_count. PW3 units each expose
+        # two BMS sub-modules in the msa components list, so bms_module_count can be 2× the
+        # actual physical Powerwall count. site_info.battery_count is Tesla's authoritative
+        # count of physical units — prefer it when the BMS count exceeds it.
+        try:
+            _coord = (self._hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+                      .get("tesla_coordinator"))
+            _site_batt_count = (
+                (_coord._site_info_cache or {}).get("battery_count")
+                if _coord and hasattr(_coord, "_site_info_cache")
+                else None
+            )
+            if _site_batt_count and batt_count > _site_batt_count:
+                _LOGGER.info(
+                    "fleet_api_bms: BMS module count (%d) exceeds site battery_count (%d) — "
+                    "using site battery_count for rated capacity (PW3 has 2 BMS sub-modules per unit)",
+                    batt_count, _site_batt_count,
+                )
+                batt_count = _site_batt_count
+        except Exception:
+            pass
+
+        # Rated capacity: 13.5 kWh per physical Powerwall unit.
         original_wh = 13500 * batt_count
         health_percent = round((current_wh / original_wh) * 100, 1) if original_wh > 0 else 0
 
@@ -13577,7 +13599,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
 
     # Tesla AEMO Spike Manager (tariff-based) — only for Tesla
-    if aemo_spike_enabled and has_tesla_site and not is_sigenergy and not is_sungrow and not is_foxess and not is_goodwe and not is_esy_sunhome and not is_saj_h2:
+    if aemo_spike_enabled and has_tesla_site and not is_sigenergy and not is_sungrow and not is_foxess and not is_goodwe and not is_alphaess and not is_esy_sunhome and not is_solax and not is_saj_h2:
         aemo_region = entry.options.get(
             CONF_AEMO_REGION,
             entry.data.get(CONF_AEMO_REGION)
@@ -13607,7 +13629,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.warning("AEMO spike detection enabled but no region configured")
 
     # Generic AEMO Spike Manager (service-call-based) for non-Tesla systems
-    if aemo_spike_enabled and (is_sigenergy or is_sungrow or is_foxess or is_esy_sunhome or is_solax or is_saj_h2):
+    if aemo_spike_enabled and (is_sigenergy or is_sungrow or is_foxess or is_esy_sunhome or is_solax or is_saj_h2 or is_goodwe or is_alphaess):
         aemo_region = entry.options.get(
             CONF_AEMO_REGION,
             entry.data.get(CONF_AEMO_REGION)
@@ -13624,6 +13646,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 "solax" if is_solax else
                 "saj_h2" if is_saj_h2 else
                 "esy_sunhome" if is_esy_sunhome else
+                "goodwe" if is_goodwe else
+                "alphaess" if is_alphaess else
                 "foxess"
             )
             generic_aemo_spike_manager = GenericAEMOSpikeManager(
