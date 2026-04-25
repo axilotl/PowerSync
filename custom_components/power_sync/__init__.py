@@ -9591,6 +9591,40 @@ class EVVehicleCommandView(HomeAssistantView):
                 _LOGGER.error(f"Zaptec start charging failed: {e}")
                 return False, f"Failed to start Zaptec charging: {e}"
 
+        # Generic Charger path (OCPP / any switch-based charger) — bypasses Tesla preconditions
+        if vehicle_vin == "generic_ev":
+            from .const import (
+                CONF_GENERIC_CHARGER_ENABLED,
+                CONF_GENERIC_CHARGER_STATUS_ENTITY,
+                CONF_GENERIC_CHARGER_SWITCH_ENTITY,
+            )
+            for entry in self._hass.config_entries.async_entries(DOMAIN):
+                opts = {**entry.data, **entry.options}
+                if not opts.get(CONF_GENERIC_CHARGER_ENABLED):
+                    continue
+                status_entity = opts.get(CONF_GENERIC_CHARGER_STATUS_ENTITY, "")
+                switch_entity = opts.get(CONF_GENERIC_CHARGER_SWITCH_ENTITY, "")
+                if status_entity:
+                    cs = self._hass.states.get(status_entity)
+                    if cs and cs.state.lower() in ("available", "disconnected"):
+                        msg = "Vehicle is not plugged in"
+                        _LOGGER.warning(f"Generic Charger: {status_entity} = {cs.state}")
+                        return False, msg
+                if not switch_entity:
+                    return False, "Generic Charger: no switch entity configured"
+                try:
+                    await self._hass.services.async_call(
+                        "switch", "turn_on",
+                        {"entity_id": switch_entity},
+                        blocking=True,
+                    )
+                    _LOGGER.info(f"Started charging via Generic Charger: {switch_entity}")
+                    return True, "Charging started"
+                except Exception as e:
+                    _LOGGER.error(f"Generic Charger start charging failed: {e}")
+                    return False, f"Failed to start charging: {e}"
+            return False, "Generic Charger not configured"
+
         # Check preconditions (Tesla path)
         if not await self._is_vehicle_at_home(vehicle_vin):
             msg = "Vehicle is not at home"
@@ -9694,6 +9728,32 @@ class EVVehicleCommandView(HomeAssistantView):
             except Exception as e:
                 _LOGGER.error(f"Zaptec stop charging failed: {e}")
                 return False, f"Failed to stop Zaptec charging: {e}"
+
+        # Generic Charger path — bypasses Tesla preconditions
+        if vehicle_vin == "generic_ev":
+            from .const import (
+                CONF_GENERIC_CHARGER_ENABLED,
+                CONF_GENERIC_CHARGER_SWITCH_ENTITY,
+            )
+            for entry in self._hass.config_entries.async_entries(DOMAIN):
+                opts = {**entry.data, **entry.options}
+                if not opts.get(CONF_GENERIC_CHARGER_ENABLED):
+                    continue
+                switch_entity = opts.get(CONF_GENERIC_CHARGER_SWITCH_ENTITY, "")
+                if not switch_entity:
+                    return False, "Generic Charger: no switch entity configured"
+                try:
+                    await self._hass.services.async_call(
+                        "switch", "turn_off",
+                        {"entity_id": switch_entity},
+                        blocking=True,
+                    )
+                    _LOGGER.info(f"Stopped charging via Generic Charger: {switch_entity}")
+                    return True, "Charging stopped"
+                except Exception as e:
+                    _LOGGER.error(f"Generic Charger stop charging failed: {e}")
+                    return False, f"Failed to stop charging: {e}"
+            return False, "Generic Charger not configured"
 
         # Check if actually charging (Tesla path)
         charging_state = await self._get_vehicle_charging_state(vehicle_vin)
