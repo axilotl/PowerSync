@@ -493,6 +493,30 @@ async def is_ev_plugged_in(
                 _LOGGER.debug("OCPP server found but no charge point has vehicle connected")
                 return False
 
+            # No built-in OCPP server — fall back to HACS lbbrhzn/ocpp entities.
+            # The connector-level status sensor is the most reliable indicator.
+            OCPP_CAR_PRESENT = {'preparing', 'charging', 'suspendedev', 'suspendedevse', 'finishing'}
+            for state in hass.states.async_all():
+                eid = state.entity_id
+                if not (eid.startswith("sensor.") and eid.endswith("_status_connector")):
+                    continue
+                if state.state in ("unavailable", "unknown"):
+                    continue
+                # Only consider entities from the ocpp platform
+                try:
+                    from homeassistant.helpers.entity_registry import async_get as _er_get
+                    _er = _er_get(hass)
+                    _entry = _er.async_get(eid)
+                    if _entry and _entry.platform != "ocpp":
+                        continue
+                except Exception:
+                    pass
+                if state.state.lower() in OCPP_CAR_PRESENT:
+                    _LOGGER.debug("HACS OCPP: %s=%s → car plugged in", eid, state.state)
+                    return True
+            _LOGGER.debug("HACS OCPP: no connector shows car present")
+            return False
+
     # Generic charger — check connector status sensor
     if config_entry:
         opts = {**config_entry.data, **config_entry.options}

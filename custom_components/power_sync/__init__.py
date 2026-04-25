@@ -11020,14 +11020,26 @@ class OCPPChargersView(HomeAssistantView):
         # Build charger list from detected entities
         for idx, cid in enumerate(sorted(charger_ids)):
             status_entity = f"sensor.{cid}_status"
+            # lbbrhzn/ocpp exposes sensor.*_status (charge-point level) and
+            # sensor.*_status_connector (connector level).  The charge-point sensor
+            # often stays "unknown" while the connector sensor is reliably updated,
+            # so fall back to it when the primary status is unknown/unavailable.
+            status_connector_entity = f"sensor.{cid}_status_connector"
             power_entity = f"sensor.{cid}_current_power"
             energy_entity = f"sensor.{cid}_energy_meter"
 
             status_state = self._hass.states.get(status_entity)
+            status_connector_state = self._hass.states.get(status_connector_entity)
             power_state = self._hass.states.get(power_entity)
             energy_state = self._hass.states.get(energy_entity)
 
-            status = status_state.state if status_state and status_state.state not in ("unavailable", "unknown") else "Unavailable"
+            effective_status = None
+            if status_state and status_state.state not in ("unavailable", "unknown"):
+                effective_status = status_state.state
+            elif status_connector_state and status_connector_state.state not in ("unavailable", "unknown"):
+                effective_status = status_connector_state.state
+            status = effective_status if effective_status else "Unavailable"
+
             power_kw = 0.0
             energy_kwh = 0.0
 
@@ -11043,8 +11055,12 @@ class OCPPChargersView(HomeAssistantView):
                 except (ValueError, TypeError):
                     pass
 
-            is_connected = status.lower() not in ("unavailable", "disconnected", "")
-            is_charging = status.lower() in ("charging",)
+            # OCPP connector statuses: anything other than offline/fault means the
+            # charger hardware is reachable.  "Available" = charger ready, no car.
+            OCPP_ONLINE = {"available", "preparing", "charging", "suspendedevse",
+                           "suspendedev", "finishing", "reserved"}
+            is_connected = status.lower() in OCPP_ONLINE
+            is_charging = status.lower() == "charging"
 
             chargers.append({
                 "id": idx + 1,
