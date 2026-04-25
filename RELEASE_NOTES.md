@@ -1,9 +1,6 @@
-<<<<<<< HEAD
-=======
 ## What's Changed
 
-**Fix: Tesla Fleet API "user out of region" error blocks setup for EU and AP users**
-EU and Asia-Pacific users connecting via Tesla Fleet API received a 421 "user out of region" error during setup, with no way to proceed — the integration silently returned "cannot connect." Tesla's 421 response includes the correct regional endpoint in the error body; the setup flow now detects this, parses the regional URL (e.g. `fleet-api.prd.eu.vn.cloud.tesla.com`), retries the validation against it automatically, and stores the correct endpoint in the config entry. All subsequent Fleet API calls — tariff syncing, TOU uploads, curtailment, AEMO spike mode, live status, force charge/discharge — now use the stored regional URL rather than hardcoding the NA server.
+**Fix: Powerwall local signaling log spam for PowerSync proxy users**
+Users connecting via the PowerSync.cc proxy (psync_ tokens) saw repeated errors every few seconds — "all hermes JWT exchange endpoints failed" and "HermesServer rejected raw token fallback" — looping indefinitely. The signaling WebSocket requires a real Tesla JWT with hermes scope, which psync_ proxy credentials can't provide directly. The client now gives up cleanly after 3 consecutive failures instead of retrying forever. Additionally, if the `tesla_fleet` Home Assistant integration is installed alongside PowerSync, its real Tesla access token will now be used for signaling (which does have the right scopes), making signaling functional for psync_ users who have both integrations.
 
 *Update available via HACS*
->>>>>>> 8f8fa43 (fix: resolve RELEASE_NOTES conflict markers from rebase)
