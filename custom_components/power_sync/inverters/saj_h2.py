@@ -37,7 +37,7 @@ _SENSOR_KEYS: dict[str, tuple[str, ...]] = {
     "battery_level":               ("Bat1SOC", "batEnergyPercent"),
     "battery_power":               ("batteryPower",),
     "grid_power":                  ("gridPower", "totalgridPower", "CT_GridPowerWatt"),
-    "solar_power":                 ("pvPower", "CT_PVPowerWatt"),
+    "solar_power":                 ("CT_PVPowerWatt", "pvPower"),
     "load_power":                  ("TotalLoadPower", "gridPower"),
     "battery_temperature":         ("BatTemp", "Bat1Temperature"),
     "app_mode":                    ("AppMode",),
@@ -286,15 +286,16 @@ class SajH2BatteryController:
         return True
 
     async def restore_normal(self) -> bool:
-        """Return to normal TOU self-consumption mode (AppMode=1).
+        """Return to normal self-consumption mode.
 
-        Turning off the passive discharge switch causes stanus74 to write
-        passive_enable=0 to register 0x3636 and restore the previously-captured
-        AppMode (AppMode=1, TOU). The inverter resumes its own discharge schedule,
-        covering home load with zero grid export.
+        Both passive switches write to the same register (0x3636). Turning off
+        whichever switch is currently ON causes stanus74 to write passive_enable=0
+        and restore the previously-captured AppMode. We turn off both to handle
+        whichever passive mode is currently active.
         """
+        await self._turn_off("charge_switch")
         await self._turn_off("discharge_switch")
-        _LOGGER.info("SAJ H2 restored to normal TOU operation (AppMode=1)")
+        _LOGGER.info("SAJ H2 restored to normal operation")
         return True
 
     async def disconnect(self) -> None:
