@@ -234,13 +234,15 @@ class SajH2BatteryController:
         return True
 
     async def set_idle(self) -> bool:
-        """Hold battery at current SOC — no discharge, no grid charge."""
-        # discharge_power_pct=0 locks discharge; passive_enable=2 prevents grid charge schedule;
-        # charge_switch must be on for passive_enable to take effect.
+        """Hold battery at current SOC — no discharge, grid serves home load."""
+        # discharge_power_pct=0 only locks the battery when passive_discharge_control is ON.
+        # Mirrors force_discharge but at 0% rate. passive_enable=2 must be set first so
+        # the discharge switch sticks. restore_normal() exits this mode correctly.
         await self._set_number("discharge_power_pct", 0)
         await self._set_number("passive_enable", 2)
-        await self._turn_on("charge_switch")
-        _LOGGER.info("SAJ H2 idle mode: battery locked at current SOC")
+        await self._turn_off("charge_switch")
+        await self._turn_on("discharge_switch")
+        _LOGGER.info("SAJ H2 idle mode: battery locked at current SOC (discharge_pct=0, discharge_switch=on)")
         return True
 
     async def restore_normal(self) -> bool:
