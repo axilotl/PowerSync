@@ -535,6 +535,20 @@ async def is_ev_plugged_in(
                             "charging", "preparing", "suspended_evse",
                             "suspended_ev", "finishing",
                         )
+                        # Charger-level entities can show "available" even when a car is
+                        # connected — fall back to connector-level entities before declaring unplugged.
+                        if not plugged and status in ("available", "disconnected"):
+                            _OCPP_CAR_PRESENT = {"preparing", "charging", "suspendedev", "suspendedevse", "finishing"}
+                            for s in hass.states.async_all():
+                                if (s.entity_id.startswith("sensor.") and s.entity_id.endswith("_status_connector")
+                                        and s.state not in ("unavailable", "unknown")
+                                        and s.state.lower() in _OCPP_CAR_PRESENT):
+                                    _LOGGER.debug(
+                                        "Generic charger: %s=%s but %s=%s → car present",
+                                        status_entity, state.state, s.entity_id, s.state,
+                                    )
+                                    plugged = True
+                                    break
                     _LOGGER.debug(
                         "Generic charger plugged_in check: %s state=%s → %s",
                         status_entity, state.state, plugged,

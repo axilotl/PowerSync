@@ -9614,9 +9614,21 @@ class EVVehicleCommandView(HomeAssistantView):
                 if status_entity:
                     cs = self._hass.states.get(status_entity)
                     if cs and cs.state.lower() in ("available", "disconnected"):
-                        msg = "Vehicle is not plugged in"
-                        _LOGGER.warning(f"Generic Charger: {status_entity} = {cs.state}")
-                        return False, msg
+                        # Charger-level entity can show "Available" even when a car is
+                        # connected — connector-level entities are more reliable.
+                        # Fall back to checking any _status_connector entity before rejecting.
+                        _OCPP_CAR_PRESENT = {"preparing", "charging", "suspendedev", "suspendedevse", "finishing"}
+                        car_on_connector = any(
+                            s.state.lower() in _OCPP_CAR_PRESENT
+                            for s in self._hass.states.async_all()
+                            if s.entity_id.startswith("sensor.") and s.entity_id.endswith("_status_connector")
+                            and s.state not in ("unavailable", "unknown")
+                        )
+                        if not car_on_connector:
+                            msg = "Vehicle is not plugged in"
+                            _LOGGER.warning(f"Generic Charger: {status_entity} = {cs.state}, no connector shows car present")
+                            return False, msg
+                        _LOGGER.debug(f"Generic Charger: {status_entity} = {cs.state} but connector shows car present, proceeding")
                 if not switch_entity:
                     return False, "Generic Charger: no switch entity configured"
                 try:
