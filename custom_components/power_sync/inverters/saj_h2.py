@@ -238,9 +238,10 @@ class SajH2BatteryController:
         await self._set_number("charge_power", 0)
         await self._set_number("discharge_power", 0)
         await self._turn_off("discharge_switch")
-        # Value 2 = passive self-consumption mode; 0 = disabled (inverter follows charge schedule)
+        # passive_enable must be set before turning on the switch — switch is ignored when enable=0
         await self._set_number("passive_enable", 2)
-        _LOGGER.info("SAJ H2 restored to normal operation (passive_enable=2)")
+        await self._turn_on("charge_switch")
+        _LOGGER.info("SAJ H2 restored to normal operation (passive_enable=2, charge_switch=on)")
         return True
 
     async def disconnect(self) -> None:
