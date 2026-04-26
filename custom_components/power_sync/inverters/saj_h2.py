@@ -17,29 +17,32 @@ _LOGGER = logging.getLogger(__name__)
 
 # Maps internal slot → tuple of unique_id suffixes to try (first match wins).
 # Regular (slow-poll) sensors are preferred over fast-poll counterparts.
+# stanus74 integration uses camelCase keys: unique_id = f"{hub_name}_{key}" or f"{hub_name}_fast_{key}"
 _SENSOR_KEYS: dict[str, tuple[str, ...]] = {
-    "battery_level":               ("battery_1_soc", "battery_energy_percent"),
-    "battery_power":               ("battery_power",),
-    "grid_power":                  ("total_grid_power", "ct_grid_power_watt"),
-    "solar_power":                 ("pv_power", "ct_pv_power_watt"),
-    "load_power":                  ("total_load_power", "total_load"),
-    "battery_temperature":         ("battery_temperature", "battery_1_temperature"),
-    "app_mode":                    ("app_mode", "inverter_working_mode"),
-    "battery_max_charge_power_w":  ("battery_charge_power_limit", "grid_charge_power_limit", "battery_charge_current_limit"),
-    "battery_max_discharge_power_w": ("battery_discharge_power_limit", "grid_discharge_power_limit", "battery_discharge_current_limit"),
+    "battery_level":               ("Bat1SOC", "batEnergyPercent"),
+    "battery_power":               ("batteryPower",),
+    "grid_power":                  ("totalgridPower", "CT_GridPowerWatt"),
+    "solar_power":                 ("pvPower", "CT_PVPowerWatt"),
+    "load_power":                  ("TotalLoadPower",),
+    "battery_temperature":         ("BatTemp", "Bat1Temperature"),
+    "app_mode":                    ("AppMode",),
+    "battery_max_charge_power_w":  ("BatChargePower", "GridChargePower", "BatChaCurrLimit"),
+    "battery_max_discharge_power_w": ("BatDischargePower", "GridDischargePower", "BatDisCurrLimit"),
     # Direction sensors — integer: 1=charging/import, 2=discharging/export, 0=idle
-    "direction_battery":           ("direction_battery",),
-    "direction_grid":              ("direction_grid",),
+    "direction_battery":           ("directionBattery",),
+    "direction_grid":              ("directionGrid",),
 }
 
 # Maps internal slot → unique_id suffix for writable number entities.
-# stanus74 exposes passive-mode power targets as number.saj_passive_battery_*_input entities.
+# stanus74 constructs: f"{hub_name}_{key}_input" — so we search for endswith("_{key}_input")
 _NUMBER_KEYS: dict[str, str] = {
-    "charge_power":   "passive_battery_charge_power_input",
-    "discharge_power": "passive_battery_discharge_power_input",
+    "charge_power":   "passive_bat_charge_power_input",
+    "discharge_power": "passive_bat_discharge_power_input",
 }
 
 # Maps internal slot → unique_id suffix for writable switch entities.
+# stanus74 constructs: f"{hub_name}_{switch_type}{unique_id_suffix}"
+# passive charge → ends with "_passive_charge_control", passive discharge → "_passive_discharge_control"
 _SWITCH_KEYS: dict[str, str] = {
     "charge_switch":   "passive_charge_control",
     "discharge_switch": "passive_discharge_control",
