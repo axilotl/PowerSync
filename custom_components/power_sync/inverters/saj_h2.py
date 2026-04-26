@@ -45,14 +45,12 @@ _NUMBER_KEYS: dict[str, str] = {
 }
 
 # Maps internal slot → unique_id suffix for writable switch entities.
-# stanus74 constructs: f"{hub_name}_{switch_type}{unique_id_suffix}"
-# passive charge → ends with "_passive_charge_control", passive discharge → "_passive_discharge_control"
-# charging_control / discharging_control are the master battery switches that override passive registers.
+# passive_charge_control / passive_discharge_control are the actual on/off gates for battery
+# charge and discharge. charging_control / discharging_control are read-back status indicators
+# and cannot be set directly — the inverter firmware drives them.
 _SWITCH_KEYS: dict[str, str] = {
     "charge_switch":    "passive_charge_control",
     "discharge_switch": "passive_discharge_control",
-    "master_charge":    "charging_control",
-    "master_discharge": "discharging_control",
 }
 
 
@@ -221,55 +219,53 @@ class SajH2BatteryController:
     async def force_charge(self, duration_minutes: int, power_w: int) -> bool:
         """Prevent battery discharge so grid/solar charges the battery.
 
-        discharge_power_pct=0 causes the inverter firmware to set discharging_control=OFF,
-        which is the actual gate. The master_discharge turn_off is sent as well — it can
-        transition from ON→OFF but not OFF→ON, so restore_normal relies on discharge_pct=1100
-        to re-open the discharge pathway (and discharging_control becomes ON automatically).
+        passive_discharge_control=OFF is the actual discharge gate. discharge_power_pct=0
+        is set as well so the rate register is consistent. charging_control / discharging_control
+        are read-back indicators driven by inverter firmware — they cannot be set directly.
         """
         await self._set_number("discharge_power_pct", 0)
-        await self._turn_off("master_discharge")
-        await self._set_number("charge_power", 1100)
         await self._turn_off("discharge_switch")
+        await self._set_number("charge_power", 1100)
         await self._turn_on("charge_switch")
-        await self._turn_on("master_charge")
-        _LOGGER.info("SAJ H2 force charge: discharge_pct=0, master_discharge off")
+        await self._set_number("passive_enable", 2)
+        _LOGGER.info("SAJ H2 force charge: passive_discharge_control=OFF, discharge_pct=0")
         return True
 
     async def force_discharge(self, duration_minutes: int, power_w: int) -> bool:
-        """Enable SAJ passive discharge mode at full rate."""
+        """Enable SAJ passive discharge mode at full rate.
+
+        passive_discharge_control=ON enables discharge. passive_charge_control=OFF blocks charging.
+        """
         await self._set_number("discharge_power_pct", 1100)
         await self._turn_on("discharge_switch")
-        await self._turn_on("master_discharge")
+        await self._set_number("charge_power", 0)
         await self._turn_off("charge_switch")
-        await self._turn_off("master_charge")
-        _LOGGER.info("SAJ H2 force discharge: discharge_pct=1100, charge disabled")
+        await self._set_number("passive_enable", 2)
+        _LOGGER.info("SAJ H2 force discharge: passive_discharge_control=ON, discharge_pct=1100")
         return True
 
     async def set_idle(self) -> bool:
         """Hold battery at current SOC — no charge or discharge, grid serves home load."""
         await self._set_number("discharge_power_pct", 0)
-        await self._turn_off("master_discharge")
-        await self._set_number("charge_power", 0)
-        await self._turn_off("master_charge")
-        await self._turn_off("charge_switch")
         await self._turn_off("discharge_switch")
-        _LOGGER.info("SAJ H2 idle: discharge_pct=0, both master switches off")
+        await self._set_number("charge_power", 0)
+        await self._turn_off("charge_switch")
+        await self._set_number("passive_enable", 2)
+        _LOGGER.info("SAJ H2 idle: both passive charge and discharge disabled")
         return True
 
     async def restore_normal(self) -> bool:
         """Return to self-consumption.
 
-        discharge_power_pct=1100 must be written first — the inverter firmware re-opens the
-        discharge pathway as soon as this register changes, so the battery starts serving home
-        load immediately rather than waiting for subsequent writes to complete.
+        passive_discharge_control=ON + discharge_pct=1100 enables the battery to serve home load.
+        These two writes are done first so the battery starts discharging immediately while the
+        remaining registers (charge side, passive_enable) are cleaned up afterwards.
         """
         await self._set_number("discharge_power_pct", 1100)
+        await self._turn_on("discharge_switch")
         await self._set_number("charge_power", 1100)
-        await self._set_number("passive_enable", 2)
         await self._turn_on("charge_switch")
-        await self._turn_off("discharge_switch")
-        await self._turn_on("master_charge")
-        await self._turn_on("master_discharge")
+        await self._set_number("passive_enable", 2)
         _LOGGER.info("SAJ H2 restored to normal operation")
         return True
 
