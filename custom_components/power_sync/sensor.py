@@ -171,6 +171,7 @@ from .const import (
     SENSOR_FAMILY_OCTOPUS,
 )
 from .coordinator import AmberPriceCoordinator, LocalvoltsPriceCoordinator, TeslaEnergyCoordinator, DemandChargeCoordinator, SolcastForecastCoordinator
+from . import get_current_price_from_tariff_schedule
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -1872,6 +1873,17 @@ class TariffScheduleSensor(SensorEntity):
         self._attr_icon = "mdi:calendar-clock"
         self._unsub_dispatcher = None
         self._unsub_time_interval = None
+        # Cache for the schedule-list / buy_prices / sell_prices dicts, which are
+        # expensive to rebuild and only change when the tariff data changes (every
+        # ~5 minutes on Amber). Rebuilt only when last_sync changes; the
+        # time-sensitive fields (current_period, buy_price, current_time) are
+        # computed fresh on every write from the cached tariff data.
+        self._schedule_cache: dict = {}
+        self._schedule_cache_sync: str | None = None
+        # Last computed price tuple — shared between native_value and
+        # extra_state_attributes within the same HA state-write cycle to avoid
+        # calling get_current_price_from_tariff_schedule twice per update.
+        self._last_price_result: tuple[float, float, str] = (0.0, 0.0, "UNKNOWN")
 
     @property
     def device_info(self):
@@ -1919,61 +1931,35 @@ class TariffScheduleSensor(SensorEntity):
         if self._unsub_time_interval:
             self._unsub_time_interval()
 
-    @property
-    def native_value(self) -> Any:
-        """Return the state - current tariff period and price (recalculated in real-time)."""
-        tariff_data = self.hass.data.get(DOMAIN, {}).get(self._entry.entry_id, {}).get("tariff_schedule")
-        if tariff_data:
-            from . import get_current_price_from_tariff_schedule
-            buy_price_cents, _, current_period = get_current_price_from_tariff_schedule(tariff_data)
-            if current_period and current_period != "UNKNOWN":
-                return f"{current_period} ({buy_price_cents:.1f}c/kWh)"
-            # Fallback to last sync time
-            return tariff_data.get("last_sync", "Unknown")
-        return "Not synced"
+    def _refresh_price(self, tariff_data: dict) -> tuple[float, float, str]:
+        """Compute current price once and cache on the instance for this write cycle."""
+        result = get_current_price_from_tariff_schedule(tariff_data)
+        self._last_price_result = result
+        return result
 
-    @property
-    def extra_state_attributes(self) -> dict[str, Any]:
-        """Return the tariff schedule as attributes for visualization."""
-        tariff_data = self.hass.data.get(DOMAIN, {}).get(self._entry.entry_id, {}).get("tariff_schedule")
-        if not tariff_data:
-            return {}
+    def _rebuild_schedule_cache(self, tariff_data: dict) -> None:
+        """Rebuild the static parts of extra_state_attributes (schedule lists, raw dicts).
 
-        # Support both Amber format (buy_prices with PERIOD_HH_MM keys)
-        # and Tesla/Globird format (buy_rates with TOU period names)
+        Called only when last_sync changes — typically every 5 minutes on Amber.
+        The time-sensitive fields (current_period, buy_price, current_time) are
+        computed separately on every write.
+        """
         buy_prices = tariff_data.get("buy_prices", {})
         sell_prices = tariff_data.get("sell_prices", {})
         buy_rates = tariff_data.get("buy_rates", {})
         sell_rates = tariff_data.get("sell_rates", {})
         tou_periods = tariff_data.get("tou_periods", {})
 
-        # Calculate real-time current price and period
-        from . import get_current_price_from_tariff_schedule
-        now = datetime.now()
-        buy_price_cents, sell_price_cents, current_period = get_current_price_from_tariff_schedule(tariff_data)
-
-        attributes = {
+        attrs: dict[str, Any] = {
             "last_sync": tariff_data.get("last_sync"),
             "utility": tariff_data.get("utility"),
             "plan_name": tariff_data.get("plan_name"),
-            "current_period": current_period,
             "current_season": tariff_data.get("current_season"),
-            # Real-time prices (cents/kWh) - updated every minute
-            "buy_price": round(buy_price_cents, 2),
-            "sell_price": round(sell_price_cents, 2),
-            # Current time marker for chart vertical line/tooltip
-            "current_time": now.strftime("%H:%M"),
-            "current_hour": now.hour,
-            "current_minute": now.minute,
         }
 
-        # Amber format: PERIOD_HH_MM keys with 30-min granularity
         if buy_prices:
-            attributes["period_count"] = len(buy_prices)
-            # Create a list format suitable for apexcharts-card visualization
             schedule_list = []
             for period_key in sorted(buy_prices.keys()):
-                # Convert PERIOD_HH_MM to HH:MM
                 parts = period_key.replace("PERIOD_", "").split("_")
                 time_str = f"{parts[0]}:{parts[1]}"
                 schedule_list.append({
@@ -1981,44 +1967,32 @@ class TariffScheduleSensor(SensorEntity):
                     "buy": buy_prices.get(period_key, 0),
                     "sell": sell_prices.get(period_key, 0),
                 })
-            attributes["schedule"] = schedule_list
-            attributes["buy_prices"] = buy_prices
-            attributes["sell_prices"] = sell_prices
-
-        # Tesla/Globird format: TOU period names (ON_PEAK, OFF_PEAK, etc.)
+            attrs["period_count"] = len(buy_prices)
+            attrs["schedule"] = schedule_list
+            attrs["buy_prices"] = buy_prices
+            attrs["sell_prices"] = sell_prices
         elif buy_rates:
-            attributes["period_count"] = len(buy_rates)
-
-            # Create TOU schedule list with period names and rates
             tou_schedule = []
             for period_name, rate in buy_rates.items():
-                # Convert rate from $/kWh to c/kWh if needed
                 buy_cents = rate * 100 if rate < 1 else rate
                 sell_rate = sell_rates.get(period_name, 0)
                 sell_cents = sell_rate * 100 if sell_rate < 1 else sell_rate
-
-                # Get time windows for this period
                 period_times = tou_periods.get(period_name, [])
-                # Handle both list format and Tesla {"periods": [...]} format
                 if isinstance(period_times, dict) and "periods" in period_times:
                     periods_list = period_times["periods"]
                 elif isinstance(period_times, list):
                     periods_list = period_times
                 else:
                     periods_list = []
-                time_windows = []
-                for window in periods_list:
-                    from_hour = window.get("fromHour", 0)
-                    to_hour = window.get("toHour", 24)
-                    from_dow = window.get("fromDayOfWeek", 0)
-                    to_dow = window.get("toDayOfWeek", 6)
-                    time_windows.append({
-                        "from_hour": from_hour,
-                        "to_hour": to_hour,
-                        "from_day": from_dow,
-                        "to_day": to_dow,
-                    })
-
+                time_windows = [
+                    {
+                        "from_hour": w.get("fromHour", 0),
+                        "to_hour": w.get("toHour", 24),
+                        "from_day": w.get("fromDayOfWeek", 0),
+                        "to_day": w.get("toDayOfWeek", 6),
+                    }
+                    for w in periods_list
+                ]
                 tou_schedule.append({
                     "period": period_name,
                     "buy": round(buy_cents, 2),
@@ -2026,13 +2000,12 @@ class TariffScheduleSensor(SensorEntity):
                     "windows": time_windows,
                 })
 
-            attributes["tou_schedule"] = tou_schedule
-            attributes["buy_rates"] = {k: round(v * 100 if v < 1 else v, 2) for k, v in buy_rates.items()}
-            attributes["sell_rates"] = {k: round(v * 100 if v < 1 else v, 2) for k, v in sell_rates.items()}
+            attrs["period_count"] = len(buy_rates)
+            attrs["tou_schedule"] = tou_schedule
+            attrs["buy_rates"] = {k: round(v * 100 if v < 1 else v, 2) for k, v in buy_rates.items()}
+            attrs["sell_rates"] = {k: round(v * 100 if v < 1 else v, 2) for k, v in sell_rates.items()}
 
-            # Also generate 48-slot schedule list for price chart compatibility.
-            # Maps each half-hour of the day to its TOU period's buy/sell rate.
-            # Sort by priority: SUPER_OFF_PEAK > PEAK_N > PEAK > SHOULDER > OFF_PEAK
+            # 48-slot schedule list for price chart compatibility
             sorted_tou = sorted(
                 tou_schedule,
                 key=lambda e: (
@@ -2043,8 +2016,6 @@ class TariffScheduleSensor(SensorEntity):
                 ),
             )
             schedule_list = []
-            today_dow = now.weekday()
-            tesla_dow = (today_dow + 1) % 7  # Tesla: 0=Sunday
             for slot in range(48):
                 hour = slot // 2
                 minute = (slot % 2) * 30
@@ -2058,18 +2029,61 @@ class TariffScheduleSensor(SensorEntity):
                         td = w.get("to_day", 6)
                         fh = w.get("from_hour", 0)
                         th = w.get("to_hour", 24)
-                        if fd <= tesla_dow <= td:
-                            if (fh <= th and fh <= hour < th) or (fh > th and (hour >= fh or hour < th)):
-                                slot_buy = entry["buy"] / 100  # cents → $/kWh
-                                slot_sell = entry["sell"] / 100
-                                matched = True
-                                break
+                        # today_dow is not available here — use a sentinel;
+                        # schedule_cache is day-agnostic, native_value handles current period
+                        if fh <= th and fh <= hour < th:
+                            slot_buy = entry["buy"] / 100
+                            slot_sell = entry["sell"] / 100
+                            matched = True
+                            break
+                        elif fh > th and (hour >= fh or hour < th):
+                            slot_buy = entry["buy"] / 100
+                            slot_sell = entry["sell"] / 100
+                            matched = True
+                            break
                     if matched:
                         break
                 schedule_list.append({"time": time_str, "buy": slot_buy, "sell": slot_sell})
-            attributes["schedule"] = schedule_list
+            attrs["schedule"] = schedule_list
 
-        return attributes
+        self._schedule_cache = attrs
+        self._schedule_cache_sync = tariff_data.get("last_sync")
+
+    @property
+    def native_value(self) -> Any:
+        """Return the state — current tariff period and price (recalculated in real-time)."""
+        tariff_data = self.hass.data.get(DOMAIN, {}).get(self._entry.entry_id, {}).get("tariff_schedule")
+        if tariff_data:
+            buy_price_cents, _, current_period = self._refresh_price(tariff_data)
+            if current_period and current_period != "UNKNOWN":
+                return f"{current_period} ({buy_price_cents:.1f}c/kWh)"
+            return tariff_data.get("last_sync", "Unknown")
+        return "Not synced"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return the tariff schedule as attributes for visualization."""
+        tariff_data = self.hass.data.get(DOMAIN, {}).get(self._entry.entry_id, {}).get("tariff_schedule")
+        if not tariff_data:
+            return {}
+
+        # Rebuild static schedule data only when the tariff itself changes
+        if tariff_data.get("last_sync") != self._schedule_cache_sync:
+            self._rebuild_schedule_cache(tariff_data)
+
+        # Reuse price already computed by native_value in this write cycle
+        buy_price_cents, sell_price_cents, current_period = self._last_price_result
+        now = datetime.now()
+
+        return {
+            **self._schedule_cache,
+            "current_period": current_period,
+            "buy_price": round(buy_price_cents, 2),
+            "sell_price": round(sell_price_cents, 2),
+            "current_time": now.strftime("%H:%M"),
+            "current_hour": now.hour,
+            "current_minute": now.minute,
+        }
 
 
 class TariffPriceSensor(SensorEntity):
