@@ -255,14 +255,18 @@ class SajH2BatteryController:
         return True
 
     async def restore_normal(self) -> bool:
-        """Return to self-consumption — re-enable both master charge and discharge switches."""
-        await self._set_number("charge_power", 0)
-        await self._set_number("discharge_power_pct", 1100)
-        await self._set_number("passive_enable", 2)
-        await self._turn_off("discharge_switch")
-        await self._turn_on("charge_switch")
+        """Return to self-consumption — re-enable both master charge and discharge switches.
+
+        Master switches are turned on first so the inverter immediately starts serving
+        load from the battery while the passive registers are cleaned up afterwards.
+        """
         await self._turn_on("master_charge")
         await self._turn_on("master_discharge")
+        await self._set_number("charge_power", 1100)
+        await self._set_number("discharge_power_pct", 1100)
+        await self._set_number("passive_enable", 2)
+        await self._turn_on("charge_switch")
+        await self._turn_off("discharge_switch")
         _LOGGER.info("SAJ H2 restored to normal operation (master charge+discharge ON)")
         return True
 
