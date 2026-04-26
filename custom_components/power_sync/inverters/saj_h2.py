@@ -215,14 +215,16 @@ class SajH2BatteryController:
         }
 
     async def force_charge(self, duration_minutes: int, power_w: int) -> bool:
-        """Enable SAJ passive charge mode."""
-        max_w = self._read_float("battery_max_charge_power_w")
-        actual_w = min(float(power_w), max_w) if max_w and max_w > 0 else float(power_w)
-        await self._set_number("charge_power", actual_w)
-        await self._set_number("discharge_power_pct", 0)   # prevent discharge during forced charge
+        """Enable SAJ passive charge mode at full rate.
+
+        passive_battery_charge_power_input is 0–1100 (% of rated × 10), not watts.
+        1100 = 110% = full rated charge rate.
+        """
+        await self._set_number("charge_power", 1100)
+        await self._set_number("discharge_power_pct", 0)
         await self._turn_off("discharge_switch")
         await self._turn_on("charge_switch")
-        _LOGGER.info("SAJ H2 passive charge enabled at %.0fW", actual_w)
+        _LOGGER.info("SAJ H2 passive charge enabled at full rate")
         return True
 
     async def force_discharge(self, duration_minutes: int, power_w: int) -> bool:
