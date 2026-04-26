@@ -1857,6 +1857,7 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 CONF_ALPHAESS_MODBUS_SLAVE_ID, DEFAULT_ALPHAESS_MODBUS_SLAVE_ID
             )
             export_limit_kw = user_input.get(CONF_ALPHAESS_EXPORT_LIMIT_KW)
+            dc_curtailment = user_input.get(CONF_ALPHAESS_DC_CURTAILMENT_ENABLED, False)
 
             if not host:
                 errors["base"] = "alphaess_host_required"
@@ -1888,6 +1889,7 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         CONF_ALPHAESS_MODBUS_HOST: host,
                         CONF_ALPHAESS_MODBUS_PORT: int(port),
                         CONF_ALPHAESS_MODBUS_SLAVE_ID: int(slave_id),
+                        CONF_ALPHAESS_DC_CURTAILMENT_ENABLED: dc_curtailment,
                     }
                     if export_limit_kw is not None:
                         self._alphaess_data[CONF_ALPHAESS_EXPORT_LIMIT_KW] = float(
@@ -1924,6 +1926,10 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             unit_of_measurement="kW",
                         )
                     ),
+                    vol.Optional(
+                        CONF_ALPHAESS_DC_CURTAILMENT_ENABLED,
+                        default=False,
+                    ): BooleanSelector(),
                 }
             ),
             errors=errors,
@@ -1932,6 +1938,14 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     "Connect to your AlphaESS inverter. Default slave ID is 85 "
                     "(0x55) — the AlphaESS factory default. Export limit is "
                     "optional; leave blank for unlimited."
+                ),
+                "alphaess_curtailment_warning": (
+                    "⚠️ DC Curtailment requires Modbus curtailment to be enabled in "
+                    "your AlphaESS firmware settings first. Without this, PowerSync "
+                    "can write the export-limit register but the inverter will not "
+                    "physically curtail PV. Enable it in the AlphaESS app under "
+                    "Settings → Grid → Export Limit (or equivalent for your firmware "
+                    "version) before turning this on. See the PowerSync wiki for details."
                 ),
             },
         )
