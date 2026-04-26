@@ -9633,8 +9633,14 @@ class EVVehicleCommandView(HomeAssistantView):
                             _LOGGER.warning(f"Generic Charger: {status_entity} = {cs.state}, no connector shows car present")
                             return False, msg
                         _LOGGER.debug(f"Generic Charger: {status_entity} = {cs.state} but connector shows car present, proceeding")
-                if not switch_entity:
+                _LOGGER.debug(f"Generic Charger: switch_entity={switch_entity!r}, status_entity={status_entity!r}")
+                if not switch_entity or not switch_entity.strip():
                     return False, "Generic Charger: no switch entity configured"
+                switch_entity = switch_entity.strip()
+                if "." not in switch_entity:
+                    return False, f"Generic Charger: switch entity '{switch_entity}' is not a valid entity_id (missing domain, e.g. 'switch.charger_charge')"
+                if not self._hass.states.get(switch_entity):
+                    return False, f"Generic Charger: switch entity '{switch_entity}' not found in Home Assistant"
                 try:
                     await self._hass.services.async_call(
                         "switch", "turn_on",
@@ -9644,7 +9650,7 @@ class EVVehicleCommandView(HomeAssistantView):
                     _LOGGER.info(f"Started charging via Generic Charger: {switch_entity}")
                     return True, "Charging started"
                 except Exception as e:
-                    _LOGGER.error(f"Generic Charger start charging failed: {e}")
+                    _LOGGER.error(f"Generic Charger start charging failed: switch_entity={switch_entity!r}, error={e}")
                     return False, f"Failed to start charging: {e}"
             return False, "Generic Charger not configured"
 
