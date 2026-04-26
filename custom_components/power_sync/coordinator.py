@@ -4658,7 +4658,7 @@ class SolaxBatteryEnergyCoordinator(DataUpdateCoordinator):
         buy, sell = _get_current_prices(self.hass, self._entry_id)
         self._energy_acc.update(max(0.0, solar_kw), grid_kw, battery_kw, load_kw, buy, sell)
 
-        result = {
+        return {
             "solar_power": solar_kw,
             "grid_power": grid_kw,
             "battery_power": battery_kw,
@@ -4666,9 +4666,8 @@ class SolaxBatteryEnergyCoordinator(DataUpdateCoordinator):
             "battery_level": soc,
             "battery_temperature": status.get("battery_temperature"),
             "mode": status.get("mode"),
+            "energy_summary": self._energy_acc.as_dict(),
         }
-        result.update(self._energy_acc.totals())
-        return result
 
     async def force_charge(self, duration_minutes: int, power_w: int) -> bool:
         return await self._controller.force_charge(duration_minutes, power_w)
@@ -4744,7 +4743,7 @@ class SajH2EnergyCoordinator(DataUpdateCoordinator):
         buy, sell = _get_current_prices(self.hass, self._entry_id)
         self._energy_acc.update(max(0.0, solar_kw), grid_kw, battery_kw, load_kw, buy, sell)
 
-        result = {
+        return {
             "solar_power": solar_kw,
             "grid_power": grid_kw,
             "battery_power": battery_kw,
@@ -4755,9 +4754,8 @@ class SajH2EnergyCoordinator(DataUpdateCoordinator):
             "battery_max_charge_power_w": status.get("battery_max_charge_power_w"),
             "battery_max_discharge_power_w": status.get("battery_max_discharge_power_w"),
             "app_mode": status.get("app_mode"),
+            "energy_summary": self._energy_acc.as_dict(),
         }
-        result.update(self._energy_acc.totals())
-        return result
 
     async def force_charge(self, duration_minutes: int, power_w: int) -> bool:
         return await self._controller.force_charge(duration_minutes, power_w)

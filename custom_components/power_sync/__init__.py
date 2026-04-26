@@ -3011,8 +3011,12 @@ class CalendarHistoryView(HomeAssistantView):
         is_sungrow = False
         is_foxess = False
         is_goodwe = False
+        is_solax = False
+        is_saj_h2 = False
         foxess_coordinator = None
         goodwe_coordinator = None
+        solax_coordinator = None
+        saj_h2_coordinator = None
         for entry_id, data in self._hass.data.get(DOMAIN, {}).items():
             if isinstance(data, dict):
                 # Check battery system types
@@ -3026,6 +3030,12 @@ class CalendarHistoryView(HomeAssistantView):
                 if data.get("goodwe_coordinator") is not None:
                     is_goodwe = True
                     goodwe_coordinator = data["goodwe_coordinator"]
+                if data.get("is_solax", False) and data.get("solax_coordinator") is not None:
+                    is_solax = True
+                    solax_coordinator = data["solax_coordinator"]
+                if data.get("is_saj_h2", False) and data.get("saj_h2_coordinator") is not None:
+                    is_saj_h2 = True
+                    saj_h2_coordinator = data["saj_h2_coordinator"]
                 # Look for Tesla coordinator (this is the main data source for calendar history)
                 if "tesla_coordinator" in data and data["tesla_coordinator"] is not None:
                     tesla_coordinator = data["tesla_coordinator"]
@@ -3144,6 +3154,78 @@ class CalendarHistoryView(HomeAssistantView):
                 "grid_import": 0,
                 "grid_export": 0,
                 "home_consumption": 0,
+            }]
+
+            result = {
+                "success": True,
+                "period": period,
+                "time_series": time_series,
+                "serial_number": None,
+                "installation_date": None,
+            }
+            cost_summary = await _calculate_cost_from_statistics(self._hass, period, end_date)
+            if not cost_summary and tariff_schedule:
+                cost_summary = _calculate_cost_from_tariff(tariff_schedule, time_series)
+            if cost_summary:
+                load_kwh = sum(e.get("home_consumption", 0) for e in time_series) / 1000
+                if load_kwh > 0:
+                    cost_summary["avg_cost_per_kwh"] = round(
+                        ((cost_summary.get("import_cost") or 0) - (cost_summary.get("export_earnings") or 0)) / load_kwh, 4
+                    )
+                result["cost_summary"] = cost_summary
+            return web.json_response(result)
+
+        if is_solax and solax_coordinator:
+            from homeassistant.util import dt as dt_util
+
+            energy_data = {}
+            if solax_coordinator.data:
+                energy_data = solax_coordinator.data.get("energy_summary", {})
+
+            time_series = [{
+                "timestamp": dt_util.utcnow().isoformat(),
+                "solar_generation": energy_data.get("pv_today_kwh", 0) * 1000,
+                "battery_discharge": energy_data.get("discharge_today_kwh", 0) * 1000,
+                "battery_charge": energy_data.get("charge_today_kwh", 0) * 1000,
+                "grid_import": energy_data.get("grid_import_today_kwh", 0) * 1000,
+                "grid_export": energy_data.get("grid_export_today_kwh", 0) * 1000,
+                "home_consumption": energy_data.get("load_today_kwh", 0) * 1000,
+            }]
+
+            result = {
+                "success": True,
+                "period": period,
+                "time_series": time_series,
+                "serial_number": None,
+                "installation_date": None,
+            }
+            cost_summary = await _calculate_cost_from_statistics(self._hass, period, end_date)
+            if not cost_summary and tariff_schedule:
+                cost_summary = _calculate_cost_from_tariff(tariff_schedule, time_series)
+            if cost_summary:
+                load_kwh = sum(e.get("home_consumption", 0) for e in time_series) / 1000
+                if load_kwh > 0:
+                    cost_summary["avg_cost_per_kwh"] = round(
+                        ((cost_summary.get("import_cost") or 0) - (cost_summary.get("export_earnings") or 0)) / load_kwh, 4
+                    )
+                result["cost_summary"] = cost_summary
+            return web.json_response(result)
+
+        if is_saj_h2 and saj_h2_coordinator:
+            from homeassistant.util import dt as dt_util
+
+            energy_data = {}
+            if saj_h2_coordinator.data:
+                energy_data = saj_h2_coordinator.data.get("energy_summary", {})
+
+            time_series = [{
+                "timestamp": dt_util.utcnow().isoformat(),
+                "solar_generation": energy_data.get("pv_today_kwh", 0) * 1000,
+                "battery_discharge": energy_data.get("discharge_today_kwh", 0) * 1000,
+                "battery_charge": energy_data.get("charge_today_kwh", 0) * 1000,
+                "grid_import": energy_data.get("grid_import_today_kwh", 0) * 1000,
+                "grid_export": energy_data.get("grid_export_today_kwh", 0) * 1000,
+                "home_consumption": energy_data.get("load_today_kwh", 0) * 1000,
             }]
 
             result = {
