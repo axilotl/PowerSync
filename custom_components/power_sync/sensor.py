@@ -1880,6 +1880,7 @@ class TariffScheduleSensor(SensorEntity):
         # computed fresh on every write from the cached tariff data.
         self._schedule_cache: dict = {}
         self._schedule_cache_sync: str | None = None
+        self._schedule_cache_dow: int = -1  # weekday the cache was built on (0=Mon)
         # Last computed price tuple — shared between native_value and
         # extra_state_attributes within the same HA state-write cycle to avoid
         # calling get_current_price_from_tariff_schedule twice per update.
@@ -1940,7 +1941,9 @@ class TariffScheduleSensor(SensorEntity):
     def _rebuild_schedule_cache(self, tariff_data: dict) -> None:
         """Rebuild the static parts of extra_state_attributes (schedule lists, raw dicts).
 
-        Called only when last_sync changes — typically every 5 minutes on Amber.
+        Called when last_sync changes (~5 min on Amber) OR when the weekday
+        changes (midnight rollover). Day-of-week is part of the cache key so
+        TOU tariffs with weekday/weekend rate differences stay correct.
         The time-sensitive fields (current_period, buy_price, current_time) are
         computed separately on every write.
         """
@@ -1949,6 +1952,7 @@ class TariffScheduleSensor(SensorEntity):
         buy_rates = tariff_data.get("buy_rates", {})
         sell_rates = tariff_data.get("sell_rates", {})
         tou_periods = tariff_data.get("tou_periods", {})
+        today_dow = datetime.now().weekday()  # 0=Monday; used for TOU day filtering
 
         attrs: dict[str, Any] = {
             "last_sync": tariff_data.get("last_sync"),
@@ -2015,6 +2019,7 @@ class TariffScheduleSensor(SensorEntity):
                     3 if e["period"].startswith("SHOULDER") else 4
                 ),
             )
+            tesla_dow = (today_dow + 1) % 7  # Tesla: 0=Sunday
             schedule_list = []
             for slot in range(48):
                 hour = slot // 2
@@ -2029,18 +2034,12 @@ class TariffScheduleSensor(SensorEntity):
                         td = w.get("to_day", 6)
                         fh = w.get("from_hour", 0)
                         th = w.get("to_hour", 24)
-                        # today_dow is not available here — use a sentinel;
-                        # schedule_cache is day-agnostic, native_value handles current period
-                        if fh <= th and fh <= hour < th:
-                            slot_buy = entry["buy"] / 100
-                            slot_sell = entry["sell"] / 100
-                            matched = True
-                            break
-                        elif fh > th and (hour >= fh or hour < th):
-                            slot_buy = entry["buy"] / 100
-                            slot_sell = entry["sell"] / 100
-                            matched = True
-                            break
+                        if fd <= tesla_dow <= td:
+                            if (fh <= th and fh <= hour < th) or (fh > th and (hour >= fh or hour < th)):
+                                slot_buy = entry["buy"] / 100
+                                slot_sell = entry["sell"] / 100
+                                matched = True
+                                break
                     if matched:
                         break
                 schedule_list.append({"time": time_str, "buy": slot_buy, "sell": slot_sell})
@@ -2048,6 +2047,7 @@ class TariffScheduleSensor(SensorEntity):
 
         self._schedule_cache = attrs
         self._schedule_cache_sync = tariff_data.get("last_sync")
+        self._schedule_cache_dow = today_dow
 
     @property
     def native_value(self) -> Any:
@@ -2067,8 +2067,12 @@ class TariffScheduleSensor(SensorEntity):
         if not tariff_data:
             return {}
 
-        # Rebuild static schedule data only when the tariff itself changes
-        if tariff_data.get("last_sync") != self._schedule_cache_sync:
+        # Rebuild when tariff changes OR when the day rolls over (TOU tariffs have
+        # weekday/weekend rate differences that depend on the current day).
+        if (
+            tariff_data.get("last_sync") != self._schedule_cache_sync
+            or datetime.now().weekday() != self._schedule_cache_dow
+        ):
             self._rebuild_schedule_cache(tariff_data)
 
         # Reuse price already computed by native_value in this write cycle
