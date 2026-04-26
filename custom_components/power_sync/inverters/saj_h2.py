@@ -16,19 +16,19 @@ _LOGGER = logging.getLogger(__name__)
 
 
 # Maps internal slot → tuple of unique_id suffixes to try (first match wins).
-# Regular (slow-poll) sensors are preferred over fast-poll counterparts.
+# Fast-poll sensors are preferred over slow-poll for fresher readings.
 # stanus74 integration uses camelCase keys: unique_id = f"{hub_name}_{key}" or f"{hub_name}_fast_{key}"
 _SENSOR_KEYS: dict[str, tuple[str, ...]] = {
     "battery_level":               ("Bat1SOC", "batEnergyPercent"),
     "battery_power":               ("batteryPower",),
-    "grid_power":                  ("totalgridPower", "CT_GridPowerWatt"),
+    "grid_power":                  ("gridPower", "totalgridPower", "CT_GridPowerWatt"),
     "solar_power":                 ("pvPower", "CT_PVPowerWatt"),
-    "load_power":                  ("TotalLoadPower",),
+    "load_power":                  ("TotalLoadPower", "gridPower"),
     "battery_temperature":         ("BatTemp", "Bat1Temperature"),
     "app_mode":                    ("AppMode",),
     "battery_max_charge_power_w":  ("BatChargePower", "GridChargePower", "BatChaCurrLimit"),
     "battery_max_discharge_power_w": ("BatDischargePower", "GridDischargePower", "BatDisCurrLimit"),
-    # Direction sensors — integer: 1=charging/import, 2=discharging/export, 0=idle
+    # Direction sensors — 1=discharging/export, -1=charging/import, 0=idle
     "direction_battery":           ("directionBattery",),
     "direction_grid":              ("directionGrid",),
 }
@@ -36,8 +36,8 @@ _SENSOR_KEYS: dict[str, tuple[str, ...]] = {
 # Maps internal slot → unique_id suffix for writable number entities.
 # stanus74 constructs: f"{hub_name}_{key}_input" — so we search for endswith("_{key}_input")
 _NUMBER_KEYS: dict[str, str] = {
-    "charge_power":   "passive_bat_charge_power_input",
-    "discharge_power": "passive_bat_discharge_power_input",
+    "charge_power":   "passive_battery_charge_power_input",
+    "discharge_power": "passive_battery_discharge_power_input",
 }
 
 # Maps internal slot → unique_id suffix for writable switch entities.
@@ -107,10 +107,10 @@ class SajH2BatteryController:
             if target in self._entity_map:
                 continue
             for key in keys:
-                # Prefer slow-poll over fast-poll
-                regular = self._find_uid_suffix(by_uid, f"_{key}", exclude=f"_fast_{key}")
+                # Prefer fast-poll over slow-poll for fresher readings
                 fast = self._find_uid_suffix(by_uid, f"_fast_{key}")
-                chosen = regular or fast
+                regular = self._find_uid_suffix(by_uid, f"_{key}", exclude=f"_fast_{key}")
+                chosen = fast or regular
                 if chosen:
                     self._entity_map[target] = chosen
                     _LOGGER.debug("SAJ H2: mapped %s → %s", target, chosen)
@@ -158,13 +158,13 @@ class SajH2BatteryController:
         if not state or state.state in ("unavailable", "unknown", ""):
             return None
         val = state.state.lower().strip()
-        # Numeric convention: 1=charging/import, 2=discharging/export, 0=idle
+        # Numeric convention (SAJ): 1=discharging/export, -1=charging/import, 0=idle
         try:
             n = int(float(val))
             if n == 1:
-                return "active_a"   # charging / grid import
-            if n == 2:
                 return "active_b"   # discharging / grid export
+            if n == -1:
+                return "active_a"   # charging / grid import
             return "idle"
         except (ValueError, TypeError):
             pass
