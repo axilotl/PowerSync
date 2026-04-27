@@ -18,6 +18,10 @@ Control model (verified against stanus74 source and live testing):
     stanus74 author and independent testers). It is not written.
   - passive_grid_discharge_power DOES limit grid export during passive discharge
     mode. Set to the same scale value as the battery discharge target.
+  - Write order: AppMode MUST be set to 3 BEFORE passive_charge_enable when
+    entering passive mode. Stanus74's number entity handler (_handle_simple_passive_charge)
+    writes the passive_charge_enable register directly without touching AppMode,
+    so the inverter would receive passive_enable before AppMode=3 if order is wrong.
 """
 
 from __future__ import annotations
@@ -233,6 +237,18 @@ class SajH2BatteryController:
             "battery_max_discharge_power_w": self._read_float("battery_max_discharge_power_w"),
         }
 
+    def _check_passive_control_entities(self, operation: str) -> bool:
+        """Return False and log an error if passive_enable or app_mode are not mapped."""
+        missing = [k for k in ("passive_enable", "app_mode") if not self._entity_map.get(k)]
+        if missing:
+            _LOGGER.error(
+                "SAJ H2: %s aborted — control entities not mapped: %s. "
+                "Check that stanus74 exposes number entities for passive mode.",
+                operation, missing,
+            )
+            return False
+        return True
+
     async def force_charge(self, duration_minutes: int, power_w: int) -> bool:
         """Force battery to charge from grid.
 
@@ -242,11 +258,18 @@ class SajH2BatteryController:
         passive_grid_charge_power is not written — it has no effect on charging
         behavior (confirmed stanus74 discussions/105).
         """
+        if not self._check_passive_control_entities("force_charge"):
+            return False
         pct = self._power_to_scaled_percent(power_w, self._read_float("battery_max_charge_power_w"))
-        await self._set_number("discharge_power", 0)
-        await self._set_number("charge_power", pct)
-        await self._set_number("passive_enable", 2)
-        await self._set_number("app_mode", 3)
+        try:
+            await self._set_number("discharge_power", 0)
+            await self._set_number("charge_power", pct)
+            await self._set_number("app_mode", 3)
+            await self._set_number("passive_enable", 2)
+        except Exception:
+            _LOGGER.exception("SAJ H2: force_charge failed mid-sequence — attempting restore_normal")
+            await self.restore_normal()
+            return False
         _LOGGER.info("SAJ H2 force charge: passive charge mode at %d/1000", pct)
         return True
 
@@ -261,12 +284,23 @@ class SajH2BatteryController:
         load first and exports surplus. It does not unconditionally push maximum
         power to grid.
         """
+        if not self._check_passive_control_entities("force_discharge"):
+            return False
+        soc = self._read_float("battery_level") or 0.0
+        if soc <= 10.0:
+            _LOGGER.warning("SAJ H2: force_discharge refused — SOC %.0f%% at or below 10%%", soc)
+            return False
         pct = self._power_to_scaled_percent(power_w, self._read_float("battery_max_discharge_power_w"))
-        await self._set_number("charge_power", 0)
-        await self._set_number("discharge_power", pct)
-        await self._set_number("grid_discharge_power", pct)
-        await self._set_number("passive_enable", 1)
-        await self._set_number("app_mode", 3)
+        try:
+            await self._set_number("charge_power", 0)
+            await self._set_number("discharge_power", pct)
+            await self._set_number("grid_discharge_power", pct)
+            await self._set_number("app_mode", 3)
+            await self._set_number("passive_enable", 1)
+        except Exception:
+            _LOGGER.exception("SAJ H2: force_discharge failed mid-sequence — attempting restore_normal")
+            await self.restore_normal()
+            return False
         _LOGGER.info("SAJ H2 force discharge: passive discharge mode at %d/1000", pct)
         return True
 
@@ -277,11 +311,18 @@ class SajH2BatteryController:
         zeroed. AppMode=3 prevents the TOU schedule from driving discharge while
         the zero charge target keeps the battery from drawing grid power.
         """
-        await self._set_number("discharge_power", 0)
-        await self._set_number("grid_discharge_power", 0)
-        await self._set_number("charge_power", 0)
-        await self._set_number("passive_enable", 2)
-        await self._set_number("app_mode", 3)
+        if not self._check_passive_control_entities("set_idle"):
+            return False
+        try:
+            await self._set_number("discharge_power", 0)
+            await self._set_number("grid_discharge_power", 0)
+            await self._set_number("charge_power", 0)
+            await self._set_number("app_mode", 3)
+            await self._set_number("passive_enable", 2)
+        except Exception:
+            _LOGGER.exception("SAJ H2: set_idle failed mid-sequence — attempting restore_normal")
+            await self.restore_normal()
+            return False
         _LOGGER.info("SAJ H2 idle: passive charge mode with zero power — battery held")
         return True
 
