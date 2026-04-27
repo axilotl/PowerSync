@@ -52,11 +52,16 @@ _SENSOR_KEYS: dict[str, tuple[str, ...]] = {
 _NUMBER_KEYS: dict[str, str] = {
     "charge_power":         "passive_bat_charge_power_input",
     "discharge_power_pct":  "passive_bat_discharge_power_input",
-    "passive_enable":       "passive_charge_enable_input",
     # Grid-side power gates — must be set alongside battery power or the inverter
     # operates at partial rate regardless of the battery setpoint.
     "grid_charge_power":    "passive_grid_charge_power_input",
     "grid_discharge_power": "passive_grid_discharge_power_input",
+    # passive_enable (passive_charge_enable_input) is intentionally absent.
+    # The switch entities (passive_charge_control / passive_discharge_control) are
+    # the only safe path: they capture AppMode before writing 0x3636 and restore it
+    # on exit.  Writing the number entity directly skips that AppMode management,
+    # leaving the inverter in a mixed state (passive register set, AppMode still TOU)
+    # that caused erratic behaviour and a protection trip.
 }
 
 # Maps internal slot → unique_id suffix for writable switch entities.
@@ -232,41 +237,47 @@ class SajH2BatteryController:
         }
 
     async def force_charge(self, duration_minutes: int, power_w: int) -> bool:
-        """Force battery to charge from grid at maximum rate.
+        """Force battery to charge from grid.
 
-        Exits any active passive discharge mode first so stanus74 captures AppMode=1
-        (TOU) before entering passive charge mode. All number writes before the switch
-        — any passive register write resets switch state as a side-effect.
-        Both battery and grid power registers must be set: the grid-side register gates
-        actual power flow independently of the battery setpoint.
+        Exits any active passive discharge mode first so stanus74 captures the
+        current AppMode before entering passive charge mode.  Power registers are
+        written before the switch because any passive register write resets switch
+        state as a side-effect.  The switch path (not the passive_enable number
+        entity) must be used here: the number entity only writes register 0x3636
+        and deliberately skips the AppMode change, leaving the inverter in a mixed
+        state (passive register set but AppMode still TOU) that causes erratic
+        behaviour and protection trips.
+        Power is expressed on a 0–1000 scale where 1000 = 100% of rated capacity.
         """
+        pct = self._power_to_scaled_percent(power_w, self._read_float("battery_max_charge_power_w"))
         await self._turn_off("discharge_switch")
-        await self._set_number("passive_enable", 2)
         await self._set_number("discharge_power_pct", 0)
         await self._set_number("grid_discharge_power", 0)
-        await self._set_number("charge_power", 1100)
-        await self._set_number("grid_charge_power", 1100)
+        await self._set_number("charge_power", pct)
+        await self._set_number("grid_charge_power", pct)
         await self._turn_on("charge_switch")
-        _LOGGER.info("SAJ H2 force charge: passive charge mode, bat+grid charge power=1100")
+        _LOGGER.info("SAJ H2 force charge: passive charge mode at %d/1000", pct)
         return True
 
     async def force_discharge(self, duration_minutes: int, power_w: int) -> bool:
-        """Enable passive discharge mode at maximum rate.
+        """Enable passive discharge mode.
 
-        Exits any active passive charge mode first so stanus74 captures AppMode=1
-        before entering passive discharge mode. All number writes before the switch.
+        Exits any active passive charge mode first so stanus74 captures AppMode
+        before entering passive discharge mode.  Power registers before the switch
+        for the same reason as force_charge.
         Note: SAJ H2 passive discharge is load-following — the battery covers home
         load and exports any surplus, but does not unconditionally push maximum power
         to grid. This is a hardware limitation of passive mode on this inverter.
+        Power is expressed on a 0–1000 scale where 1000 = 100% of rated capacity.
         """
+        pct = self._power_to_scaled_percent(power_w, self._read_float("battery_max_discharge_power_w"))
         await self._turn_off("charge_switch")
-        await self._set_number("passive_enable", 2)
-        await self._set_number("discharge_power_pct", 1100)
-        await self._set_number("grid_discharge_power", 1100)
         await self._set_number("charge_power", 0)
         await self._set_number("grid_charge_power", 0)
+        await self._set_number("discharge_power_pct", pct)
+        await self._set_number("grid_discharge_power", pct)
         await self._turn_on("discharge_switch")
-        _LOGGER.info("SAJ H2 force discharge: passive discharge mode, bat+grid discharge power=1100")
+        _LOGGER.info("SAJ H2 force discharge: passive discharge mode at %d/1000", pct)
         return True
 
     async def set_idle(self) -> bool:
@@ -276,7 +287,6 @@ class SajH2BatteryController:
         keeps AppMode=3 (passive) so the TOU schedule cannot drive discharge.
         """
         await self._turn_off("discharge_switch")
-        await self._set_number("passive_enable", 2)
         await self._set_number("discharge_power_pct", 0)
         await self._set_number("grid_discharge_power", 0)
         await self._set_number("charge_power", 0)
@@ -301,6 +311,17 @@ class SajH2BatteryController:
     async def disconnect(self) -> None:
         """No persistent connection to close."""
         return None
+
+    @staticmethod
+    def _power_to_scaled_percent(requested_w: int | float, max_w: float | None) -> int:
+        """Convert watts to SAJ's 0–1000 scale (1000 = 100% of rated capacity).
+
+        Falls back to 1000 (full power) when max_w is unknown, which is safe
+        since the inverter's own protection limits apply regardless.
+        """
+        if requested_w and requested_w > 0 and max_w and max_w > 0:
+            return max(0, min(1000, int(round((requested_w / max_w) * 1000))))
+        return 1000
 
     def _read_float(self, key: str) -> float | None:
         entity_id = self._entity_map.get(key)

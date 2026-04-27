@@ -2915,6 +2915,31 @@ async def _dynamic_ev_update_surplus(
 
     params = state.get("params", {})
 
+    # Don't charge when vehicle is away from home
+    try:
+        from .ev_charging_planner import get_ev_location
+        _vin = vehicle_id if vehicle_id != DEFAULT_VEHICLE_ID else None
+        _location = await get_ev_location(hass, config_entry, _vin)
+        if _location not in ("home", "unknown"):
+            _current_amps = state.get("current_amps", 0)
+            if _current_amps > 0:
+                _LOGGER.info(f"⚡ Solar surplus EV: Stopping - vehicle not at home ({_location})")
+                await _set_vehicle_amps(hass, config_entry, vehicle_id, 0, params)
+                state["current_amps"] = 0
+                state["target_amps"] = 0
+                try:
+                    from .ev_charging_session import get_session_manager
+                    _sm = get_session_manager()
+                    if _sm:
+                        await _sm.end_session(vehicle_id=vehicle_id, reason="vehicle_away")
+                except Exception:
+                    pass
+            state["high_surplus_start"] = None
+            state["low_surplus_start"] = None
+            return
+    except Exception as e:
+        _LOGGER.debug(f"Solar surplus EV: Could not check vehicle location: {e}")
+
     # Re-check Tesla entity max after charging starts (Tesla reports real max only when active)
     # The entity needs a few seconds to update after the car starts drawing power,
     # so we do this on the first update cycle after charging_started=True (10-30s later).
