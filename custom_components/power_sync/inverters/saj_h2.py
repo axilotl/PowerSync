@@ -286,10 +286,6 @@ class SajH2BatteryController:
         """
         if not self._check_passive_control_entities("force_discharge"):
             return False
-        soc = self._read_float("battery_level") or 0.0
-        if soc <= 10.0:
-            _LOGGER.warning("SAJ H2: force_discharge refused — SOC %.0f%% at or below 10%%", soc)
-            return False
         pct = self._power_to_scaled_percent(power_w, self._read_float("battery_max_discharge_power_w"))
         try:
             await self._set_number("charge_power", 0)
