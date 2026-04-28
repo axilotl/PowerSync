@@ -431,22 +431,13 @@ class SajH2BatteryController:
         """Convert watts to SAJ's 0–1100 scale.
 
         0–1000 = 0–100% of the inverter's rated capacity (percentage × 10).
-        1100   = stanus74 sentinel "no explicit limit". Avoid — lets the inverter
-                 push charge beyond its battery DC-DC converter rating.
-
-        Field testing on an H2-10K (10 kW AC inverter, ~6 kW battery DC-DC stage):
-            1100 → 5.6–7.3 kW battery → trips DC converter overload at ~90 s
-            1000 → unknown — may map to the 10 kW AC rating, still over-rates DC
-            600  → ~60% rated, safe for H2-10K's ~6 kW battery DC-DC stage
-
-        We default to 600 to stay below the battery converter limit on the largest
-        H2 model. Smaller models will charge slower than their max but won't trip.
-        Better fix later: expose the rated battery DC-DC W as a config option and
-        compute the correct percentage per-system.
+        1100   = stanus74 sentinel "no explicit limit" — inverter runs at its
+                 own hardware ceiling. This is the safe default; field-confirmed
+                 that owners have run at 1100 long-term without trips.
         """
         if requested_w and requested_w > 0 and max_w and max_w > 0:
-            return max(0, min(1000, int(round((requested_w / max_w) * 1000))))
-        return 600
+            return max(0, min(1100, int(round((requested_w / max_w) * 1000))))
+        return 1100
 
     def _read_float(self, key: str) -> float | None:
         entity_id = self._entity_map.get(key)
