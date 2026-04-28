@@ -2348,14 +2348,14 @@ async def send_tariff_to_tesla(
     timeout_seconds: int = 60,
     fleet_base_url: str | None = None,
 ) -> bool:
-    """Send tariff data to Tesla via Teslemetry or Fleet API with retry logic.
+    """Send tariff data to Tesla via the configured provider with retry logic.
 
     Args:
         hass: HomeAssistant instance
         site_id: Tesla energy site ID
         tariff_data: Tariff data to send
-        api_token: API token (Teslemetry or Fleet API)
-        api_provider: API provider (teslemetry or fleet_api)
+        api_token: API token (Teslemetry, Fleet API, or PowerSync proxy)
+        api_provider: API provider (teslemetry, fleet_api, or powersync)
         max_retries: Maximum number of retry attempts (default: 3)
         timeout_seconds: Request timeout in seconds (default: 60)
         fleet_base_url: Regional Fleet API base URL override for EU/AP users.
@@ -2437,7 +2437,8 @@ async def send_tariff_to_tesla(
                 await asyncio.sleep(wait_time)
 
             _LOGGER.debug(
-                "Sending TOU schedule to Teslemetry API for site %s (attempt %d/%d)",
+                "Sending TOU schedule to Tesla via %s for site %s (attempt %d/%d)",
+                api_provider,
                 site_id,
                 attempt + 1,
                 max_retries
@@ -2501,7 +2502,8 @@ async def send_tariff_to_tesla(
 
         except aiohttp.ClientError as err:
             _LOGGER.warning(
-                "Error communicating with Teslemetry API (attempt %d/%d): %s",
+                "Error communicating with Tesla via %s (attempt %d/%d): %s",
+                api_provider,
                 attempt + 1,
                 max_retries,
                 err
@@ -2511,7 +2513,8 @@ async def send_tariff_to_tesla(
 
         except asyncio.TimeoutError:
             _LOGGER.warning(
-                "Teslemetry API timeout after %ds (attempt %d/%d)",
+                "Tesla API timeout via %s after %ds (attempt %d/%d)",
+                api_provider,
                 timeout_seconds,
                 attempt + 1,
                 max_retries
@@ -13588,11 +13591,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             CONF_SAJ_BATTERY_CAPACITY_KWH,
             entry.data.get(CONF_SAJ_BATTERY_CAPACITY_KWH, DEFAULT_SAJ_BATTERY_CAPACITY_KWH),
         )
+        # The SAJ inverter's discharge_depth register cannot be reliably written from
+        # stanus74 (writes silently ignored). Pass the user-configured backup_reserve
+        # so the controller enforces the floor in software for force_discharge calls.
+        saj_reserve_pct = entry.options.get(
+            CONF_OPTIMIZATION_BACKUP_RESERVE,
+            entry.data.get(CONF_OPTIMIZATION_BACKUP_RESERVE, DEFAULT_OPTIMIZATION_BACKUP_RESERVE),
+        )
+        if saj_reserve_pct is not None and saj_reserve_pct <= 1:
+            saj_reserve_pct = saj_reserve_pct * 100  # decimal → percent
         saj_h2_coordinator = SajH2EnergyCoordinator(
             hass,
             saj_entry_id=entry.data[CONF_SAJ_CONFIG_ENTRY_ID],
             battery_capacity_kwh=float(saj_capacity_kwh),
             entry_id=entry.entry_id,
+            min_soc_pct=float(saj_reserve_pct or 5.0),
         )
     else:
         # Get initial Tesla API token and provider

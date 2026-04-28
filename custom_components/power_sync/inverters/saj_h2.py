@@ -55,6 +55,11 @@ _SENSOR_KEYS: dict[str, tuple[str, ...]] = {
     # Direction sensors — 1=discharging/export, -1=charging/import, 0=idle
     "direction_battery":           ("directionBattery",),
     "direction_grid":              ("directionGrid",),
+    # Engagement signals — distinguish "battery converter active" (mode 2, R-phase ~240V)
+    # from "low-SOC lockout" (mode 4, R-phase 0V). Without these the controller silently
+    # writes Modbus commands that go nowhere because the inverter's converter is offline.
+    "inverter_working_mode":       ("mpvmode",),
+    "inverter_voltage_r":          ("RInvVolt",),
 }
 
 # Maps internal slot → unique_id suffix for writable number entities.
@@ -85,16 +90,35 @@ _SWITCH_KEYS: dict[str, str] = {
 class SajH2BatteryController:
     """Bridge controller for SAJ H2 entities exposed by saj_h2_modbus."""
 
+    # SOC band guarding force_discharge. The SAJ inverter's discharge_depth register
+    # cannot be written reliably from the stanus74 integration (writes silently
+    # ignored on tested firmware), so the user-facing min_soc must be enforced in
+    # software here. The +1% buffer keeps us off the inverter's own low-SOC lockout
+    # which trips at the register floor (typically 5%) and requires a power-cycle.
+    _MIN_SOC_BUFFER_PCT = 1.0
+
+    # Minimum R-phase inverter voltage that indicates the battery DC-DC converter
+    # is actually engaged. When the converter is offline the register reads 0V even
+    # though the on-grid pass-through is at 235V — so we test the inverter (battery)
+    # leg specifically, not the grid leg.
+    _MIN_ENGAGED_INV_VOLTAGE = 50.0
+
     def __init__(
         self,
         hass: Any,
         saj_entry_id: str,
         battery_capacity_kwh: float = 10.0,
+        min_soc_pct: float = 5.0,
     ) -> None:
         self.hass = hass
         self._saj_entry_id = saj_entry_id
         self._battery_capacity_kwh = float(battery_capacity_kwh)
+        self._min_soc_pct = float(min_soc_pct)
         self._entity_map: dict[str, str] = {}
+
+    def set_min_soc_pct(self, min_soc_pct: float) -> None:
+        """Update the software-enforced discharge floor (called when user changes it)."""
+        self._min_soc_pct = float(min_soc_pct)
 
     async def connect(self) -> bool:
         """Validate that the required SAJ entities exist."""
@@ -262,6 +286,36 @@ class SajH2BatteryController:
             return False
         return True
 
+    def _check_engaged(self, operation: str) -> bool:
+        """Refuse Modbus commands when the inverter's battery converter is offline.
+
+        SAJ H2 firmware shuts off the battery DC-DC converter when SOC reaches the
+        on-grid discharge floor and does NOT auto-recover. Working mode goes to 4
+        and the R-phase inverter voltage drops to 0V. Sending charge/discharge
+        commands in that state writes registers that the inverter silently ignores
+        — the only fix is a physical power-cycle. Catch it early so the user sees
+        a clear error instead of a silent no-op.
+        """
+        wm = self._read_float("inverter_working_mode")
+        rv = self._read_float("inverter_voltage_r")
+        # Treat missing readings as engaged — don't block on stale/unmapped sensors,
+        # they aren't published by older stanus74 firmwares.
+        if wm is not None and int(wm) != 2:
+            _LOGGER.error(
+                "SAJ H2: %s refused — inverter working_mode=%s (need 2). "
+                "Battery converter is offline (low-SOC lockout). Power-cycle required.",
+                operation, int(wm),
+            )
+            return False
+        if rv is not None and rv < self._MIN_ENGAGED_INV_VOLTAGE:
+            _LOGGER.error(
+                "SAJ H2: %s refused — inverter R-phase voltage %.1fV (need ≥%.0fV). "
+                "Battery converter is offline. Power-cycle required.",
+                operation, rv, self._MIN_ENGAGED_INV_VOLTAGE,
+            )
+            return False
+        return True
+
     async def force_charge(self, duration_minutes: int, power_w: int) -> bool:
         """Force battery to charge from grid.
 
@@ -274,6 +328,8 @@ class SajH2BatteryController:
         behavior (confirmed stanus74 discussions/105).
         """
         if not self._check_passive_control_entities("force_charge"):
+            return False
+        if not self._check_engaged("force_charge"):
             return False
         pct = self._power_to_scaled_percent(power_w, self._read_float("battery_max_charge_power_w"))
         try:
@@ -300,6 +356,17 @@ class SajH2BatteryController:
         """
         if not self._check_passive_control_entities("force_discharge"):
             return False
+        if not self._check_engaged("force_discharge"):
+            return False
+        soc = self._read_float("battery_level")
+        floor = self._min_soc_pct + self._MIN_SOC_BUFFER_PCT
+        if soc is not None and soc <= floor:
+            _LOGGER.warning(
+                "SAJ H2: force_discharge refused — SOC %.1f%% at/below software floor %.1f%% "
+                "(min_soc=%.1f%% + %.1f%% buffer). Holding battery to avoid low-SOC lockout.",
+                soc, floor, self._min_soc_pct, self._MIN_SOC_BUFFER_PCT,
+            )
+            return False
         pct = self._power_to_scaled_percent(power_w, self._read_float("battery_max_discharge_power_w"))
         try:
             await self._set_number("charge_power", 0)
@@ -323,6 +390,8 @@ class SajH2BatteryController:
         PV exports to grid instead. This is intentional: idle means hold SOC.
         """
         if not self._check_passive_control_entities("set_idle"):
+            return False
+        if not self._check_engaged("set_idle"):
             return False
         try:
             await self._set_number("discharge_power", 0)

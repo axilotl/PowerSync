@@ -4703,6 +4703,7 @@ class SajH2EnergyCoordinator(DataUpdateCoordinator):
         saj_entry_id: str,
         battery_capacity_kwh: float = 10.0,
         entry_id: str = "",
+        min_soc_pct: float = 5.0,
     ) -> None:
         from .inverters.saj_h2 import SajH2BatteryController
 
@@ -4711,6 +4712,7 @@ class SajH2EnergyCoordinator(DataUpdateCoordinator):
             hass,
             saj_entry_id=saj_entry_id,
             battery_capacity_kwh=battery_capacity_kwh,
+            min_soc_pct=min_soc_pct,
         )
         self._energy_acc = EnergyAccumulator(hass, "saj_h2")
 
@@ -4720,6 +4722,10 @@ class SajH2EnergyCoordinator(DataUpdateCoordinator):
             name=f"{DOMAIN}_saj_h2_energy",
             update_interval=timedelta(seconds=30),
         )
+
+    def set_min_soc_pct(self, min_soc_pct: float) -> None:
+        """Propagate min_soc updates from the optimizer's backup_reserve setting."""
+        self._controller.set_min_soc_pct(min_soc_pct)
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Return SAJ data assembled from HA entity states."""
