@@ -15225,57 +15225,46 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             session = async_get_clientsession(hass)
             headers = {"Authorization": f"Bearer {amber_token}"}
 
-            # If no site ID stored, fetch all sites and use first active one
-            if not amber_site_id:
-                _LOGGER.debug("No Amber site ID in config, fetching sites list...")
-                try:
-                    async with session.get(
-                        f"{AMBER_API_BASE_URL}/sites",
-                        headers=headers,
-                        timeout=aiohttp.ClientTimeout(total=10),
-                    ) as sites_response:
-                        if sites_response.status == 200:
-                            sites = await sites_response.json()
-                            # Prefer active site
-                            active_sites = [s for s in sites if s.get("status") == "active"]
-                            if active_sites:
-                                amber_site_id = active_sites[0]["id"]
-                            elif sites:
-                                amber_site_id = sites[0]["id"]
-                            if amber_site_id:
-                                _LOGGER.info(f"Auto-selected Amber site: {amber_site_id}")
-                        else:
-                            _LOGGER.debug(f"Failed to fetch Amber sites: HTTP {sites_response.status}")
-                except Exception as e:
-                    _LOGGER.debug(f"Error fetching Amber sites: {e}")
-
-            if not amber_site_id:
-                _LOGGER.debug("Could not determine Amber site ID for NEM region auto-detection")
-                return None
-
-            # Fetch Amber site info
+            # Amber only exposes GET /sites (list) — there is no
+            # GET /sites/{id} endpoint. Fetch the list once and pick
+            # the matching site (or fall back to first active).
             async with session.get(
-                f"{AMBER_API_BASE_URL}/sites/{amber_site_id}",
+                f"{AMBER_API_BASE_URL}/sites",
                 headers=headers,
                 timeout=aiohttp.ClientTimeout(total=10),
-            ) as response:
-                if response.status == 200:
-                    site_info = await response.json()
-                    network = site_info.get("network")
+            ) as sites_response:
+                if sites_response.status != 200:
+                    _LOGGER.debug(f"Failed to fetch Amber sites: HTTP {sites_response.status}")
+                    return None
+                sites = await sites_response.json()
 
-                    if network:
-                        nem_region = NETWORK_TO_NEM_REGION.get(network)
-                        if nem_region:
-                            _LOGGER.info(f"Auto-detected NEM region: {nem_region} (network: {network})")
-                            # Cache the result
-                            hass.data[DOMAIN][entry.entry_id]["amber_nem_region"] = nem_region
-                            return nem_region
-                        else:
-                            _LOGGER.warning(f"Unknown network '{network}' - cannot determine NEM region")
-                    else:
-                        _LOGGER.debug("Amber site info doesn't include network field")
-                else:
-                    _LOGGER.debug(f"Failed to fetch Amber site info: HTTP {response.status}")
+            if not isinstance(sites, list) or not sites:
+                _LOGGER.debug("Amber /sites returned no sites")
+                return None
+
+            site_info = None
+            if amber_site_id:
+                site_info = next((s for s in sites if s.get("id") == amber_site_id), None)
+            if site_info is None:
+                # No stored ID, or the stored ID didn't match — pick the
+                # first active site (matches the original fallback).
+                active_sites = [s for s in sites if s.get("status") == "active"]
+                site_info = active_sites[0] if active_sites else sites[0]
+                _LOGGER.info(f"Auto-selected Amber site for NEM region detection: {site_info.get('id')}")
+
+            network = site_info.get("network")
+            if not network:
+                _LOGGER.debug("Amber site info doesn't include network field")
+                return None
+
+            nem_region = NETWORK_TO_NEM_REGION.get(network)
+            if not nem_region:
+                _LOGGER.warning(f"Unknown network '{network}' - cannot determine NEM region")
+                return None
+
+            _LOGGER.info(f"Auto-detected NEM region: {nem_region} (network: {network})")
+            hass.data[DOMAIN][entry.entry_id]["amber_nem_region"] = nem_region
+            return nem_region
 
         except Exception as e:
             _LOGGER.debug(f"Error auto-detecting NEM region: {e}")
