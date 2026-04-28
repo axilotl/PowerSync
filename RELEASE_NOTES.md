@@ -1,6 +1,0 @@
-## What's Changed
-
-**SAJ H2: Force charge/discharge cap restored to 1100 — earlier "DC overload" theory retracted**
-2.12.210 dropped the default scaled-power target from 1100 → 1000, and 2.12.211 dropped it further to 600, both based on the theory that a stanus74 value of 1100 was overloading the inverter's battery DC-DC stage and tripping it to working_mode 4. Field testing on 2026-04-28 confirmed the trips were caused by something else entirely: a hidden "upper SOC limit" in the SAJ engineer/installer menu had been reset to 5% (factory default after a system reset), so the battery would charge to 5% and the inverter would behave as if it had hit a wall. Once the hidden ceiling was set back to 100%, the system charged normally at 1100 with no trip — and the affected owner confirmed they'd always run at 1100 without issue prior to the reset. The cap and fallback are now both back to 1100 (stanus74's "no explicit limit" sentinel), letting the inverter use its own hardware protections rather than artificially throttling charge rate. If your SAJ system suddenly stops charging above some low SOC, check the engineer menu for a low upper-SOC value before suspecting PowerSync.
-
-Update available via HACS
