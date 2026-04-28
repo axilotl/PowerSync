@@ -49,6 +49,22 @@ def _battery_health_payload_is_newer(candidate_ts: Any, current_ts: Any) -> bool
         return False
     return candidate >= current
 
+
+def _resolve_non_nem_timezone(hass, electricity_provider: str) -> str | None:
+    """Pick an IANA timezone for non-NEM (non-Australian) providers.
+
+    Sigenergy/FoxESS cloud sync converters fall back to Australia/Sydney when
+    no NEM region is supplied. For Octopus UK and other non-NEM providers,
+    that bucketing is ~10 hours off real local time. Returns None for
+    Australian providers so the existing NEM-region path keeps running.
+    """
+    if electricity_provider == "octopus":
+        return "Europe/London"
+    # For any other non-AU provider, fall back to HA's configured timezone.
+    if electricity_provider in ("nz", "epex", "other"):
+        return getattr(hass.config, "time_zone", None)
+    return None
+
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState
 import homeassistant.helpers.config_validation as cv
 from homeassistant.const import Platform, CONF_ACCESS_TOKEN, CONF_TOKEN
@@ -15363,6 +15379,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             return
 
         try:
+            # Skip cloud TOU upload when LP optimizer is active. The LP drives
+            # the inverter via Modbus directly; uploading a competing TOU plan
+            # to Sigenergy Cloud causes the inverter to charge/discharge on a
+            # schedule the LP didn't choose.
+            optimization_provider = entry.options.get(
+                CONF_OPTIMIZATION_PROVIDER,
+                entry.data.get(CONF_OPTIMIZATION_PROVIDER, OPT_PROVIDER_NATIVE)
+            )
+            if optimization_provider == OPT_PROVIDER_POWERSYNC:
+                _LOGGER.debug("Sigenergy Cloud TOU sync skipped — LP optimizer controls via Modbus")
+                return
+
             # Get Sigenergy credentials from config entry
             station_id = entry.data.get(CONF_SIGENERGY_STATION_ID)
             username = entry.data.get(CONF_SIGENERGY_USERNAME)
@@ -15392,6 +15420,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             if not nem_region:
                 nem_region = await _get_nem_region_from_amber()
 
+            # Resolve timezone for non-NEM providers (Octopus UK, etc.). Without
+            # this, the converter falls back to Australia/Sydney and bucket keys
+            # land ~10h off real local time.
+            provider_for_tz = entry.options.get(
+                CONF_ELECTRICITY_PROVIDER,
+                entry.data.get(CONF_ELECTRICITY_PROVIDER, "amber"),
+            )
+            timezone_name = _resolve_non_nem_timezone(hass, provider_for_tz)
+
             # Convert Amber forecast to Sigenergy format
             general_prices = [p for p in forecast_data if p.get("channelType") == "general"]
             feedin_prices = [p for p in forecast_data if p.get("channelType") == "feedIn"]
@@ -15419,11 +15456,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
             buy_prices = convert_amber_prices_to_sigenergy(
                 general_prices, price_type="buy", forecast_type=forecast_type,
-                current_actual_interval=current_actual_interval, nem_region=nem_region
+                current_actual_interval=current_actual_interval, nem_region=nem_region,
+                timezone_name=timezone_name,
             )
             sell_prices = convert_amber_prices_to_sigenergy(
                 feedin_prices, price_type="sell", forecast_type=forecast_type,
-                current_actual_interval=current_actual_interval, nem_region=nem_region
+                current_actual_interval=current_actual_interval, nem_region=nem_region,
+                timezone_name=timezone_name,
             )
 
             if not buy_prices:
@@ -15523,11 +15562,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
 
             try:
+                provider_label = (provider_for_tz or "amber").replace("_", " ").title()
                 result = await client.set_tariff_rate(
                     station_id=station_id,
                     buy_prices=buy_prices,
                     sell_prices=sell_prices if sell_prices else buy_prices,
-                    plan_name="PowerSync Amber",
+                    plan_name=f"PowerSync {provider_label}",
                 )
 
                 if result.get("success"):
@@ -15599,17 +15639,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             if not nem_region:
                 nem_region = await _get_nem_region_from_amber()
 
+            # Non-NEM providers (Octopus UK, etc.) need an explicit IANA TZ —
+            # otherwise converter falls back to Australia/Sydney and slots invert.
+            provider_for_tz = entry.options.get(
+                CONF_ELECTRICITY_PROVIDER,
+                entry.data.get(CONF_ELECTRICITY_PROVIDER, "amber"),
+            )
+            timezone_name = _resolve_non_nem_timezone(hass, provider_for_tz)
+
             # Convert Amber forecast to price slots (reuse Sigenergy converter for consistency)
             general_prices = [p for p in forecast_data if p.get("channelType") == "general"]
             feedin_prices = [p for p in forecast_data if p.get("channelType") == "feedIn"]
 
             buy_prices = convert_amber_prices_to_sigenergy(
                 general_prices, price_type="buy", forecast_type=forecast_type,
-                current_actual_interval=current_actual_interval, nem_region=nem_region
+                current_actual_interval=current_actual_interval, nem_region=nem_region,
+                timezone_name=timezone_name,
             )
             sell_prices = convert_amber_prices_to_sigenergy(
                 feedin_prices, price_type="sell", forecast_type=forecast_type,
-                current_actual_interval=current_actual_interval, nem_region=nem_region
+                current_actual_interval=current_actual_interval, nem_region=nem_region,
+                timezone_name=timezone_name,
             )
 
             if not buy_prices:

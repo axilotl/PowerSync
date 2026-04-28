@@ -6112,6 +6112,21 @@ class OctopusPriceCoordinator(DataUpdateCoordinator):
         if not import_rates_raw:
             return None
 
+        # Promote BottlecapDave's active tariff/product code so callers (e.g.
+        # the LP optimizer's AGILE/FLUX dynamic-pricing gate) see the live
+        # tariff rather than whatever was set in the config flow.
+        if import_tariff:
+            self.tariff_code = import_tariff
+            # Tariff code format: E-1R-AGILE-24-10-01-A (region letter trailing).
+            # Derive product_code by stripping the leading E-{1R|2R}- prefix and
+            # the trailing -A region letter, keeping the middle segment.
+            try:
+                parts = import_tariff.split("-")
+                if len(parts) >= 5 and parts[0] == "E":
+                    self.product_code = "-".join(parts[2:-1])
+            except Exception:
+                pass
+
         # Convert octopus_energy rate format to our Amber-compatible format
         current_prices: list[dict] = []
         forecast_prices: list[dict] = []
@@ -6131,6 +6146,12 @@ class OctopusPriceCoordinator(DataUpdateCoordinator):
             if isinstance(end, str):
                 end = datetime.fromisoformat(end.replace("Z", "+00:00"))
 
+            # Duration in minutes — BottlecapDave usually emits 30-min slots,
+            # but block tariffs (Go/Cosy off-peak windows) can come through
+            # as wider intervals. Compute from timestamps so downstream LP
+            # expansion sees the correct slot count.
+            duration_min = max(1, int((end - start).total_seconds() // 60))
+
             if start <= now < end:
                 interval_type = "CurrentInterval"
             elif end <= now:
@@ -6143,7 +6164,7 @@ class OctopusPriceCoordinator(DataUpdateCoordinator):
                 "perKwh": price_pence,  # pence/kWh maps to cents
                 "channelType": "general",
                 "type": interval_type,
-                "duration": 30,
+                "duration": duration_min,
                 "valid_from": start.isoformat(),
                 "valid_to": end.isoformat(),
             }
@@ -6165,6 +6186,8 @@ class OctopusPriceCoordinator(DataUpdateCoordinator):
             if isinstance(end, str):
                 end = datetime.fromisoformat(end.replace("Z", "+00:00"))
 
+            duration_min = max(1, int((end - start).total_seconds() // 60))
+
             if start <= now < end:
                 interval_type = "CurrentInterval"
             elif end <= now:
@@ -6177,7 +6200,7 @@ class OctopusPriceCoordinator(DataUpdateCoordinator):
                 "perKwh": -price_pence,  # Negative = you get paid (Amber convention)
                 "channelType": "feedIn",
                 "type": interval_type,
-                "duration": 30,
+                "duration": duration_min,
                 "valid_from": start.isoformat(),
                 "valid_to": end.isoformat(),
             }

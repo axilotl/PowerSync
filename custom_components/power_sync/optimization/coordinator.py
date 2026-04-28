@@ -191,6 +191,10 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Price monitoring
         self._is_dynamic_pricing = False
         self._price_listener_unsub: Callable | None = None
+        # Secondary listener used only for Octopus on a non-dynamic tariff:
+        # re-checks the live tariff_code on each refresh and promotes to
+        # dynamic pricing if the user moves onto AGILE/FLUX/COSY.
+        self._octopus_gate_listener_unsub: Callable | None = None
         # Deduplication key for AEMO price-update trigger — LP only fires on new dispatch files
         self._last_aemo_dispatch_file: str | None = None
         # Rate-limit for non-AEMO price-triggered LP runs (Amber/Octopus send 2 updates per
@@ -598,6 +602,22 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         _LOGGER.warning("No home load sensor found — load forecast will use defaults")
         return None
 
+    def _is_octopus_dynamic_tariff(self) -> bool:
+        """Return True when the active Octopus tariff is genuinely half-hourly.
+
+        Checks both product_code and the live tariff_code. The tariff_code is
+        authoritative when data is sourced from BottlecapDave (the configured
+        product_code may not match what the user is actually billed on).
+        """
+        if not self.price_coordinator:
+            return False
+        product = (getattr(self.price_coordinator, "product_code", "") or "").upper()
+        tariff = (getattr(self.price_coordinator, "tariff_code", "") or "").upper()
+        for token in ("AGILE", "FLUX", "COSY"):
+            if token in product or token in tariff:
+                return True
+        return False
+
     async def _setup_price_listener(self) -> None:
         """Set up price-triggered optimization for dynamic pricing providers."""
         if not self.price_coordinator:
@@ -606,10 +626,8 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         coordinator_name = type(self.price_coordinator).__name__
         dynamic_providers = ["AmberPriceCoordinator", "AEMOPriceCoordinator"]
 
-        if coordinator_name == "OctopusPriceCoordinator":
-            product_code = getattr(self.price_coordinator, "product_code", "")
-            if "AGILE" in product_code.upper() or "FLUX" in product_code.upper():
-                dynamic_providers.append("OctopusPriceCoordinator")
+        if coordinator_name == "OctopusPriceCoordinator" and self._is_octopus_dynamic_tariff():
+            dynamic_providers.append("OctopusPriceCoordinator")
 
         self._is_dynamic_pricing = coordinator_name in dynamic_providers
 
@@ -624,6 +642,39 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "Dynamic pricing detected (%s) - re-optimizing on price changes",
                 coordinator_name,
             )
+        elif coordinator_name == "OctopusPriceCoordinator":
+            # Octopus on a non-dynamic tariff today might roll onto an AGILE
+            # variant tomorrow (BottlecapDave reports the live agreement).
+            # Listen once so we can re-evaluate when fresh data arrives.
+            if not self._octopus_gate_listener_unsub:
+                self._octopus_gate_listener_unsub = (
+                    self.price_coordinator.async_add_listener(
+                        self._reevaluate_octopus_gate
+                    )
+                )
+
+    def _reevaluate_octopus_gate(self) -> None:
+        """Promote Octopus to dynamic pricing if the live tariff turns out to be AGILE/FLUX."""
+        if self._is_dynamic_pricing or not self.price_coordinator:
+            return
+        if type(self.price_coordinator).__name__ != "OctopusPriceCoordinator":
+            return
+        if not self._is_octopus_dynamic_tariff():
+            return
+        # Promote: drop the gate listener, attach the real one.
+        if self._octopus_gate_listener_unsub:
+            self._octopus_gate_listener_unsub()
+            self._octopus_gate_listener_unsub = None
+        self._is_dynamic_pricing = True
+        if self._price_listener_unsub:
+            self._price_listener_unsub()
+        self._price_listener_unsub = self.price_coordinator.async_add_listener(
+            self._on_price_update
+        )
+        _LOGGER.info(
+            "Octopus tariff %s detected as dynamic — enabling price-triggered LP",
+            getattr(self.price_coordinator, "tariff_code", "?"),
+        )
 
     def _on_price_update(self) -> None:
         """Callback when price coordinator updates."""
@@ -883,6 +934,10 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if self._price_listener_unsub:
             self._price_listener_unsub()
             self._price_listener_unsub = None
+
+        if self._octopus_gate_listener_unsub:
+            self._octopus_gate_listener_unsub()
+            self._octopus_gate_listener_unsub = None
 
         if self._executor:
             await self._executor.stop()
@@ -2690,6 +2745,50 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         return ""
 
+    @staticmethod
+    def _get_entry_end_time(e: dict) -> str:
+        """Get the end time of a price entry across all provider formats.
+
+        Octopus entries have valid_to. Amber/AEMO entries have nemTime
+        which is itself the interval END.
+
+        Returns:
+            ISO format end time string, or "" if indeterminate
+        """
+        vt = e.get("valid_to")
+        if vt:
+            return vt
+        nem = e.get("nemTime")
+        if nem:
+            return nem
+        return ""
+
+    @classmethod
+    def _entry_remaining_minutes(
+        cls,
+        e: dict,
+        current_window: datetime,
+        fallback_dur: int,
+    ) -> int:
+        """Minutes of this entry that lie at or after current_window.
+
+        Used for first-slot expansion: the active 30-min interval may have
+        only N minutes of validity remaining after current_window. Returns
+        fallback_dur if start/end can't be parsed.
+        """
+        start_str = cls._get_entry_start_time(e)
+        end_str = cls._get_entry_end_time(e)
+        if not start_str or not end_str:
+            return max(0, int(fallback_dur))
+        try:
+            start_dt = datetime.fromisoformat(start_str.replace("Z", "+00:00"))
+            end_dt = datetime.fromisoformat(end_str.replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            return max(0, int(fallback_dur))
+        effective_start = max(start_dt, current_window)
+        remaining = int((end_dt - effective_start).total_seconds() // 60)
+        return max(0, remaining)
+
     async def _get_price_forecast(self) -> tuple[list[float], list[float]] | None:
         """Get price forecasts for optimizer.
 
@@ -2714,9 +2813,13 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     for lst in (general, feed_in):
                         lst.sort(key=lambda e: self._get_entry_start_time(e))
 
-                    # Filter out past entries — providers return
-                    # historical entries, but the LP needs prices
-                    # starting from the current interval.
+                    # Filter out fully-past entries — providers return
+                    # historical entries, but the LP needs prices starting
+                    # from the current interval. Use END time so an
+                    # interval that started before current_window but is
+                    # still active (e.g. 30-min Octopus slot at minute 20)
+                    # is preserved; its remaining-minutes are computed
+                    # during expansion.
                     now = dt_util.now()
                     current_window = now.replace(
                         minute=(now.minute // 5) * 5,
@@ -2726,13 +2829,13 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         original_len = len(lst)
                         filtered = []
                         for e in lst:
-                            st = self._get_entry_start_time(e)
-                            if st:
+                            end_str = self._get_entry_end_time(e)
+                            if end_str:
                                 try:
-                                    entry_time = datetime.fromisoformat(
-                                        st.replace("Z", "+00:00")
+                                    entry_end = datetime.fromisoformat(
+                                        end_str.replace("Z", "+00:00")
                                     )
-                                    if entry_time < current_window:
+                                    if entry_end <= current_window:
                                         continue
                                 except (ValueError, TypeError):
                                     pass
@@ -2740,7 +2843,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         lst[:] = filtered
                         if len(lst) < original_len:
                             _LOGGER.debug(
-                                "Filtered %d past price entries (before %s), "
+                                "Filtered %d past price entries (ended <= %s), "
                                 "%d remaining",
                                 original_len - len(lst),
                                 current_window.isoformat(),
@@ -2788,10 +2891,23 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
                     import_prices = []
                     entry_positions = []  # start index for each general entry
+                    entry_expands_general = []  # parallel: actual expand count per entry
                     for e in general:
                         entry_positions.append(len(import_prices))
                         dur = e.get("duration", 30)
-                        entry_expand = max(1, dur // interval)
+                        # Clip the first surviving entry to its remaining minutes
+                        # so a 30-min interval that's already 20 min in only
+                        # contributes its last 10 min to the LP horizon.
+                        effective_min = self._entry_remaining_minutes(
+                            e, current_window, dur,
+                        )
+                        if effective_min <= 0:
+                            entry_expand = 0
+                        else:
+                            entry_expand = max(1, effective_min // interval)
+                        entry_expands_general.append(entry_expand)
+                        if entry_expand == 0:
+                            continue
                         if is_flow_power:
                             if fp_custom_pea is not None:
                                 price_dollar = max(
@@ -2825,7 +2941,12 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     export_prices = []
                     for e in feed_in:
                         dur = e.get("duration", 30)
-                        entry_expand = max(1, dur // interval)
+                        effective_min = self._entry_remaining_minutes(
+                            e, current_window, dur,
+                        )
+                        if effective_min <= 0:
+                            continue
+                        entry_expand = max(1, effective_min // interval)
                         # feedIn perKwh: negative = you get paid, positive = you pay to export.
                         # Negate so optimizer sees positive = revenue.  Clamp to 0 so
                         # genuinely negative export prices (you pay) don't look profitable.
@@ -2866,8 +2987,13 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                                 spike_status = e.get("spikeStatus", "none")
                                 if spike_status in ("spike", "potential"):
                                     base_idx = entry_positions[idx]
-                                    dur = e.get("duration", 30)
-                                    entry_expand = max(1, dur // interval)
+                                    entry_expand = (
+                                        entry_expands_general[idx]
+                                        if idx < len(entry_expands_general)
+                                        else max(1, e.get("duration", 30) // interval)
+                                    )
+                                    if entry_expand == 0:
+                                        continue
                                     original_price = e.get("perKwh", 0)
                                     capped_count = 0
                                     for j in range(entry_expand):
