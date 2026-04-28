@@ -1093,6 +1093,17 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             else:
                 self._optimizer.suppress_reserve_warning = False
 
+            # Pre-window SOC floor: in profit_max mode, force the battery to be
+            # filled before the next high-value export window (today's Flow
+            # Power Happy Hour). Without this, the LP's 48 h horizon places
+            # the planned grid-charge slots at the globally cheapest PEA
+            # periods, which often misses today's HH and leaves the user
+            # at ~80% SOC at 17:30.
+            self._optimizer.pre_window_slot = self._next_export_window_slot()
+            self._optimizer.pre_window_soc_target = (
+                1.0 if self._optimizer.pre_window_slot is not None else 0.0
+            )
+
             # Run LP in executor thread to avoid blocking event loop
             result: OptimizerResult = await self.hass.async_add_executor_job(
                 self._optimizer.optimize,
@@ -2206,6 +2217,55 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
 
         return result
+
+    def _next_export_window_slot(self) -> int | None:
+        """Slot index of the next high-value export window in the LP horizon.
+
+        Used to enforce a pre-window SOC floor when profit_max mode is on.
+        Returns None when the floor should not be applied (profit_max off,
+        unsupported provider, or no upcoming window in horizon).
+
+        Currently only Flow Power (Happy Hour 17:30-19:30) is supported; other
+        tariffs with deterministic high-export windows can be added here.
+        """
+        if not self._entry:
+            return None
+        if not self._config.profit_max_enabled:
+            return None
+
+        from ..const import CONF_ELECTRICITY_PROVIDER, CONF_FLOW_POWER_STATE
+        provider = self._entry.options.get(
+            CONF_ELECTRICITY_PROVIDER,
+            self._entry.data.get(CONF_ELECTRICITY_PROVIDER, ""),
+        )
+        if provider != "flow_power":
+            return None
+        state = self._entry.options.get(
+            CONF_FLOW_POWER_STATE,
+            self._entry.data.get(CONF_FLOW_POWER_STATE, ""),
+        )
+        if not state:
+            return None
+
+        happy_start_min = 17 * 60 + 30  # 17:30
+        interval = self._config.interval_minutes
+        n_steps = int(self._config.horizon_hours * 60) // interval
+        raw_now = dt_util.now()
+        now = raw_now.replace(
+            minute=(raw_now.minute // interval) * interval,
+            second=0, microsecond=0,
+        )
+        for t in range(n_steps):
+            slot = now + timedelta(minutes=t * interval)
+            slot_min = slot.hour * 60 + slot.minute
+            if slot_min == happy_start_min:
+                # Skip t=0: HH starts right now, no pre-window slots to charge in.
+                # The next HH match will be tomorrow (288 slots ahead) which the
+                # loop continues to find.
+                if t == 0:
+                    continue
+                return t
+        return None
 
     def _apply_flow_power_export(
         self, export_prices: list[float]

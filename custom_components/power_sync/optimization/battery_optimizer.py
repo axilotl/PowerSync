@@ -98,6 +98,29 @@ class BatteryOptimizer:
         # (SOC below reserve is expected during intentional force discharge.)
         self.suppress_reserve_warning: bool = False
 
+        # Pre-window SOC floor: enforce soc[pre_window_slot - 1] >= target.
+        # Used by the coordinator to guarantee the battery is filled before
+        # high-value export windows (e.g. Flow Power Happy Hour) when
+        # profit_max mode is on. The LP rolling horizon otherwise tends to
+        # defer grid-charging to the globally cheapest slots, missing the
+        # window for today's HH.
+        self.pre_window_soc_target: float = 0.0
+        self.pre_window_slot: int | None = None
+
+        # Terminal valuation units. The original LP wrote terminal coefficients
+        # as `terminal_price * eff * dt / cap`, which is dimensionally wrong:
+        # `terminal_price` is $/kWh, so the correct per-kW objective coefficient
+        # is `terminal_price * eff * dt` (no `/cap`). The `/cap` was an
+        # artefact of treating terminal_price as "$ per SoC unit" while it's
+        # actually "$ per kWh of stored energy"; the cap belongs in the SoC
+        # bound *constraints* (which already have it correctly), not the
+        # objective. Default True now that the unit error is fixed; kept as
+        # a flag so tests can compare behavior. Solar-equipped users see no
+        # regression because terminal_price is set from solar export prices
+        # (typically ~5c) when solar is in horizon, which keeps the
+        # discharge penalty well below avoided-import savings.
+        self.use_per_kwh_terminal: bool = True
+
         # Derived
         self.capacity_kwh = capacity_wh / 1000.0
         self.max_charge_kw = max_charge_w / 1000.0
@@ -315,9 +338,16 @@ class BatteryOptimizer:
 
         # Pre-compute free charging bonus: use median non-free import price
         # so the LP sees free charging as "saving" that future import cost.
+        # See use_per_kwh_terminal field: legacy form divides by `cap` (a unit
+        # error; attenuates the bonus to noise on large batteries), corrected
+        # form drops the `/cap`. _build_schedule has a hard override that
+        # forces max charge during 0c periods regardless of solver output —
+        # the corrected coefficient just lets the LP arrive at the same
+        # answer through its own economics.
         _nonzero_prices = sorted(p for p in import_prices if p > 0.01)
+        _terminal_unit_divisor = 1.0 if self.use_per_kwh_terminal else cap
         _free_charge_bonus = (
-            _nonzero_prices[len(_nonzero_prices) // 2] * eff * dt / cap
+            _nonzero_prices[len(_nonzero_prices) // 2] * eff * dt / _terminal_unit_divisor
             if _nonzero_prices else 0.0
         )
 
@@ -384,11 +414,18 @@ class BatteryOptimizer:
         terminal_price *= self.terminal_weight
 
         if terminal_price > 0:
+            # See use_per_kwh_terminal field for the unit-error history.
+            # Correct coefficients are terminal_price * eff * dt (no /cap):
+            # terminal_price is $/kWh, so a per-kW objective coefficient over
+            # dt hours produces $ — adding /cap would give $·h/kWh², garbage.
+            # Solar-equipped users see no behavior change because solar
+            # export sets terminal_price low (~5c FiT), keeping the
+            # discharge penalty well under avoided-import savings.
             for t in range(n):
                 # Charging adds SOC → subtract cost (incentivize keeping charge)
-                c[2 * n + t] -= terminal_price * eff * dt / cap
+                c[2 * n + t] -= terminal_price * eff * dt / _terminal_unit_divisor
                 # Discharging removes SOC → add cost (penalize draining)
-                c[3 * n + t] += terminal_price * dt / (eff * cap)
+                c[3 * n + t] += terminal_price * dt / (eff * _terminal_unit_divisor)
 
         # === Equality constraints: power balance ===
         # solar[t] + grid_import[t] + battery_discharge[t] = load[t] + grid_export[t] + battery_charge[t]
@@ -433,6 +470,44 @@ class BatteryOptimizer:
                 row_lower[3 * n + i] = dt / (eff * cap)
             A_ub.append(row_lower)
             b_ub.append(soc_0 - self.backup_reserve)
+
+        # === Pre-window SOC floor ===
+        # Force soc[pre_window_slot - 1] >= target so the battery is filled
+        # before a known high-value export window (e.g. Flow Power Happy Hour).
+        # The 48 h rolling horizon otherwise places grid-charge slots at the
+        # globally cheapest periods, which often misses today's HH entirely.
+        # Cap target at what's physically reachable to keep the LP feasible.
+        if (
+            self.pre_window_slot is not None
+            and self.pre_window_slot > 0
+            and self.pre_window_slot <= n
+            and self.pre_window_soc_target > 0.0
+            and not getattr(self, "_relaxing", False)
+        ):
+            slots_to_window = self.pre_window_slot
+            max_soc_gain = (
+                self.max_charge_kw * eff * dt * slots_to_window / cap
+            )
+            max_reachable = min(1.0, soc_0 + max_soc_gain)
+            # 0.5% buffer so a tight LP doesn't flip infeasible from rounding
+            effective_target = min(self.pre_window_soc_target, max_reachable - 0.005)
+
+            if effective_target > soc_0:
+                row = [0.0] * (4 * n)
+                for i in range(slots_to_window):
+                    row[2 * n + i] = -eff * dt / cap
+                    row[3 * n + i] = dt / (eff * cap)
+                A_ub.append(row)
+                b_ub.append(soc_0 - effective_target)
+                _LOGGER.debug(
+                    "Pre-window SOC floor: target=%.1f%% (capped from %.1f%%) "
+                    "at slot %d (%.1f h ahead), current=%.1f%%",
+                    effective_target * 100,
+                    self.pre_window_soc_target * 100,
+                    self.pre_window_slot,
+                    self.pre_window_slot * dt,
+                    soc_0 * 100,
+                )
 
         # === Variable bounds ===
         # Cap grid at 100 kW (generous safety limit; prevents unbounded LP
