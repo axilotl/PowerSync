@@ -124,7 +124,6 @@
         "description": "Configure spike protection, export boost, and chip mode for Amber pricing.",
         "data": {
           "spike_protection_enabled": "Enable spike protection",
-          "settled_prices_only": "Use settled prices only",
           "forecast_discrepancy_alert": "Enable forecast discrepancy alert",
           "forecast_discrepancy_threshold": "Discrepancy threshold (c/kWh)",
           "force_tariff_mode_toggle": "Force mode toggle after sync",
@@ -141,7 +140,6 @@
         },
         "data_description": {
           "spike_protection_enabled": "When Amber detects a price spike, artificially inflate buy prices to prevent your battery from charging from grid.",
-          "settled_prices_only": "Skip forecast sync at :00 and only sync when actual prices arrive at :35/:60. Use when forecasts differ significantly from settled prices.",
           "forecast_discrepancy_alert": "Send a mobile notification when predicted and conservative forecasts diverge significantly. Indicates the forecast may be unreliable.",
           "forecast_discrepancy_threshold": "Average price difference that triggers the alert. Default 10 c/kWh.",
           "force_tariff_mode_toggle": "After uploading a new tariff, briefly toggle operation mode to force immediate recalculation. Tesla only, causes a ~5 second interruption.",
@@ -1116,7 +1114,6 @@
           "amber_forecast_type": "Amber forecast type",
           "battery_curtailment_enabled": "Stop export at negative prices",
           "spike_protection_enabled": "Enable spike protection",
-          "settled_prices_only": "Use settled prices only",
           "forecast_discrepancy_alert": "Enable forecast discrepancy alert",
           "forecast_discrepancy_threshold": "Discrepancy threshold (c/kWh)",
           "force_tariff_mode_toggle": "Force mode toggle after sync",
@@ -1144,7 +1141,6 @@
           "battery_curtailment_enabled": "Stop battery exports and DC solar when feed-in prices go negative.",
           "spike_protection_enabled": "Artificially inflate buy prices during Amber price spikes to prevent grid charging.",
           "ac_inverter_curtailment_enabled": "Shut down AC-coupled solar inverter when feed-in price is negative. Use if solar bypasses your battery.",
-          "settled_prices_only": "Skip forecast sync at :00 and only sync when actual prices arrive at :35/:60. Use when forecasts diverge from settled prices.",
           "forecast_discrepancy_alert": "Send a notification when predicted and conservative forecasts diverge significantly.",
           "forecast_discrepancy_threshold": "Average price difference that triggers the alert. Default 10 c/kWh.",
           "force_tariff_mode_toggle": "After uploading a new tariff, briefly toggle operation mode to force recalculation. Tesla only, ~5 second interruption.",

@@ -178,8 +178,6 @@ from .const import (
     DEFAULT_CHIP_MODE_THRESHOLD,
     # Spike protection configuration
     CONF_SPIKE_PROTECTION_ENABLED,
-    # Settled prices only mode
-    CONF_SETTLED_PRICES_ONLY,
     # Forecast discrepancy alert
     CONF_FORECAST_DISCREPANCY_ALERT,
     CONF_FORECAST_DISCREPANCY_THRESHOLD,
@@ -5800,10 +5798,6 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             vol.Optional(
                 CONF_SPIKE_PROTECTION_ENABLED,
                 default=self._get_option(CONF_SPIKE_PROTECTION_ENABLED, False),
-            ): BooleanSelector(),
-            vol.Optional(
-                CONF_SETTLED_PRICES_ONLY,
-                default=self._get_option(CONF_SETTLED_PRICES_ONLY, False),
             ): BooleanSelector(),
             vol.Optional(
                 CONF_FORECAST_DISCREPANCY_ALERT,

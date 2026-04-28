@@ -15,8 +15,15 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
+
+# Dispatcher signal fired by AEMOPriceCoordinator when a new dispatch file is
+# detected on NEMWEB (settled price for the period that just ended). TOU sync
+# subscribes to this in __init__.py to issue exactly one tariff POST per
+# 5-min period, aligned with AEMO's publish event instead of a fixed cron.
+SIGNAL_AEMO_NEW_DISPATCH = "power_sync_aemo_new_dispatch"
 
 from .const import (
     DOMAIN,
@@ -2880,6 +2887,15 @@ class AEMOPriceCoordinator(DataUpdateCoordinator):
                 _LOGGER.info(
                     "AEMO API data for %s: current=%.2fc/kWh (%s), forecast_periods=%d",
                     self.region, current_price_cents, price_source, len(forecast) // 2
+                )
+                async_dispatcher_send(
+                    self.hass,
+                    SIGNAL_AEMO_NEW_DISPATCH,
+                    {
+                        "region": self.region,
+                        "file": dispatch_file,
+                        "price_cents": current_price_cents,
+                    },
                 )
 
             return {

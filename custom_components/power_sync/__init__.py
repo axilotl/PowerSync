@@ -59,7 +59,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.event import async_track_utc_time_change, async_track_point_in_utc_time
 from homeassistant.helpers.storage import Store
-from homeassistant.helpers.dispatcher import async_dispatcher_send
+from homeassistant.helpers.dispatcher import async_dispatcher_send, async_dispatcher_connect
 from homeassistant.components.http import HomeAssistantView
 from aiohttp import web
 
@@ -175,8 +175,6 @@ from .const import (
     DEFAULT_CHIP_MODE_THRESHOLD,
     # Spike protection configuration
     CONF_SPIKE_PROTECTION_ENABLED,
-    # Settled prices only mode
-    CONF_SETTLED_PRICES_ONLY,
     # Forecast discrepancy alert configuration
     CONF_FORECAST_DISCREPANCY_ALERT,
     CONF_FORECAST_DISCREPANCY_THRESHOLD,
@@ -6177,10 +6175,6 @@ class ProviderConfigView(HomeAssistantView):
                         CONF_SPIKE_PROTECTION_ENABLED,
                         entry.data.get(CONF_SPIKE_PROTECTION_ENABLED, False)
                     ),
-                    "settled_prices_only": entry.options.get(
-                        CONF_SETTLED_PRICES_ONLY,
-                        entry.data.get(CONF_SETTLED_PRICES_ONLY, False)
-                    ),
                     # Forecast Discrepancy Alert settings
                     "forecast_discrepancy_alert": entry.options.get(
                         CONF_FORECAST_DISCREPANCY_ALERT,
@@ -6509,7 +6503,6 @@ class ProviderConfigView(HomeAssistantView):
                 # Amber
                 "forecast_type": CONF_AMBER_FORECAST_TYPE,
                 "spike_protection_enabled": CONF_SPIKE_PROTECTION_ENABLED,
-                "settled_prices_only": CONF_SETTLED_PRICES_ONLY,
                 "forecast_discrepancy_alert": CONF_FORECAST_DISCREPANCY_ALERT,
                 "forecast_discrepancy_threshold": CONF_FORECAST_DISCREPANCY_THRESHOLD,
                 "price_spike_alert": CONF_PRICE_SPIKE_ALERT,
@@ -14308,7 +14301,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "epex_coordinator": epex_coordinator,  # For EPEX Day-Ahead EU pricing
         "ws_client": ws_client,  # Store for cleanup on unload
         "entry": entry,
-        "auto_sync_cancel": None,  # Will store the timer cancel function
+        "aemo_dispatch_unsub": None,  # Will store the AEMO dispatch listener unsubscriber
+        "octopus_sync_cancel": None,  # Will store the Octopus :00/:30 cron cancel function
         "aemo_spike_cancel": None,  # Will store the AEMO spike check cancel function
         "generic_aemo_spike_cancel": None,  # Will store the generic AEMO spike check cancel function
         "demand_charging_cancel": None,  # Will store the demand period grid charging cancel function
@@ -15156,64 +15150,34 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     # Register services
-    async def handle_sync_initial_forecast() -> None:
-        """
-        STAGE 1 (0s): Sync immediately at start of 5-min period using forecast price.
+    async def handle_sync_rest_api_check(check_name="manual") -> None:
+        """Run a single TOU sync against the live (settled) price.
 
-        This gets the predicted price to Tesla ASAP at the start of each period.
-        Later stages will re-sync if the actual price differs from forecast.
-        """
-        # Skip if no price coordinator available (AEMO spike-only mode without pricing)
-        if not amber_coordinator and not aemo_sensor_coordinator and not octopus_coordinator:
-            _LOGGER.debug("TOU sync skipped - no price coordinator available (AEMO spike-only mode)")
-            return
+        Used by:
+          - The AEMO new-dispatch event handler (NEM providers).
+          - The Octopus :00/:30 cron (UK provider).
+          - The legacy `power_sync.sync_tou` service call (manual user request).
 
-        if not await coordinator.should_do_initial_sync():
-            _LOGGER.info("⏭️  Initial forecast sync already done this period")
-            return
+        Manual force charge / force discharge handlers don't call this — they
+        invoke `send_tariff_to_tesla` directly with their override tariff,
+        and the in-progress force action also short-circuits this function
+        via the guard inside `_handle_sync_tou_internal`.
 
-        _LOGGER.info("🚀 Stage 1: Initial forecast sync at start of period")
-        await _handle_sync_tou_internal(None, sync_mode='initial_forecast')
-        await coordinator.mark_initial_sync_done()
-
-    async def handle_sync_tou_with_websocket_data(websocket_data) -> None:
-        """
-        STAGE 2 (WebSocket): Re-sync only if price differs from what we synced.
-
-        Called by WebSocket callback when new price data arrives.
-        Compares with last synced price and only re-syncs if difference > threshold.
-        """
-        _LOGGER.info("📡 Stage 2: WebSocket price received - checking if re-sync needed")
-        await _handle_sync_tou_internal(websocket_data, sync_mode='websocket_update')
-
-    async def handle_sync_rest_api_check(check_name="fallback") -> None:
-        """
-        STAGE 3/4 (35s/60s): Check REST API and re-sync if price differs.
-
-        Called at 35s and 60s as fallback if WebSocket hasn't delivered.
-        Fetches current price from REST API and compares with last synced price.
-
-        Args:
-            check_name: Label for logging (e.g., "35s check", "60s final")
+        The `should_resync_for_price` check inside `_handle_sync_tou_internal`
+        is the only de-duplication guard — if the dispatch event fires twice
+        with the same price, the second call is skipped.
         """
         # Skip if no price coordinator available (AEMO spike-only mode without pricing)
         if not amber_coordinator and not aemo_sensor_coordinator and not octopus_coordinator:
             _LOGGER.debug("TOU sync skipped - no price coordinator available (AEMO spike-only mode)")
             return
 
-        if await coordinator.has_websocket_delivered():
-            _LOGGER.info(f"⏭️  REST API {check_name}: WebSocket already delivered this period, skipping")
-            return
-
-        _LOGGER.info(f"⏰ Stage 3/4: REST API {check_name} - checking if re-sync needed")
-        await _handle_sync_tou_internal(None, sync_mode='rest_api_check')
+        _LOGGER.info(f"⏰ TOU sync ({check_name})")
+        await _handle_sync_tou_internal(None, sync_mode='settled_price')
 
     async def handle_sync_tou(call: ServiceCall) -> None:
-        """
-        LEGACY: Cron fallback sync (now calls handle_sync_rest_api_check).
-        Kept for backwards compatibility and service call.
-        """
-        await handle_sync_rest_api_check(check_name="legacy fallback")
+        """Service handler for `power_sync.sync_tou` — manual user-triggered sync."""
+        await handle_sync_rest_api_check(check_name="service call")
 
     async def _get_nem_region_from_amber() -> Optional[str]:
         """Auto-detect NEM region from Amber site's network field.
@@ -15693,16 +15657,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         except Exception as e:
             _LOGGER.error(f"Error in FoxESS schedule sync: {e}", exc_info=True)
 
-    async def _handle_sync_tou_internal(websocket_data, sync_mode='initial_forecast') -> None:
-        """
-        Internal sync logic with smart price-aware re-sync.
+    async def _handle_sync_tou_internal(websocket_data, sync_mode='settled_price') -> None:
+        """Internal sync logic with price-aware de-dupe.
 
         Args:
-            websocket_data: Price data from WebSocket (or None to fetch from REST API)
-            sync_mode: One of:
-                - 'initial_forecast': Always sync, record the price (Stage 1)
-                - 'websocket_update': Re-sync only if price differs (Stage 2)
-                - 'rest_api_check': Check REST API and re-sync if differs (Stage 3/4)
+            websocket_data: Reserved for future WebSocket-driven flows. Always
+                None today — REST is refreshed inside this function.
+            sync_mode: Always 'settled_price' in current callers. Kept as a
+                parameter so future provider-specific sync paths can pass a
+                different label without changing the signature.
         """
         # Determine battery system type for routing
         battery_system = entry.data.get(CONF_BATTERY_SYSTEM, "tesla")
@@ -15873,13 +15836,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             else:
                 _LOGGER.error("No Amber price data available from REST API")
 
-        # SMART SYNC: For non-initial syncs, check if price has changed enough to warrant re-sync
-        if sync_mode != 'initial_forecast':
-            if general_price is not None or feedin_price is not None:
-                if not coordinator.should_resync_for_price(general_price, feedin_price):
-                    _LOGGER.info(f"⏭️  Price unchanged - skipping re-sync")
-                    return
-                _LOGGER.info(f"🔄 Price changed - proceeding with re-sync")
+        # De-dupe guard: only POST when the price has moved more than the
+        # threshold since the last sync. With AEMO-dispatch-driven scheduling
+        # there should never be more than one fire per 5-min period anyway,
+        # but if the same dispatch event somehow fires twice we won't burn a
+        # Tesla call on identical data.
+        if general_price is not None or feedin_price is not None:
+            if not coordinator.should_resync_for_price(general_price, feedin_price):
+                _LOGGER.info(f"⏭️  Price unchanged - skipping re-sync")
+                return
+            _LOGGER.info(f"🔄 Price changed - proceeding with sync")
 
         # Get forecast data from appropriate coordinator
         if use_localvolts:
@@ -15992,16 +15958,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 except Exception as notify_err:
                     _LOGGER.debug(f"Could not send forecast discrepancy notification: {notify_err}")
 
-        # Check for price spikes (extreme prices in settled/actual data)
-        # Only runs on REST API sync (Stage 3/4 at :35/:60) when actual prices are available
-        # This avoids false alerts from potentially inaccurate forecast prices
-        # Works for all providers with forecast data (Amber, Octopus, Flow Power, etc.)
+        # Check for price spikes (extreme prices in settled/actual data).
+        # Runs on every TOU sync now — sync only fires after AEMO settled
+        # publish, so prices are reliably actual rather than forecasts.
         price_spike_alert_enabled = entry.options.get(
             CONF_PRICE_SPIKE_ALERT,
             entry.data.get(CONF_PRICE_SPIKE_ALERT, False)
         )
         if (
-            sync_mode == 'rest_api_check' and
+            sync_mode == 'settled_price' and
             price_spike_alert_enabled and
             forecast_data
         ):
@@ -16544,20 +16509,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     return True  # newly detected
                 return False
 
-            # Alpha: Force mode toggle for faster Powerwall response
-            # Only toggle on settled prices, not forecast (reduces unnecessary toggles)
+            # Alpha: Force mode toggle for faster Powerwall response.
+            # Every TOU sync now runs against settled prices, so the
+            # previous "only toggle on settled" guard is implicit.
             force_mode_toggle = entry.options.get(
                 CONF_FORCE_TARIFF_MODE_TOGGLE,
                 entry.data.get(CONF_FORCE_TARIFF_MODE_TOGGLE, False)
             )
-            if force_mode_toggle and sync_mode != 'initial_forecast':
+            if force_mode_toggle:
                 # Skip toggle if calibration suspected (tariff upload still proceeds)
                 _toggle_entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
                 if _toggle_entry_data.get("calibration_suspected"):
                     _LOGGER.debug("Skipping force mode toggle — calibration suspected")
                     force_mode_toggle = False  # Skip toggle below but don't skip tariff upload
 
-            if force_mode_toggle and sync_mode != 'initial_forecast':
+            if force_mode_toggle:
                 try:
                     site_id = entry.data[CONF_TESLA_ENERGY_SITE_ID]
                     api_base = get_tesla_api_base_url(current_provider, entry.data.get(CONF_FLEET_API_BASE_URL))
@@ -22628,180 +22594,107 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     _LOGGER.info("🔋 Battery health sync service registered")
 
-    # Wire up WebSocket sync callback now that handlers are defined
+    # Wire up WebSocket data-feed callback. WebSocket no longer triggers a
+    # TOU POST — the AEMO new-dispatch signal is the single source of truth
+    # for "settled price published, sync now". WebSocket data still drives:
+    #   • the live price sensor on the dashboard (via notify_websocket_update)
+    #   • fast-reaction solar curtailment (which needs sub-5-min responsiveness)
     if ws_client:
         def websocket_sync_callback(prices_data):
-            """
-            STAGE 2: WebSocket price arrival triggers re-sync IF price differs.
+            """Forward WebSocket price arrivals to the live sensor + curtailment.
 
-            Smart sync flow:
-            - Stage 1 (0s): Initial forecast already synced
-            - Stage 2 (WebSocket): Re-sync only if price differs from forecast
-            - Stage 3 (35s): REST API fallback if no WebSocket
-            - Stage 4 (60s): Final REST API check
-
-            NOTE: This callback is called from a background WebSocket thread,
-            so we must use call_soon_threadsafe to schedule work on the HA event loop.
+            Called from a background WebSocket thread, so async work is
+            scheduled onto the HA event loop via call_soon_threadsafe.
             """
-            # Notify coordinator that WebSocket delivered (for REST API fallback checks)
             coordinator.notify_websocket_update(prices_data)
 
-            # Trigger sync with price comparison (handle_sync_tou_with_websocket_data does comparison)
-            async def trigger_sync():
-                # Check if auto-sync is enabled (respect user's preference)
-                auto_sync_enabled = entry.options.get(
-                    CONF_AUTO_SYNC_ENABLED,
-                    entry.data.get(CONF_AUTO_SYNC_ENABLED, True)
-                )
-
-                # Check if solar curtailment is enabled
+            async def trigger_curtailment_check():
                 solar_curtailment_enabled = entry.options.get(
                     CONF_BATTERY_CURTAILMENT_ENABLED,
                     entry.data.get(CONF_BATTERY_CURTAILMENT_ENABLED, False)
                 )
-
-                # Skip if neither feature is enabled
-                if not auto_sync_enabled and not solar_curtailment_enabled:
-                    _LOGGER.debug("⏭️  WebSocket price received but auto-sync and curtailment both disabled, skipping")
+                if not solar_curtailment_enabled:
                     return
-
-                _LOGGER.info("📡 Stage 2: WebSocket price received - checking if re-sync needed")
-
                 try:
-                    # 1. Re-sync TOU to Tesla if price changed (handles comparison internally)
-                    if auto_sync_enabled:
-                        await handle_sync_tou_with_websocket_data(prices_data)
-                    else:
-                        _LOGGER.debug("⏭️  Skipping TOU sync (auto-sync disabled)")
-
-                    # 2. Check solar curtailment with WebSocket price (only if curtailment enabled)
-                    if solar_curtailment_enabled:
-                        await handle_solar_curtailment_with_websocket_data(prices_data)
-                    else:
-                        _LOGGER.debug("⏭️  Skipping solar curtailment check (curtailment disabled)")
-
-                    _LOGGER.info("✅ Stage 2 WebSocket sync completed")
+                    await handle_solar_curtailment_with_websocket_data(prices_data)
                 except Exception as e:
-                    _LOGGER.error(f"❌ Error in Stage 2 WebSocket sync: {e}", exc_info=True)
+                    _LOGGER.error(f"❌ Error in WebSocket curtailment check: {e}", exc_info=True)
 
-            # Schedule the async sync using thread-safe method
-            # This callback runs in a background WebSocket thread, not the HA event loop
             hass.loop.call_soon_threadsafe(
-                lambda: hass.async_create_task(trigger_sync())
+                lambda: hass.async_create_task(trigger_curtailment_check())
             )
 
-        # Assign callback to WebSocket client
         ws_client._sync_callback = websocket_sync_callback
-        _LOGGER.info("🔗 WebSocket sync callback configured for smart price-aware sync")
+        _LOGGER.info("🔗 WebSocket data-feed callback configured (live sensor + curtailment)")
 
-    # Set up SMART SYNC with 4-stage approach
-    # Stage 1 (0s): Initial forecast sync at start of period
-    async def auto_sync_initial_forecast(now):
-        """Stage 1: Initial forecast sync at start of 5-min period."""
-        # Ensure WebSocket thread is alive (restart if it died)
-        if ws_client:
-            await ws_client.ensure_running()
+    # TOU sync is now event-driven for NEM providers (Amber, Flow Power, AEMO
+    # sensor, Localvolts) — one POST per 5-min period, fired off the AEMO
+    # new-dispatch signal so it always lands on settled prices instead of
+    # racing the AEMO publish window. Octopus UK is on a different settlement
+    # cadence (30 min, not on NEM) and gets its own :00/:30 cron.
+    from .coordinator import SIGNAL_AEMO_NEW_DISPATCH
 
-        # Check if auto-sync is enabled in the config entry options
-        auto_sync_enabled = entry.options.get(
+    async def _handle_aemo_dispatch_event(_signal_data) -> None:
+        """Run TOU sync once per AEMO dispatch (settled price publish event).
+
+        Fires for Amber, Flow Power, AEMO sensor, and Localvolts entries.
+        Octopus, GloBird, and AEMO VPP are skipped here — Octopus has its
+        own cron, the others don't sync TOU at all (see provider_check below).
+        """
+        provider = entry.options.get(
+            CONF_ELECTRICITY_PROVIDER,
+            entry.data.get(CONF_ELECTRICITY_PROVIDER, "amber"),
+        )
+        if provider in ("octopus", "globird", "aemo_vpp", "other", "tou_only", "nz"):
+            return
+
+        if not entry.options.get(
             CONF_AUTO_SYNC_ENABLED,
-            entry.data.get(CONF_AUTO_SYNC_ENABLED, True)
+            entry.data.get(CONF_AUTO_SYNC_ENABLED, True),
+        ):
+            _LOGGER.debug("Auto-sync disabled, skipping AEMO-dispatch sync")
+            return
+
+        # Brief delay so Amber / Localvolts have time to ingest the AEMO
+        # publish into their own REST APIs (network fees, batching).
+        await asyncio.sleep(5)
+        _LOGGER.info("📡 AEMO dispatch received — syncing settled tariff")
+        await handle_sync_rest_api_check(check_name="aemo dispatch")
+
+    cancel_aemo_dispatch_sub = async_dispatcher_connect(
+        hass, SIGNAL_AEMO_NEW_DISPATCH, lambda data: hass.async_create_task(
+            _handle_aemo_dispatch_event(data)
         )
+    )
+    hass.data[DOMAIN][entry.entry_id]["aemo_dispatch_unsub"] = cancel_aemo_dispatch_sub
 
-        # Check if settled prices only mode is enabled (skip forecast sync)
-        settled_prices_only = entry.options.get(
-            CONF_SETTLED_PRICES_ONLY,
-            entry.data.get(CONF_SETTLED_PRICES_ONLY, False)
+    # Octopus UK is not on NEM and updates every 30 min. Single cron at the
+    # period boundaries (:00 and :30) is the right cadence for them.
+    cancel_octopus_cron = None
+    if electricity_provider == "octopus":
+        async def _octopus_periodic_sync(now):
+            if not entry.options.get(
+                CONF_AUTO_SYNC_ENABLED,
+                entry.data.get(CONF_AUTO_SYNC_ENABLED, True),
+            ):
+                _LOGGER.debug("Auto-sync disabled, skipping Octopus periodic sync")
+                return
+            await handle_sync_rest_api_check(check_name="octopus :00/:30")
+
+        cancel_octopus_cron = async_track_utc_time_change(
+            hass,
+            _octopus_periodic_sync,
+            minute=[0, 30],
+            second=0,
         )
+        hass.data[DOMAIN][entry.entry_id]["octopus_sync_cancel"] = cancel_octopus_cron
+        _LOGGER.info("🐙 Octopus TOU sync scheduled at :00 and :30 (1 POST per 30-min period)")
 
-        if not auto_sync_enabled:
-            _LOGGER.debug("Auto-sync disabled, skipping initial forecast sync")
-        elif settled_prices_only:
-            _LOGGER.info("⏭️ Settled prices only mode - skipping initial forecast sync (waiting for actual prices at :35/:60)")
-        else:
-            await handle_sync_initial_forecast()
-
-    # Stage 3 (35s): REST API fallback check if no WebSocket
-    async def auto_sync_rest_api_35s(now):
-        """Stage 3: REST API check at 35s if WebSocket hasn't delivered."""
-        auto_sync_enabled = entry.options.get(
-            CONF_AUTO_SYNC_ENABLED,
-            entry.data.get(CONF_AUTO_SYNC_ENABLED, True)
-        )
-
-        if auto_sync_enabled:
-            await handle_sync_rest_api_check(check_name="35s check")
-        else:
-            _LOGGER.debug("Auto-sync disabled, skipping REST API 35s check")
-
-    # Stage 4 (60s): Final REST API check
-    async def auto_sync_rest_api_60s(now):
-        """Stage 4: Final REST API check at 60s."""
-        auto_sync_enabled = entry.options.get(
-            CONF_AUTO_SYNC_ENABLED,
-            entry.data.get(CONF_AUTO_SYNC_ENABLED, True)
-        )
-
-        if auto_sync_enabled:
-            await handle_sync_rest_api_check(check_name="60s final")
-        else:
-            _LOGGER.debug("Auto-sync disabled, skipping REST API 60s check")
-
-    # Perform initial TOU sync if auto-sync is enabled (only in Amber mode)
-    auto_sync_enabled = entry.options.get(
-        CONF_AUTO_SYNC_ENABLED,
-        entry.data.get(CONF_AUTO_SYNC_ENABLED, True)
+    _LOGGER.info(
+        "✅ TOU sync wired: AEMO-dispatch-driven for NEM providers, "
+        "%scron at :00/:30 for Octopus",
+        "" if cancel_octopus_cron else "no ",
     )
-    settled_prices_only = entry.options.get(
-        CONF_SETTLED_PRICES_ONLY,
-        entry.data.get(CONF_SETTLED_PRICES_ONLY, False)
-    )
-
-    if not auto_sync_enabled:
-        _LOGGER.info("Skipping initial TOU sync - auto-sync disabled")
-    elif settled_prices_only:
-        _LOGGER.info("Skipping initial TOU sync - settled prices only mode (will sync at :35/:60)")
-    elif amber_coordinator or aemo_sensor_coordinator or octopus_coordinator:
-        _LOGGER.info("Performing initial TOU sync")
-        await handle_sync_initial_forecast()
-    elif not amber_coordinator and not aemo_sensor_coordinator and not octopus_coordinator:
-        _LOGGER.info("Skipping initial TOU sync - AEMO spike-only mode (no pricing data)")
-
-    # STAGE 1: Initial forecast sync at start of each 5-min period (0s)
-    cancel_timer_stage1 = async_track_utc_time_change(
-        hass,
-        auto_sync_initial_forecast,
-        minute=[0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55],
-        second=0,  # Start of each 5-min period
-    )
-
-    # STAGE 2: WebSocket-triggered sync (handled by callback, not scheduler)
-
-    # STAGE 3: REST API fallback check at 35s if WebSocket hasn't delivered
-    cancel_timer_stage3 = async_track_utc_time_change(
-        hass,
-        auto_sync_rest_api_35s,
-        minute=[0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55],
-        second=35,  # 35s into each period
-    )
-
-    # STAGE 4: Final REST API check at 60s (1 minute into period)
-    cancel_timer_stage4 = async_track_utc_time_change(
-        hass,
-        auto_sync_rest_api_60s,
-        minute=[1, 6, 11, 16, 21, 26, 31, 36, 41, 46, 51, 56],
-        second=0,  # 60s after period start
-    )
-
-    # Store the cancel functions so we can clean them up later
-    hass.data[DOMAIN][entry.entry_id]["auto_sync_cancel"] = cancel_timer_stage1
-    hass.data[DOMAIN][entry.entry_id]["auto_sync_cancel_35s"] = cancel_timer_stage3
-    hass.data[DOMAIN][entry.entry_id]["auto_sync_cancel_60s"] = cancel_timer_stage4
-    _LOGGER.info("✅ Smart sync scheduled with 4-stage approach:")
-    _LOGGER.info("  - Stage 1 (0s): Initial forecast sync at :00, :05, :10, etc.")
-    _LOGGER.info("  - Stage 2 (WebSocket): Re-sync on price change (event-driven)")
-    _LOGGER.info("  - Stage 3 (35s): REST API fallback if no WebSocket")
-    _LOGGER.info("  - Stage 4 (60s): Final REST API check at :01, :06, :11, etc.")
 
     # Set up automatic curtailment check every 5 minutes (same timing as TOU sync)
     # Triggers at :01:00, :06:00, :11:00, etc. - 60s after Amber price updates
@@ -24213,17 +24106,14 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     _LOGGER.info("Unloading PowerSync integration")
 
-    # Cancel the auto-sync timers if they exist (4-stage smart sync)
+    # Tear down TOU sync hooks (AEMO dispatch subscriber + optional Octopus cron)
     entry_data = hass.data[DOMAIN].get(entry.entry_id, {})
-    if cancel_timer := entry_data.get("auto_sync_cancel"):
-        cancel_timer()
-        _LOGGER.debug("Cancelled auto-sync timer (Stage 1)")
-    if cancel_timer_35s := entry_data.get("auto_sync_cancel_35s"):
-        cancel_timer_35s()
-        _LOGGER.debug("Cancelled auto-sync timer (Stage 3 - 35s)")
-    if cancel_timer_60s := entry_data.get("auto_sync_cancel_60s"):
-        cancel_timer_60s()
-        _LOGGER.debug("Cancelled auto-sync timer (Stage 4 - 60s)")
+    if aemo_unsub := entry_data.get("aemo_dispatch_unsub"):
+        aemo_unsub()
+        _LOGGER.debug("Unsubscribed AEMO new-dispatch listener")
+    if octopus_cancel := entry_data.get("octopus_sync_cancel"):
+        octopus_cancel()
+        _LOGGER.debug("Cancelled Octopus :00/:30 sync cron")
 
     # Cancel the curtailment timer if it exists
     if curtailment_cancel := entry_data.get("curtailment_cancel"):

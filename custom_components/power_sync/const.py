@@ -1120,11 +1120,6 @@ DEFAULT_CHIP_MODE_THRESHOLD = 30.0  # c/kWh (allow export only above this)
 # to max(sell_prices) + $1.00 to eliminate arbitrage opportunities
 CONF_SPIKE_PROTECTION_ENABLED = "spike_protection_enabled"
 
-# Settled Prices Only mode
-# Skips the initial forecast sync at :00 and only syncs when actual/settled prices
-# arrive via the Amber API at :35/:60 seconds into each 5-minute period
-CONF_SETTLED_PRICES_ONLY = "settled_prices_only"
-
 # Forecast Discrepancy Alert configuration
 # Compares predicted forecast against conservative/low forecast and alerts if
 # they differ significantly (indicates forecast model may be unreliable)
