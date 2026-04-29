@@ -1597,40 +1597,6 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                                 "(confirmed after 3 cycles)",
                             )
 
-            # User restore cooldown: if the user manually restored normal
-            # operation, suppress force charge/discharge for 30 minutes to
-            # respect their intent — but ONLY for the action type they
-            # actually stopped. A "Stop Charge" press shouldn't block tonight's
-            # Flow Power Happy Hour discharge; a "Stop Discharge" press
-            # shouldn't block off-peak charging an hour later.
-            if effective_action in ("charge", "discharge", "export"):
-                from ..const import DOMAIN
-                entry_data = self.hass.data.get(DOMAIN, {}).get(self.entry_id, {})
-                cooldown_until = entry_data.get("restore_cooldown_until")
-                if cooldown_until and dt_util.utcnow() < cooldown_until:
-                    cooldown_action = entry_data.get("restore_cooldown_action", "any")
-                    lp_is_charge = effective_action == "charge"
-                    lp_is_discharge = effective_action in ("discharge", "export")
-                    cooldown_blocks = (
-                        cooldown_action == "any"
-                        or (cooldown_action == "charge" and lp_is_charge)
-                        or (cooldown_action == "discharge" and lp_is_discharge)
-                    )
-                    if cooldown_blocks:
-                        remaining = (cooldown_until - dt_util.utcnow()).total_seconds() / 60
-                        _LOGGER.info(
-                            "Optimizer: Suppressing %s — user %s restore cooldown active (%.0fmin remaining)",
-                            effective_action, cooldown_action, remaining,
-                        )
-                        effective_action = "self_consumption"
-                    else:
-                        _LOGGER.debug(
-                            "Optimizer: %s allowed — restore cooldown is %s-only "
-                            "(LP wants %s, %.0fmin remaining)",
-                            effective_action, cooldown_action, effective_action,
-                            (cooldown_until - dt_util.utcnow()).total_seconds() / 60,
-                        )
-
             # CHARGE hysteresis: require 2 consecutive CHARGE decisions
             # before executing force_charge. This prevents oscillation at
             # decision boundaries (e.g. LP flipping CHARGE↔SC every cycle
