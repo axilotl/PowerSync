@@ -82,14 +82,27 @@ class _PowerwallPairButtonBase(ButtonEntity):
 
 
 class PowerwallPairButton(_PowerwallPairButtonBase):
-    """Kick off Powerwall RSA key registration over Fleet API."""
+    """Kick off Powerwall RSA key registration over Fleet API.
+
+    First-time pairing: single press starts immediately — no friction in the
+    common setup flow. Re-pair (already paired): two-press confirmation since
+    the user is intentionally swapping a working key for a new one and burns
+    a Fleet API registration in the process. The confirmation isn't strictly
+    needed (the new key only replaces the old one after VERIFIED, so a
+    half-finished re-pair leaves the existing key intact) but it's a
+    deliberate friction layer to stop a stray automation / dashboard tap from
+    spamming Tesla with new keys.
+    """
 
     _attr_name = "Pair Powerwall Gateway"
     _attr_icon = "mdi:key-plus"
 
+    _CONFIRM_WINDOW_SECONDS = 30
+
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         super().__init__(hass, entry)
         self._attr_unique_id = f"{entry.entry_id}_pair_powerwall"
+        self._first_press_ts: float | None = None
 
     @property
     def available(self) -> bool:
@@ -108,6 +121,32 @@ class PowerwallPairButton(_PowerwallPairButtonBase):
         return True
 
     async def async_press(self) -> None:
+        already_paired = bool(
+            self._entry.data.get(CONF_POWERWALL_LOCAL_PAIRED)
+        )
+        if already_paired:
+            now = time.time()
+            if (
+                self._first_press_ts is None
+                or (now - self._first_press_ts) > self._CONFIRM_WINDOW_SECONDS
+            ):
+                self._first_press_ts = now
+                await _notify(
+                    self._hass,
+                    "⚠ Confirm Re-pair Powerwall",
+                    (
+                        f"This site is already paired. Press **Pair Powerwall "
+                        f"Gateway** again within {self._CONFIRM_WINDOW_SECONDS}s "
+                        f"to generate a new RSA key and re-register with Tesla.\n\n"
+                        f"You'll need to toggle the DC isolator OFF then ON within "
+                        f"the 2-minute window. The old key stays valid until the "
+                        f"new one is verified — interrupted re-pairs are safe."
+                    ),
+                )
+                return
+            # Second press inside the confirmation window → execute.
+            self._first_press_ts = None
+
         await _start_pairing_with_notifications(self._hass, self._entry)
 
 
