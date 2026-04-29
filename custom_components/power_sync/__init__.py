@@ -22771,19 +22771,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # site_info.installation_time_zone, then Amber's network field.
         resolved_region: Optional[str] = None
 
-        configured_region = entry.options.get(
-            CONF_AEMO_REGION,
-            entry.data.get(CONF_AEMO_REGION),
-        )
-        if configured_region in _NEM_REGIONS:
-            resolved_region = configured_region
-
-        if resolved_region is None and flow_power_state in _NEM_REGIONS:
-            # Flow Power's "state" config is a NEM region code even when the
-            # user is on a non-AEMO price source.
-            resolved_region = flow_power_state
-
-        if resolved_region is None and tesla_coordinator is not None:
+        # Step 1: Tesla site_info.installation_time_zone is the strongest
+        # signal — it's the actual physical site where the Powerwall is
+        # installed, set at commissioning, and Tesla pre-populates it from
+        # the address. Try it first so we don't get pinned to a stale
+        # config default below.
+        if tesla_coordinator is not None:
             try:
                 site_info = await tesla_coordinator.async_get_site_info()
                 if site_info:
@@ -22798,6 +22791,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             except Exception as e:
                 _LOGGER.debug("Tesla site_info NEM region lookup failed: %s", e)
 
+        # Step 2: Amber's network field gives us a precise NEM region
+        # mapping when the Tesla path didn't resolve (no Powerwall, or
+        # ambiguous timezone like Australia/Adelaide / Australia/Hobart that
+        # we want to confirm against the network).
         if resolved_region is None and electricity_provider == "amber":
             try:
                 amber_region = await _get_nem_region_from_amber()
@@ -22805,6 +22802,36 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     resolved_region = amber_region
             except Exception as e:
                 _LOGGER.debug("Amber NEM region lookup failed: %s", e)
+
+        # Step 3: Explicit CONF_AEMO_REGION is the last resort because it's
+        # a manual override that older entries set when configuring AEMO
+        # spike protection — whatever default they accepted at config time
+        # may now be wrong if the user has since moved or the auto-detect
+        # paths above can give a more accurate answer.
+        if resolved_region is None:
+            configured_region = entry.options.get(
+                CONF_AEMO_REGION,
+                entry.data.get(CONF_AEMO_REGION),
+            )
+            if configured_region in _NEM_REGIONS:
+                _LOGGER.info(
+                    "Using configured CONF_AEMO_REGION=%s for AEMO dispatch trigger",
+                    configured_region,
+                )
+                resolved_region = configured_region
+
+        # Step 4 (Flow Power only): the Flow Power state config IS a NEM
+        # region code, but only meaningful for Flow Power entries — every
+        # other provider falls back to the "NSW1" default in this codebase
+        # which would silently pin Amber/Localvolts users to NSW1 (bug
+        # observed in v2.12.215–217 where QLD/VIC/SA users with no
+        # CONF_AEMO_REGION ended up requesting NSW1 dispatch).
+        if (
+            resolved_region is None
+            and electricity_provider == "flow_power"
+            and flow_power_state in _NEM_REGIONS
+        ):
+            resolved_region = flow_power_state
 
         if resolved_region:
             try:
