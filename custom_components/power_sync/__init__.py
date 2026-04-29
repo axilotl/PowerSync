@@ -1015,6 +1015,7 @@ PLATFORMS: list[Platform] = [
     Platform.SELECT,
     Platform.NUMBER,
     Platform.BINARY_SENSOR,
+    Platform.BUTTON,
     Platform.UPDATE,
 ]
 
