@@ -1080,16 +1080,12 @@ class SyncCoordinator:
     - Reliability: Multiple fallback checks if WebSocket fails
     """
 
-    # Price difference threshold (in cents) to trigger re-sync
-    PRICE_DIFF_THRESHOLD = 0.5  # Re-sync if price differs by more than 0.5c/kWh
-
     def __init__(self):
         self._websocket_event = asyncio.Event()
         self._websocket_data = None
         self._current_period = None  # Track which 5-min period we're in
         self._lock = asyncio.Lock()
         self._initial_sync_done = False  # Has initial forecast sync happened this period?
-        self._last_synced_prices = {}  # {'general': price, 'feedIn': price}
         self._websocket_received = False  # Has WebSocket delivered this period?
 
     def _get_current_period(self):
@@ -1107,7 +1103,6 @@ class SyncCoordinator:
             self._current_period = current_period
             self._initial_sync_done = False
             self._websocket_received = False
-            self._last_synced_prices = {}
             self._websocket_event.clear()
             self._websocket_data = None
             return True
@@ -1150,58 +1145,6 @@ class SyncCoordinator:
         async with self._lock:
             await self._reset_if_new_period()
             return self._websocket_received
-
-    def record_synced_price(self, general_price, feedin_price):
-        """
-        Record the price that was synced.
-
-        Args:
-            general_price: The general (buy) price in c/kWh
-            feedin_price: The feedIn (sell) price in c/kWh
-        """
-        self._last_synced_prices = {
-            'general': general_price,
-            'feedIn': feedin_price
-        }
-        _LOGGER.debug(f"Recorded synced price: general={general_price}c, feedIn={feedin_price}c")
-
-    def should_resync_for_price(self, new_general_price, new_feedin_price):
-        """
-        Check if we should re-sync because the price has changed significantly.
-
-        Args:
-            new_general_price: The new general price from WebSocket/REST
-            new_feedin_price: The new feedIn price from WebSocket/REST
-
-        Returns:
-            bool: True if price difference exceeds threshold
-        """
-        last_prices = self._last_synced_prices
-
-        if not last_prices:
-            # No previous sync - should sync
-            _LOGGER.info("No previous price recorded, will sync")
-            return True
-
-        last_general = last_prices.get('general')
-        last_feedin = last_prices.get('feedIn')
-
-        # Check general price difference
-        if last_general is not None and new_general_price is not None:
-            general_diff = abs(new_general_price - last_general)
-            if general_diff > self.PRICE_DIFF_THRESHOLD:
-                _LOGGER.info(f"General price changed by {general_diff:.2f}c ({last_general:.2f}c → {new_general_price:.2f}c) - will re-sync")
-                return True
-
-        # Check feedIn price difference
-        if last_feedin is not None and new_feedin_price is not None:
-            feedin_diff = abs(new_feedin_price - last_feedin)
-            if feedin_diff > self.PRICE_DIFF_THRESHOLD:
-                _LOGGER.info(f"FeedIn price changed by {feedin_diff:.2f}c ({last_feedin:.2f}c → {new_feedin_price:.2f}c) - will re-sync")
-                return True
-
-        _LOGGER.debug(f"Price unchanged (general={new_general_price}c, feedIn={new_feedin_price}c) - skipping re-sync")
-        return False
 
     # Legacy methods for backwards compatibility
     async def wait_for_websocket_or_timeout(self, timeout_seconds=15):
@@ -15215,10 +15158,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         invoke `send_tariff_to_tesla` directly with their override tariff,
         and the in-progress force action also short-circuits this function
         via the guard inside `_handle_sync_tou_internal`.
-
-        The `should_resync_for_price` check inside `_handle_sync_tou_internal`
-        is the only de-duplication guard — if the dispatch event fires twice
-        with the same price, the second call is skipped.
         """
         # Skip if no price coordinator available (AEMO spike-only mode without pricing)
         if not amber_coordinator and not aemo_sensor_coordinator and not octopus_coordinator:
@@ -15912,17 +15851,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             else:
                 _LOGGER.error("No Amber price data available from REST API")
 
-        # De-dupe guard: only POST when the price has moved more than the
-        # threshold since the last sync. With AEMO-dispatch-driven scheduling
-        # there should never be more than one fire per 5-min period anyway,
-        # but if the same dispatch event somehow fires twice we won't burn a
-        # Tesla call on identical data.
-        if general_price is not None or feedin_price is not None:
-            if not coordinator.should_resync_for_price(general_price, feedin_price):
-                _LOGGER.info(f"⏭️  Price unchanged - skipping re-sync")
-                return
-            _LOGGER.info(f"🔄 Price changed - proceeding with sync")
-
         # Get forecast data from appropriate coordinator
         if use_localvolts:
             # Localvolts coordinator already refreshed above
@@ -16223,8 +16151,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 return
             _LOGGER.info("🔀 Using Sigenergy Cloud API for tariff sync")
             await _sync_tariff_to_sigenergy(forecast_data, sync_mode, current_actual_interval)
-            if general_price is not None or feedin_price is not None:
-                coordinator.record_synced_price(general_price, feedin_price)
             return
 
         # FoxESS: sync to Cloud API if configured, otherwise store for sensors only
@@ -16900,10 +16826,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                                 hass.async_create_task(_retry_autonomous_restore())
                 except Exception as e:
                     _LOGGER.warning(f"Force mode toggle failed: {e}")
-
-            # Record the synced price for smart price-change detection
-            if general_price is not None or feedin_price is not None:
-                coordinator.record_synced_price(general_price, feedin_price)
 
             # Enforce grid charging setting after TOU sync (counteracts VPP overrides)
             entry_data = hass.data[DOMAIN].get(entry.entry_id, {})
