@@ -65,6 +65,43 @@ def _resolve_non_nem_timezone(hass, electricity_provider: str) -> str | None:
         return getattr(hass.config, "time_zone", None)
     return None
 
+
+# Valid NEM region codes. Used to validate user-supplied region values before
+# we hand them to AEMOPriceCoordinator.
+_NEM_REGIONS = ("NSW1", "VIC1", "QLD1", "SA1", "TAS1")
+
+# IANA timezone → NEM region. Tesla site_info.installation_time_zone gives us
+# this for free for Tesla Powerwall users; mapping it lets us spawn an
+# AEMO-dispatch trigger for users on Amber / Localvolts / Flow Power non-AEMO
+# without asking them to pick a region in the config flow.
+# WA (Australia/Perth) and NT (Australia/Darwin) are intentionally absent —
+# neither is on the National Electricity Market.
+_TZ_TO_NEM_REGION: dict[str, str] = {
+    "Australia/Sydney": "NSW1",
+    "Australia/ACT": "NSW1",
+    "Australia/Canberra": "NSW1",
+    "Australia/NSW": "NSW1",
+    "Australia/Broken_Hill": "NSW1",
+    "Australia/Lord_Howe": "NSW1",
+    "Australia/Melbourne": "VIC1",
+    "Australia/Victoria": "VIC1",
+    "Australia/Brisbane": "QLD1",
+    "Australia/Lindeman": "QLD1",
+    "Australia/Queensland": "QLD1",
+    "Australia/Adelaide": "SA1",
+    "Australia/South": "SA1",
+    "Australia/Hobart": "TAS1",
+    "Australia/Currie": "TAS1",
+    "Australia/Tasmania": "TAS1",
+}
+
+
+def _nem_region_from_iana_tz(tz_name: str | None) -> str | None:
+    """Map an IANA timezone (e.g. Australia/Sydney) to a NEM region code."""
+    if not tz_name:
+        return None
+    return _TZ_TO_NEM_REGION.get(tz_name)
+
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState
 import homeassistant.helpers.config_validation as cv
 from homeassistant.const import Platform, CONF_ACCESS_TOKEN, CONF_TOKEN
@@ -22671,7 +22708,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # new-dispatch signal so it always lands on settled prices instead of
     # racing the AEMO publish window. Octopus UK is on a different settlement
     # cadence (30 min, not on NEM) and gets its own :00/:30 cron.
-    from .coordinator import SIGNAL_AEMO_NEW_DISPATCH
+    from .coordinator import SIGNAL_AEMO_NEW_DISPATCH, AEMOPriceCoordinator
+
+    NEM_PROVIDERS = ("amber", "flow_power", "localvolts", "aemo_sensor")
+    is_nem_provider = electricity_provider in NEM_PROVIDERS
 
     async def _handle_aemo_dispatch_event(_signal_data) -> None:
         """Run TOU sync once per AEMO dispatch (settled price publish event).
@@ -22684,7 +22724,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             CONF_ELECTRICITY_PROVIDER,
             entry.data.get(CONF_ELECTRICITY_PROVIDER, "amber"),
         )
-        if provider in ("octopus", "globird", "aemo_vpp", "other", "tou_only", "nz"):
+        if provider in ("octopus", "globird", "aemo_vpp", "other", "tou_only", "nz", "epex"):
             return
 
         if not entry.options.get(
@@ -22706,6 +22746,114 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
     )
     hass.data[DOMAIN][entry.entry_id]["aemo_dispatch_unsub"] = cancel_aemo_dispatch_sub
+
+    # The dispatch signal is only emitted by an AEMOPriceCoordinator instance.
+    # Flow Power AEMO mode already builds one earlier (as the price source).
+    # For other NEM providers — Amber, Localvolts, Flow Power on a non-AEMO
+    # price source — we need to spin up a dispatch-trigger coordinator here so
+    # `_handle_aemo_dispatch_event` actually fires for them. The coordinator
+    # is purely a signal source; the user's existing price coordinator
+    # (Amber, Localvolts, etc.) is still the authoritative price feed.
+    aemo_dispatch_trigger_coordinator = None
+    cancel_dispatch_fallback_cron = None
+
+    if is_nem_provider and aemo_sensor_coordinator is None:
+        # Resolve a NEM region: explicit config first, then Tesla
+        # site_info.installation_time_zone, then Amber's network field.
+        resolved_region: Optional[str] = None
+
+        configured_region = entry.options.get(
+            CONF_AEMO_REGION,
+            entry.data.get(CONF_AEMO_REGION),
+        )
+        if configured_region in _NEM_REGIONS:
+            resolved_region = configured_region
+
+        if resolved_region is None and flow_power_state in _NEM_REGIONS:
+            # Flow Power's "state" config is a NEM region code even when the
+            # user is on a non-AEMO price source.
+            resolved_region = flow_power_state
+
+        if resolved_region is None and tesla_coordinator is not None:
+            try:
+                site_info = await tesla_coordinator.async_get_site_info()
+                if site_info:
+                    tesla_tz = site_info.get("installation_time_zone")
+                    mapped = _nem_region_from_iana_tz(tesla_tz)
+                    if mapped:
+                        _LOGGER.info(
+                            "Auto-detected NEM region %s from Tesla site timezone (%s)",
+                            mapped, tesla_tz,
+                        )
+                        resolved_region = mapped
+            except Exception as e:
+                _LOGGER.debug("Tesla site_info NEM region lookup failed: %s", e)
+
+        if resolved_region is None and electricity_provider == "amber":
+            try:
+                amber_region = await _get_nem_region_from_amber()
+                if amber_region in _NEM_REGIONS:
+                    resolved_region = amber_region
+            except Exception as e:
+                _LOGGER.debug("Amber NEM region lookup failed: %s", e)
+
+        if resolved_region:
+            try:
+                session = async_get_clientsession(hass)
+                aemo_dispatch_trigger_coordinator = AEMOPriceCoordinator(
+                    hass, resolved_region, session,
+                )
+                # Don't await first_refresh before the listener is attached
+                # above — that's already done. Schedule the first refresh as
+                # a background task so setup doesn't block on NEMWEB I/O.
+                hass.async_create_task(
+                    aemo_dispatch_trigger_coordinator.async_config_entry_first_refresh()
+                )
+                hass.data[DOMAIN][entry.entry_id]["aemo_dispatch_trigger_coordinator"] = (
+                    aemo_dispatch_trigger_coordinator
+                )
+                _LOGGER.info(
+                    "📡 AEMO-dispatch trigger coordinator started for %s in region %s",
+                    electricity_provider, resolved_region,
+                )
+            except Exception as e:
+                _LOGGER.warning(
+                    "Failed to start AEMO-dispatch trigger coordinator: %s — "
+                    "falling back to periodic cron",
+                    e,
+                )
+                aemo_dispatch_trigger_coordinator = None
+
+        if aemo_dispatch_trigger_coordinator is None:
+            # No region resolvable (or coordinator failed). Fall back to a
+            # periodic cron at +40s past every 5-min boundary so the sync
+            # still runs once per period — by :40s the user's REST price
+            # feed has had time to ingest the latest AEMO settled price.
+            async def _nem_fallback_periodic_sync(now):
+                if not entry.options.get(
+                    CONF_AUTO_SYNC_ENABLED,
+                    entry.data.get(CONF_AUTO_SYNC_ENABLED, True),
+                ):
+                    _LOGGER.debug("Auto-sync disabled, skipping fallback periodic sync")
+                    return
+                await handle_sync_rest_api_check(check_name="cron fallback")
+
+            cancel_dispatch_fallback_cron = async_track_utc_time_change(
+                hass,
+                _nem_fallback_periodic_sync,
+                minute=[0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55],
+                second=40,
+            )
+            hass.data[DOMAIN][entry.entry_id]["dispatch_fallback_cron_cancel"] = (
+                cancel_dispatch_fallback_cron
+            )
+            _LOGGER.warning(
+                "TOU sync: NEM region not auto-detectable for %s — "
+                "running periodic fallback at :40s past every 5-min boundary. "
+                "Set the AEMO region in PowerSync settings to switch to "
+                "AEMO-dispatch-driven sync.",
+                electricity_provider,
+            )
 
     # Octopus UK is not on NEM and updates every 30 min. Single cron at the
     # period boundaries (:00 and :30) is the right cadence for them.
@@ -22729,11 +22877,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.data[DOMAIN][entry.entry_id]["octopus_sync_cancel"] = cancel_octopus_cron
         _LOGGER.info("🐙 Octopus TOU sync scheduled at :00 and :30 (1 POST per 30-min period)")
 
-    _LOGGER.info(
-        "✅ TOU sync wired: AEMO-dispatch-driven for NEM providers, "
-        "%scron at :00/:30 for Octopus",
-        "" if cancel_octopus_cron else "no ",
-    )
+    if is_nem_provider:
+        if aemo_sensor_coordinator is not None:
+            _LOGGER.info(
+                "✅ TOU sync wired: AEMO-dispatch-driven (Flow Power AEMO price coordinator)"
+            )
+        elif aemo_dispatch_trigger_coordinator is not None:
+            _LOGGER.info(
+                "✅ TOU sync wired: AEMO-dispatch-driven (dispatch-trigger coordinator)"
+            )
+        else:
+            _LOGGER.info("✅ TOU sync wired: periodic cron fallback (no NEM region)")
+    elif cancel_octopus_cron is not None:
+        _LOGGER.info("✅ TOU sync wired: Octopus :00/:30 cron")
+    else:
+        _LOGGER.info("✅ TOU sync wired: no automatic sync for %s", electricity_provider)
 
     # Set up automatic curtailment check every 5 minutes (same timing as TOU sync)
     # Triggers at :01:00, :06:00, :11:00, etc. - 60s after Amber price updates
@@ -24145,11 +24303,25 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     _LOGGER.info("Unloading PowerSync integration")
 
-    # Tear down TOU sync hooks (AEMO dispatch subscriber + optional Octopus cron)
+    # Tear down TOU sync hooks (AEMO dispatch subscriber + dispatch-trigger
+    # coordinator + cron fallback + optional Octopus cron)
     entry_data = hass.data[DOMAIN].get(entry.entry_id, {})
     if aemo_unsub := entry_data.get("aemo_dispatch_unsub"):
         aemo_unsub()
         _LOGGER.debug("Unsubscribed AEMO new-dispatch listener")
+    if trigger_coord := entry_data.get("aemo_dispatch_trigger_coordinator"):
+        # Stop the polling loop so we don't keep hitting NEMWEB after unload.
+        trigger_coord.update_interval = None
+        if hasattr(trigger_coord, "async_shutdown"):
+            try:
+                await trigger_coord.async_shutdown()
+            except Exception as e:
+                _LOGGER.debug("AEMO dispatch-trigger coordinator shutdown error: %s", e)
+        entry_data["aemo_dispatch_trigger_coordinator"] = None
+        _LOGGER.debug("Stopped AEMO dispatch-trigger coordinator")
+    if fallback_cancel := entry_data.get("dispatch_fallback_cron_cancel"):
+        fallback_cancel()
+        _LOGGER.debug("Cancelled NEM TOU sync periodic fallback")
     if octopus_cancel := entry_data.get("octopus_sync_cancel"):
         octopus_cancel()
         _LOGGER.debug("Cancelled Octopus :00/:30 sync cron")
