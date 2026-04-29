@@ -22812,9 +22812,28 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 aemo_dispatch_trigger_coordinator = AEMOPriceCoordinator(
                     hass, resolved_region, session,
                 )
-                # Don't await first_refresh before the listener is attached
-                # above — that's already done. Schedule the first refresh as
-                # a background task so setup doesn't block on NEMWEB I/O.
+                # HA's DataUpdateCoordinator only re-schedules the next refresh
+                # when at least one listener is attached (`_listeners` is
+                # non-empty). For the Flow Power AEMO mode that's the price
+                # sensor; in dispatch-trigger mode no sensor uses this
+                # coordinator's data, so we attach a no-op listener purely to
+                # keep the polling loop alive. Without this the coordinator
+                # runs `first_refresh` once and then never polls again — which
+                # is the bug observed in v2.12.216 where exactly one
+                # "PowerSync changed Utility Rate Plan" entry was sent at
+                # startup and nothing followed for ~1.5 h.
+                trigger_listener_unsub = (
+                    aemo_dispatch_trigger_coordinator.async_add_listener(
+                        lambda: None,
+                    )
+                )
+                hass.data[DOMAIN][entry.entry_id][
+                    "aemo_dispatch_trigger_listener_unsub"
+                ] = trigger_listener_unsub
+                # Schedule the first refresh as a background task so setup
+                # doesn't block on NEMWEB I/O. The dispatch listener has
+                # already been wired above, so the first dispatch event
+                # emitted by this refresh is captured.
                 hass.async_create_task(
                     aemo_dispatch_trigger_coordinator.async_config_entry_first_refresh()
                 )
@@ -24318,8 +24337,14 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if aemo_unsub := entry_data.get("aemo_dispatch_unsub"):
         aemo_unsub()
         _LOGGER.debug("Unsubscribed AEMO new-dispatch listener")
+    if trigger_listener_unsub := entry_data.get("aemo_dispatch_trigger_listener_unsub"):
+        # Removing the no-op listener tells the coordinator to stop scheduling
+        # the next refresh after the in-flight one (if any) finishes.
+        trigger_listener_unsub()
+        entry_data["aemo_dispatch_trigger_listener_unsub"] = None
     if trigger_coord := entry_data.get("aemo_dispatch_trigger_coordinator"):
-        # Stop the polling loop so we don't keep hitting NEMWEB after unload.
+        # Belt-and-braces: also clear update_interval so the coordinator can't
+        # reschedule, and call async_shutdown if HA exposes it.
         trigger_coord.update_interval = None
         if hasattr(trigger_coord, "async_shutdown"):
             try:
