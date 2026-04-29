@@ -1,0 +1,6 @@
+## What's Changed
+
+**TOU sync no longer polls AEMO NEMWEB for Amber / Localvolts users**
+Earlier 2.12.215–218 builds spun up a dispatch-trigger `AEMOPriceCoordinator` for every NEM-on entry that didn't already have one (i.e. every Amber and Localvolts user). That coordinator polls NEMWEB at 1 Hz during its post-boundary search window — fine for the original Flow Power AEMO mode where one user runs it as their actual price source, but rolling it out to every Amber and Localvolts user meant ~50 NEMWEB requests per 5-minute period per user, just to receive a "settled price published" signal. A user flagged the polling in their logs and was reasonably concerned about being rate-limited by AEMO. The dispatch-trigger coordinator has been removed; non-Flow-Power-AEMO entries now fire a single fixed cron at `:50s` past every 5-minute boundary, which is well after AEMO's typical `:36–:43s` settled-dispatch publish window and gives the user's own price feed (Amber REST/WebSocket, Localvolts, etc.) time to ingest. Net effect: zero NEMWEB load for Amber/Localvolts users, same "1 sync per 5-min on settled prices" guarantee as the original v2.12.208 design. Flow Power AEMO mode is unchanged — its price coordinator was always going to poll NEMWEB anyway, so it keeps using the dispatch signal.
+
+Update available via HACS
