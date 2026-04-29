@@ -30,6 +30,7 @@ from homeassistant.util import dt as dt_util
 from datetime import timedelta
 
 from .const import (
+    CONF_POWERWALL_LOCAL_PAIRED,
     DOMAIN,
     SENSOR_TYPE_CURRENT_PRICE,
     SENSOR_TYPE_CURRENT_IMPORT_PRICE,
@@ -1448,8 +1449,61 @@ class AmberPriceSensor(CoordinatorEntity, SensorEntity):
         return {}
 
 
+_LOCAL_GRID_STATUS_TO_CLOUD = {
+    "SystemGridConnected": "Active",
+    "SystemIslandedReady": "Active",
+    "SystemTransitionToGrid": "Active",
+    "SystemTransitionToIsland": "Off-Grid",
+    "SystemIslandedActive": "Off-Grid",
+    "SystemMicroGridFaulted": "Off-Grid",
+    "SystemWaitForUser": "Off-Grid",
+}
+
+
+def _local_value_for(sensor_key: str, snap: Any) -> Any:
+    """Map a sensor key to its equivalent on the local PowerwallSnapshot.
+
+    Returns the locally-derived value (in the same units the cloud value_fn
+    produces) or ``None`` to indicate "no local equivalent — fall through to cloud".
+    """
+    if snap is None:
+        return None
+    if sensor_key == SENSOR_TYPE_BATTERY_POWER:
+        return None if snap.battery_w is None else snap.battery_w / 1000.0
+    if sensor_key == SENSOR_TYPE_GRID_POWER:
+        return None if snap.grid_w is None else snap.grid_w / 1000.0
+    if sensor_key == SENSOR_TYPE_SOLAR_POWER:
+        return None if snap.solar_w is None else snap.solar_w / 1000.0
+    if sensor_key == SENSOR_TYPE_HOME_LOAD:
+        return None if snap.load_w is None else snap.load_w / 1000.0
+    if sensor_key == SENSOR_TYPE_BATTERY_LEVEL:
+        return snap.soc
+    if sensor_key == SENSOR_TYPE_GRID_STATUS:
+        if snap.grid_status is None:
+            return None
+        return _LOCAL_GRID_STATUS_TO_CLOUD.get(snap.grid_status, "Active")
+    return None
+
+
+_LOCAL_OVERRIDABLE = {
+    SENSOR_TYPE_BATTERY_POWER,
+    SENSOR_TYPE_GRID_POWER,
+    SENSOR_TYPE_SOLAR_POWER,
+    SENSOR_TYPE_HOME_LOAD,
+    SENSOR_TYPE_BATTERY_LEVEL,
+    SENSOR_TYPE_GRID_STATUS,
+}
+
+
 class TeslaEnergySensor(CoordinatorEntity, SensorEntity):
-    """Sensor for Tesla energy data."""
+    """Sensor for Tesla energy data.
+
+    Reads cloud-coordinator data via the entity description's ``value_fn`` by
+    default. When the entry is paired and the local coordinator has a fresh
+    snapshot, the locally-derived value wins for keys in ``_LOCAL_OVERRIDABLE``
+    — and the entity also subscribes to local coordinator updates so it
+    refreshes at the local 2s cadence instead of the cloud 30-60s cadence.
+    """
 
     entity_description: PowerSyncSensorEntityDescription
 
@@ -1467,6 +1521,7 @@ class TeslaEnergySensor(CoordinatorEntity, SensorEntity):
         # HA 2026.2.0+ requires lowercase suggested_object_id
         self._attr_suggested_object_id = f"power_sync_{description.key}"
         self._entry = entry
+        self._local_unsub = None
 
     @property
     def device_info(self):
@@ -1475,12 +1530,46 @@ class TeslaEnergySensor(CoordinatorEntity, SensorEntity):
             SENSOR_KEY_TO_FAMILY.get(self.entity_description.key, SENSOR_FAMILY_BATTERY),
         )
 
+    def _local_coordinator(self):
+        """Return the PowerwallLocalCoordinator if paired and built, else None."""
+        if not self._entry.data.get(CONF_POWERWALL_LOCAL_PAIRED):
+            return None
+        bucket = (
+            self.hass.data.get(DOMAIN, {})
+            .get(self._entry.entry_id, {})
+            .get("powerwall_local", {})
+        )
+        return bucket.get("coordinator")
+
     @property
     def native_value(self) -> Any:
-        """Return the state of the sensor."""
+        """Prefer local snapshot value when paired; else cloud value_fn."""
+        if self.entity_description.key in _LOCAL_OVERRIDABLE:
+            local_coord = self._local_coordinator()
+            snap = local_coord.data if local_coord is not None else None
+            local_v = _local_value_for(self.entity_description.key, snap)
+            if local_v is not None:
+                return local_v
         if self.entity_description.value_fn:
             return self.entity_description.value_fn(self.coordinator.data)
         return None
+
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to both cloud and local coordinator updates."""
+        await super().async_added_to_hass()
+        if self.entity_description.key in _LOCAL_OVERRIDABLE:
+            local_coord = self._local_coordinator()
+            if local_coord is not None:
+                self._local_unsub = local_coord.async_add_listener(
+                    self.async_write_ha_state
+                )
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Drop the local coordinator listener cleanly."""
+        if self._local_unsub is not None:
+            self._local_unsub()
+            self._local_unsub = None
+        await super().async_will_remove_from_hass()
 
 
 class OptimizerActionSensor(CoordinatorEntity, SensorEntity):

@@ -281,7 +281,7 @@ class ForceDischargeSwitch(SwitchEntity):
     """Switch to manually force battery discharge mode."""
 
     _attr_has_entity_name = True
-    _attr_entity_category = EntityCategory.CONFIG
+    # Primary user control — belongs in the device card's Controls section.
 
     def __init__(
         self,
@@ -422,7 +422,7 @@ class ForceChargeSwitch(SwitchEntity):
     """Switch to manually force battery charge mode."""
 
     _attr_has_entity_name = True
-    _attr_entity_category = EntityCategory.CONFIG
+    # Primary user control — belongs in the device card's Controls section.
 
     def __init__(
         self,

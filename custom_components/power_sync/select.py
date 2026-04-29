@@ -98,7 +98,7 @@ async def async_setup_entry(
 class PowerSyncDurationSelect(SelectEntity):
     """Select entity for choosing a duration in minutes."""
 
-    _attr_entity_category = EntityCategory.CONFIG
+    # User-facing duration picker for force charge/discharge — Controls, not Configuration.
     _attr_icon = "mdi:clock-outline"
     _attr_has_entity_name = True
 
@@ -146,10 +146,10 @@ class PowerSyncDurationSelect(SelectEntity):
 
 
 class _TeslaSiteSelectBase(SelectEntity):
-    """Base for Tesla Energy Site select entities."""
+    """Base for Tesla Energy Site select entities (Operation Mode, Grid Export)."""
 
     _attr_has_entity_name = True
-    _attr_entity_category = EntityCategory.CONFIG
+    # User-facing — these are primary controls, belong in Controls section.
 
     def __init__(
         self,

@@ -97,7 +97,8 @@ class _TeslaSiteNumberBase(NumberEntity):
         self._attr_suggested_object_id = f"power_sync_{key}"
         self._attr_name = name
         self._attr_icon = icon
-        self._attr_entity_category = EntityCategory.CONFIG
+        # No EntityCategory — these are user-facing controls (Backup Reserve etc),
+        # belong in the device card's main Controls section, not Configuration.
 
     @property
     def device_info(self):
@@ -180,7 +181,7 @@ class ForcePowerNumber(NumberEntity):
     _attr_native_step = 0.5
     _attr_native_unit_of_measurement = UnitOfPower.KILO_WATT
     _attr_icon = "mdi:lightning-bolt"
-    _attr_entity_category = EntityCategory.CONFIG
+    # User-facing power input for force charge/discharge — Controls, not Configuration.
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         self.hass = hass
