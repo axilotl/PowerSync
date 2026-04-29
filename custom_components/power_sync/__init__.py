@@ -20256,13 +20256,31 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 })
 
         # Set a cooldown so the optimizer doesn't immediately re-trigger force mode.
-        # User-initiated restores (user_id set) get a 30-min cooldown.
+        # User-initiated restores (user_id set) get a 30-min cooldown SCOPED to
+        # the action type that was being restored.  If the user stopped a
+        # charge, only future CHARGE is suppressed; future DISCHARGE/EXPORT
+        # remains free to fire (e.g. don't lose Flow Power Happy Hour revenue
+        # because the user pressed Stop Charge half an hour earlier).
+        # Likewise, stopping a discharge only suppresses future DISCHARGE.
         # Optimizer-initiated restores (no user_id) get no cooldown.
         entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
         if context.user_id is not None:
+            # Inspect which force was active BEFORE the per-battery branches
+            # below clear it. Default to "any" if neither is active (e.g. user
+            # pressed Restore on an already-idle system).
+            if force_charge_state.get("active"):
+                _cooldown_action = "charge"
+            elif force_discharge_state.get("active"):
+                _cooldown_action = "discharge"
+            else:
+                _cooldown_action = "any"
             cooldown_until = dt_util.utcnow() + timedelta(minutes=30)
             entry_data["restore_cooldown_until"] = cooldown_until
-            _LOGGER.info("User-initiated restore — optimizer force actions suppressed until %s", cooldown_until.isoformat())
+            entry_data["restore_cooldown_action"] = _cooldown_action
+            _LOGGER.info(
+                "User-initiated restore — optimizer %s actions suppressed until %s",
+                _cooldown_action, cooldown_until.isoformat(),
+            )
 
         # Check if optimizer is active (and not in monitoring mode) — suppress routine notifications
         # (optimizer transitions between force modes frequently; AEMO spikes have their own notification)
