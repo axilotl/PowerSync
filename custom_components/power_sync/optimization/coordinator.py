@@ -1099,7 +1099,22 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # the planned grid-charge slots at the globally cheapest PEA
             # periods, which often misses today's HH and leaves the user
             # at ~80% SOC at 17:30.
-            self._optimizer.pre_window_slot = self._next_export_window_slot()
+            #
+            # Safety buffer: pull the deadline 15 min earlier so charging
+            # completes with slack instead of racing the HH start. The LP
+            # otherwise plans charge to end at the exact HH boundary, which
+            # leaves no headroom for Modbus/UDP write latency, BMS current
+            # taper above ~90% SOC, AEMO predispatch jitter, or a dropped
+            # control packet — any of which can leave SOC below target at
+            # window start. Cost: typically ~$0.02/day from using slightly
+            # more expensive earlier slots; aligned with profit_max's
+            # existing trade of economic-optimal for reliable export.
+            _SAFETY_BUFFER_SLOTS = 3  # 15 min @ 5-min intervals
+            _hh_slot = self._next_export_window_slot()
+            if _hh_slot is not None and _hh_slot > _SAFETY_BUFFER_SLOTS:
+                self._optimizer.pre_window_slot = _hh_slot - _SAFETY_BUFFER_SLOTS
+            else:
+                self._optimizer.pre_window_slot = _hh_slot
             self._optimizer.pre_window_soc_target = (
                 1.0 if self._optimizer.pre_window_slot is not None else 0.0
             )

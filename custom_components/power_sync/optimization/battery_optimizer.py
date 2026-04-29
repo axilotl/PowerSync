@@ -332,9 +332,23 @@ class BatteryOptimizer:
         # actions across non-contiguous timesteps (charge-SC-charge-SC…).
         # Adding a monotonic epsilon concentrates actions into contiguous blocks:
         #   - Exports: prefer earlier (decreasing eps) → discharge first, then SC
-        #   - Imports/charging: prefer later (increasing eps) → SC first, then charge
+        #   - Imports/charging: depends on whether a SOC deadline is binding
         # 1e-7 per step is ~5e-5 across 576 steps — negligible vs real prices.
         eps = 1e-7
+
+        # Deadline mode: when pre_window_soc_target is binding (e.g. must reach
+        # 100% before today's Flow Power Happy Hour), flip the import bias so
+        # ties resolve to EARLIER charging.  Otherwise the legacy prefer-later
+        # behavior eats the entire pre-window slack and starts charging right
+        # against the deadline — any Modbus latency, BMS taper, or forecast
+        # jitter then leaves the user below target at window start.
+        # Solar-SC users (no deadline) keep the prefer-later default so grid
+        # imports happen after solar has had a chance to fill the battery.
+        deadline_mode = (
+            self.pre_window_slot is not None
+            and self.pre_window_slot > 0
+            and self.pre_window_soc_target > 0.0
+        )
 
         # Pre-compute free charging bonus: use median non-free import price
         # so the LP sees free charging as "saving" that future import cost.
@@ -352,7 +366,10 @@ class BatteryOptimizer:
         )
 
         for t in range(n):
-            c[t] = (import_prices[t] + eps * (n - t)) * dt  # grid_import: prefer later
+            # Import/charge tie-breaker: prefer EARLIER when a deadline is
+            # binding, prefer LATER otherwise (see deadline_mode comment above).
+            import_eps = eps * (t if deadline_mode else (n - t))
+            c[t] = (import_prices[t] + import_eps) * dt
             if export_prices[t] > 0:
                 c[n + t] = -(export_prices[t] + eps * (n - t)) * dt  # grid_export: prefer earlier
             else:
