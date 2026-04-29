@@ -1,0 +1,9 @@
+## What's Changed
+
+**Restore the AEMO dispatch-trigger architecture (revert v2.12.219)**
+v2.12.219 swapped the per-entry AEMO dispatch trigger for a fixed `:50s` cron because of a concern that the 1 Hz NEMWEB polling was too aggressive. On closer look that concern doesn't hold up: the 1 Hz poll is just a `GET` on the dispatch directory's HTML index (a few KB), not the dispatch ZIP — the cache check at `aemo_api.py:116-118` short-circuits as soon as the filename hasn't changed, so the ZIP downloads exactly once per 5-min period. NEMWEB is AEMO's public reports server and Flow Power AEMO mode users have been polling it the same way for months without issue. The dispatch-trigger architecture is also more correct: it fires the moment AEMO actually publishes the settled file, so even on the rare occasions when AEMO is late past `:50s`, the sync still lands on settled prices instead of the previous interval's value. Reverting v2.12.219 restores the v2.12.218 behavior — auto-region resolver (Tesla `installation_time_zone` → Amber network field → `CONF_AEMO_REGION` → Flow Power state) and dispatch-trigger AEMOPriceCoordinator with the no-op listener that keeps it polling.
+
+**Quieter AEMO logs**
+The mode-transition log lines (`AEMO: WAIT mode`, `PRE-ACTIVE mode`, `ACTIVE mode (1 s intervals) - searching for new dispatch file`) are demoted from INFO to DEBUG. They each fire once per 5-min period and the wording — particularly "ACTIVE mode (1 s intervals) - searching for new dispatch file" — read as alarming to anyone with debug logging on, even though the underlying poll is the cheap directory-listing fetch above. The actual settled-dispatch arrival is still logged at INFO via `NEMWEB dispatch: PUBLIC_DISPATCHIS_*.zip -> 5 regions` and `AEMO: New dispatch - next boundary X`, which are the lines that matter for confirming tariff sync is running.
+
+Update available via HACS

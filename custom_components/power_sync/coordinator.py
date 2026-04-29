@@ -2752,11 +2752,19 @@ class AEMOPriceCoordinator(DataUpdateCoordinator):
         now = datetime.now()
         secs = (self._next_boundary - now).total_seconds()
 
+        # Mode-transition logs are demoted to DEBUG: each one fires once per
+        # 5-min period and the wording ("ACTIVE mode (1 s intervals) -
+        # searching for new dispatch file") read as alarming to users with
+        # debug logging enabled even though the underlying poll is just a
+        # cheap directory listing on AEMO's public NEMWEB. The actual
+        # dispatch arrival is still logged at INFO ("AEMO: New dispatch -
+        # next boundary X" / "NEMWEB dispatch: ... -> N regions") which is
+        # the line that matters for users debugging tariff sync.
         if secs > self._PRE_ACTIVE_WINDOW:
             # WAIT mode - too early to expect a new file
             if self._polling_mode != "wait":
                 self._polling_mode = "wait"
-                _LOGGER.info(
+                _LOGGER.debug(
                     "AEMO: WAIT mode - next boundary %s in %ds",
                     self._next_boundary.strftime("%H:%M:%S"),
                     int(secs),
@@ -2768,14 +2776,14 @@ class AEMOPriceCoordinator(DataUpdateCoordinator):
             # PRE-ACTIVE mode - gently start checking
             if self._polling_mode != "pre-active":
                 self._polling_mode = "pre-active"
-                _LOGGER.info("AEMO: PRE-ACTIVE mode (5 s intervals)")
+                _LOGGER.debug("AEMO: PRE-ACTIVE mode (5 s intervals)")
             self.update_interval = timedelta(seconds=self._PRE_ACTIVE_INTERVAL)
             return True
 
         # ACTIVE mode - new file could appear any second
         if self._polling_mode != "active":
             self._polling_mode = "active"
-            _LOGGER.info("AEMO: ACTIVE mode (1 s intervals) - searching for new dispatch file")
+            _LOGGER.debug("AEMO: ACTIVE mode (1 s intervals)")
         self.update_interval = timedelta(seconds=self._ACTIVE_INTERVAL)
         return True
 
