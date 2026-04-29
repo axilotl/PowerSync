@@ -22740,10 +22740,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.info("📡 AEMO dispatch received — syncing settled tariff")
         await handle_sync_rest_api_check(check_name="aemo dispatch")
 
-    cancel_aemo_dispatch_sub = async_dispatcher_connect(
-        hass, SIGNAL_AEMO_NEW_DISPATCH, lambda data: hass.async_create_task(
-            _handle_aemo_dispatch_event(data)
+    def _aemo_dispatch_callback(data) -> None:
+        # HA invokes dispatcher listeners on whichever thread called
+        # `async_dispatcher_send`. Our AEMO coordinator does that on the event
+        # loop, but HA's frame-safety logic can re-trigger the report from a
+        # SyncWorker, which then re-enters the listener off-loop. Either way,
+        # `hass.async_create_task` is not thread-safe — hop back onto the
+        # event loop before scheduling the coroutine.
+        hass.loop.call_soon_threadsafe(
+            lambda: hass.async_create_task(_handle_aemo_dispatch_event(data))
         )
+
+    cancel_aemo_dispatch_sub = async_dispatcher_connect(
+        hass, SIGNAL_AEMO_NEW_DISPATCH, _aemo_dispatch_callback,
     )
     hass.data[DOMAIN][entry.entry_id]["aemo_dispatch_unsub"] = cancel_aemo_dispatch_sub
 
