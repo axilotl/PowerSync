@@ -2077,12 +2077,14 @@ function _batteryHealth(e, hass) {
     },
   });
 
-  // Build individual battery gauge cards. Followers get a distinct label so it's
-  // clear their capacity is inferred from the aggregate rather than directly measured.
+  // Build individual battery gauge cards. Each slot is labelled by its role:
+  // followers get capacity inferred from the aggregate, expansions hang off a
+  // leader, and the leader is the gateway-attached primary unit.
   const individualGauges = [];
   for (let n = 1; n <= numSlots; n++) {
     const attrPath = `states['${healthEntity}']?.attributes?.battery_${n}_health_percent`;
     const followerPath = `states['${healthEntity}']?.attributes?.battery_${n}_is_follower`;
+    const expansionPath = `states['${healthEntity}']?.attributes?.battery_${n}_is_expansion`;
     individualGauges.push({
       type: 'custom:button-card',
       entity: healthEntity,
@@ -2091,7 +2093,10 @@ function _batteryHealth(e, hass) {
       show_state: true,
       name: `[[[
         const isFollower = ${followerPath};
-        return isFollower ? 'Follower ${n}' : 'Battery ${n}';
+        const isExpansion = ${expansionPath};
+        if (isFollower) return 'Follower ${n}';
+        if (isExpansion) return 'Expansion ${n}';
+        return 'Leader ${n}';
       ]]]`,
       state_display: `[[[
         const v = ${attrPath};
