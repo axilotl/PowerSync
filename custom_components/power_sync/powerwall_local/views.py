@@ -129,7 +129,17 @@ def _get_fleet_api_context(
 async def _build_client(
     hass: HomeAssistant, entry: ConfigEntry
 ) -> PowerwallLocalClient | None:
-    """Construct a PowerwallLocalClient from entry.data after a successful pair."""
+    """Construct a PowerwallLocalClient from entry.data after a successful pair.
+
+    A local IP is required for direct LAN features (snapshot polling,
+    config.json writes for curtailment / operation-mode / grid-charging),
+    but NOT for off-grid / reconnect — those go through Fleet API
+    ``device_command`` with a signed routable_message and only need the
+    gateway's DIN + the paired RSA key. To keep off-grid working for
+    users who paired without setting a gateway IP, fall back to a
+    loopback host for transport construction. LAN calls will fail fast
+    (connect refused) while the cloud signing path stays usable.
+    """
     host = entry.data.get(CONF_POWERWALL_LOCAL_IP)
     customer_password = entry.data.get(CONF_POWERWALL_LOCAL_CUSTOMER_PASSWORD, "")
     version_str = entry.data.get(CONF_POWERWALL_LOCAL_VERSION, "pw3")
@@ -137,7 +147,19 @@ async def _build_client(
     din = entry.data.get(CONF_POWERWALL_LOCAL_DIN)
 
     if not host:
-        return None
+        # Off-grid via cloud device_command works without a LAN IP, so
+        # construct the client with a loopback placeholder rather than
+        # bailing. The user can still set a real IP later via Gateway
+        # Connection to enable local-only features.
+        if not din or not private_key_pem:
+            # Without DIN + private key we can't sign anything — refuse.
+            return None
+        _LOGGER.info(
+            "Powerwall paired without local IP — building cloud-only client. "
+            "Local features (snapshot, curtailment, fast writes) will be "
+            "unavailable until a gateway IP is set."
+        )
+        host = "127.0.0.1"
 
     try:
         version = PowerwallVersion(version_str)

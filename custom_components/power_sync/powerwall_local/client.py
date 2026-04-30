@@ -329,14 +329,19 @@ class PowerwallLocalClient:
     async def go_off_grid(self, *, mode_override: int | None = None) -> bool:
         """Physically disconnect from the grid (contactor open).
 
-        Primary path (both PW2 and PW3): local TEDAPI v1r with signed
-        setIslandModeRequest sent directly to the gateway over LAN.
-        No cloud relay needed — the RSA-signed protobuf goes straight
-        to the gateway which verifies the signature locally.
+        Cloud-only via Fleet API ``device_command`` with a signed
+        ``routable_message``. The gateway verifies our RSA signature
+        from the paired key. Local TEDAPI v1r returns success for the
+        same setIslandModeRequest but does not actually operate the
+        contactor — discovered empirically on both PW2 and PW3.
 
-        Cloud fallback: signed routable_message via device_command.
-        PW3 default mode=6, PW2 default mode=2. Use mode_override to
-        test alternative mode values.
+        Because the path is cloud-only, a local LAN IP is NOT required;
+        the client just needs the paired private key + gateway DIN +
+        Fleet API token + energy site ID. ``_send_signed_device_command``
+        handles the signing-and-send.
+
+        Default mode=6 works for both PW2 and PW3. Use ``mode_override``
+        to test alternative values.
         """
         # Verify our key is state=3 (verified) before attempting off-grid
         key_state = await self.verify_pairing()
