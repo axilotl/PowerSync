@@ -10481,18 +10481,13 @@ class SolarSurplusConfigView(HomeAssistantView):
     async def get(self, request: web.Request) -> web.Response:
         """Handle GET request - get solar surplus config."""
         try:
+            from .solar_surplus_config import (
+                DEFAULT_SOLAR_SURPLUS_CONFIG,
+                normalize_solar_surplus_config,
+            )
+
             store = self._get_store()
-            default_config = {
-                "enabled": False,
-                "household_buffer_kw": 0.5,
-                "surplus_calculation": "grid_based",
-                "sustained_surplus_minutes": 2,
-                "stop_delay_minutes": 5,
-                "dual_vehicle_strategy": "priority_first",
-                "home_battery_minimum": 80,  # Home battery must reach this % before EV surplus charging
-                "allow_parallel_charging": False,  # Charge EV while battery is charging if surplus exceeds max rate
-                "max_battery_charge_rate_kw": 5.0,  # Max battery charge rate (5=single PW, 10=dual, 15=triple)
-            }
+            default_config = dict(DEFAULT_SOLAR_SURPLUS_CONFIG)
 
             if not store:
                 return web.json_response({
@@ -10501,11 +10496,11 @@ class SolarSurplusConfigView(HomeAssistantView):
                 })
 
             stored_data = getattr(store, '_data', {}) or {}
-            config = stored_data.get("solar_surplus_config", default_config)
+            config = normalize_solar_surplus_config(stored_data.get("solar_surplus_config", {}))
 
             return web.json_response({
                 "success": True,
-                "config": {**default_config, **config}
+                "config": config
             })
 
         except Exception as e:
@@ -10518,7 +10513,11 @@ class SolarSurplusConfigView(HomeAssistantView):
     async def post(self, request: web.Request) -> web.Response:
         """Handle POST request - update solar surplus config."""
         try:
+            from .solar_surplus_config import normalize_solar_surplus_config
+
             data = await request.json()
+            if "min_battery_soc" in data and "home_battery_minimum" not in data:
+                data["home_battery_minimum"] = data["min_battery_soc"]
 
             store = self._get_store()
             if not store:
@@ -10551,6 +10550,7 @@ class SolarSurplusConfigView(HomeAssistantView):
                 updated_config["allow_parallel_charging"] = bool(updated_config["allow_parallel_charging"])
             if "max_battery_charge_rate_kw" in updated_config:
                 updated_config["max_battery_charge_rate_kw"] = max(1, min(30, float(updated_config["max_battery_charge_rate_kw"])))
+            updated_config = normalize_solar_surplus_config(updated_config)
 
             # Save updated config (update key in existing _data, don't overwrite)
             if hasattr(store, '_data') and hasattr(store, 'async_save'):
@@ -11940,6 +11940,10 @@ class PriceRecommendationView(HomeAssistantView):
                 get_price_recommendation,
                 _calculate_solar_surplus,
             )
+            from .solar_surplus_config import (
+                get_solar_surplus_min_battery_soc,
+                normalize_solar_surplus_config,
+            )
 
             entry_id = self._config_entry.entry_id
             entry_data = self._hass.data.get(DOMAIN, {}).get(entry_id, {})
@@ -11981,6 +11985,17 @@ class PriceRecommendationView(HomeAssistantView):
                 load_power_kw = foxess_coordinator.data.get("load_power", 0)
                 battery_soc = foxess_coordinator.data.get("battery_level", 0)
 
+            # Get solar-surplus config from the automation store where the app saves it.
+            automation_store = entry_data.get("automation_store")
+            stored_solar_config = {}
+            if automation_store:
+                stored_data = getattr(automation_store, '_data', {}) or {}
+                stored_solar_config = stored_data.get("solar_surplus_config", {})
+            if not stored_solar_config:
+                stored_solar_config = entry_data.get("solar_surplus_config", {})
+            solar_config = normalize_solar_surplus_config(stored_solar_config)
+            home_battery_minimum = get_solar_surplus_min_battery_soc(solar_config)
+
             # Build live_status dict for surplus calculation (expects watts)
             live_status = {
                 "solar_power": solar_power_kw * 1000,
@@ -11990,7 +12005,7 @@ class PriceRecommendationView(HomeAssistantView):
                 "battery_soc": battery_soc,
             }
 
-            surplus_kw = _calculate_solar_surplus(live_status, 0, {"household_buffer_kw": 0.5})
+            surplus_kw = _calculate_solar_surplus(live_status, 0, solar_config)
 
             # Get current prices based on electricity provider
             import_price_cents = 30.0  # Default
@@ -12061,12 +12076,6 @@ class PriceRecommendationView(HomeAssistantView):
                     import_price_cents = price_data.get("import_price_cents", import_price_cents)
                     export_price_cents = price_data.get("export_price_cents", export_price_cents)
                     price_source = "price_data"
-
-            # Get home battery minimum from config if available
-            home_battery_minimum = 80
-            solar_config = entry_data.get("solar_surplus_config", {})
-            if solar_config:
-                home_battery_minimum = solar_config.get("home_battery_minimum", 80)
 
             # Get recommendation
             recommendation = get_price_recommendation(
@@ -23452,12 +23461,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     _action_stop_ev_charging_dynamic,
                     _dynamic_ev_state,
                 )
+                from .solar_surplus_config import (
+                    get_solar_surplus_min_battery_soc,
+                    normalize_solar_surplus_config,
+                )
 
                 automation_store_ref = hass.data.get(DOMAIN, {}).get(entry.entry_id, {}).get("automation_store")
                 if automation_store_ref:
                     stored = getattr(automation_store_ref, '_data', {}) or {}
-                    surplus_config = stored.get("solar_surplus_config", {})
+                    surplus_config = normalize_solar_surplus_config(stored.get("solar_surplus_config", {}))
                     surplus_enabled = surplus_config.get("enabled", False)
+                    min_battery_soc = get_solar_surplus_min_battery_soc(surplus_config)
 
                     # Check which vehicles already have active solar surplus sessions
                     entry_vehicles = _dynamic_ev_state.get(entry.entry_id, {})
@@ -23556,8 +23570,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                                 "surplus_calculation": surplus_config.get("surplus_calculation", "grid_based"),
                                 "sustained_surplus_minutes": surplus_config.get("sustained_surplus_minutes", 2),
                                 "stop_delay_minutes": surplus_config.get("stop_delay_minutes", 5),
-                                "min_battery_soc": surplus_config.get("home_battery_minimum", 80),
-                                "pause_below_soc": max(0, surplus_config.get("home_battery_minimum", 80) - 10),
+                                "min_battery_soc": min_battery_soc,
+                                "pause_below_soc": max(0, min_battery_soc - 10),
                                 "dual_vehicle_strategy": surplus_config.get("dual_vehicle_strategy", "priority_first"),
                                 "allow_parallel_charging": allow_parallel,
                                 "max_battery_charge_rate_kw": surplus_config.get("max_battery_charge_rate_kw", 5.0),

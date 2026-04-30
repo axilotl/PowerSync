@@ -295,22 +295,26 @@ class SajH2BatteryController:
         commands in that state writes registers that the inverter silently ignores
         — the only fix is a physical power-cycle. Catch it early so the user sees
         a clear error instead of a silent no-op.
+
+        working_mode is the authoritative signal: 2 = running, 4 = lockout.
+        RInvVolt is unreliable on some firmwares (reports 0V even when running),
+        so it's only consulted as a fallback when working_mode is unavailable.
         """
         wm = self._read_float("inverter_working_mode")
+        if wm is not None:
+            if int(wm) != 2:
+                _LOGGER.error(
+                    "SAJ H2: %s refused — inverter working_mode=%s (need 2). "
+                    "Battery converter is offline (low-SOC lockout). Power-cycle required.",
+                    operation, int(wm),
+                )
+                return False
+            return True
         rv = self._read_float("inverter_voltage_r")
-        # Treat missing readings as engaged — don't block on stale/unmapped sensors,
-        # they aren't published by older stanus74 firmwares.
-        if wm is not None and int(wm) != 2:
-            _LOGGER.error(
-                "SAJ H2: %s refused — inverter working_mode=%s (need 2). "
-                "Battery converter is offline (low-SOC lockout). Power-cycle required.",
-                operation, int(wm),
-            )
-            return False
         if rv is not None and rv < self._MIN_ENGAGED_INV_VOLTAGE:
             _LOGGER.error(
-                "SAJ H2: %s refused — inverter R-phase voltage %.1fV (need ≥%.0fV). "
-                "Battery converter is offline. Power-cycle required.",
+                "SAJ H2: %s refused — inverter R-phase voltage %.1fV (need ≥%.0fV) "
+                "and working_mode unavailable. Battery converter likely offline.",
                 operation, rv, self._MIN_ENGAGED_INV_VOLTAGE,
             )
             return False

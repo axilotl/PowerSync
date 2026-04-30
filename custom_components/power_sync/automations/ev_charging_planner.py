@@ -21,6 +21,11 @@ import aiohttp
 import re
 
 from ..const import TESLA_INTEGRATIONS
+from ..solar_surplus_config import (
+    DEFAULT_SOLAR_SURPLUS_MIN_BATTERY_SOC,
+    get_solar_surplus_min_battery_soc,
+    normalize_solar_surplus_config,
+)
 
 
 class SensitiveDataFilter(logging.Filter):
@@ -2550,7 +2555,7 @@ class ChargingPlanner:
         current_surplus_kw: float,
         current_price_cents: float,
         battery_soc: float,
-        min_battery_soc: int = 80,
+        min_battery_soc: int = DEFAULT_SOLAR_SURPLUS_MIN_BATTERY_SOC,
         is_time_critical: bool = False,
     ) -> Tuple[bool, str, str]:
         """
@@ -4036,7 +4041,7 @@ class AutoScheduleExecutor:
         if should_charge and source == "solar_surplus":
             # Get solar surplus config to check home_battery_minimum and parallel charging settings
             solar_config = await self._get_solar_surplus_config()
-            min_battery_for_ev = solar_config.get("home_battery_minimum", 80)
+            min_battery_for_ev = get_solar_surplus_min_battery_soc(solar_config)
             allow_parallel = solar_config.get("allow_parallel_charging", False)
             max_battery_charge_kw = solar_config.get("max_battery_charge_rate_kw", 5.0)
 
@@ -4301,19 +4306,13 @@ class AutoScheduleExecutor:
                 stored_data = getattr(automation_store, '_data', {}) or {}
                 config = stored_data.get("solar_surplus_config", {})
                 if config:
-                    return config
+                    return normalize_solar_surplus_config(config)
 
             # Return defaults
-            return {
-                "enabled": False,
-                "household_buffer_kw": 0.5,
-                "sustained_surplus_minutes": 2,
-                "stop_delay_minutes": 5,
-                "home_battery_minimum": 80,
-            }
+            return normalize_solar_surplus_config()
         except Exception as e:
             _LOGGER.debug(f"Failed to get solar surplus config: {e}")
-            return {"home_battery_minimum": 80}
+            return normalize_solar_surplus_config()
 
     async def _get_home_power_settings(self) -> dict:
         """Get home power settings from storage.
