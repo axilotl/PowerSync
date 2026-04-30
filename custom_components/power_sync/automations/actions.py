@@ -35,6 +35,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers import entity_registry as er, device_registry as dr
 from homeassistant.helpers.event import async_track_time_interval, async_track_point_in_time
 from datetime import timedelta, datetime, time as dt_time
+from homeassistant.util import dt as dt_util
 
 from ..const import (
     DOMAIN,
@@ -2410,14 +2411,14 @@ def _get_current_ev_prices(hass, entry_id: str) -> tuple:
         buy_prices = sigenergy_tariff.get("buy_prices", [])
         sell_prices = sigenergy_tariff.get("sell_prices", [])
         if buy_prices:
-            now = datetime.now()
+            now = dt_util.now()  # HA tz; container UTC would pick wrong slot
             current_time = f"{now.hour:02d}:{30 if now.minute >= 30 else 0:02d}"
             for slot in buy_prices:
                 if slot.get("timeRange", "").startswith(current_time):
                     import_price = slot.get("price", 30.0)
                     break
         if sell_prices:
-            now = datetime.now()
+            now = dt_util.now()  # HA tz; container UTC would pick wrong slot
             current_time = f"{now.hour:02d}:{30 if now.minute >= 30 else 0:02d}"
             for slot in sell_prices:
                 if slot.get("timeRange", "").startswith(current_time):

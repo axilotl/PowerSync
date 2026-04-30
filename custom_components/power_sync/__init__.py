@@ -4638,9 +4638,9 @@ class InverterStatusView(HomeAssistantView):
                 if sun_state:
                     is_night = sun_state.state == "below_horizon"
                 else:
-                    # Fallback to hour-based check (6pm-6am)
-                    from datetime import datetime
-                    local_hour = datetime.now().hour
+                    # Fallback to hour-based check (6pm-6am) — use HA tz, not container UTC
+                    from homeassistant.util import dt as dt_util
+                    local_hour = dt_util.now().hour
                     is_night = local_hour >= 18 or local_hour < 6
             except Exception:
                 pass
@@ -4677,9 +4677,9 @@ class InverterStatusView(HomeAssistantView):
                 if sun_state:
                     is_night = sun_state.state == "below_horizon"
                 else:
-                    # Fallback to hour-based check (6pm-6am)
-                    from datetime import datetime
-                    local_hour = datetime.now().hour
+                    # Fallback to hour-based check (6pm-6am) — use HA tz, not container UTC
+                    from homeassistant.util import dt as dt_util
+                    local_hour = dt_util.now().hour
                     is_night = local_hour >= 18 or local_hour < 6
             except Exception:
                 pass
@@ -6846,9 +6846,9 @@ class TariffPriceView(HomeAssistantView):
           - Sell rates at saved_tariff["sell_tariff"]["energy_charges"][season]["rates"][period]
         """
         try:
-            from datetime import datetime as dt
+            from homeassistant.util import dt as dt_util
 
-            now = dt.now()
+            now = dt_util.now()  # HA tz; container UTC would mis-classify season/period
             current_hour = now.hour
             current_month = now.month
             current_dow = now.weekday()  # 0=Monday, 6=Sunday
@@ -7203,12 +7203,12 @@ def convert_custom_tariff_to_schedule(custom_tariff: dict) -> dict:
         tariff_schedule dict with: current_period, current_season, buy_price, sell_price,
         buy_rates, sell_rates, tou_periods, seasons, utility, plan_name, last_sync
     """
-    from datetime import datetime as dt
+    from homeassistant.util import dt as dt_util
     from zoneinfo import ZoneInfo
 
     try:
-        # Get current time for determining current period
-        now = dt.now()
+        # Get current time for determining current period — HA tz, not container UTC
+        now = dt_util.now()
         current_hour = now.hour
         current_dow = now.weekday()  # 0=Monday, 6=Sunday
 
@@ -7361,10 +7361,10 @@ def get_current_price_from_tariff_schedule(tariff_schedule: dict) -> tuple[float
     Returns:
         Tuple of (buy_price_cents, sell_price_cents, current_period)
     """
-    from datetime import datetime as dt
+    from homeassistant.util import dt as dt_util
 
     try:
-        now = dt.now()
+        now = dt_util.now()  # HA-configured timezone — naive datetime.now() returns UTC in containers
         current_hour = now.hour
         current_dow = now.weekday()  # Python: 0=Monday, 6=Sunday
 
@@ -23801,7 +23801,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     if buy_prices:
                         # Find current time slot price
                         # Format: [{"timeRange": "10:00-10:30", "price": 25.0}, ...]
-                        now = datetime.now()
+                        from homeassistant.util import dt as dt_util
+                        now = dt_util.now()  # HA tz; container UTC would pick wrong slot
                         current_time = f"{now.hour:02d}:{30 if now.minute >= 30 else 0:02d}"
                         for slot in buy_prices:
                             time_range = slot.get("timeRange", "")

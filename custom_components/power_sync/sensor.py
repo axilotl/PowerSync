@@ -2491,7 +2491,7 @@ class TariffScheduleSensor(SensorEntity):
         buy_rates = tariff_data.get("buy_rates", {})
         sell_rates = tariff_data.get("sell_rates", {})
         tou_periods = tariff_data.get("tou_periods", {})
-        today_dow = datetime.now().weekday()  # 0=Monday; used for TOU day filtering
+        today_dow = dt_util.now().weekday()  # 0=Monday; used for TOU day filtering — must use HA tz, not container UTC
 
         attrs: dict[str, Any] = {
             "last_sync": tariff_data.get("last_sync"),
@@ -2610,13 +2610,13 @@ class TariffScheduleSensor(SensorEntity):
         # weekday/weekend rate differences that depend on the current day).
         if (
             tariff_data.get("last_sync") != self._schedule_cache_sync
-            or datetime.now().weekday() != self._schedule_cache_dow
+            or dt_util.now().weekday() != self._schedule_cache_dow
         ):
             self._rebuild_schedule_cache(tariff_data)
 
         # Reuse price already computed by native_value in this write cycle
         buy_price_cents, sell_price_cents, current_period = self._last_price_result
-        now = datetime.now()
+        now = dt_util.now()  # HA tz; naive datetime.now() returns UTC in containers
 
         return {
             **self._schedule_cache,

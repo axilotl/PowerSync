@@ -20,6 +20,8 @@ from enum import Enum
 import aiohttp
 import re
 
+from homeassistant.util import dt as dt_util
+
 from ..const import TESLA_INTEGRATIONS
 from ..solar_surplus_config import (
     DEFAULT_SOLAR_SURPLUS_MIN_BATTERY_SOC,
@@ -3966,7 +3968,7 @@ class AutoScheduleExecutor:
         # Note: min_battery_soc affects surplus calculation (prevents discharge),
         # but does NOT block EV charging from solar or grid.
         # The Powerwall's own backup reserve handles discharge protection.
-        weekday = datetime.now().weekday()
+        weekday = dt_util.now().weekday()  # HA tz; container UTC would mis-classify weekday near midnight
         effective_priority = settings.get_effective_priority(weekday)
         effective_limit_grid = settings.get_effective_limit_grid_import(weekday)
         effective_max_price = settings.get_effective_max_grid_price(weekday)
@@ -4252,7 +4254,7 @@ class AutoScheduleExecutor:
                     return buy_cents
 
                 # Try Amber format with PERIOD_HH_MM keys
-                now = datetime.now()
+                now = dt_util.now()  # HA tz, not container UTC
                 period_key = f"PERIOD_{now.hour:02d}_{30 if now.minute >= 30 else 0:02d}"
                 buy_prices = tariff_schedule.get("buy_prices", {})
                 if period_key in buy_prices:
@@ -4265,7 +4267,7 @@ class AutoScheduleExecutor:
                 if buy_prices:
                     # Find current time slot price
                     # Format: [{"timeRange": "10:00-10:30", "price": 25.0}, ...]
-                    now = datetime.now()
+                    now = dt_util.now()  # HA tz, not container UTC
                     current_time = f"{now.hour:02d}:{30 if now.minute >= 30 else 0:02d}"
                     for slot in buy_prices:
                         time_range = slot.get("timeRange", "")
@@ -4273,7 +4275,7 @@ class AutoScheduleExecutor:
                             return slot.get("price", 30.0)  # Already in cents
 
             # Default fallback based on time of day
-            hour = datetime.now().hour
+            hour = dt_util.now().hour  # HA tz, not container UTC
             if 7 <= hour < 9 or 17 <= hour < 21:
                 return 45.0  # Peak
             elif 9 <= hour < 17:
@@ -4757,17 +4759,17 @@ class AutoScheduleExecutor:
             "voltage": settings.voltage,
             "phases": settings.phases,
             "charger_type": settings.charger_type,
-            "min_battery_soc": settings.get_effective_min_battery_to_start(datetime.now().weekday()),
+            "min_battery_soc": settings.get_effective_min_battery_to_start(dt_util.now().weekday()),
             "pause_below_soc": (
-                settings.get_effective_consume_battery_level(datetime.now().weekday())
-                if settings.get_effective_consume_battery_level(datetime.now().weekday()) > 0
-                else max(0, settings.get_effective_min_battery_to_start(datetime.now().weekday()) - 10)
+                settings.get_effective_consume_battery_level(dt_util.now().weekday())
+                if settings.get_effective_consume_battery_level(dt_util.now().weekday()) > 0
+                else max(0, settings.get_effective_min_battery_to_start(dt_util.now().weekday()) - 10)
             ),
-            "stop_at_battery_floor": settings.get_effective_stop_at_battery_floor(datetime.now().weekday()),
+            "stop_at_battery_floor": settings.get_effective_stop_at_battery_floor(dt_util.now().weekday()),
             "charger_switch_entity": settings.charger_switch_entity,
             "charger_amps_entity": settings.charger_amps_entity,
             "ocpp_charger_id": settings.ocpp_charger_id,
-            "no_grid_import": settings.get_effective_limit_grid_import(datetime.now().weekday()),
+            "no_grid_import": settings.get_effective_limit_grid_import(dt_util.now().weekday()),
             **_get_optimizer_battery_params(self.hass, self.config_entry),
         }
 
@@ -5915,7 +5917,7 @@ class ScheduledChargingExecutor:
     def _is_in_time_window(self, start_time_str: str, end_time_str: str) -> bool:
         """Check if current time is within the scheduled window."""
         try:
-            now = datetime.now()
+            now = dt_util.now()  # HA tz; container UTC would mis-trigger schedule windows
             current_time = now.time()
 
             # Parse start and end times
