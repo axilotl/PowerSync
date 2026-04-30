@@ -54,6 +54,10 @@ from ..const import (
     TESLEMETRY_BT_SWITCH_CHARGE,
     TESLEMETRY_BT_NUMBER_CHARGE_AMPS,
 )
+from ..solar_surplus_config import (
+    DEFAULT_SOLAR_SURPLUS_MIN_BATTERY_SOC,
+    get_solar_surplus_min_battery_soc,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -2407,7 +2411,7 @@ def get_price_recommendation(
     export_price_cents: float,
     surplus_kw: float,
     battery_soc: float,
-    min_battery_soc: float = 80,
+    min_battery_soc: float = DEFAULT_SOLAR_SURPLUS_MIN_BATTERY_SOC,
     prefer_export_threshold_cents: float = 15.0,
 ) -> dict:
     """
@@ -2974,8 +2978,8 @@ async def _dynamic_ev_update_surplus(
     battery_soc = live_status.get("battery_soc") or 0
 
     # Battery priority check
-    min_soc = params.get("min_battery_soc", 80)
-    pause_soc = params.get("pause_below_soc", 70)
+    min_soc = get_solar_surplus_min_battery_soc(params)
+    pause_soc = params.get("pause_below_soc", max(0, min_soc - 10))
 
     # Parallel charging parameters
     allow_parallel = params.get("allow_parallel_charging", False)
@@ -3675,11 +3679,12 @@ async def _action_start_ev_charging_dynamic_locked(
 
     # Mode-specific parameters
     if dynamic_mode == "solar_surplus":
+        min_battery_soc = get_solar_surplus_min_battery_soc(params)
         mode_params = {
             "household_buffer_kw": params.get("household_buffer_kw", 0.5),
             "surplus_calculation": params.get("surplus_calculation", "grid_based"),
-            "min_battery_soc": params.get("min_battery_soc", 80),
-            "pause_below_soc": params.get("pause_below_soc", 70),
+            "min_battery_soc": min_battery_soc,
+            "pause_below_soc": params.get("pause_below_soc", max(0, min_battery_soc - 10)),
             "sustained_surplus_minutes": params.get("sustained_surplus_minutes", 2),
             "stop_delay_minutes": params.get("stop_delay_minutes", 5),
             "dual_vehicle_strategy": params.get("dual_vehicle_strategy", "priority_first"),
@@ -3908,7 +3913,11 @@ async def _action_stop_ev_charging_dynamic(
         elif vehicle_id == DEFAULT_VEHICLE_ID:
             vehicle_ids_to_stop = list(vehicles.keys())  # Stop all (single vehicle)
         else:
-            vehicle_ids_to_stop = []
+            # Caller asked to stop a specific vehicle that isn't tracked in
+            # dynamic state. Tesla auto-charges on plug-in, and reloads wipe
+            # the in-memory state — in both cases the per-vehicle cleanup is
+            # a no-op but we still need to send the stop command downstream.
+            vehicle_ids_to_stop = [vehicle_id]
     else:
         # Stop all vehicles for this entry
         vehicle_ids_to_stop = list(vehicles.keys())

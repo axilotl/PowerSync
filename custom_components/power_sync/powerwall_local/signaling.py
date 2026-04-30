@@ -30,6 +30,7 @@ fails.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import struct
 import time
@@ -374,12 +375,31 @@ class TeslaSignalingClient:
                             continue
                         if resp.status != 200:
                             body = await resp.text()
+                            # The PowerSync.cc proxy returns structured JSON with
+                            # `error`, `detail`, and `token_scopes` from the
+                            # upstream Tesla response. Log those explicitly so
+                            # we don't lose `token_scopes` to the 200-char clip.
+                            err_code = ""
+                            detail = ""
+                            scopes: list = []
+                            try:
+                                parsed = json.loads(body)
+                                if isinstance(parsed, dict):
+                                    err_code = str(parsed.get("error", ""))
+                                    detail = str(parsed.get("detail", ""))
+                                    raw_scopes = parsed.get("token_scopes")
+                                    if isinstance(raw_scopes, list):
+                                        scopes = raw_scopes
+                            except (ValueError, TypeError):
+                                pass
                             _LOGGER.warning(
                                 "signaling: hermes JWT exchange at %s "
-                                "failed (%d): %s",
+                                "failed (%d) error=%s scopes=%s detail=%s",
                                 url,
                                 resp.status,
-                                body[:200],
+                                err_code or "?",
+                                scopes if scopes else "?",
+                                (detail or body)[:400],
                             )
                             continue
 

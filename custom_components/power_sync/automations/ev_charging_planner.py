@@ -668,6 +668,79 @@ async def is_ev_plugged_in(
     return False
 
 
+async def is_ev_actively_charging(
+    hass: "HomeAssistant",
+    config_entry: "ConfigEntry",
+    vehicle_vin: Optional[str] = None,
+) -> bool:
+    """Probe upstream charger/vehicle state to detect actual charge draw.
+
+    Tesla starts charging on plug-in by default — when that happens without
+    PowerSync issuing a start, the planner's per-vehicle `is_charging` flag
+    stays False and the stop branch never fires. The same gap appears after
+    an integration reload, which wipes the in-memory flag while the vehicle
+    keeps charging. This helper queries Teslemetry BT, Tesla Fleet, and BLE
+    entities directly so the stop branch can act on physical reality rather
+    than PowerSync's bookkeeping.
+    """
+    from ..const import (
+        CONF_TESLA_BLE_ENTITY_PREFIX,
+        DEFAULT_TESLA_BLE_ENTITY_PREFIX,
+    )
+    from homeassistant.helpers import entity_registry as er, device_registry as dr
+    import re as _re
+
+    # Method 0: Teslemetry Bluetooth — sensor.{prefix}_charging_state
+    for state in hass.states.async_all():
+        match = _re.match(r"sensor\.(\w+)_charging_state$", state.entity_id)
+        if not match:
+            continue
+        candidate = match.group(1)
+        if len(candidate) != 17 or not candidate.isalnum():
+            continue
+        if hass.states.get(f"switch.{candidate}_charge") is None:
+            continue
+        if vehicle_vin is not None and candidate.upper() != vehicle_vin.upper():
+            continue
+        if state.state and state.state.lower() == "charging":
+            return True
+
+    # Method 1: Tesla Fleet/Teslemetry — sensor.{vehicle}_charging == "Charging"
+    # (binary_sensor.*_charger is plug-state, not charge-state, so we ignore it)
+    entity_registry = er.async_get(hass)
+    device_registry = dr.async_get(hass)
+    for device, device_vin in _iter_tesla_vehicle_devices(device_registry):
+        if vehicle_vin is not None and device_vin != vehicle_vin:
+            continue
+        for entity in entity_registry.entities.values():
+            if entity.device_id != device.id:
+                continue
+            eid = entity.entity_id
+            eid_lower = eid.lower()
+            if (
+                eid.startswith("sensor.")
+                and "_charging" in eid_lower
+                and "charging_" not in eid_lower
+            ):
+                s = hass.states.get(eid)
+                if s and s.state and s.state.lower() == "charging":
+                    return True
+
+    # Method 2: Tesla BLE — switch.{prefix}_charger state
+    config = dict(config_entry.options) if config_entry else {}
+    if vehicle_vin and vehicle_vin.startswith("ble_"):
+        ble_prefixes = [vehicle_vin[4:]]
+    else:
+        raw_prefix = config.get(CONF_TESLA_BLE_ENTITY_PREFIX, DEFAULT_TESLA_BLE_ENTITY_PREFIX)
+        ble_prefixes = [p.strip() for p in raw_prefix.split(",") if p.strip()]
+    for prefix in ble_prefixes:
+        s = hass.states.get(f"switch.{prefix}_charger")
+        if s and s.state == "on":
+            return True
+
+    return False
+
+
 async def get_ev_battery_level(
     hass: "HomeAssistant",
     config_entry: "ConfigEntry",
@@ -5685,8 +5758,26 @@ class PriceLevelChargingExecutor:
             # Take action per vehicle
             if should_charge and not vehicle_state.is_charging:
                 await self._start_charging(mode, reason, vehicle_vin=vin)
-            elif not should_charge and vehicle_state.is_charging:
-                await self._stop_charging(reason, vehicle_vin=vin)
+            elif not should_charge:
+                # Stop if PowerSync started the session OR if the vehicle is
+                # actually charging (Tesla auto-starts on plug-in, and reloads
+                # wipe the in-memory flag while the car keeps drawing power).
+                stop_due_to_state = vehicle_state.is_charging
+                external_charge = False
+                if not stop_due_to_state:
+                    external_charge = await is_ev_actively_charging(
+                        self.hass, self.config_entry, vehicle_vin=vin
+                    )
+                if stop_due_to_state or external_charge:
+                    if external_charge and not stop_due_to_state:
+                        _LOGGER.info(
+                            f"{name} ({vin}) charging without an active PowerSync "
+                            f"session — sending stop: {reason}"
+                        )
+                    await self._stop_charging(reason, vehicle_vin=vin)
+                else:
+                    vehicle_state.last_decision = "waiting"
+                    vehicle_state.last_decision_reason = reason
             else:
                 vehicle_state.last_decision = "charging" if vehicle_state.is_charging else "waiting"
                 vehicle_state.last_decision_reason = reason
