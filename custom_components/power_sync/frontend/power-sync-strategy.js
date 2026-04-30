@@ -818,32 +818,72 @@ class PowerSyncStrategy {
 
 // ─── Section Builders ────────────────────────────────────────
 
+function _priceGaugeCentsCard(entityId, label, minCents, maxCents, thresholds) {
+  // thresholds: { green, yellow, red } in cents (ascending — value crosses to next color at each threshold)
+  return {
+    type: 'custom:button-card',
+    entity: entityId,
+    show_icon: false,
+    show_state: false,
+    show_name: false,
+    show_label: false,
+    custom_fields: {
+      gauge: `[[[
+        const v = parseFloat(entity?.state);
+        if (isNaN(v)) {
+          return '<div style="text-align:center;padding-top:30px;color:#888;">—</div>';
+        }
+        const cents = v * 100;
+        const min = ${minCents}, max = ${maxCents};
+        const pct = Math.max(0, Math.min(1, (cents - min) / (max - min)));
+        const t = ${JSON.stringify(thresholds)};
+        // Pick the color whose threshold is the highest one <= cents
+        const stops = [['#f44336', t.red], ['#ff9800', t.yellow], ['#4caf50', t.green]]
+          .filter(([_, threshold]) => threshold !== undefined && cents >= threshold)
+          .sort((a, b) => b[1] - a[1]);
+        const color = stops.length > 0 ? stops[0][0] : '#9e9e9e';
+        const r = 50;
+        const circ = Math.PI * r;
+        const fill = pct * circ;
+        const display = cents.toFixed(Math.abs(cents) >= 100 ? 0 : 1);
+        return \`
+          <div style="display:flex;flex-direction:column;align-items:center;">
+            <div style="font-size:0.85em;color:var(--secondary-text-color);margin-bottom:2px;">${label}</div>
+            <svg viewBox="0 0 120 75" style="width:100%;max-width:140px;">
+              <path d="M 10,60 A 50,50 0 0,1 110,60" fill="none" stroke="var(--divider-color, #444)" stroke-width="10" stroke-linecap="round"/>
+              <path d="M 10,60 A 50,50 0 0,1 110,60" fill="none" stroke="\${color}" stroke-width="10" stroke-linecap="round" stroke-dasharray="\${fill} \${circ}"/>
+              <text x="60" y="54" text-anchor="middle" font-size="20" font-weight="600" fill="var(--primary-text-color)">\${display}</text>
+              <text x="60" y="68" text-anchor="middle" font-size="9" fill="var(--secondary-text-color)">c/kWh</text>
+            </svg>
+          </div>
+        \`;
+      ]]]`,
+    },
+    styles: {
+      card: [
+        { 'border-radius': '12px' },
+        { padding: '8px' },
+        { height: '110px' },
+      ],
+      grid: [
+        { 'grid-template-areas': '"gauge"' },
+      ],
+      custom_fields: {
+        gauge: [
+          { 'grid-area': 'gauge' },
+          { 'align-self': 'center' },
+        ],
+      },
+    },
+  };
+}
+
 function _priceGauges(e) {
   return {
     type: 'horizontal-stack',
     cards: [
-      {
-        type: 'gauge',
-        entity: e('current_import_price'),
-        name: 'Import',
-        unit: '$/kWh',
-        min: 0,
-        max: 0.6,
-        needle: true,
-        severity: { green: 0, yellow: 0.25, red: 0.4 },
-        card_mod: { style: 'ha-card { height: 110px; }' },
-      },
-      {
-        type: 'gauge',
-        entity: e('current_export_price'),
-        name: 'Export Earnings',
-        unit: '$/kWh',
-        min: -0.1,
-        max: 0.3,
-        needle: true,
-        severity: { red: -0.1, yellow: 0, green: 0.05 },
-        card_mod: { style: 'ha-card { height: 110px; }' },
-      },
+      _priceGaugeCentsCard(e('current_import_price'), 'Import Price', 0, 60, { green: 0, yellow: 25, red: 40 }),
+      _priceGaugeCentsCard(e('current_export_price'), 'Export Price', -10, 30, { green: 5, yellow: 0, red: -10 }),
       {
         type: 'gauge',
         entity: e('battery_level'),
@@ -1572,7 +1612,7 @@ function _priceChart(e) {
     series: [
       {
         entity: e('current_import_price'),
-        name: 'Import',
+        name: 'Import Price',
         type: 'line',
         color: '#FF9800',
         yaxis_id: 'price',
@@ -1582,7 +1622,7 @@ function _priceChart(e) {
       },
       {
         entity: e('current_export_price'),
-        name: 'Export Earnings',
+        name: 'Export Price',
         type: 'line',
         color: '#4CAF50',
         yaxis_id: 'price',
