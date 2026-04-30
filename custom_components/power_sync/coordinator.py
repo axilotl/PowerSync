@@ -1728,19 +1728,41 @@ class TeslaEnergyCoordinator(DataUpdateCoordinator):
                 nameplate_w = self._site_info_cache.get("nameplate_power")
             nameplate_kw = round(nameplate_w / 1000.0, 2) if nameplate_w else None
 
-            # Total pack energy (nameplate kWh) from cached site_info
+            # Total pack energy (nameplate Wh) and energy_left (stored Wh) come
+            # from live_status, not site_info — that was the v2.12.236 bug that
+            # left these sensors stuck at "Unknown". site_info exposes
+            # nameplate_power but NOT pack capacity, so we fall back to
+            # battery_count × per-unit nameplate when live_status omits it.
             total_pack_kwh: float | None = None
-            if self._site_info_cache:
-                tpe_w = self._site_info_cache.get("total_pack_energy")
-                if tpe_w is not None:
+            tpe_w = live_status.get("total_pack_energy")
+            if tpe_w is not None:
+                try:
+                    total_pack_kwh = round(float(tpe_w) / 1000.0, 2)
+                except (TypeError, ValueError):
+                    total_pack_kwh = None
+            if total_pack_kwh is None and self._site_info_cache:
+                # Fallback: derive from battery_count × per-unit nameplate.
+                # PW2 = 13.5 kWh, PW3 = 13.5 kWh; the battery_count field is
+                # reliably present even when total_pack_energy isn't.
+                count = (
+                    (self._site_info_cache.get("components") or {}).get("battery_count")
+                    or self._site_info_cache.get("battery_count")
+                )
+                if count:
                     try:
-                        total_pack_kwh = round(float(tpe_w) / 1000.0, 2)
+                        total_pack_kwh = round(int(count) * 13.5, 2)
                     except (TypeError, ValueError):
-                        total_pack_kwh = None
+                        pass
 
             soc_pct = live_status.get("percentage_charged", 0) or 0
             energy_left_kwh: float | None = None
-            if total_pack_kwh is not None:
+            el_w = live_status.get("energy_left")
+            if el_w is not None:
+                try:
+                    energy_left_kwh = round(float(el_w) / 1000.0, 2)
+                except (TypeError, ValueError):
+                    energy_left_kwh = None
+            if energy_left_kwh is None and total_pack_kwh is not None:
                 energy_left_kwh = round(total_pack_kwh * (soc_pct / 100.0), 2)
 
             # Backup time remaining (hours): stored kWh / current home load.
@@ -1749,15 +1771,18 @@ class TeslaEnergyCoordinator(DataUpdateCoordinator):
             if energy_left_kwh is not None and load_kw and load_kw > 0.05:
                 backup_hours = round(min(999.0, energy_left_kwh / load_kw), 1)
 
-            # Grid services / VPP — present in live_status when site is enrolled
+            # Grid services / VPP — present in live_status when site is enrolled.
+            # When the site has no VPP the field is typically absent or 0;
+            # default the power reading to 0 so the sensor reads a real value
+            # ("0 W") rather than "Unknown" — much more useful for graphs.
             grid_services_active = bool(live_status.get("grid_services_active", False))
-            grid_services_power_kw: float | None = None
+            grid_services_power_kw: float = 0.0
             gsp = live_status.get("grid_services_power")
             if gsp is not None:
                 try:
                     grid_services_power_kw = round(float(gsp) / 1000.0, 3)
                 except (TypeError, ValueError):
-                    grid_services_power_kw = None
+                    grid_services_power_kw = 0.0
 
             energy_data = {
                 "solar_power": solar_kw,
