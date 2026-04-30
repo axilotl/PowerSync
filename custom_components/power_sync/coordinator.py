@@ -4783,6 +4783,7 @@ class SajH2EnergyCoordinator(DataUpdateCoordinator):
             "load_power": load_kw,
             "battery_level": soc,
             "battery_temperature": status.get("battery_temperature"),
+            "battery_soh": status.get("battery_soh"),
             "battery_capacity_kwh": status.get("battery_capacity_kwh"),
             "battery_max_charge_power_w": status.get("battery_max_charge_power_w"),
             "battery_max_discharge_power_w": status.get("battery_max_discharge_power_w"),

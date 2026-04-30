@@ -1390,6 +1390,8 @@ async def async_setup_entry(
         battery_system = "sigenergy"
     elif is_alphaess:
         battery_system = "alphaess"
+    elif is_saj_h2:
+        battery_system = "saj_h2"
     entities.append(BatteryHealthSensor(
         entry=entry,
         coordinator=energy_coordinator,
