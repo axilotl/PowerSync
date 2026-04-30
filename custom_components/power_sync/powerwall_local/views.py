@@ -28,7 +28,6 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from ..const import (
-    CONF_POWERWALL_LOCAL_CUSTOMER_PASSWORD,
     CONF_POWERWALL_LOCAL_DIN,
     CONF_POWERWALL_LOCAL_ENERGY_SITE_ID,
     CONF_POWERWALL_LOCAL_IP,
@@ -37,8 +36,6 @@ from ..const import (
     CONF_POWERWALL_LOCAL_PRIVATE_KEY,
     CONF_POWERWALL_LOCAL_PUBLIC_KEY,
     CONF_POWERWALL_LOCAL_VERSION,
-    CONF_POWERWALL_LOCAL_WIFI_PASSWORD,
-    CONF_POWERWALL_LOCAL_WIFI_SSID,
     CONF_POWERWALL_OFF_GRID_MIN_SOC,
     CONF_POWERWALL_OFFGRID_AS_CURTAILMENT,
     CONF_POWERWALL_OFFGRID_CURTAILMENT_MAX_SECONDS,
@@ -141,19 +138,20 @@ async def _build_client(
     (connect refused) while the cloud signing path stays usable.
     """
     host = entry.data.get(CONF_POWERWALL_LOCAL_IP)
-    customer_password = entry.data.get(CONF_POWERWALL_LOCAL_CUSTOMER_PASSWORD, "")
     version_str = entry.data.get(CONF_POWERWALL_LOCAL_VERSION, "pw3")
     private_key_pem = entry.data.get(CONF_POWERWALL_LOCAL_PRIVATE_KEY)
     din = entry.data.get(CONF_POWERWALL_LOCAL_DIN)
+
+    # RSA key + DIN are now required — without them every snapshot,
+    # config write, and signed command would fail.
+    if not din or not private_key_pem:
+        return None
 
     if not host:
         # Off-grid via cloud device_command works without a LAN IP, so
         # construct the client with a loopback placeholder rather than
         # bailing. The user can still set a real IP later via Gateway
         # Connection to enable local-only features.
-        if not din or not private_key_pem:
-            # Without DIN + private key we can't sign anything — refuse.
-            return None
         _LOGGER.info(
             "Powerwall paired without local IP — building cloud-only client. "
             "Local features (snapshot, curtailment, fast writes) will be "
@@ -166,10 +164,9 @@ async def _build_client(
     except ValueError:
         version = PowerwallVersion.PW3
 
-    key_bytes: bytes | None = None
-    if isinstance(private_key_pem, str) and private_key_pem:
+    if isinstance(private_key_pem, str):
         key_bytes = private_key_pem.encode()
-    elif isinstance(private_key_pem, bytes):
+    else:
         key_bytes = private_key_pem
 
     # Fleet API context for the device_command cloud path (off-grid/reconnect).
@@ -202,7 +199,6 @@ async def _build_client(
 
     return PowerwallLocalClient(
         host,
-        customer_password,
         version=version,
         private_key_pem=key_bytes,
         din=din,
@@ -282,17 +278,10 @@ class PowerwallPairStartView(HomeAssistantView):
 
         # Pairing is entirely cloud-based (Fleet API key registration + physical
         # toggle verification). No gateway IP is needed for the handshake itself.
-        # If the app provides one, store it for legacy local REST use; otherwise
+        # If the app provides one, store it for local LAN access; otherwise
         # preserve any IP already in the config entry.
         gateway_ip = payload.get("gateway_ip") or payload.get("ip")
-        customer_password = (
-            payload.get("customer_password")
-            or payload.get("password")
-            or ""
-        )
         version_str = (payload.get("version") or "pw3").lower()
-        wifi_ssid = payload.get("wifi_ssid") or payload.get("wifi_name")
-        wifi_password = payload.get("wifi_password")
 
         try:
             version = PowerwallVersion(version_str)
@@ -301,19 +290,16 @@ class PowerwallPairStartView(HomeAssistantView):
 
         # Mirror app-supplied creds into the entry so HA holds authoritative
         # config. Only overwrite gateway IP if one was explicitly provided —
-        # don't clear an IP the user set via Gateway Connection.
+        # don't clear an IP the user set via Gateway Connection. Older app
+        # versions send `customer_password`, `wifi_ssid`, `wifi_password`;
+        # those are silently ignored — the integration uses RSA signing
+        # exclusively.
         new_data = {
             **entry.data,
             CONF_POWERWALL_LOCAL_VERSION: version.value,
         }
         if gateway_ip:
             new_data[CONF_POWERWALL_LOCAL_IP] = gateway_ip
-        if customer_password:
-            new_data[CONF_POWERWALL_LOCAL_CUSTOMER_PASSWORD] = customer_password
-        if wifi_ssid:
-            new_data[CONF_POWERWALL_LOCAL_WIFI_SSID] = wifi_ssid
-        if wifi_password:
-            new_data[CONF_POWERWALL_LOCAL_WIFI_PASSWORD] = wifi_password
         self._hass.config_entries.async_update_entry(entry, data=new_data)
 
         token, base, site_id = _get_fleet_api_context(self._hass, entry)
@@ -475,19 +461,19 @@ class PowerwallPairUnpairView(HomeAssistantView):
 
 
 class PowerwallSetGatewayIpView(HomeAssistantView):
-    """POST: update local gateway credentials without re-pairing.
+    """POST: update the gateway LAN IP without re-pairing.
 
     Use case: a user pairs without supplying the gateway IP (cloud-only
     pairing), then later wants to enable LAN-dependent features (snapshot
     polling, automated curtailment, fast operation-mode toggles). This
-    endpoint writes the new IP and customer password into entry.data and
-    tears down the cached client + coordinator so the next
-    ``ensure_coordinator`` call rebuilds against the new host.
+    endpoint writes the new IP into entry.data and tears down the cached
+    client + coordinator so the next ``ensure_coordinator`` call rebuilds
+    against the new host.
 
-    Body: ``{"gateway_ip": "192.168.1.50", "customer_password": "8904G"}``.
-    The customer password is usually the last 5 characters of the gateway
-    serial/DIN. Empty gateway IP clears local LAN access and reverts the
-    install to cloud-only mode.
+    Body: ``{"gateway_ip": "192.168.1.50"}``. Empty gateway IP clears
+    local LAN access and reverts the install to cloud-only mode. Older
+    app builds may also send ``customer_password`` — that field is silently
+    ignored; the integration uses RSA signing exclusively.
     """
 
     url = "/api/power_sync/powerwall/set_gateway_ip"
@@ -516,47 +502,14 @@ class PowerwallSetGatewayIpView(HomeAssistantView):
             )
         gateway_ip = gateway_ip_raw.strip()
 
-        customer_password_raw = (
-            payload.get("customer_password")
-            or payload.get("password")
-            or ""
-        )
-        if not isinstance(customer_password_raw, str):
-            return web.json_response(
-                {
-                    "success": False,
-                    "error": "customer_password must be a string",
-                },
-                status=400,
-            )
-        customer_password = customer_password_raw.strip()
-        current_customer_password = (
-            entry.data.get(CONF_POWERWALL_LOCAL_CUSTOMER_PASSWORD, "") or ""
-        ).strip()
-        if gateway_ip and not (customer_password or current_customer_password):
-            return web.json_response(
-                {
-                    "success": False,
-                    "error": (
-                        "customer_password is required with gateway_ip for "
-                        "local Powerwall access"
-                    ),
-                    "reason": "customer_password_required",
-                },
-                status=400,
-            )
-
         new_data = {**entry.data}
         if gateway_ip:
             new_data[CONF_POWERWALL_LOCAL_IP] = gateway_ip
-            if customer_password:
-                new_data[CONF_POWERWALL_LOCAL_CUSTOMER_PASSWORD] = customer_password
         else:
             # Clearing the IP reverts to cloud-only operation. Pop the key
             # entirely so the diagnostic binary_sensor flips correctly
             # rather than treating "" as a valid IP.
             new_data.pop(CONF_POWERWALL_LOCAL_IP, None)
-            new_data.pop(CONF_POWERWALL_LOCAL_CUSTOMER_PASSWORD, None)
         self._hass.config_entries.async_update_entry(entry, data=new_data)
 
         # Drop the cached client + coordinator so the next ensure_coordinator
@@ -580,9 +533,6 @@ class PowerwallSetGatewayIpView(HomeAssistantView):
         return web.json_response({
             "success": True,
             "gateway_ip": gateway_ip or None,
-            "has_customer_password": bool(
-                new_data.get(CONF_POWERWALL_LOCAL_CUSTOMER_PASSWORD)
-            ),
         })
 
 
@@ -688,7 +638,6 @@ class PowerwallDebugProbeView(HomeAssistantView):
             return web.json_response({"error": "not configured"}, status=503)
 
         host = entry.data.get(CONF_POWERWALL_LOCAL_IP)
-        password = entry.data.get(CONF_POWERWALL_LOCAL_CUSTOMER_PASSWORD, "")
         if not host:
             return web.json_response({"error": "no gateway IP"}, status=400)
 
@@ -700,7 +649,9 @@ class PowerwallDebugProbeView(HomeAssistantView):
         path = str(payload.get("path", "/api/system_status/grid_status"))
         body = payload.get("body")
         username = str(payload.get("username", "customer"))
-        login_password = str(payload.get("login_password", "")) or password
+        # Debug probe is a hand-driven utility — caller supplies the login
+        # password explicitly. The integration itself never stores one.
+        login_password = str(payload.get("login_password", ""))
 
         # Create insecure SSL context for self-signed gateway cert
         ctx = ssl.create_default_context()
@@ -846,11 +797,10 @@ class PowerwallGatewayInfoView(HomeAssistantView):
     """GET gateway metadata derived from Tesla Fleet API ``site_info``.
 
     Tesla's ``/api/1/energy_sites/{id}/site_info`` response contains a DIN
-    in ``id`` formatted ``{part_number}--{serial_number}``. The customer
-    password used by the Powerwall's REST login endpoint is the last 5
-    characters of ``serial_number``. Surfacing this automatically means
-    the pairing wizard can pre-fill the field instead of making the user
-    crawl under their gateway to read a sticker.
+    in ``id`` formatted ``{part_number}--{serial_number}``. PowerSync uses
+    RSA signing exclusively for gateway control, so the customer password
+    is no longer relevant — the response is informational (gateway serial
+    + DIN) for the mobile app's pairing UI.
 
     Response shape::
 
@@ -858,14 +808,12 @@ class PowerwallGatewayInfoView(HomeAssistantView):
             "success": true,
             "gateway_serial": "TG12345678904G",
             "part_number": "STSTSM",
-            "suggested_customer_password": "8904G",
             "site_name": "Home",
             "din": "STSTSM--TG12345678904G"
         }
 
     All fields may be null if site_info is unavailable or the DIN doesn't
-    parse — the wizard should fall back to manual entry in that case and
-    not treat it as an error.
+    parse — the wizard should treat that as informational, not an error.
     """
 
     url = "/api/power_sync/powerwall/gateway_info"
@@ -961,16 +909,11 @@ class PowerwallGatewayInfoView(HomeAssistantView):
             else:
                 gateway_serial = din
 
-        suggested_pw = None
-        if gateway_serial and len(gateway_serial) >= 5:
-            suggested_pw = gateway_serial[-5:]
-
         return web.json_response(
             {
                 "success": True,
                 "gateway_serial": gateway_serial,
                 "part_number": part_number,
-                "suggested_customer_password": suggested_pw,
                 "site_name": site_name,
                 "din": din,
             }
@@ -1302,10 +1245,8 @@ class PowerwallDebugConfigView(HomeAssistantView):
         if coordinator is None or coordinator.client is None:
             return web.json_response({"error": "no client"}, status=503)
         client = coordinator.client
-        # Login + fetch DIN
-        await client.login()
         din = client.din
-        if not din or not client._transport:
+        if not din:
             return web.json_response({"error": f"no din={din}"}, status=503)
         config = await client._transport.read_config(din)
         if config is None:

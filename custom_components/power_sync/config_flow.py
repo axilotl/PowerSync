@@ -38,7 +38,6 @@ from .const import (
     CONF_BATTERY_CURTAILMENT_ENABLED,
     CONF_TESLEMETRY_API_TOKEN,
     CONF_TESLA_ENERGY_SITE_ID,
-    CONF_POWERWALL_LOCAL_CUSTOMER_PASSWORD,
     CONF_POWERWALL_LOCAL_IP,
     CONF_POWERWALL_LOCAL_PAIRED,
     CONF_AUTO_SYNC_ENABLED,
@@ -3295,18 +3294,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             gateway_ip = (user_input.get(CONF_POWERWALL_LOCAL_IP) or "").strip()
-            customer_password = (
-                user_input.get(CONF_POWERWALL_LOCAL_CUSTOMER_PASSWORD) or ""
-            ).strip()
-
-            if gateway_ip and not customer_password:
-                errors[CONF_POWERWALL_LOCAL_CUSTOMER_PASSWORD] = (
-                    "powerwall_local_password_required"
-                )
-            elif customer_password and not gateway_ip:
-                errors[CONF_POWERWALL_LOCAL_IP] = "powerwall_local_ip_required"
-
-        if user_input is not None and not errors:
             # Handle Amber site selection (only if we have Amber sites)
             amber_site_id = None
             if has_amber_sites:
@@ -3334,9 +3321,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
             if gateway_ip:
                 self._site_data[CONF_POWERWALL_LOCAL_IP] = gateway_ip
-                self._site_data[
-                    CONF_POWERWALL_LOCAL_CUSTOMER_PASSWORD
-                ] = customer_password
 
             # Add Amber site if we have one
             if amber_site_id:
@@ -3385,15 +3369,11 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 )
             )
 
-            # Optional local LAN control. Pairing itself is cloud-based
-            # (Fleet API key registration), but direct gateway reads/writes
-            # require both the gateway IP and customer password.
+            # Optional gateway LAN IP for direct local features (snapshot
+            # polling, automated curtailment, fast operation-mode toggles).
+            # Pairing itself is cloud-based (Fleet API key registration);
+            # gateway control uses RSA signing — no password required.
             data_schema_dict[vol.Optional(CONF_POWERWALL_LOCAL_IP, default="")] = str
-            data_schema_dict[
-                vol.Optional(CONF_POWERWALL_LOCAL_CUSTOMER_PASSWORD, default="")
-            ] = TextSelector(
-                TextSelectorConfig(type=TextSelectorType.PASSWORD)
-            )
         else:
             # No sites found - should not happen if validation worked
             _LOGGER.error("No Tesla energy sites found in Teslemetry account")
@@ -3708,19 +3688,6 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             # customer password.
             gateway_ip_raw = user_input.get(CONF_POWERWALL_LOCAL_IP, "")
             gateway_ip = (gateway_ip_raw or "").strip()
-            customer_password_raw = user_input.get(
-                CONF_POWERWALL_LOCAL_CUSTOMER_PASSWORD, ""
-            )
-            customer_password = (customer_password_raw or "").strip()
-            current_customer_password = (
-                self.config_entry.data.get(
-                    CONF_POWERWALL_LOCAL_CUSTOMER_PASSWORD, ""
-                )
-                or ""
-            ).strip()
-            effective_customer_password = (
-                customer_password or current_customer_password
-            )
 
             # Validate EV provider
             detected = _detect_tesla_ev_integrations(self.hass)
@@ -3737,12 +3704,6 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 self._pending_init_tesla_input = dict(user_input)
                 self._tesla_connection_return = True
                 return await self.async_step_options_tesla_ev_token()
-            elif gateway_ip and not effective_customer_password:
-                errors[CONF_POWERWALL_LOCAL_CUSTOMER_PASSWORD] = (
-                    "powerwall_local_password_required"
-                )
-            elif customer_password and not gateway_ip:
-                errors[CONF_POWERWALL_LOCAL_IP] = "powerwall_local_ip_required"
 
             if not errors:
                 new_data = dict(self.config_entry.data)
@@ -3753,13 +3714,8 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 # rather than reading an empty string as "set".
                 if gateway_ip:
                     new_data[CONF_POWERWALL_LOCAL_IP] = gateway_ip
-                    if customer_password:
-                        new_data[
-                            CONF_POWERWALL_LOCAL_CUSTOMER_PASSWORD
-                        ] = customer_password
                 else:
                     new_data.pop(CONF_POWERWALL_LOCAL_IP, None)
-                    new_data.pop(CONF_POWERWALL_LOCAL_CUSTOMER_PASSWORD, None)
                 self.hass.config_entries.async_update_entry(
                     self.config_entry, data=new_data
                 )
@@ -3819,19 +3775,13 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                         ],
                         mode=SelectSelectorMode.DROPDOWN,
                     )),
-                    # Optional local LAN control. Pairing itself is cloud-based,
-                    # but direct gateway polling and writes require both the IP
-                    # and customer password.
+                    # Optional gateway LAN IP for direct local features.
+                    # Pairing is cloud-based; gateway control uses RSA
+                    # signing — no password required.
                     vol.Optional(
                         CONF_POWERWALL_LOCAL_IP,
                         default=current_gateway_ip,
                     ): str,
-                    vol.Optional(
-                        CONF_POWERWALL_LOCAL_CUSTOMER_PASSWORD,
-                        default="",
-                    ): TextSelector(
-                        TextSelectorConfig(type=TextSelectorType.PASSWORD)
-                    ),
                 }
             ),
             errors=errors,

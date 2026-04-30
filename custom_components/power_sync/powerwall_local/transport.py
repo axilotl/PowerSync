@@ -13,7 +13,6 @@ are unchanged; the gateway verifies both byte-for-byte.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import math
@@ -30,7 +29,6 @@ from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 from . import tedapi_combined_pb2 as combined_pb2
 from .exceptions import (
-    PowerwallAuthError,
     PowerwallLocalError,
     PowerwallSignatureError,
     PowerwallUnreachableError,
@@ -42,9 +40,6 @@ _SIGNATURE_TYPE_RSA = 7
 _DOMAIN_ENERGY_DEVICE = 7
 _TAG_END = 0xFF
 _SIGNATURE_TTL_SECONDS = 12
-_LOGIN_BACKOFF_INITIAL_SECONDS = 60.0
-_LOGIN_BACKOFF_MAX_SECONDS = 300.0
-_LOGIN_BACKOFF_WARNING_INTERVAL_SECONDS = 60.0
 
 
 def _build_insecure_ssl_context() -> ssl.SSLContext:
@@ -119,12 +114,11 @@ class TEDAPIv1rTransport:
         self,
         host: str,
         private_key_pem: bytes,
-        customer_password: str,
         *,
+        din: str | None = None,
         timeout: float = 8.0,
     ) -> None:
         self._host = host
-        self._customer_password = customer_password
         self._timeout = aiohttp.ClientTimeout(total=timeout)
 
         try:
@@ -139,12 +133,9 @@ class TEDAPIv1rTransport:
             format=serialization.PublicFormat.PKCS1,
         )
         self._ssl = _insecure_ssl_context()
-        self._token: str | None = None
-        self._din: str | None = None
-        self._login_lock = asyncio.Lock()
-        self._login_backoff_until = 0.0
-        self._login_backoff_seconds = 0.0
-        self._last_login_backoff_log = 0.0
+        # DIN is supplied by the caller from cloud pairing — no Bearer-authed
+        # /tedapi/din fetch path remains.
+        self._din: str | None = din
 
     @property
     def din(self) -> str | None:
@@ -155,134 +146,6 @@ class TEDAPIv1rTransport:
         # caller; TEDAPI polling is low rate and the handshake is cheap.
         connector = aiohttp.TCPConnector(ssl=self._ssl, limit=4)
         return aiohttp.ClientSession(connector=connector, timeout=self._timeout)
-
-    @property
-    def login_backoff_remaining(self) -> float:
-        """Seconds until the next gateway login attempt is allowed."""
-        return max(0.0, self._login_backoff_until - time.monotonic())
-
-    def _parse_retry_after(self, retry_after: str | None) -> float | None:
-        if not retry_after:
-            return None
-        try:
-            return max(0.0, float(retry_after))
-        except (TypeError, ValueError):
-            return None
-
-    def _set_login_backoff(self, retry_after: str | None = None) -> float:
-        retry_delay = self._parse_retry_after(retry_after)
-        if retry_delay is None:
-            retry_delay = (
-                _LOGIN_BACKOFF_INITIAL_SECONDS
-                if self._login_backoff_seconds <= 0
-                else min(
-                    self._login_backoff_seconds * 2.0,
-                    _LOGIN_BACKOFF_MAX_SECONDS,
-                )
-            )
-        retry_delay = min(retry_delay, _LOGIN_BACKOFF_MAX_SECONDS)
-        self._login_backoff_seconds = retry_delay
-        now = time.monotonic()
-        self._login_backoff_until = now + retry_delay
-        self._last_login_backoff_log = now
-        return retry_delay
-
-    def _login_backoff_active(self) -> bool:
-        remaining = self.login_backoff_remaining
-        if remaining <= 0:
-            return False
-
-        now = time.monotonic()
-        should_warn = (
-            now - self._last_login_backoff_log
-            >= _LOGIN_BACKOFF_WARNING_INTERVAL_SECONDS
-        )
-        if should_warn:
-            _LOGGER.warning(
-                "Skipping Powerwall v1r login for %.0fs after gateway rate limit",
-                remaining,
-            )
-            self._last_login_backoff_log = now
-        else:
-            _LOGGER.debug(
-                "Skipping Powerwall v1r login for %.0fs after gateway rate limit",
-                remaining,
-            )
-        return True
-
-    async def login(self) -> bool:
-        """Log in via ``/api/login/Basic`` to get a Bearer token for REST calls."""
-        if self._token:
-            return True
-        if self._login_backoff_active():
-            return False
-
-        async with self._login_lock:
-            if self._token:
-                return True
-            if self._login_backoff_active():
-                return False
-
-            return await self._login_once()
-
-    async def _login_once(self) -> bool:
-        """Perform one network login attempt without lock/backoff pre-checks."""
-        url = f"https://{self._host}/api/login/Basic"
-        payload = {
-            "username": "customer",
-            "password": self._customer_password,
-            "email": "customer@customer.domain",
-            "clientInfo": {"timezone": "UTC"},
-        }
-        try:
-            async with await self._session() as sess:
-                async with sess.post(url, json=payload) as resp:
-                    if resp.status != 200:
-                        body = await resp.text()
-                        _LOGGER.warning(
-                            "v1r login failed (%s): %s", resp.status, body[:200]
-                        )
-                        if resp.status in (401, 403):
-                            raise PowerwallAuthError(
-                                f"Gateway rejected customer password ({resp.status})"
-                            )
-                        if resp.status == 429:
-                            delay = self._set_login_backoff(
-                                resp.headers.get("Retry-After")
-                            )
-                            _LOGGER.warning(
-                                "Powerwall gateway rate-limited v1r login; "
-                                "backing off for %.0fs",
-                                delay,
-                            )
-                        return False
-                    data = await resp.json()
-                    self._token = data.get("token")
-                    ok = self._token is not None
-                    if ok:
-                        self._login_backoff_until = 0.0
-                        self._login_backoff_seconds = 0.0
-                    return ok
-        except aiohttp.ClientError as err:
-            raise PowerwallUnreachableError(
-                f"Cannot reach gateway {self._host}: {err}"
-            ) from err
-
-    async def fetch_din(self) -> str | None:
-        """Fetch the gateway DIN from ``/tedapi/din`` (Bearer-authed)."""
-        if not self._token and not await self.login():
-            return None
-        url = f"https://{self._host}/tedapi/din"
-        headers = {"Authorization": f"Bearer {self._token}"}
-        try:
-            async with await self._session() as sess:
-                async with sess.get(url, headers=headers) as resp:
-                    if resp.status != 200:
-                        return None
-                    self._din = (await resp.text()).strip()
-                    return self._din
-        except aiohttp.ClientError as err:
-            raise PowerwallUnreachableError(str(err)) from err
 
     @staticmethod
     def _tlv(tag: int, value: bytes) -> bytes:
@@ -692,64 +555,3 @@ class TEDAPIv1rTransport:
         except Exception:
             return False
 
-    async def api_get(self, path: str) -> Any | None:
-        """Authenticated REST GET against the gateway (Bearer token).
-
-        Works on PW2 and PW3 for standard endpoints: ``/api/meters/aggregates``,
-        ``/api/system_status/soe``, ``/api/system_status/grid_status``, etc.
-        """
-        if not self._token and not await self.login():
-            return None
-        url = f"https://{self._host}{path}"
-        headers = {"Authorization": f"Bearer {self._token}"}
-        try:
-            async with await self._session() as sess:
-                async with sess.get(url, headers=headers) as resp:
-                    if resp.status in (401, 403):
-                        # Token lapsed; re-login once and retry.
-                        self._token = None
-                        if await self.login():
-                            headers["Authorization"] = f"Bearer {self._token}"
-                            async with sess.get(url, headers=headers) as r2:
-                                if r2.status != 200:
-                                    return None
-                                return await r2.json()
-                        return None
-                    if resp.status != 200:
-                        return None
-                    return await resp.json()
-        except aiohttp.ClientError as err:
-            raise PowerwallUnreachableError(str(err)) from err
-
-    async def api_post(self, path: str, body: dict[str, Any]) -> Any | None:
-        """Authenticated REST POST against the gateway."""
-        if not self._token and not await self.login():
-            return None
-        url = f"https://{self._host}{path}"
-        headers = {
-            "Authorization": f"Bearer {self._token}",
-            "Content-Type": "application/json",
-        }
-        try:
-            async with await self._session() as sess:
-                async with sess.post(url, json=body, headers=headers) as resp:
-                    if resp.status in (401, 403):
-                        self._token = None
-                        if await self.login():
-                            headers["Authorization"] = f"Bearer {self._token}"
-                            async with sess.post(
-                                url, json=body, headers=headers
-                            ) as r2:
-                                if r2.status not in (200, 201, 204):
-                                    return None
-                                if r2.status == 204:
-                                    return {}
-                                return await r2.json()
-                        return None
-                    if resp.status not in (200, 201, 204):
-                        return None
-                    if resp.status == 204:
-                        return {}
-                    return await resp.json()
-        except aiohttp.ClientError as err:
-            raise PowerwallUnreachableError(str(err)) from err

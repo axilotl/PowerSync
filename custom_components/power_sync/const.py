@@ -302,6 +302,9 @@ CONF_POWERWALL_LOCAL_PUBLIC_KEY = "powerwall_local_public_key_der"
 CONF_POWERWALL_LOCAL_DIN = "powerwall_local_din"
 CONF_POWERWALL_LOCAL_IP = "powerwall_local_ip"
 CONF_POWERWALL_LOCAL_VERSION = "powerwall_local_version"  # "pw2" | "pw3"
+# DEPRECATED — kept only so HA doesn't choke on legacy entry.data values
+# carried forward from versions <= 2.12.247. The integration uses RSA-signed
+# /tedapi/v1r exclusively now; never written, never read at runtime.
 CONF_POWERWALL_LOCAL_CUSTOMER_PASSWORD = "powerwall_local_customer_password"
 CONF_POWERWALL_LOCAL_WIFI_SSID = "powerwall_local_wifi_ssid"
 CONF_POWERWALL_LOCAL_WIFI_PASSWORD = "powerwall_local_wifi_password"
