@@ -38,6 +38,8 @@ from .const import (
     CONF_BATTERY_CURTAILMENT_ENABLED,
     CONF_TESLEMETRY_API_TOKEN,
     CONF_TESLA_ENERGY_SITE_ID,
+    CONF_POWERWALL_LOCAL_IP,
+    CONF_POWERWALL_LOCAL_PAIRED,
     CONF_AUTO_SYNC_ENABLED,
     CONF_DEMAND_CHARGE_ENABLED,
     CONF_DEMAND_CHARGE_RATE,
@@ -3284,6 +3286,11 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 CONF_TESLA_ENERGY_SITE_ID: user_input[CONF_TESLA_ENERGY_SITE_ID],
             }
 
+            # Optional Powerwall gateway IP — strip whitespace, ignore empty.
+            gateway_ip = (user_input.get(CONF_POWERWALL_LOCAL_IP) or "").strip()
+            if gateway_ip:
+                self._site_data[CONF_POWERWALL_LOCAL_IP] = gateway_ip
+
             # Add Amber site if we have one
             if amber_site_id:
                 self._site_data[CONF_AMBER_SITE_ID] = amber_site_id
@@ -3330,6 +3337,15 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     mode=SelectSelectorMode.DROPDOWN,
                 )
             )
+
+            # Optional gateway IP for local LAN control. Pairing itself is
+            # cloud-based (Fleet API key registration) — off-grid/reconnect
+            # work without a LAN IP — but features that need direct gateway
+            # writes (per-Powerwall snapshot polling, automated curtailment,
+            # fast operation-mode/grid-charging toggles) require the IP.
+            # Leave blank to skip; users can add it later via the mobile
+            # app's Battery Setup → Gateway Connection screen.
+            data_schema_dict[vol.Optional(CONF_POWERWALL_LOCAL_IP, default="")] = str
         else:
             # No sites found - should not happen if validation worked
             _LOGGER.error("No Tesla energy sites found in Teslemetry account")

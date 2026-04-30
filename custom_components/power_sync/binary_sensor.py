@@ -48,6 +48,11 @@ async def async_setup_entry(
     # Local Control section on it, and the mobile app can subscribe.
     async_add_entities([PowerwallLocalPairedBinarySensor(hass, entry)])
     async_add_entities([PowerwallLocalIslandedBinarySensor(hass, entry)])
+    # Surface "paired but no LAN IP" as a diagnostic — mobile app uses this
+    # to show a banner directing the user to set the gateway IP, since
+    # without it the local-only features (snapshot, curtailment, fast writes)
+    # silently won't work even though pairing succeeded.
+    async_add_entities([PowerwallLocalIPMissingBinarySensor(hass, entry)])
 
     # Critical Alert sensor only makes sense once the gateway is paired
     # (its data source is the local TEDAPI snapshot).
@@ -338,6 +343,40 @@ class PermissionToOperateBinarySensor(_TeslaBinarySensorBase):
             if key in components:
                 return bool(components[key])
         return None
+
+
+class PowerwallLocalIPMissingBinarySensor(_TeslaBinarySensorBase):
+    """True when the entry is paired but no local gateway IP is configured.
+
+    This signals "you finished cloud-side pairing but local-only features
+    (per-PW snapshot, automated curtailment, fast operation-mode toggles)
+    won't work until you set ``CONF_POWERWALL_LOCAL_IP``". Off-grid still
+    works in this state because it goes through the cloud signed
+    ``device_command`` path.
+    """
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_device_class = BinarySensorDeviceClass.PROBLEM
+
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+        super().__init__(
+            hass, entry,
+            key="powerwall_local_ip_missing",
+            name="Powerwall Gateway IP Missing",
+            icon="mdi:lan-disconnect",
+        )
+
+    @property
+    def is_on(self) -> bool | None:
+        from .const import CONF_POWERWALL_LOCAL_IP
+        paired = bool(self._entry.data.get(CONF_POWERWALL_LOCAL_PAIRED, False))
+        if not paired:
+            # Not paired at all — this banner doesn't apply. Returning False
+            # (not None) so it shows as "OK" rather than "unknown" in the
+            # device's diagnostic panel.
+            return False
+        ip = self._entry.data.get(CONF_POWERWALL_LOCAL_IP)
+        return not ip
 
 
 class PowerwallLocalIslandedBinarySensor(_TeslaBinarySensorBase):
