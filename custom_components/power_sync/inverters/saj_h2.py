@@ -64,13 +64,17 @@ _SENSOR_KEYS: dict[str, tuple[str, ...]] = {
 
 # Maps internal slot → unique_id suffix for writable number entities.
 # stanus74 constructs unique_id as f"{hub_name}_{key}_input" for all number entities.
-# NOTE: passive_charge_enable and app_mode are intentionally absent — passive mode
-# entry/exit is managed via the switch entities below, which handle AppMode internally.
+# NOTE: passive_charge_enable is intentionally absent — passive mode entry is
+# managed via the switch entities below, which handle AppMode internally.
 # passive_grid_charge_power is absent — confirmed no effect on charging behavior.
+# app_mode_writable is used by restore_normal() to force AppMode=0 (Self-Use)
+# after a force charge/discharge, regardless of the pre-passive AppMode that
+# stanus74's _deactivate_passive_mode would otherwise restore.
 _NUMBER_KEYS: dict[str, str] = {
     "charge_power":         "passive_bat_charge_power_input",
     "discharge_power":      "passive_bat_discharge_power_input",
     "grid_discharge_power": "passive_grid_discharge_power_input",
+    "app_mode_writable":    "app_mode_input",
 }
 
 # Maps internal slot → unique_id suffix for writable switch entities.
@@ -401,11 +405,15 @@ class SajH2BatteryController:
         return True
 
     async def restore_normal(self) -> bool:
-        """Return to normal self-consumption mode.
+        """Return to Self-Use mode.
 
         Zeros passive power registers, turns off both passive switches (stanus74's
-        _deactivate_passive_mode() restores the pre-passive AppMode automatically),
-        and ensures charging_control and discharging_control are off.
+        _deactivate_passive_mode() restores the pre-passive AppMode), and ensures
+        the TOU charging_control/discharging_control switches are off. Then
+        explicitly writes AppMode=0 (Self-Use) — without this, users who entered
+        force charge/discharge from TOU (1) or Backup (2) would be returned to
+        their original mode and the inverter would resume schedule-driven
+        behaviour instead of self-consumption.
         """
         await self._set_number("charge_power", 0)
         await self._set_number("discharge_power", 0)
@@ -414,7 +422,8 @@ class SajH2BatteryController:
         await self._turn_off("passive_discharge_control")
         await self._turn_off("charging_control")
         await self._turn_off("discharging_control")
-        _LOGGER.info("SAJ H2 restored to normal operation")
+        await self._set_number("app_mode_writable", 0)
+        _LOGGER.info("SAJ H2 restored to Self-Use mode (AppMode=0)")
         return True
 
     async def disconnect(self) -> None:
