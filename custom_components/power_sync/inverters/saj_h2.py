@@ -45,7 +45,9 @@ _LOGGER = logging.getLogger(__name__)
 _SENSOR_KEYS: dict[str, tuple[str, ...]] = {
     "battery_level":               ("Bat1SOC", "batEnergyPercent"),
     "battery_power":               ("batteryPower",),
-    "grid_power":                  ("gridPower", "totalgridPower", "CT_GridPowerWatt"),
+    # CT_GridPowerWatt is the whole-house meter and reflects AC-coupled inverter
+    # contribution; gridPower is only the SAJ's own grid leg. Prefer the CT.
+    "grid_power":                  ("CT_GridPowerWatt", "gridPower", "totalgridPower"),
     "solar_power":                 ("CT_PVPowerWatt", "pvPower"),
     "load_power":                  ("TotalLoadPower", "gridPower"),
     "battery_temperature":         ("BatTemp", "Bat1Temperature"),
