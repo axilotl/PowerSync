@@ -4195,22 +4195,31 @@ class BatteryHealthView(HomeAssistantView):
 
         # Ghost expansion pack filter: Tesla Fleet API sometimes returns BMS entries for
         # expansion pack slots that are registered but not physically installed. These show
-        # plausible-looking full-capacity values (~13.5–14.5 kWh) but near-zero remaining energy
-        # (< 500 Wh). Cross-validate: if the system-level nominalFullPackEnergyWh (current_wh)
-        # matches just the non-expansion packs within 10%, the expansion entries are stale phantom
-        # data and should be dropped before battery_count / rated_capacity are calculated.
-        if individual and current_wh > 0 and any(p.get("isExpansion") for p in individual):
-            non_exp = [p for p in individual if not p.get("isExpansion")]
-            non_exp_full_wh = sum(p["nominalFullPackEnergyWh"] for p in non_exp)
-            if non_exp_full_wh > 0 and abs(current_wh - non_exp_full_wh) / current_wh < 0.10:
-                ghost_count = sum(1 for p in individual if p.get("isExpansion"))
-                _LOGGER.warning(
-                    "fleet_api_bms: Dropping %d ghost expansion pack(s) — system %.0f Wh matches "
-                    "non-expansion sum %.0f Wh (ratio %.3f); expansion slots registered but not installed",
-                    ghost_count, current_wh, non_exp_full_wh, non_exp_full_wh / current_wh,
-                )
-                individual = non_exp
-                bms_module_count -= ghost_count
+        # plausible-looking full-capacity values (~13.5–14.5 kWh) but lack a serialNumber and
+        # report near-zero remaining energy regardless of system SOC. Real BMS modules always
+        # populate a serialNumber (Main and physically-installed expansions), so missing-serial
+        # expansions are the strong ghost signal. Cross-validate by removing the no-serial
+        # expansions and checking the kept-pack sum matches the system-level
+        # nominalFullPackEnergyWh (current_wh) within 10% — handles mixed cases (e.g. 1 real
+        # expansion + 2 ghost slots) that the previous "all expansions are ghosts" check missed.
+        if individual and current_wh > 0:
+            ghost_candidates = [
+                p for p in individual
+                if p.get("isExpansion") and not p.get("serialNumber")
+            ]
+            if ghost_candidates:
+                kept = [p for p in individual if p not in ghost_candidates]
+                kept_full_wh = sum(p["nominalFullPackEnergyWh"] for p in kept)
+                if kept_full_wh > 0 and abs(current_wh - kept_full_wh) / current_wh < 0.10:
+                    ghost_count = len(ghost_candidates)
+                    _LOGGER.warning(
+                        "fleet_api_bms: Dropping %d ghost expansion pack(s) (no serial) — "
+                        "system %.0f Wh matches real-pack sum %.0f Wh (ratio %.3f); "
+                        "expansion slots registered but not physically installed",
+                        ghost_count, current_wh, kept_full_wh, kept_full_wh / current_wh,
+                    )
+                    individual = kept
+                    bms_module_count -= ghost_count
 
         # Module count: BMS signal presence is the most accurate count (includes follower packs
         # that report the signal key but have None values). batteryBlocks counts inverter units
