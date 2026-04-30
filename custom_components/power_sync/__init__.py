@@ -21556,8 +21556,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         Local V1R first when paired; cloud Fleet API as fallback.
         """
         mode = call.data.get("mode")
-        if mode not in ("autonomous", "self_consumption"):
-            _LOGGER.error(f"Invalid operation mode: {mode}. Must be 'autonomous' or 'self_consumption'.")
+        if mode not in ("autonomous", "self_consumption", "backup"):
+            _LOGGER.error(f"Invalid operation mode: {mode}. Must be 'autonomous', 'self_consumption', or 'backup'.")
             return
 
         _LOGGER.info(f"⚙️ Setting operation mode to {mode}")
@@ -21930,6 +21930,163 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         except Exception as e:
             _LOGGER.error("Error setting VPP enrollment: %s", e, exc_info=True)
 
+    async def _persist_max_backup_schedule(payload: dict | None) -> None:
+        """Write or clear the max_backup_schedule key in this entry's Store.
+
+        ``payload=None`` clears the key. Survives HA restart so an in-flight
+        schedule can resume; without this the Powerwall would stay at 100%
+        indefinitely after a reboot mid-window.
+        """
+        entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+        store = entry_data.get("store")
+        if store is None:
+            return
+        try:
+            data = await store.async_load() or {}
+            if payload is None:
+                data.pop("max_backup_schedule", None)
+            else:
+                data["max_backup_schedule"] = payload
+            await store.async_save(data)
+        except Exception as err:
+            _LOGGER.warning("Failed to persist max_backup_schedule: %s", err)
+
+    async def _restore_max_backup_window(end_ts: float, saved_reserve: int | None) -> None:
+        """Re-arm the restoration timer for an already-active window.
+
+        End time and saved reserve come from the persisted Store payload.
+        If the window already expired while HA was down, restore immediately;
+        otherwise schedule the restore for the remaining seconds.
+        """
+        import time as _time
+        from homeassistant.helpers.event import async_call_later
+
+        now = _time.time()
+        remaining = max(0.0, end_ts - now)
+        entry_data = hass.data.setdefault(DOMAIN, {}).setdefault(entry.entry_id, {})
+        entry_data["max_backup_saved_reserve"] = saved_reserve
+        entry_data["max_backup_end_ts"] = end_ts
+
+        if remaining <= 0:
+            _LOGGER.info(
+                "schedule_max_backup: window expired during downtime — restoring reserve to %s%% now",
+                saved_reserve,
+            )
+            await _max_backup_restore(None)
+            return
+
+        cancel = async_call_later(hass, remaining, _max_backup_restore)
+        entry_data["max_backup_cancel"] = cancel
+        _LOGGER.info(
+            "🛡️ Resumed max backup window — restoring reserve to %s%% in %d min",
+            saved_reserve, int(remaining // 60),
+        )
+
+    async def _max_backup_restore(_now) -> None:
+        """One-shot callback that restores the saved reserve and clears storage.
+
+        Bound to ``async_call_later`` from both fresh schedules and on-startup
+        re-arm — the implementation is identical so we share the closure.
+        """
+        data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+        target = data.pop("max_backup_saved_reserve", None)
+        data.pop("max_backup_cancel", None)
+        data.pop("max_backup_end_ts", None)
+        await _persist_max_backup_schedule(None)
+        if target is None:
+            _LOGGER.warning("schedule_max_backup: no saved reserve to restore")
+            return
+        _LOGGER.info("🛡️ Max backup window ended — restoring reserve to %s%%", target)
+        try:
+            await hass.services.async_call(
+                DOMAIN, "set_backup_reserve",
+                {"percent": int(target)}, blocking=True,
+            )
+        except Exception as err:
+            _LOGGER.error("schedule_max_backup: restore failed: %s", err)
+
+    async def handle_schedule_max_backup(call: ServiceCall) -> None:
+        """Charge to 100% for a window, then restore the previous reserve.
+
+        Saves the current backup_reserve_percent, raises it to 100, and
+        schedules a one-shot restoration after ``duration_minutes``. If a
+        prior schedule is still running it is cancelled and the original
+        saved reserve is preserved (so back-to-back schedules don't lose
+        the user's baseline). The schedule is persisted to the per-entry
+        Store and resumes after HA restart.
+        """
+        duration_minutes = call.data.get("duration_minutes")
+        if duration_minutes is None:
+            _LOGGER.error("schedule_max_backup requires 'duration_minutes'")
+            return
+        try:
+            duration_minutes = int(duration_minutes)
+        except (ValueError, TypeError):
+            _LOGGER.error("schedule_max_backup: invalid duration: %r", duration_minutes)
+            return
+        if duration_minutes < 1 or duration_minutes > 1440:
+            _LOGGER.error(
+                "schedule_max_backup: duration_minutes out of range (1-1440): %d",
+                duration_minutes,
+            )
+            return
+
+        from homeassistant.helpers.event import async_call_later
+
+        coord = _get_tesla_coordinator_for_service("schedule_max_backup")
+        if coord is None:
+            return
+        site_info = getattr(coord, "_site_info_cache", None) or {}
+        saved_reserve = site_info.get("backup_reserve_percent")
+
+        entry_data = hass.data.setdefault(DOMAIN, {}).setdefault(entry.entry_id, {})
+        prior_cancel = entry_data.get("max_backup_cancel")
+        if prior_cancel is not None:
+            try:
+                prior_cancel()
+            except Exception:
+                pass
+            saved_reserve = entry_data.get("max_backup_saved_reserve", saved_reserve)
+            _LOGGER.info("schedule_max_backup: replacing existing schedule")
+
+        import time as _time
+        entry_data["max_backup_saved_reserve"] = saved_reserve
+        end_ts = _time.time() + duration_minutes * 60
+        entry_data["max_backup_end_ts"] = end_ts
+
+        _LOGGER.info(
+            "🛡️ Scheduling max backup for %d min (current reserve: %s%%)",
+            duration_minutes, saved_reserve,
+        )
+
+        await hass.services.async_call(
+            DOMAIN, "set_backup_reserve",
+            {"percent": 100}, blocking=True,
+        )
+
+        cancel = async_call_later(hass, duration_minutes * 60, _max_backup_restore)
+        entry_data["max_backup_cancel"] = cancel
+        await _persist_max_backup_schedule({
+            "end_ts": end_ts,
+            "saved_reserve": saved_reserve,
+        })
+
+    async def handle_refresh_calibration(call: ServiceCall) -> None:
+        """Clear PowerSync's calibration_suspected flag.
+
+        Use after a Powerwall calibration completes (or to retry mode toggles
+        sooner than the optimiser's natural recovery window). Does not touch
+        the Powerwall itself — purely resets the integration's local guard.
+        """
+        entry_data = hass.data.setdefault(DOMAIN, {}).setdefault(entry.entry_id, {})
+        was_suspected = entry_data.get("calibration_suspected", False)
+        entry_data["calibration_suspected"] = False
+        entry_data["calibration_detected_at"] = None
+        _LOGGER.info(
+            "🔄 Calibration flag cleared (was %s)",
+            "set" if was_suspected else "already clear",
+        )
+
     # Register force discharge, force charge, and restore normal services
     hass.services.async_register(DOMAIN, SERVICE_FORCE_DISCHARGE, handle_force_discharge)
     hass.services.async_register(DOMAIN, SERVICE_FORCE_CHARGE, handle_force_charge)
@@ -21951,6 +22108,30 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.services.async_register(DOMAIN, "set_storm_watch", handle_set_storm_watch)
     hass.services.async_register(DOMAIN, "set_off_grid_ev_reserve", handle_set_off_grid_ev_reserve)
     hass.services.async_register(DOMAIN, "set_vpp_enrollment", handle_set_vpp_enrollment)
+    hass.services.async_register(DOMAIN, "schedule_max_backup", handle_schedule_max_backup)
+    hass.services.async_register(DOMAIN, "refresh_calibration", handle_refresh_calibration)
+
+    # Resume an in-flight max_backup window if HA restarted mid-schedule.
+    async def _resume_max_backup_if_persisted() -> None:
+        entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+        store = entry_data.get("store")
+        if store is None:
+            return
+        try:
+            data = await store.async_load() or {}
+        except Exception:
+            return
+        schedule = data.get("max_backup_schedule")
+        if not isinstance(schedule, dict):
+            return
+        end_ts = schedule.get("end_ts")
+        saved_reserve = schedule.get("saved_reserve")
+        if not isinstance(end_ts, (int, float)):
+            await _persist_max_backup_schedule(None)
+            return
+        await _restore_max_backup_window(float(end_ts), saved_reserve)
+
+    hass.async_create_task(_resume_max_backup_if_persisted())
 
     _LOGGER.info("🔋 Force charge/discharge, restore, and Powerwall settings services registered")
 

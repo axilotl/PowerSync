@@ -1547,6 +1547,11 @@ class TeslaEnergyCoordinator(DataUpdateCoordinator):
         self._outage_start: float = 0  # monotonic timestamp
         self._last_outage_notification: float = 0  # monotonic timestamp (cooldown)
 
+        # Lifetime energy totals (refreshed hourly from calendar_history period=lifetime)
+        self._lifetime_totals: dict[str, float] | None = None
+        self._lifetime_last_fetch: float = 0
+        self._lifetime_fetch_failed: bool = False
+
         # Determine API base URL based on provider
         if api_provider == TESLA_PROVIDER_POWERSYNC:
             self.api_base_url = POWERSYNC_API_BASE_URL
@@ -1723,6 +1728,37 @@ class TeslaEnergyCoordinator(DataUpdateCoordinator):
                 nameplate_w = self._site_info_cache.get("nameplate_power")
             nameplate_kw = round(nameplate_w / 1000.0, 2) if nameplate_w else None
 
+            # Total pack energy (nameplate kWh) from cached site_info
+            total_pack_kwh: float | None = None
+            if self._site_info_cache:
+                tpe_w = self._site_info_cache.get("total_pack_energy")
+                if tpe_w is not None:
+                    try:
+                        total_pack_kwh = round(float(tpe_w) / 1000.0, 2)
+                    except (TypeError, ValueError):
+                        total_pack_kwh = None
+
+            soc_pct = live_status.get("percentage_charged", 0) or 0
+            energy_left_kwh: float | None = None
+            if total_pack_kwh is not None:
+                energy_left_kwh = round(total_pack_kwh * (soc_pct / 100.0), 2)
+
+            # Backup time remaining (hours): stored kWh / current home load.
+            # Caps at 999 to keep the UI sane when load drops near zero.
+            backup_hours: float | None = None
+            if energy_left_kwh is not None and load_kw and load_kw > 0.05:
+                backup_hours = round(min(999.0, energy_left_kwh / load_kw), 1)
+
+            # Grid services / VPP — present in live_status when site is enrolled
+            grid_services_active = bool(live_status.get("grid_services_active", False))
+            grid_services_power_kw: float | None = None
+            gsp = live_status.get("grid_services_power")
+            if gsp is not None:
+                try:
+                    grid_services_power_kw = round(float(gsp) / 1000.0, 3)
+                except (TypeError, ValueError):
+                    grid_services_power_kw = None
+
             energy_data = {
                 "solar_power": solar_kw,
                 "grid_power": grid_kw,
@@ -1739,7 +1775,23 @@ class TeslaEnergyCoordinator(DataUpdateCoordinator):
                 "battery_max_discharge_power": nameplate_kw,
                 "battery_max_charge_power_w": nameplate_w,
                 "battery_max_discharge_power_w": nameplate_w,
+                # Powerwall extended fields
+                "total_pack_energy_kwh": total_pack_kwh,
+                "energy_left_kwh": energy_left_kwh,
+                "backup_time_remaining_hours": backup_hours,
+                "grid_services_active": grid_services_active,
+                "grid_services_power_kw": grid_services_power_kw,
+                "lifetime_totals": self._lifetime_totals,
             }
+
+            # Refresh lifetime totals once per hour (best-effort, never fails the poll)
+            _lifetime_stale = (time.monotonic() - self._lifetime_last_fetch) > 3600
+            if _lifetime_stale and not self._lifetime_fetch_failed:
+                try:
+                    await self.async_refresh_lifetime_totals()
+                    energy_data["lifetime_totals"] = self._lifetime_totals
+                except Exception as err:
+                    _LOGGER.debug("Lifetime totals refresh failed: %s", err)
 
             # Tesla API recovered — send recovery notification if we were in outage
             if self._outage_notified:
@@ -2462,6 +2514,52 @@ class TeslaEnergyCoordinator(DataUpdateCoordinator):
         except Exception as err:
             _LOGGER.error(f"Error fetching calendar history: {err}")
             return None
+
+    async def async_refresh_lifetime_totals(self) -> dict[str, float] | None:
+        """Sum calendar_history period=lifetime into a small dict of kWh totals.
+
+        Tesla returns Wh per bucket (yearly bins from install date). Result is
+        cached in ``self._lifetime_totals`` so sensors return the last good value
+        between refreshes; on permanent failure (e.g. unsupported endpoint),
+        ``_lifetime_fetch_failed`` short-circuits subsequent calls.
+        """
+        history = await self.async_get_calendar_history(period="lifetime")
+        if not history:
+            return self._lifetime_totals
+
+        totals = {
+            "lifetime_solar_kwh": 0.0,
+            "lifetime_grid_import_kwh": 0.0,
+            "lifetime_grid_export_kwh": 0.0,
+            "lifetime_battery_charged_kwh": 0.0,
+            "lifetime_battery_discharged_kwh": 0.0,
+            "lifetime_home_kwh": 0.0,
+        }
+        for ts in history.get("time_series", []) or []:
+            totals["lifetime_solar_kwh"] += (ts.get("solar_energy_exported") or 0)
+            totals["lifetime_grid_import_kwh"] += (ts.get("grid_energy_imported") or 0)
+            totals["lifetime_grid_export_kwh"] += (
+                (ts.get("grid_energy_exported_from_solar") or 0)
+                + (ts.get("grid_energy_exported_from_battery") or 0)
+            )
+            totals["lifetime_battery_charged_kwh"] += (
+                (ts.get("battery_energy_imported_from_grid") or 0)
+                + (ts.get("battery_energy_imported_from_solar") or 0)
+            )
+            totals["lifetime_battery_discharged_kwh"] += (ts.get("battery_energy_exported") or 0)
+            totals["lifetime_home_kwh"] += (
+                (ts.get("consumer_energy_imported_from_grid") or 0)
+                + (ts.get("consumer_energy_imported_from_solar") or 0)
+                + (ts.get("consumer_energy_imported_from_battery") or 0)
+            )
+
+        # Tesla returns Wh; convert to kWh
+        for k in totals:
+            totals[k] = round(totals[k] / 1000.0, 3)
+
+        self._lifetime_totals = totals
+        self._lifetime_last_fetch = time.monotonic()
+        return totals
 
 
 class DemandChargeCoordinator(DataUpdateCoordinator):

@@ -60,6 +60,14 @@ class PowerwallSnapshot:
     operation_mode: str | None
     backup_reserve_percent: int | None
     raw: dict[str, Any]
+    # Best-effort fields from /api/system_status (PW2; may be None on PW3).
+    # Keep None when the endpoint is unsupported so consumers know to skip.
+    system_island_state: str | None = None
+    pw_count: int | None = None
+    total_pack_full_wh: float | None = None
+    total_pack_remaining_wh: float | None = None
+    battery_blocks: list[dict[str, Any]] | None = None
+    alerts: list[dict[str, Any]] | None = None
 
 
 class PowerwallLocalClient:
@@ -165,11 +173,41 @@ class PowerwallLocalClient:
         grid = await self._get("/api/system_status/grid_status") or {}
         operation = await self._get("/api/operation") or {}
 
+        # Best-effort: rich system status + alerts. Both endpoints are
+        # available on PW2 firmware but absent on PW3, so we swallow any
+        # exception and keep the snapshot fields as None when unsupported.
+        system_status: dict[str, Any] = {}
+        alerts_payload: Any = None
+        try:
+            system_status = await self._get("/api/system_status") or {}
+        except Exception as err:
+            _LOGGER.debug("system_status fetch failed (likely PW3): %s", err)
+        try:
+            alerts_payload = await self._get("/api/troubleshooting/problems")
+        except Exception as err:
+            _LOGGER.debug("troubleshooting/problems fetch failed: %s", err)
+
         def _watts(section: dict[str, Any] | None) -> float | None:
             if not isinstance(section, dict):
                 return None
             v = section.get("instant_power")
             return float(v) if v is not None else None
+
+        # Parse alerts into a uniform list of dicts with at least name/severity.
+        alerts: list[dict[str, Any]] | None = None
+        if isinstance(alerts_payload, dict):
+            problems = alerts_payload.get("problems") or alerts_payload.get("alerts") or []
+            if isinstance(problems, list):
+                alerts = [p for p in problems if isinstance(p, dict)]
+        elif isinstance(alerts_payload, list):
+            alerts = [p for p in alerts_payload if isinstance(p, dict)]
+
+        battery_blocks_raw = system_status.get("battery_blocks")
+        battery_blocks = (
+            [b for b in battery_blocks_raw if isinstance(b, dict)]
+            if isinstance(battery_blocks_raw, list)
+            else None
+        )
 
         return PowerwallSnapshot(
             soc=_float_or_none(soe.get("percentage")),
@@ -191,7 +229,15 @@ class PowerwallLocalClient:
                 "soe": soe,
                 "grid": grid,
                 "operation": operation,
+                "system_status": system_status,
+                "alerts": alerts_payload,
             },
+            system_island_state=system_status.get("system_island_state"),
+            pw_count=_int_or_none(system_status.get("enumerate_in_service_battery_blocks")),
+            total_pack_full_wh=_float_or_none(system_status.get("nominal_full_pack_energy")),
+            total_pack_remaining_wh=_float_or_none(system_status.get("nominal_energy_remaining")),
+            battery_blocks=battery_blocks,
+            alerts=alerts,
         )
 
     async def verify_pairing(self) -> int | None:

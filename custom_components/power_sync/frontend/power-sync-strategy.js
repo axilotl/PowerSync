@@ -599,6 +599,8 @@ class PowerSyncStrategy {
       if (_hasTesla) {
         const teslaSection = _teslaEnergySiteControls(findEntity, findVppSwitches);
         if (teslaSection) left.push(teslaSection);
+        const powerwallStatus = _powerwallStatus(e, hasE);
+        if (powerwallStatus) left.push(powerwallStatus);
       }
     }
 
@@ -754,7 +756,9 @@ class PowerSyncStrategy {
     // Gated on the binary_sensor.powerwall_local_paired entity so the card
     // stays hidden until the user completes the pairing flow in the app.
     if (hasE('powerwall_local_paired')) {
-      left.push(_powerwallLocalControl(e));
+      left.push(_powerwallLocalControl(e, hasE));
+      const health = _powerwallHealth(hass);
+      if (health) left.push(health);
     }
 
     // --- Left Column: Flow Power ---
@@ -1154,10 +1158,22 @@ function _teslaEnergySiteControls(findEntity, findVppSwitches) {
     });
   }
 
-  // ── Status row: storm active + manual export override badges ──
+  // ── Status row: storm active + manual export override + grid services + calibration + PTO ──
+  const gridServicesActive = findEntity('binary_sensor', 'grid_services_active');
+  const calibrationActive = findEntity('binary_sensor', 'calibration_active');
+  const permissionToOperate = findEntity('binary_sensor', 'permission_to_operate');
   const statuses = [];
   if (stormActive) {
     statuses.push({ entity: stormActive, name: 'Storm Watch Active', icon: 'mdi:weather-lightning-rainy' });
+  }
+  if (gridServicesActive) {
+    statuses.push({ entity: gridServicesActive, name: 'Grid Services Active', icon: 'mdi:transmission-tower-export' });
+  }
+  if (calibrationActive) {
+    statuses.push({ entity: calibrationActive, name: 'Calibration Active', icon: 'mdi:battery-sync' });
+  }
+  if (permissionToOperate) {
+    statuses.push({ entity: permissionToOperate, name: 'Permission to Operate', icon: 'mdi:check-decagram' });
   }
   if (manualOverride) {
     statuses.push({ entity: manualOverride, name: 'Manual Export Override', icon: 'mdi:hand-back-right' });
@@ -1185,6 +1201,67 @@ function _teslaEnergySiteControls(findEntity, findVppSwitches) {
       ...cards,
     ],
   };
+}
+
+function _powerwallStatus(e, hasE) {
+  // Live Powerwall vitals: backup runtime, capacity, lifetime totals.
+  // Each row is added only when the underlying sensor has a value, so the
+  // section gracefully scales from a fresh install (no lifetime data yet) to
+  // a long-running site (full energy history).
+  const live = [];
+  if (hasE('backup_time_remaining')) {
+    live.push({ entity: e('backup_time_remaining'), name: 'Backup Time Remaining', icon: 'mdi:timer-sand' });
+  }
+  if (hasE('energy_left')) {
+    live.push({ entity: e('energy_left'), name: 'Energy Available', icon: 'mdi:battery-50' });
+  }
+  if (hasE('total_pack_energy')) {
+    live.push({ entity: e('total_pack_energy'), name: 'Pack Capacity', icon: 'mdi:battery-high' });
+  }
+  if (hasE('grid_services_power')) {
+    live.push({ entity: e('grid_services_power'), name: 'Grid Services Power', icon: 'mdi:transmission-tower' });
+  }
+
+  const lifetime = [];
+  if (hasE('lifetime_solar_energy')) {
+    lifetime.push({ entity: e('lifetime_solar_energy'), name: 'Solar', icon: 'mdi:solar-power-variant' });
+  }
+  if (hasE('lifetime_grid_import')) {
+    lifetime.push({ entity: e('lifetime_grid_import'), name: 'Grid Import', icon: 'mdi:transmission-tower-import' });
+  }
+  if (hasE('lifetime_grid_export')) {
+    lifetime.push({ entity: e('lifetime_grid_export'), name: 'Grid Export', icon: 'mdi:transmission-tower-export' });
+  }
+  if (hasE('lifetime_battery_charged')) {
+    lifetime.push({ entity: e('lifetime_battery_charged'), name: 'Battery Charged', icon: 'mdi:battery-charging-100' });
+  }
+  if (hasE('lifetime_battery_discharged')) {
+    lifetime.push({ entity: e('lifetime_battery_discharged'), name: 'Battery Discharged', icon: 'mdi:battery-arrow-down' });
+  }
+  if (hasE('lifetime_home_consumption')) {
+    lifetime.push({ entity: e('lifetime_home_consumption'), name: 'Home Consumption', icon: 'mdi:home-lightning-bolt' });
+  }
+
+  if (live.length === 0 && lifetime.length === 0) return null;
+
+  const cards = [];
+  if (live.length > 0) {
+    cards.push({
+      type: 'entities',
+      title: 'Powerwall Status',
+      show_header_toggle: false,
+      entities: live,
+    });
+  }
+  if (lifetime.length > 0) {
+    cards.push({
+      type: 'entities',
+      title: 'Lifetime Energy',
+      show_header_toggle: false,
+      entities: lifetime,
+    });
+  }
+  return { type: 'vertical-stack', cards };
 }
 
 function _optimizerStatus(e, showForceChargeWindows = false) {
@@ -2052,7 +2129,47 @@ function _demandCharge(e) {
   };
 }
 
-function _powerwallLocalControl(e) {
+function _powerwallLocalControl(e, hasE) {
+  const statusEntities = [
+    {
+      entity: e('powerwall_local_paired'),
+      name: 'Paired',
+      icon: 'mdi:key-variant',
+    },
+    {
+      entity: e('powerwall_local_islanded'),
+      name: 'Off-Grid',
+      icon: 'mdi:transmission-tower-off',
+    },
+  ];
+  if (hasE && hasE('pw_system_island_state')) {
+    statusEntities.push({
+      entity: e('pw_system_island_state'),
+      name: 'Island State',
+      icon: 'mdi:transmission-tower',
+    });
+  }
+  if (hasE && hasE('pw_count')) {
+    statusEntities.push({
+      entity: e('pw_count'),
+      name: 'Powerwalls',
+      icon: 'mdi:battery-multiple',
+    });
+  }
+  if (hasE && hasE('pw_active_alerts')) {
+    statusEntities.push({
+      entity: e('pw_active_alerts'),
+      name: 'Active Alerts',
+      icon: 'mdi:alert-circle',
+    });
+  }
+  if (hasE && hasE('pw_critical_alert')) {
+    statusEntities.push({
+      entity: e('pw_critical_alert'),
+      name: 'Alert Active',
+      icon: 'mdi:alert-octagon',
+    });
+  }
   return {
     type: 'vertical-stack',
     cards: [
@@ -2061,18 +2178,7 @@ function _powerwallLocalControl(e) {
         title: 'Powerwall Local Control',
         show_header_toggle: false,
         state_color: true,
-        entities: [
-          {
-            entity: e('powerwall_local_paired'),
-            name: 'Paired',
-            icon: 'mdi:key-variant',
-          },
-          {
-            entity: e('powerwall_local_islanded'),
-            name: 'Off-Grid',
-            icon: 'mdi:transmission-tower-off',
-          },
-        ],
+        entities: statusEntities,
       },
       {
         type: 'conditional',
@@ -2092,6 +2198,48 @@ function _powerwallLocalControl(e) {
       },
     ],
   };
+}
+
+function _powerwallHealth(hass) {
+  // Scan hass.states for per-PW sensors created by the lazy-add task.
+  // The deferred-add pattern means these only exist on PW2 / supported sites,
+  // so we render the section only when at least one block is discovered.
+  const states = hass && hass.states ? hass.states : {};
+  const blockIndices = new Set();
+  const blockRe = /^sensor\.power_sync_pw(\d+)_(soc|soh|capacity|voltage|temperature)$/;
+  for (const key of Object.keys(states)) {
+    const m = blockRe.exec(key);
+    if (m) blockIndices.add(parseInt(m[1], 10));
+  }
+  if (blockIndices.size === 0) return null;
+
+  const cards = [];
+  const sortedIndices = Array.from(blockIndices).sort((a, b) => a - b);
+  for (const i of sortedIndices) {
+    const entities = [];
+    for (const [suffix, label, icon] of [
+      ['soc', 'SOC', 'mdi:battery'],
+      ['soh', 'State of Health', 'mdi:battery-heart'],
+      ['capacity', 'Capacity', 'mdi:battery-high'],
+      ['voltage', 'Voltage', 'mdi:flash'],
+      ['temperature', 'Temperature', 'mdi:thermometer'],
+    ]) {
+      const id = `sensor.power_sync_pw${i}_${suffix}`;
+      if (states[id] && states[id].state !== 'unavailable') {
+        entities.push({ entity: id, name: label, icon });
+      }
+    }
+    if (entities.length > 0) {
+      cards.push({
+        type: 'entities',
+        title: `Powerwall ${i}`,
+        show_header_toggle: false,
+        entities,
+      });
+    }
+  }
+  if (cards.length === 0) return null;
+  return { type: 'vertical-stack', cards };
 }
 
 function _aemoSpike(e) {

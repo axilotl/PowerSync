@@ -19,6 +19,7 @@ from homeassistant.const import (
     UnitOfEnergy,
     UnitOfPower,
     UnitOfTemperature,
+    UnitOfTime,
     PERCENTAGE,
 )
 from homeassistant.core import HomeAssistant, callback
@@ -87,6 +88,16 @@ from .const import (
     DEFAULT_FP_AMBER_MARKUP,
     SENSOR_TYPE_BATTERY_HEALTH,
     SENSOR_TYPE_FIRMWARE,
+    SENSOR_TYPE_LIFETIME_SOLAR,
+    SENSOR_TYPE_LIFETIME_GRID_IMPORT,
+    SENSOR_TYPE_LIFETIME_GRID_EXPORT,
+    SENSOR_TYPE_LIFETIME_BATTERY_CHARGED,
+    SENSOR_TYPE_LIFETIME_BATTERY_DISCHARGED,
+    SENSOR_TYPE_LIFETIME_HOME_CONSUMPTION,
+    SENSOR_TYPE_BACKUP_TIME_REMAINING,
+    SENSOR_TYPE_TOTAL_PACK_ENERGY,
+    SENSOR_TYPE_ENERGY_LEFT,
+    SENSOR_TYPE_GRID_SERVICES_POWER,
     SENSOR_TYPE_INVERTER_STATUS,
     SENSOR_TYPE_BATTERY_MODE,
     SENSOR_TYPE_PV1_POWER,
@@ -161,6 +172,8 @@ from .const import (
     ATTR_AEMO_THRESHOLD,
     ATTR_SPIKE_START_TIME,
     family_device_info,
+    powerwall_device_info,
+    powerwall_block_device_info,
     SENSOR_KEY_TO_FAMILY,
     SENSOR_FAMILY_LP_OPTIMIZER,
     SENSOR_FAMILY_BATTERY,
@@ -183,6 +196,10 @@ class PowerSyncSensorEntityDescription(SensorEntityDescription):
 
     value_fn: Callable[[Any], Any] | None = None
     attr_fn: Callable[[Any], dict[str, Any]] | None = None
+    # Optional override that pulls the sensor onto a separate HA device.
+    # Currently only "powerwall" is recognised — anything else falls back to
+    # the default family_device_info routing so existing sensors are unaffected.
+    device_section: str | None = None
 
 
 def _get_import_price(data):
@@ -496,6 +513,116 @@ TESLA_SENSORS: tuple[PowerSyncSensorEntityDescription, ...] = (
         name="Firmware",
         icon="mdi:chip",
         value_fn=lambda data: data.get("firmware") if data else None,
+    ),
+    PowerSyncSensorEntityDescription(
+        key=SENSOR_TYPE_TOTAL_PACK_ENERGY,
+        name="Battery Pack Capacity",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY_STORAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=2,
+        icon="mdi:battery-high",
+        value_fn=lambda data: data.get("total_pack_energy_kwh") if data else None,
+        device_section="powerwall",
+    ),
+    PowerSyncSensorEntityDescription(
+        key=SENSOR_TYPE_ENERGY_LEFT,
+        name="Battery Energy Left",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY_STORAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=2,
+        icon="mdi:battery-50",
+        value_fn=lambda data: data.get("energy_left_kwh") if data else None,
+        device_section="powerwall",
+    ),
+    PowerSyncSensorEntityDescription(
+        key=SENSOR_TYPE_BACKUP_TIME_REMAINING,
+        name="Backup Time Remaining",
+        native_unit_of_measurement=UnitOfTime.HOURS,
+        device_class=SensorDeviceClass.DURATION,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+        icon="mdi:timer-sand",
+        value_fn=lambda data: data.get("backup_time_remaining_hours") if data else None,
+        device_section="powerwall",
+    ),
+    PowerSyncSensorEntityDescription(
+        key=SENSOR_TYPE_GRID_SERVICES_POWER,
+        name="Grid Services Power",
+        native_unit_of_measurement=UnitOfPower.KILO_WATT,
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=3,
+        icon="mdi:transmission-tower",
+        value_fn=lambda data: data.get("grid_services_power_kw") if data else None,
+        device_section="powerwall",
+    ),
+    PowerSyncSensorEntityDescription(
+        key=SENSOR_TYPE_LIFETIME_SOLAR,
+        name="Lifetime Solar Energy",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        suggested_display_precision=1,
+        icon="mdi:solar-power-variant",
+        value_fn=lambda data: (data.get("lifetime_totals") or {}).get("lifetime_solar_kwh") if data else None,
+        device_section="powerwall",
+    ),
+    PowerSyncSensorEntityDescription(
+        key=SENSOR_TYPE_LIFETIME_GRID_IMPORT,
+        name="Lifetime Grid Import",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        suggested_display_precision=1,
+        icon="mdi:transmission-tower-import",
+        value_fn=lambda data: (data.get("lifetime_totals") or {}).get("lifetime_grid_import_kwh") if data else None,
+        device_section="powerwall",
+    ),
+    PowerSyncSensorEntityDescription(
+        key=SENSOR_TYPE_LIFETIME_GRID_EXPORT,
+        name="Lifetime Grid Export",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        suggested_display_precision=1,
+        icon="mdi:transmission-tower-export",
+        value_fn=lambda data: (data.get("lifetime_totals") or {}).get("lifetime_grid_export_kwh") if data else None,
+        device_section="powerwall",
+    ),
+    PowerSyncSensorEntityDescription(
+        key=SENSOR_TYPE_LIFETIME_BATTERY_CHARGED,
+        name="Lifetime Battery Charged",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        suggested_display_precision=1,
+        icon="mdi:battery-charging-100",
+        value_fn=lambda data: (data.get("lifetime_totals") or {}).get("lifetime_battery_charged_kwh") if data else None,
+        device_section="powerwall",
+    ),
+    PowerSyncSensorEntityDescription(
+        key=SENSOR_TYPE_LIFETIME_BATTERY_DISCHARGED,
+        name="Lifetime Battery Discharged",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        suggested_display_precision=1,
+        icon="mdi:battery-arrow-down",
+        value_fn=lambda data: (data.get("lifetime_totals") or {}).get("lifetime_battery_discharged_kwh") if data else None,
+        device_section="powerwall",
+    ),
+    PowerSyncSensorEntityDescription(
+        key=SENSOR_TYPE_LIFETIME_HOME_CONSUMPTION,
+        name="Lifetime Home Consumption",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        suggested_display_precision=1,
+        icon="mdi:home-lightning-bolt",
+        value_fn=lambda data: (data.get("lifetime_totals") or {}).get("lifetime_home_kwh") if data else None,
+        device_section="powerwall",
     ),
 )
 
@@ -1403,7 +1530,73 @@ async def async_setup_entry(
     entities.append(BatteryModeSensor(hass=hass, entry=entry))
     _LOGGER.info("Battery mode sensor added")
 
+    # Powerwall local TEDAPI sensors — gated on completed pairing.
+    # System-level sensors are added immediately; per-block entities are
+    # deferred until the first snapshot reveals how many Powerwalls exist.
+    if entry.data.get(CONF_POWERWALL_LOCAL_PAIRED):
+        local_coord = (
+            domain_data.get("powerwall_local", {}).get("coordinator")
+        )
+        if local_coord is not None:
+            entities.extend([
+                PowerwallSystemIslandStateSensor(local_coord, entry),
+                PowerwallCountSensor(local_coord, entry),
+                PowerwallActiveAlertsSensor(local_coord, entry),
+            ])
+            hass.async_create_task(
+                _async_add_powerwall_block_sensors(
+                    hass, entry, local_coord, async_add_entities,
+                ),
+                name=f"{DOMAIN}_powerwall_block_sensors",
+            )
+
     async_add_entities(entities)
+
+
+async def _async_add_powerwall_block_sensors(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    coordinator,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Create per-Powerwall sensors after the first snapshot lands.
+
+    Waits up to 60s for ``coordinator.data.battery_blocks`` to be populated,
+    then registers one set of sensors per discovered block. PW3 sites typically
+    return None for ``battery_blocks`` (the legacy REST endpoint is gone), so
+    this task simply exits without creating per-block entities — the cloud
+    capacity / energy-left sensors from PR1 still cover the basics.
+    """
+    import asyncio as _asyncio
+    waited = 0.0
+    while waited < 60.0:
+        snap = coordinator.data
+        if snap is not None and snap.battery_blocks:
+            break
+        await _asyncio.sleep(2.0)
+        waited += 2.0
+    snap = coordinator.data
+    if snap is None or not snap.battery_blocks:
+        _LOGGER.info(
+            "Powerwall local snapshot has no battery_blocks (likely PW3 / unsupported endpoint) — skipping per-block sensors",
+        )
+        return
+
+    block_entities: list[SensorEntity] = []
+    for index, _block in enumerate(snap.battery_blocks):
+        block_entities.extend([
+            PowerwallBlockSocSensor(coordinator, entry, index),
+            PowerwallBlockCapacitySensor(coordinator, entry, index),
+            PowerwallBlockVoltageSensor(coordinator, entry, index),
+            PowerwallBlockTemperatureSensor(coordinator, entry, index),
+            PowerwallBlockSohSensor(coordinator, entry, index),
+        ])
+    if block_entities:
+        async_add_entities(block_entities)
+        _LOGGER.info(
+            "Added %d per-Powerwall sensors across %d battery blocks",
+            len(block_entities), len(snap.battery_blocks),
+        )
 
 
 class AmberPriceSensor(CoordinatorEntity, SensorEntity):
@@ -1544,6 +1737,8 @@ class TeslaEnergySensor(CoordinatorEntity, SensorEntity):
 
     @property
     def device_info(self):
+        if self.entity_description.device_section == "powerwall":
+            return powerwall_device_info(self._entry.entry_id)
         return family_device_info(
             self._entry.entry_id,
             SENSOR_KEY_TO_FAMILY.get(self.entity_description.key, SENSOR_FAMILY_BATTERY),
@@ -1599,6 +1794,229 @@ class TeslaEnergySensor(CoordinatorEntity, SensorEntity):
             self._local_unsub()
             self._local_unsub = None
         await super().async_will_remove_from_hass()
+
+
+class _PowerwallLocalSensorBase(CoordinatorEntity, SensorEntity):
+    """Base class for sensors that read directly from the local TEDAPI snapshot."""
+
+    _attr_has_entity_name = True
+
+    def __init__(self, coordinator, entry: ConfigEntry, key: str, name: str) -> None:
+        super().__init__(coordinator)
+        self._entry = entry
+        self._attr_unique_id = f"{entry.entry_id}_{key}"
+        self._attr_suggested_object_id = f"power_sync_{key}"
+        self._attr_name = name
+
+    @property
+    def device_info(self):
+        return powerwall_device_info(self._entry.entry_id)
+
+    @property
+    def _snap(self):
+        return self.coordinator.data
+
+
+class PowerwallSystemIslandStateSensor(_PowerwallLocalSensorBase):
+    """Powerwall-reported island state (richer than the simple grid_status sensor)."""
+
+    _attr_icon = "mdi:transmission-tower"
+
+    def __init__(self, coordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry, "pw_system_island_state", "System Island State")
+
+    @property
+    def native_value(self) -> Any:
+        snap = self._snap
+        if snap is None:
+            return None
+        return snap.system_island_state or snap.grid_status
+
+
+class PowerwallCountSensor(_PowerwallLocalSensorBase):
+    """Number of in-service Powerwalls reported by the gateway."""
+
+    _attr_icon = "mdi:battery-multiple"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry, "pw_count", "Powerwall Count")
+
+    @property
+    def native_value(self) -> Any:
+        snap = self._snap
+        if snap is None:
+            return None
+        if snap.pw_count is not None:
+            return snap.pw_count
+        return len(snap.battery_blocks) if snap.battery_blocks else None
+
+
+class PowerwallActiveAlertsSensor(_PowerwallLocalSensorBase):
+    """Count of active alerts; alert names + severities exposed as attributes."""
+
+    _attr_icon = "mdi:alert-circle"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry, "pw_active_alerts", "Powerwall Active Alerts")
+
+    @property
+    def native_value(self) -> Any:
+        snap = self._snap
+        if snap is None or snap.alerts is None:
+            return None
+        return len(snap.alerts)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        snap = self._snap
+        if snap is None or not snap.alerts:
+            return {}
+        names = []
+        severities = {}
+        for alert in snap.alerts:
+            name = alert.get("name") or alert.get("alert_name") or "Unknown"
+            sev = alert.get("severity") or alert.get("alert_severity")
+            names.append(name)
+            if sev:
+                severities[name] = sev
+        return {"alerts": names, "severities": severities}
+
+
+class _PowerwallBlockSensorBase(CoordinatorEntity, SensorEntity):
+    """Base class for per-Powerwall block sensors. ``index`` is the position
+    in the snapshot's ``battery_blocks`` list (stable across polls)."""
+
+    _attr_has_entity_name = True
+
+    def __init__(self, coordinator, entry: ConfigEntry, index: int, key: str, name: str) -> None:
+        super().__init__(coordinator)
+        self._entry = entry
+        self._index = index
+        self._attr_unique_id = f"{entry.entry_id}_pw{index + 1}_{key}"
+        self._attr_suggested_object_id = f"power_sync_pw{index + 1}_{key}"
+        # Sub-device already carries "Powerwall N" — entity name is just the metric.
+        self._attr_name = name
+
+    @property
+    def device_info(self):
+        return powerwall_block_device_info(self._entry.entry_id, self._index)
+
+    @property
+    def _block(self) -> dict | None:
+        snap = self.coordinator.data
+        if snap is None or not snap.battery_blocks:
+            return None
+        if self._index >= len(snap.battery_blocks):
+            return None
+        return snap.battery_blocks[self._index]
+
+
+class PowerwallBlockSocSensor(_PowerwallBlockSensorBase):
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_device_class = SensorDeviceClass.BATTERY
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_suggested_display_precision = 1
+
+    def __init__(self, coordinator, entry: ConfigEntry, index: int) -> None:
+        super().__init__(coordinator, entry, index, "soc", "SOC")
+
+    @property
+    def native_value(self) -> Any:
+        block = self._block
+        if not block:
+            return None
+        full = block.get("nominal_full_pack_energy")
+        rem = block.get("nominal_energy_remaining")
+        if full and rem is not None and full > 0:
+            return round(rem / full * 100.0, 1)
+        return None
+
+
+class PowerwallBlockCapacitySensor(_PowerwallBlockSensorBase):
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+    _attr_device_class = SensorDeviceClass.ENERGY_STORAGE
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_suggested_display_precision = 2
+    _attr_icon = "mdi:battery-high"
+
+    def __init__(self, coordinator, entry: ConfigEntry, index: int) -> None:
+        super().__init__(coordinator, entry, index, "capacity", "Capacity")
+
+    @property
+    def native_value(self) -> Any:
+        block = self._block
+        if not block:
+            return None
+        full = block.get("nominal_full_pack_energy")
+        return round(full / 1000.0, 2) if full else None
+
+
+class PowerwallBlockVoltageSensor(_PowerwallBlockSensorBase):
+    _attr_native_unit_of_measurement = "V"
+    _attr_device_class = SensorDeviceClass.VOLTAGE
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_suggested_display_precision = 1
+
+    def __init__(self, coordinator, entry: ConfigEntry, index: int) -> None:
+        super().__init__(coordinator, entry, index, "voltage", "Voltage")
+
+    @property
+    def native_value(self) -> Any:
+        block = self._block
+        if not block:
+            return None
+        v = block.get("v_out") or block.get("voltage")
+        return round(float(v), 1) if v is not None else None
+
+
+class PowerwallBlockTemperatureSensor(_PowerwallBlockSensorBase):
+    _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
+    _attr_device_class = SensorDeviceClass.TEMPERATURE
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_suggested_display_precision = 1
+
+    def __init__(self, coordinator, entry: ConfigEntry, index: int) -> None:
+        super().__init__(coordinator, entry, index, "temperature", "Temperature")
+
+    @property
+    def native_value(self) -> Any:
+        block = self._block
+        if not block:
+            return None
+        for key in ("pinv_temperature", "temperature_celsius", "battery_temp"):
+            v = block.get(key)
+            if v is not None:
+                try:
+                    return round(float(v), 1)
+                except (TypeError, ValueError):
+                    continue
+        return None
+
+
+class PowerwallBlockSohSensor(_PowerwallBlockSensorBase):
+    """State of Health: pack capacity vs nameplate. PW2 nameplate = 13.5 kWh."""
+
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_suggested_display_precision = 1
+    _attr_icon = "mdi:battery-heart"
+
+    _NAMEPLATE_WH = 13500.0  # PW2 baseline; PW3 reports its own nominal
+
+    def __init__(self, coordinator, entry: ConfigEntry, index: int) -> None:
+        super().__init__(coordinator, entry, index, "soh", "State of Health")
+
+    @property
+    def native_value(self) -> Any:
+        block = self._block
+        if not block:
+            return None
+        full = block.get("nominal_full_pack_energy")
+        if not full:
+            return None
+        return round(float(full) / self._NAMEPLATE_WH * 100.0, 1)
 
 
 class OptimizerActionSensor(CoordinatorEntity, SensorEntity):

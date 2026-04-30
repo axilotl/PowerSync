@@ -1086,6 +1086,28 @@ SENSOR_TYPE_AMBER_COMPARISON = "flow_power_amber_comparison"
 SENSOR_TYPE_BATTERY_HEALTH = "battery_health"
 SENSOR_TYPE_FIRMWARE = "firmware"
 
+# Tesla Powerwall extended sensors (cloud)
+SENSOR_TYPE_LIFETIME_SOLAR = "lifetime_solar_energy"
+SENSOR_TYPE_LIFETIME_GRID_IMPORT = "lifetime_grid_import"
+SENSOR_TYPE_LIFETIME_GRID_EXPORT = "lifetime_grid_export"
+SENSOR_TYPE_LIFETIME_BATTERY_CHARGED = "lifetime_battery_charged"
+SENSOR_TYPE_LIFETIME_BATTERY_DISCHARGED = "lifetime_battery_discharged"
+SENSOR_TYPE_LIFETIME_HOME_CONSUMPTION = "lifetime_home_consumption"
+SENSOR_TYPE_BACKUP_TIME_REMAINING = "backup_time_remaining"
+SENSOR_TYPE_TOTAL_PACK_ENERGY = "total_pack_energy"
+SENSOR_TYPE_ENERGY_LEFT = "energy_left"
+SENSOR_TYPE_GRID_SERVICES_POWER = "grid_services_power"
+
+# Tesla Powerwall local TEDAPI sensors (gated on CONF_POWERWALL_LOCAL_PAIRED)
+SENSOR_TYPE_PW_SYSTEM_ISLAND_STATE = "pw_system_island_state"
+SENSOR_TYPE_PW_COUNT = "pw_count"
+SENSOR_TYPE_PW_ACTIVE_ALERTS = "pw_active_alerts"
+SENSOR_TYPE_PW_BLOCK_SOC = "pw_block_soc"  # per-block (key gets index suffix)
+SENSOR_TYPE_PW_BLOCK_CAPACITY = "pw_block_capacity"
+SENSOR_TYPE_PW_BLOCK_VOLTAGE = "pw_block_voltage"
+SENSOR_TYPE_PW_BLOCK_TEMPERATURE = "pw_block_temperature"
+SENSOR_TYPE_PW_BLOCK_SOH = "pw_block_soh"
+
 # Amber Export Price Boost configuration
 # Artificially increase export prices to trigger Powerwall exports
 CONF_EXPORT_PRICE_OFFSET = "export_price_offset"
@@ -1721,6 +1743,21 @@ SENSOR_KEY_TO_FAMILY: dict[str, str] = {
     "saving_session_active": SENSOR_FAMILY_OCTOPUS,
     "next_saving_session": SENSOR_FAMILY_OCTOPUS,
     "saving_session_rate": SENSOR_FAMILY_OCTOPUS,
+    # Tesla Powerwall extended (cloud)
+    "lifetime_solar_energy": SENSOR_FAMILY_SOLAR_INVERTER,
+    "lifetime_grid_import": SENSOR_FAMILY_GRID_HOME,
+    "lifetime_grid_export": SENSOR_FAMILY_GRID_HOME,
+    "lifetime_battery_charged": SENSOR_FAMILY_BATTERY,
+    "lifetime_battery_discharged": SENSOR_FAMILY_BATTERY,
+    "lifetime_home_consumption": SENSOR_FAMILY_GRID_HOME,
+    "backup_time_remaining": SENSOR_FAMILY_BATTERY,
+    "total_pack_energy": SENSOR_FAMILY_BATTERY,
+    "energy_left": SENSOR_FAMILY_BATTERY,
+    "grid_services_power": SENSOR_FAMILY_GRID_HOME,
+    # Powerwall local
+    "pw_system_island_state": SENSOR_FAMILY_GRID_HOME,
+    "pw_count": SENSOR_FAMILY_BATTERY,
+    "pw_active_alerts": SENSOR_FAMILY_BATTERY,
 }
 
 
@@ -1728,4 +1765,36 @@ def family_device_info(entry_id: str, family: str) -> dict:
     """Return device_info dict pointing all entities at the single parent device."""
     return {
         "identifiers": {(DOMAIN, entry_id)},
+    }
+
+
+def powerwall_device_info(entry_id: str) -> dict:
+    """Tesla Powerwall device — sub-device of the main PowerSync entry.
+
+    Holds Powerwall-specific telemetry (lifetime totals, backup time remaining,
+    grid services state, alerts) so the HA device tree separates raw Powerwall
+    diagnostics from the optimiser's user-facing controls.
+    """
+    return {
+        "identifiers": {(DOMAIN, f"{entry_id}_powerwall")},
+        "name": "Tesla Powerwall",
+        "manufacturer": "Tesla",
+        "model": "Powerwall",
+        "via_device": (DOMAIN, entry_id),
+    }
+
+
+def powerwall_block_device_info(entry_id: str, index: int) -> dict:
+    """Per-Powerwall sub-device, used for individual battery-block sensors.
+
+    Each in-service Powerwall gets its own device (Powerwall 1, Powerwall 2, …)
+    via the Tesla Powerwall parent so SOC / voltage / temperature / SoH for
+    each pack live on a distinct device card in HA.
+    """
+    return {
+        "identifiers": {(DOMAIN, f"{entry_id}_pw_{index + 1}")},
+        "name": f"Powerwall {index + 1}",
+        "manufacturer": "Tesla",
+        "model": "Powerwall Battery",
+        "via_device": (DOMAIN, f"{entry_id}_powerwall"),
     }

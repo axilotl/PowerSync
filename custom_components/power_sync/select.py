@@ -181,9 +181,9 @@ class _TeslaSiteSelectBase(SelectEntity):
 
 
 class TeslaOperationModeSelect(_TeslaSiteSelectBase):
-    """Powerwall operation mode: Time-of-Use (autonomous) or Self-Consumption."""
+    """Powerwall operation mode: Time-of-Use, Self-Consumption, or Backup-Only."""
 
-    _OPTIONS = ["autonomous", "self_consumption"]
+    _OPTIONS = ["autonomous", "self_consumption", "backup"]
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         super().__init__(
