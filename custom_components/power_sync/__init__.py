@@ -4193,19 +4193,35 @@ class BatteryHealthView(HomeAssistantView):
                 n_followers, inferred_full_wh,
             )
 
-        # Ghost expansion pack filter: Tesla Fleet API sometimes returns BMS entries for
-        # expansion pack slots that are registered but not physically installed. These show
-        # plausible-looking full-capacity values (~13.5–14.5 kWh) but lack a serialNumber and
-        # report near-zero remaining energy regardless of system SOC. Real BMS modules always
-        # populate a serialNumber (Main and physically-installed expansions), so missing-serial
-        # expansions are the strong ghost signal. Cross-validate by removing the no-serial
-        # expansions and checking the kept-pack sum matches the system-level
-        # nominalFullPackEnergyWh (current_wh) within 10% — handles mixed cases (e.g. 1 real
-        # expansion + 2 ghost slots) that the previous "all expansions are ghosts" check missed.
+        # Ghost expansion pack filter. Phantom packs (registered slots not physically
+        # installed) report:
+        #   1. plausible full-capacity values (~13.5–14.5 kWh)
+        #   2. NO serialNumber from MSA components
+        #   3. near-zero remaining energy regardless of system SOC
+        #
+        # Real BMS modules satisfy AT LEAST ONE of: have a serialNumber, or report
+        # remaining energy that tracks system SOC. The previous filter keyed off
+        # (!serialNumber) alone, which mis-dropped real expansion packs whose firmware
+        # doesn't populate serialNumber in the MSA components surface (observed on
+        # PW3 + 1 expansion sites — current_wh reported only the leader's energy, so
+        # the cross-validation kept-sum check passed despite the real expansion being
+        # kept). Require BOTH the missing-serial signal AND a near-zero remaining-
+        # energy signature before flagging as ghost; cross-validate as before.
         if individual and current_wh > 0:
+            GHOST_REMAINING_ABS_WH = 500
+            GHOST_REMAINING_FRACTION = 0.05
             ghost_candidates = [
                 p for p in individual
-                if p.get("isExpansion") and not p.get("serialNumber")
+                if p.get("isExpansion")
+                and not p.get("serialNumber")
+                and (
+                    p["nominalEnergyRemainingWh"] < GHOST_REMAINING_ABS_WH
+                    or (
+                        p["nominalFullPackEnergyWh"] > 0
+                        and p["nominalEnergyRemainingWh"] / p["nominalFullPackEnergyWh"]
+                        < GHOST_REMAINING_FRACTION
+                    )
+                )
             ]
             if ghost_candidates:
                 kept = [p for p in individual if p not in ghost_candidates]
@@ -4213,7 +4229,7 @@ class BatteryHealthView(HomeAssistantView):
                 if kept_full_wh > 0 and abs(current_wh - kept_full_wh) / current_wh < 0.10:
                     ghost_count = len(ghost_candidates)
                     _LOGGER.warning(
-                        "fleet_api_bms: Dropping %d ghost expansion pack(s) (no serial) — "
+                        "fleet_api_bms: Dropping %d ghost expansion pack(s) (no serial + near-empty) — "
                         "system %.0f Wh matches real-pack sum %.0f Wh (ratio %.3f); "
                         "expansion slots registered but not physically installed",
                         ghost_count, current_wh, kept_full_wh, kept_full_wh / current_wh,
