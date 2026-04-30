@@ -168,6 +168,21 @@ class PowerwallLocalClient:
 
     async def get_snapshot(self) -> PowerwallSnapshot:
         """Fetch the standard monitoring set in parallel-friendly order."""
+        if self._transport is not None:
+            authenticated = await self._transport.login()
+            remaining = self._transport.login_backoff_remaining
+        else:
+            assert self._unsigned is not None
+            authenticated = await self._unsigned.login()
+            remaining = 0.0
+
+        if not authenticated:
+            if remaining > 0:
+                raise PowerwallUnreachableError(
+                    f"Gateway login rate-limited; retrying in {remaining:.0f}s"
+                )
+            raise PowerwallUnreachableError("Gateway login failed")
+
         meters = await self._get("/api/meters/aggregates") or {}
         soe = await self._get("/api/system_status/soe") or {}
         grid = await self._get("/api/system_status/grid_status") or {}

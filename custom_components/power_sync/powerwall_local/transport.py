@@ -13,6 +13,7 @@ are unchanged; the gateway verifies both byte-for-byte.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import math
@@ -41,6 +42,9 @@ _SIGNATURE_TYPE_RSA = 7
 _DOMAIN_ENERGY_DEVICE = 7
 _TAG_END = 0xFF
 _SIGNATURE_TTL_SECONDS = 12
+_LOGIN_BACKOFF_INITIAL_SECONDS = 60.0
+_LOGIN_BACKOFF_MAX_SECONDS = 300.0
+_LOGIN_BACKOFF_WARNING_INTERVAL_SECONDS = 60.0
 
 
 def _build_insecure_ssl_context() -> ssl.SSLContext:
@@ -137,6 +141,10 @@ class TEDAPIv1rTransport:
         self._ssl = _insecure_ssl_context()
         self._token: str | None = None
         self._din: str | None = None
+        self._login_lock = asyncio.Lock()
+        self._login_backoff_until = 0.0
+        self._login_backoff_seconds = 0.0
+        self._last_login_backoff_log = 0.0
 
     @property
     def din(self) -> str | None:
@@ -148,8 +156,77 @@ class TEDAPIv1rTransport:
         connector = aiohttp.TCPConnector(ssl=self._ssl, limit=4)
         return aiohttp.ClientSession(connector=connector, timeout=self._timeout)
 
+    @property
+    def login_backoff_remaining(self) -> float:
+        """Seconds until the next gateway login attempt is allowed."""
+        return max(0.0, self._login_backoff_until - time.monotonic())
+
+    def _parse_retry_after(self, retry_after: str | None) -> float | None:
+        if not retry_after:
+            return None
+        try:
+            return max(0.0, float(retry_after))
+        except (TypeError, ValueError):
+            return None
+
+    def _set_login_backoff(self, retry_after: str | None = None) -> float:
+        retry_delay = self._parse_retry_after(retry_after)
+        if retry_delay is None:
+            retry_delay = (
+                _LOGIN_BACKOFF_INITIAL_SECONDS
+                if self._login_backoff_seconds <= 0
+                else min(
+                    self._login_backoff_seconds * 2.0,
+                    _LOGIN_BACKOFF_MAX_SECONDS,
+                )
+            )
+        retry_delay = min(retry_delay, _LOGIN_BACKOFF_MAX_SECONDS)
+        self._login_backoff_seconds = retry_delay
+        now = time.monotonic()
+        self._login_backoff_until = now + retry_delay
+        self._last_login_backoff_log = now
+        return retry_delay
+
+    def _login_backoff_active(self) -> bool:
+        remaining = self.login_backoff_remaining
+        if remaining <= 0:
+            return False
+
+        now = time.monotonic()
+        should_warn = (
+            now - self._last_login_backoff_log
+            >= _LOGIN_BACKOFF_WARNING_INTERVAL_SECONDS
+        )
+        if should_warn:
+            _LOGGER.warning(
+                "Skipping Powerwall v1r login for %.0fs after gateway rate limit",
+                remaining,
+            )
+            self._last_login_backoff_log = now
+        else:
+            _LOGGER.debug(
+                "Skipping Powerwall v1r login for %.0fs after gateway rate limit",
+                remaining,
+            )
+        return True
+
     async def login(self) -> bool:
         """Log in via ``/api/login/Basic`` to get a Bearer token for REST calls."""
+        if self._token:
+            return True
+        if self._login_backoff_active():
+            return False
+
+        async with self._login_lock:
+            if self._token:
+                return True
+            if self._login_backoff_active():
+                return False
+
+            return await self._login_once()
+
+    async def _login_once(self) -> bool:
+        """Perform one network login attempt without lock/backoff pre-checks."""
         url = f"https://{self._host}/api/login/Basic"
         payload = {
             "username": "customer",
@@ -169,10 +246,23 @@ class TEDAPIv1rTransport:
                             raise PowerwallAuthError(
                                 f"Gateway rejected customer password ({resp.status})"
                             )
+                        if resp.status == 429:
+                            delay = self._set_login_backoff(
+                                resp.headers.get("Retry-After")
+                            )
+                            _LOGGER.warning(
+                                "Powerwall gateway rate-limited v1r login; "
+                                "backing off for %.0fs",
+                                delay,
+                            )
                         return False
                     data = await resp.json()
                     self._token = data.get("token")
-                    return self._token is not None
+                    ok = self._token is not None
+                    if ok:
+                        self._login_backoff_until = 0.0
+                        self._login_backoff_seconds = 0.0
+                    return ok
         except aiohttp.ClientError as err:
             raise PowerwallUnreachableError(
                 f"Cannot reach gateway {self._host}: {err}"
@@ -617,6 +707,7 @@ class TEDAPIv1rTransport:
                 async with sess.get(url, headers=headers) as resp:
                     if resp.status in (401, 403):
                         # Token lapsed; re-login once and retry.
+                        self._token = None
                         if await self.login():
                             headers["Authorization"] = f"Bearer {self._token}"
                             async with sess.get(url, headers=headers) as r2:
@@ -643,6 +734,7 @@ class TEDAPIv1rTransport:
             async with await self._session() as sess:
                 async with sess.post(url, json=body, headers=headers) as resp:
                     if resp.status in (401, 403):
+                        self._token = None
                         if await self.login():
                             headers["Authorization"] = f"Bearer {self._token}"
                             async with sess.post(

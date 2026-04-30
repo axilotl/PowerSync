@@ -4851,6 +4851,7 @@ class SajH2EnergyCoordinator(DataUpdateCoordinator):
         battery_capacity_kwh: float = 10.0,
         entry_id: str = "",
         min_soc_pct: float = 5.0,
+        inverter_rated_kw: float = 10.0,
     ) -> None:
         from .inverters.saj_h2 import SajH2BatteryController
 
@@ -4860,6 +4861,7 @@ class SajH2EnergyCoordinator(DataUpdateCoordinator):
             saj_entry_id=saj_entry_id,
             battery_capacity_kwh=battery_capacity_kwh,
             min_soc_pct=min_soc_pct,
+            inverter_rated_kw=inverter_rated_kw,
         )
         self._energy_acc = EnergyAccumulator(hass, "saj_h2")
 

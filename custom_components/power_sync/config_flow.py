@@ -38,6 +38,7 @@ from .const import (
     CONF_BATTERY_CURTAILMENT_ENABLED,
     CONF_TESLEMETRY_API_TOKEN,
     CONF_TESLA_ENERGY_SITE_ID,
+    CONF_POWERWALL_LOCAL_CUSTOMER_PASSWORD,
     CONF_POWERWALL_LOCAL_IP,
     CONF_POWERWALL_LOCAL_PAIRED,
     CONF_AUTO_SYNC_ENABLED,
@@ -95,6 +96,8 @@ from .const import (
     CONF_SAJ_CONFIG_ENTRY_ID,
     CONF_SAJ_BATTERY_CAPACITY_KWH,
     DEFAULT_SAJ_BATTERY_CAPACITY_KWH,
+    CONF_SAJ_INVERTER_RATED_KW,
+    DEFAULT_SAJ_INVERTER_RATED_KW,
     # AlphaESS battery system configuration
     CONF_ALPHAESS_MODBUS_HOST,
     CONF_ALPHAESS_MODBUS_PORT,
@@ -2212,17 +2215,23 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 CONF_SAJ_BATTERY_CAPACITY_KWH,
                 DEFAULT_SAJ_BATTERY_CAPACITY_KWH,
             )
+            inverter_rated_kw = user_input.get(
+                CONF_SAJ_INVERTER_RATED_KW,
+                DEFAULT_SAJ_INVERTER_RATED_KW,
+            )
 
             try:
                 ctrl = SajH2BatteryController(
                     self.hass,
                     saj_entry_id=selected_entry_id,
                     battery_capacity_kwh=float(capacity_kwh),
+                    inverter_rated_kw=float(inverter_rated_kw),
                 )
                 await ctrl.connect()
                 self._saj_h2_data = {
                     CONF_SAJ_CONFIG_ENTRY_ID: selected_entry_id,
                     CONF_SAJ_BATTERY_CAPACITY_KWH: float(capacity_kwh),
+                    CONF_SAJ_INVERTER_RATED_KW: float(inverter_rated_kw),
                 }
                 return self._create_final_entry()
             except ValueError as exc:
@@ -2247,6 +2256,18 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             step=0.1,
                             mode=NumberSelectorMode.BOX,
                             unit_of_measurement="kWh",
+                        )
+                    ),
+                    vol.Required(
+                        CONF_SAJ_INVERTER_RATED_KW,
+                        default=DEFAULT_SAJ_INVERTER_RATED_KW,
+                    ): NumberSelector(
+                        NumberSelectorConfig(
+                            min=1,
+                            max=50,
+                            step=0.5,
+                            mode=NumberSelectorMode.BOX,
+                            unit_of_measurement="kW",
                         )
                     ),
                 }
@@ -2274,6 +2295,18 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             step=0.1,
                             mode=NumberSelectorMode.BOX,
                             unit_of_measurement="kWh",
+                        )
+                    ),
+                    vol.Required(
+                        CONF_SAJ_INVERTER_RATED_KW,
+                        default=DEFAULT_SAJ_INVERTER_RATED_KW,
+                    ): NumberSelector(
+                        NumberSelectorConfig(
+                            min=1,
+                            max=50,
+                            step=0.5,
+                            mode=NumberSelectorMode.BOX,
+                            unit_of_measurement="kW",
                         )
                     ),
                 }
@@ -3261,6 +3294,19 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
         if user_input is not None:
+            gateway_ip = (user_input.get(CONF_POWERWALL_LOCAL_IP) or "").strip()
+            customer_password = (
+                user_input.get(CONF_POWERWALL_LOCAL_CUSTOMER_PASSWORD) or ""
+            ).strip()
+
+            if gateway_ip and not customer_password:
+                errors[CONF_POWERWALL_LOCAL_CUSTOMER_PASSWORD] = (
+                    "powerwall_local_password_required"
+                )
+            elif customer_password and not gateway_ip:
+                errors[CONF_POWERWALL_LOCAL_IP] = "powerwall_local_ip_required"
+
+        if user_input is not None and not errors:
             # Handle Amber site selection (only if we have Amber sites)
             amber_site_id = None
             if has_amber_sites:
@@ -3286,10 +3332,11 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 CONF_TESLA_ENERGY_SITE_ID: user_input[CONF_TESLA_ENERGY_SITE_ID],
             }
 
-            # Optional Powerwall gateway IP — strip whitespace, ignore empty.
-            gateway_ip = (user_input.get(CONF_POWERWALL_LOCAL_IP) or "").strip()
             if gateway_ip:
                 self._site_data[CONF_POWERWALL_LOCAL_IP] = gateway_ip
+                self._site_data[
+                    CONF_POWERWALL_LOCAL_CUSTOMER_PASSWORD
+                ] = customer_password
 
             # Add Amber site if we have one
             if amber_site_id:
@@ -3338,14 +3385,15 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 )
             )
 
-            # Optional gateway IP for local LAN control. Pairing itself is
-            # cloud-based (Fleet API key registration) — off-grid/reconnect
-            # work without a LAN IP — but features that need direct gateway
-            # writes (per-Powerwall snapshot polling, automated curtailment,
-            # fast operation-mode/grid-charging toggles) require the IP.
-            # Leave blank to skip; users can add it later via the mobile
-            # app's Battery Setup → Gateway Connection screen.
+            # Optional local LAN control. Pairing itself is cloud-based
+            # (Fleet API key registration), but direct gateway reads/writes
+            # require both the gateway IP and customer password.
             data_schema_dict[vol.Optional(CONF_POWERWALL_LOCAL_IP, default="")] = str
+            data_schema_dict[
+                vol.Optional(CONF_POWERWALL_LOCAL_CUSTOMER_PASSWORD, default="")
+            ] = TextSelector(
+                TextSelectorConfig(type=TextSelectorType.PASSWORD)
+            )
         else:
             # No sites found - should not happen if validation worked
             _LOGGER.error("No Tesla energy sites found in Teslemetry account")
@@ -3655,10 +3703,24 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             ev_choice = user_input.get(
                 CONF_TESLA_EV_API_PROVIDER, TESLA_EV_API_PROVIDER_NONE
             )
-            # Optional Powerwall gateway IP. Empty string clears it (back to
-            # cloud-only mode); a non-empty value enables local LAN features.
+            # Optional Powerwall local LAN access. Empty gateway IP clears it
+            # (back to cloud-only mode); a non-empty IP requires the gateway
+            # customer password.
             gateway_ip_raw = user_input.get(CONF_POWERWALL_LOCAL_IP, "")
             gateway_ip = (gateway_ip_raw or "").strip()
+            customer_password_raw = user_input.get(
+                CONF_POWERWALL_LOCAL_CUSTOMER_PASSWORD, ""
+            )
+            customer_password = (customer_password_raw or "").strip()
+            current_customer_password = (
+                self.config_entry.data.get(
+                    CONF_POWERWALL_LOCAL_CUSTOMER_PASSWORD, ""
+                )
+                or ""
+            ).strip()
+            effective_customer_password = (
+                customer_password or current_customer_password
+            )
 
             # Validate EV provider
             detected = _detect_tesla_ev_integrations(self.hass)
@@ -3675,6 +3737,12 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 self._pending_init_tesla_input = dict(user_input)
                 self._tesla_connection_return = True
                 return await self.async_step_options_tesla_ev_token()
+            elif gateway_ip and not effective_customer_password:
+                errors[CONF_POWERWALL_LOCAL_CUSTOMER_PASSWORD] = (
+                    "powerwall_local_password_required"
+                )
+            elif customer_password and not gateway_ip:
+                errors[CONF_POWERWALL_LOCAL_IP] = "powerwall_local_ip_required"
 
             if not errors:
                 new_data = dict(self.config_entry.data)
@@ -3685,8 +3753,13 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 # rather than reading an empty string as "set".
                 if gateway_ip:
                     new_data[CONF_POWERWALL_LOCAL_IP] = gateway_ip
+                    if customer_password:
+                        new_data[
+                            CONF_POWERWALL_LOCAL_CUSTOMER_PASSWORD
+                        ] = customer_password
                 else:
                     new_data.pop(CONF_POWERWALL_LOCAL_IP, None)
+                    new_data.pop(CONF_POWERWALL_LOCAL_CUSTOMER_PASSWORD, None)
                 self.hass.config_entries.async_update_entry(
                     self.config_entry, data=new_data
                 )
@@ -3746,16 +3819,19 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                         ],
                         mode=SelectSelectorMode.DROPDOWN,
                     )),
-                    # Optional: gateway LAN IP. Pairing itself is cloud-based,
-                    # so this isn't required for off-grid / reconnect — but it
-                    # is required for per-Powerwall snapshot polling, automated
-                    # curtailment, and fast operation-mode / grid-charging
-                    # toggles. Leave blank to run cloud-only. Clearing a
-                    # previously-set value reverts to cloud-only.
+                    # Optional local LAN control. Pairing itself is cloud-based,
+                    # but direct gateway polling and writes require both the IP
+                    # and customer password.
                     vol.Optional(
                         CONF_POWERWALL_LOCAL_IP,
                         default=current_gateway_ip,
                     ): str,
+                    vol.Optional(
+                        CONF_POWERWALL_LOCAL_CUSTOMER_PASSWORD,
+                        default="",
+                    ): TextSelector(
+                        TextSelectorConfig(type=TextSelectorType.PASSWORD)
+                    ),
                 }
             ),
             errors=errors,
@@ -4385,16 +4461,22 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 CONF_SAJ_BATTERY_CAPACITY_KWH,
                 DEFAULT_SAJ_BATTERY_CAPACITY_KWH,
             )
+            inverter_rated_kw = user_input.get(
+                CONF_SAJ_INVERTER_RATED_KW,
+                DEFAULT_SAJ_INVERTER_RATED_KW,
+            )
             try:
                 ctrl = SajH2BatteryController(
                     self.hass,
                     saj_entry_id=selected_entry_id,
                     battery_capacity_kwh=float(capacity_kwh),
+                    inverter_rated_kw=float(inverter_rated_kw),
                 )
                 await ctrl.connect()
                 new_data = dict(self.config_entry.data)
                 new_data[CONF_SAJ_CONFIG_ENTRY_ID] = selected_entry_id
                 new_data[CONF_SAJ_BATTERY_CAPACITY_KWH] = float(capacity_kwh)
+                new_data[CONF_SAJ_INVERTER_RATED_KW] = float(inverter_rated_kw)
                 self.hass.config_entries.async_update_entry(self.config_entry, data=new_data)
                 return self.async_create_entry(title="", data=dict(self.config_entry.options))
             except ValueError as exc:
@@ -4416,6 +4498,13 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             self.config_entry.data.get(
                 CONF_SAJ_BATTERY_CAPACITY_KWH,
                 DEFAULT_SAJ_BATTERY_CAPACITY_KWH,
+            ),
+        )
+        current_rated_kw = self._get_option(
+            CONF_SAJ_INVERTER_RATED_KW,
+            self.config_entry.data.get(
+                CONF_SAJ_INVERTER_RATED_KW,
+                DEFAULT_SAJ_INVERTER_RATED_KW,
             ),
         )
 
@@ -4444,6 +4533,18 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                         step=0.1,
                         mode=NumberSelectorMode.BOX,
                         unit_of_measurement="kWh",
+                    )
+                ),
+                vol.Required(
+                    CONF_SAJ_INVERTER_RATED_KW,
+                    default=current_rated_kw,
+                ): NumberSelector(
+                    NumberSelectorConfig(
+                        min=1,
+                        max=50,
+                        step=0.5,
+                        mode=NumberSelectorMode.BOX,
+                        unit_of_measurement="kW",
                     )
                 ),
             }),

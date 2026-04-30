@@ -459,11 +459,13 @@
         "description": "PowerSync bridges through the SAJ H2 Modbus integration. Install it from HACS (search 'SAJ H2 Inverter Modbus') and configure your inverter, then return here.",
         "data": {
           "saj_config_entry_id": "SAJ H2 integration",
-          "saj_battery_capacity_kwh": "Battery capacity"
+          "saj_battery_capacity_kwh": "Battery capacity",
+          "saj_inverter_rated_kw": "Inverter rated AC power"
         },
         "data_description": {
           "saj_config_entry_id": "The saj_h2_modbus integration entry to read sensors and send passive charge/discharge commands through.",
-          "saj_battery_capacity_kwh": "Usable battery capacity in kWh. Used by the LP optimizer."
+          "saj_battery_capacity_kwh": "Usable battery capacity in kWh. Used by the LP optimizer.",
+          "saj_inverter_rated_kw": "Inverter AC rated power in kW. Read off the model number — e.g. HS2-10K-T2-5 → 10. Used to convert the LP's requested watts into the SAJ register encoding (% × 10 of rated)."
         },
         "submit": "Connect"
       },
@@ -590,6 +592,8 @@
         "description": "Match your Tesla energy site with your electricity account. If you only have one of each, they are pre-selected.",
         "data": {
           "tesla_energy_site_id": "Tesla energy site",
+          "powerwall_local_ip": "Powerwall gateway IP address",
+          "powerwall_local_customer_password": "Powerwall customer password",
           "amber_site_id": "Amber site",
           "auto_sync_enabled": "Sync TOU schedule automatically",
           "amber_forecast_type": "Amber price forecast",
@@ -597,6 +601,8 @@
         },
         "data_description": {
           "tesla_energy_site_id": "The Powerwall or Solar site that PowerSync will control. If you have multiple Tesla sites, choose the one at this address.",
+          "powerwall_local_ip": "Optional. Required with the customer password for local Powerwall access, including live local polling and fast gateway writes.",
+          "powerwall_local_customer_password": "Required when a gateway IP is set. Usually the last 5 characters of the Powerwall gateway serial/DIN, not your home Wi-Fi password.",
           "amber_site_id": "If you have multiple Amber NMIs, select the one associated with this Powerwall.",
           "auto_sync_enabled": "When enabled, PowerSync uploads a new TOU tariff schedule to your battery every 5 minutes based on current Amber prices.",
           "amber_forecast_type": "Predicted is balanced. Low assumes cheaper prices (more aggressive charging). High assumes expensive prices (more conservative).",
@@ -749,6 +755,8 @@
       "no_stations": "No Sigenergy stations found. Check that your Sigenergy account has at least one commissioned station.",
       "no_station_selected": "Select a Sigenergy station from the list to continue.",
       "modbus_host_required": "IP address is required -- enter the local IP of your Sigenergy inverter or gateway.",
+      "powerwall_local_ip_required": "Powerwall gateway IP address is required when a customer password is set.",
+      "powerwall_local_password_required": "Powerwall customer password is required when a gateway IP address is set. It is usually the last 5 characters of the gateway serial/DIN.",
       "sungrow_host_required": "IP address is required -- enter the local IP of your Sungrow inverter or WiNet-S dongle.",
       "modbus_conflict": "Connected but received invalid data (SOC > 100%). Another integration is likely using Modbus on the same port. Disable other Modbus integrations for this inverter and retry.",
       "sungrow_modbus_conflict": "The AC inverter and Sungrow battery share the same IP, port, and slave ID. Change the AC inverter's slave ID to a different value.",
@@ -827,11 +835,15 @@
         "data": {
           "tesla_api_provider": "Powerwall API provider",
           "tesla_ev_api_provider": "Vehicle API provider",
+          "powerwall_local_ip": "Powerwall gateway IP address",
+          "powerwall_local_customer_password": "Powerwall customer password",
           "update_teslemetry_token": "New API token (leave blank to keep current)"
         },
         "data_description": {
           "tesla_api_provider": "Controls how PowerSync reads and writes your Powerwall TOU schedule.",
           "tesla_ev_api_provider": "Only needed for vehicle commands. Choose None if you only have a Powerwall.",
+          "powerwall_local_ip": "Required with the customer password for local Powerwall access. Leave blank to disable local LAN access and use cloud-only mode.",
+          "powerwall_local_customer_password": "Required with the gateway IP. Usually the last 5 characters of the gateway serial/DIN. Leave blank to keep the stored value.",
           "update_teslemetry_token": "Paste a new token to rotate it. Leave blank to keep your existing token."
         },
         "submit": "Save"
@@ -940,11 +952,13 @@
         "description": "Update the SAJ H2 Modbus integration entry and battery capacity PowerSync bridges through.",
         "data": {
           "saj_config_entry_id": "SAJ H2 integration",
-          "saj_battery_capacity_kwh": "Battery capacity"
+          "saj_battery_capacity_kwh": "Battery capacity",
+          "saj_inverter_rated_kw": "Inverter rated AC power"
         },
         "data_description": {
           "saj_config_entry_id": "The saj_h2_modbus integration entry to read sensors and send passive charge/discharge commands through.",
-          "saj_battery_capacity_kwh": "Usable battery capacity in kWh."
+          "saj_battery_capacity_kwh": "Usable battery capacity in kWh.",
+          "saj_inverter_rated_kw": "Inverter AC rated power in kW (e.g. HS2-10K-T2-5 → 10). Used to convert LP-requested watts into the SAJ register encoding."
         },
         "submit": "Save"
       },

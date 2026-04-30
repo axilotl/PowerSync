@@ -3013,6 +3013,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         import_prices.extend([price_dollar] * entry_expand)
 
                     export_prices = []
+                    display_export_raw: list[float] = []
                     for e in feed_in:
                         dur = e.get("duration", 30)
                         effective_min = self._entry_remaining_minutes(
@@ -3022,10 +3023,14 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                             continue
                         entry_expand = max(1, effective_min // interval)
                         # feedIn perKwh: negative = you get paid, positive = you pay to export.
-                        # Negate so optimizer sees positive = revenue.  Clamp to 0 so
-                        # genuinely negative export prices (you pay) don't look profitable.
-                        price_dollar = max(0, -(e.get("perKwh", 0))) / 100
-                        export_prices.extend([price_dollar] * entry_expand)
+                        # display_price keeps the signed value so the UI chart can show
+                        # negative dips during oversupply (when you'd pay to export).
+                        # lp_price clamps to 0 so the LP doesn't see paying-to-export
+                        # as profitable revenue.
+                        display_price = -(e.get("perKwh", 0)) / 100
+                        lp_price = max(0.0, display_price)
+                        export_prices.extend([lp_price] * entry_expand)
+                        display_export_raw.extend([display_price] * entry_expand)
 
                     # Track actual forecast length before padding
                     actual_price_intervals = len(import_prices)
@@ -3042,6 +3047,14 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                             last = export_prices[-1] if export_prices else 0.08
                             export_prices.extend([last] * (n_steps - len(export_prices)))
                         export_prices = export_prices[:n_steps]
+
+                    if display_export_raw:
+                        if len(display_export_raw) < n_steps:
+                            last = display_export_raw[-1]
+                            display_export_raw.extend(
+                                [last] * (n_steps - len(display_export_raw))
+                            )
+                        display_export_raw = display_export_raw[:n_steps]
 
                     # Spike protection: cap buy prices during Amber spike periods
                     # so the LP optimizer won't choose to charge at extreme prices
@@ -3084,14 +3097,23 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                                         )
 
                     if import_prices:
-                        # Apply Flow Power export schedule before display storage
+                        # Apply Flow Power export schedule before display storage.
+                        # For Flow Power, the synthetic Happy Hour schedule IS the
+                        # contractual truth, so it overrides the Amber-derived
+                        # signed values for both the LP and the display chart.
+                        # For other providers this is a no-op.
                         export_prices = self._apply_flow_power_export(export_prices)
+                        if is_flow_power:
+                            display_export_raw = list(export_prices)
 
                         # Store prices for UI display BEFORE LP adjustments.
                         # Clip to actual forecast length so the app chart doesn't
                         # show flat-line padding where the forecast ran out.
+                        # display_export_raw keeps the signed export rate so the
+                        # chart shows negative dips when wholesale is oversupplied
+                        # (Amber feedIn perKwh > 0 → you pay to export).
                         self._last_display_import_prices = list(import_prices[:actual_price_intervals])
-                        self._last_display_export_prices = list(export_prices[:actual_price_intervals])
+                        self._last_display_export_prices = list(display_export_raw[:actual_price_intervals])
 
                         # Apply export boost, saving session overlay, and chip mode to LP prices
                         export_prices = self._apply_export_boost(export_prices, import_prices)

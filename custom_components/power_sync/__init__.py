@@ -300,6 +300,8 @@ from .const import (
     CONF_SAJ_CONFIG_ENTRY_ID,
     CONF_SAJ_BATTERY_CAPACITY_KWH,
     DEFAULT_SAJ_BATTERY_CAPACITY_KWH,
+    CONF_SAJ_INVERTER_RATED_KW,
+    DEFAULT_SAJ_INVERTER_RATED_KW,
     # Battery system selection
     CONF_BATTERY_SYSTEM,
     BATTERY_SYSTEM_SUNGROW,
@@ -13640,6 +13642,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             CONF_SAJ_BATTERY_CAPACITY_KWH,
             entry.data.get(CONF_SAJ_BATTERY_CAPACITY_KWH, DEFAULT_SAJ_BATTERY_CAPACITY_KWH),
         )
+        saj_inverter_rated_kw = entry.options.get(
+            CONF_SAJ_INVERTER_RATED_KW,
+            entry.data.get(CONF_SAJ_INVERTER_RATED_KW, DEFAULT_SAJ_INVERTER_RATED_KW),
+        )
         # The SAJ inverter's discharge_depth register cannot be reliably written from
         # stanus74 (writes silently ignored). Pass the user-configured backup_reserve
         # so the controller enforces the floor in software for force_discharge calls.
@@ -13655,6 +13661,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             battery_capacity_kwh=float(saj_capacity_kwh),
             entry_id=entry.entry_id,
             min_soc_pct=float(saj_reserve_pct or 5.0),
+            inverter_rated_kw=float(saj_inverter_rated_kw),
         )
     else:
         # Get initial Tesla API token and provider

@@ -475,17 +475,19 @@ class PowerwallPairUnpairView(HomeAssistantView):
 
 
 class PowerwallSetGatewayIpView(HomeAssistantView):
-    """POST: update CONF_POWERWALL_LOCAL_IP without re-pairing.
+    """POST: update local gateway credentials without re-pairing.
 
     Use case: a user pairs without supplying the gateway IP (cloud-only
     pairing), then later wants to enable LAN-dependent features (snapshot
     polling, automated curtailment, fast operation-mode toggles). This
-    endpoint writes the new IP into entry.data and tears down the cached
-    client + coordinator so the next ``ensure_coordinator`` call rebuilds
-    against the new host.
+    endpoint writes the new IP and customer password into entry.data and
+    tears down the cached client + coordinator so the next
+    ``ensure_coordinator`` call rebuilds against the new host.
 
-    Body: ``{"gateway_ip": "192.168.1.50"}`` — empty string clears the IP
-    and reverts the install to cloud-only mode.
+    Body: ``{"gateway_ip": "192.168.1.50", "customer_password": "8904G"}``.
+    The customer password is usually the last 5 characters of the gateway
+    serial/DIN. Empty gateway IP clears local LAN access and reverts the
+    install to cloud-only mode.
     """
 
     url = "/api/power_sync/powerwall/set_gateway_ip"
@@ -514,14 +516,47 @@ class PowerwallSetGatewayIpView(HomeAssistantView):
             )
         gateway_ip = gateway_ip_raw.strip()
 
+        customer_password_raw = (
+            payload.get("customer_password")
+            or payload.get("password")
+            or ""
+        )
+        if not isinstance(customer_password_raw, str):
+            return web.json_response(
+                {
+                    "success": False,
+                    "error": "customer_password must be a string",
+                },
+                status=400,
+            )
+        customer_password = customer_password_raw.strip()
+        current_customer_password = (
+            entry.data.get(CONF_POWERWALL_LOCAL_CUSTOMER_PASSWORD, "") or ""
+        ).strip()
+        if gateway_ip and not (customer_password or current_customer_password):
+            return web.json_response(
+                {
+                    "success": False,
+                    "error": (
+                        "customer_password is required with gateway_ip for "
+                        "local Powerwall access"
+                    ),
+                    "reason": "customer_password_required",
+                },
+                status=400,
+            )
+
         new_data = {**entry.data}
         if gateway_ip:
             new_data[CONF_POWERWALL_LOCAL_IP] = gateway_ip
+            if customer_password:
+                new_data[CONF_POWERWALL_LOCAL_CUSTOMER_PASSWORD] = customer_password
         else:
             # Clearing the IP reverts to cloud-only operation. Pop the key
             # entirely so the diagnostic binary_sensor flips correctly
             # rather than treating "" as a valid IP.
             new_data.pop(CONF_POWERWALL_LOCAL_IP, None)
+            new_data.pop(CONF_POWERWALL_LOCAL_CUSTOMER_PASSWORD, None)
         self._hass.config_entries.async_update_entry(entry, data=new_data)
 
         # Drop the cached client + coordinator so the next ensure_coordinator
@@ -545,6 +580,9 @@ class PowerwallSetGatewayIpView(HomeAssistantView):
         return web.json_response({
             "success": True,
             "gateway_ip": gateway_ip or None,
+            "has_customer_password": bool(
+                new_data.get(CONF_POWERWALL_LOCAL_CUSTOMER_PASSWORD)
+            ),
         })
 
 

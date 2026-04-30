@@ -406,6 +406,12 @@ DEFAULT_SOLAX_MAX_DISCHARGE_CURRENT_A = 25
 CONF_SAJ_CONFIG_ENTRY_ID = "saj_config_entry_id"
 CONF_SAJ_BATTERY_CAPACITY_KWH = "saj_battery_capacity_kwh"
 DEFAULT_SAJ_BATTERY_CAPACITY_KWH = 10.0
+# Inverter AC rated power in kW (e.g. HS2-10K-T2-5 → 10.0). Required for
+# converting LP-requested watts to the SAJ passive_battery_*_power_input
+# percent×10 encoding, and for the TOU force_discharge path which writes
+# discharge slot 7 at 100 % of this rated power.
+CONF_SAJ_INVERTER_RATED_KW = "saj_inverter_rated_kw"
+DEFAULT_SAJ_INVERTER_RATED_KW = 10.0
 
 # Demand charge configuration
 CONF_DEMAND_CHARGE_ENABLED = "demand_charge_enabled"
