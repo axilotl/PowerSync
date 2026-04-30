@@ -5470,12 +5470,13 @@ class PriceLevelChargingExecutor:
                 self._state.last_decision_reason = reason
                 return False, reason, ""
 
-        # Get current EV SoC
+        # Get current EV SoC. SOC may be unavailable for chargers without a
+        # paired vehicle integration (e.g. generic OCPP / Sigen EVAC). In that
+        # case skip recovery mode (which needs SOC < threshold) and fall
+        # through to the opportunity-price gate so the user can still drive
+        # charging purely off the grid price.
         ev_soc = await self._get_ev_soc()
-        if ev_soc is None:
-            self._state.last_decision = "waiting"
-            self._state.last_decision_reason = "Could not get EV state of charge"
-            return False, "Could not get EV state of charge", ""
+        soc_known = ev_soc is not None
 
         # Get price
         if current_price_cents is None:
@@ -5487,8 +5488,9 @@ class PriceLevelChargingExecutor:
         recovery_price = settings.get("recovery_price_cents", 30)
         opportunity_price = settings.get("opportunity_price_cents", 10)
 
-        # Recovery mode: Below recovery_soc, charge if price is low enough
-        if ev_soc < recovery_soc:
+        # Recovery mode: Below recovery_soc, charge if price is low enough.
+        # Requires a known SOC; skipped when SOC is unavailable.
+        if soc_known and ev_soc < recovery_soc:
             if current_price_cents <= recovery_price:
                 reason = f"Recovery: EV {ev_soc}% < {recovery_soc}%, price {current_price_cents:.1f}c <= {recovery_price}c"
                 self._state.last_decision = "wants_charge"
@@ -5500,18 +5502,21 @@ class PriceLevelChargingExecutor:
                 self._state.last_decision_reason = reason
                 return False, reason, ""
 
-        # Opportunity mode: Above recovery_soc, only charge if price is very low
+        # Opportunity mode: Above recovery_soc OR SOC unknown — gate on price only.
+        soc_label = f"{ev_soc}%" if soc_known else "unknown"
+        if current_price_cents <= opportunity_price:
+            reason = f"Opportunity: EV {soc_label}, price {current_price_cents:.1f}c <= {opportunity_price}c"
+            self._state.last_decision = "wants_charge"
+            self._state.last_decision_reason = reason
+            return True, reason, "price_level_opportunity"
         else:
-            if current_price_cents <= opportunity_price:
-                reason = f"Opportunity: EV {ev_soc}%, price {current_price_cents:.1f}c <= {opportunity_price}c"
-                self._state.last_decision = "wants_charge"
-                self._state.last_decision_reason = reason
-                return True, reason, "price_level_opportunity"
+            if soc_known:
+                reason = f"EV {soc_label} >= {recovery_soc}%, price {current_price_cents:.1f}c > {opportunity_price}c"
             else:
-                reason = f"EV {ev_soc}% >= {recovery_soc}%, price {current_price_cents:.1f}c > {opportunity_price}c"
-                self._state.last_decision = "waiting"
-                self._state.last_decision_reason = reason
-                return False, reason, ""
+                reason = f"EV SOC unknown, price {current_price_cents:.1f}c > {opportunity_price}c"
+            self._state.last_decision = "waiting"
+            self._state.last_decision_reason = reason
+            return False, reason, ""
 
     async def evaluate(self, current_price_cents: Optional[float]) -> None:
         """
@@ -5583,12 +5588,13 @@ class PriceLevelChargingExecutor:
                 vehicle_state.last_decision_reason = reason
                 return False, reason, ""
 
-        # Get current EV SoC
+        # Get current EV SoC. May be unavailable for chargers without a paired
+        # vehicle integration (generic OCPP, Sigen EVAC, etc). When unknown,
+        # skip recovery (which requires SOC < threshold) and fall through to
+        # the opportunity-price gate so charging can be driven by grid price
+        # alone.
         ev_soc = await self._get_ev_soc(vehicle_vin)
-        if ev_soc is None:
-            vehicle_state.last_decision = "waiting"
-            vehicle_state.last_decision_reason = "Could not get EV state of charge"
-            return False, "Could not get EV state of charge", ""
+        soc_known = ev_soc is not None
 
         # Get price
         if current_price_cents is None:
@@ -5600,8 +5606,9 @@ class PriceLevelChargingExecutor:
         recovery_price = settings.get("recovery_price_cents", 30)
         opportunity_price = settings.get("opportunity_price_cents", 10)
 
-        # Recovery mode: Below recovery_soc, charge if price is low enough
-        if ev_soc < recovery_soc:
+        # Recovery mode: Below recovery_soc, charge if price is low enough.
+        # Requires a known SOC; skipped when SOC is unavailable.
+        if soc_known and ev_soc < recovery_soc:
             if current_price_cents <= recovery_price:
                 reason = f"Recovery: EV {ev_soc}% < {recovery_soc}%, price {current_price_cents:.1f}c <= {recovery_price}c"
                 vehicle_state.last_decision = "wants_charge"
@@ -5613,18 +5620,21 @@ class PriceLevelChargingExecutor:
                 vehicle_state.last_decision_reason = reason
                 return False, reason, ""
 
-        # Opportunity mode: Above recovery_soc, only charge if price is very low
+        # Opportunity mode: Above recovery_soc OR SOC unknown — gate on price only.
+        soc_label = f"{ev_soc}%" if soc_known else "unknown"
+        if current_price_cents <= opportunity_price:
+            reason = f"Opportunity: EV {soc_label}, price {current_price_cents:.1f}c <= {opportunity_price}c"
+            vehicle_state.last_decision = "wants_charge"
+            vehicle_state.last_decision_reason = reason
+            return True, reason, "price_level_opportunity"
         else:
-            if current_price_cents <= opportunity_price:
-                reason = f"Opportunity: EV {ev_soc}%, price {current_price_cents:.1f}c <= {opportunity_price}c"
-                vehicle_state.last_decision = "wants_charge"
-                vehicle_state.last_decision_reason = reason
-                return True, reason, "price_level_opportunity"
+            if soc_known:
+                reason = f"EV {soc_label} >= {recovery_soc}%, price {current_price_cents:.1f}c > {opportunity_price}c"
             else:
-                reason = f"EV {ev_soc}% >= {recovery_soc}%, price {current_price_cents:.1f}c > {opportunity_price}c"
-                vehicle_state.last_decision = "waiting"
-                vehicle_state.last_decision_reason = reason
-                return False, reason, ""
+                reason = f"EV SOC unknown, price {current_price_cents:.1f}c > {opportunity_price}c"
+            vehicle_state.last_decision = "waiting"
+            vehicle_state.last_decision_reason = reason
+            return False, reason, ""
 
     async def evaluate_all_vehicles(
         self,
@@ -5695,7 +5705,12 @@ class PriceLevelChargingExecutor:
             if opts.get(CONF_OCPP_ENABLED):
                 decision = await self.get_charging_decision(current_price_cents)
                 should_charge, reason, mode = decision
-                pseudo_vin = "ocpp_charger"
+                # vehicle_id of the form "ocpp_<charger_id>" so price-level
+                # initiated sessions share an identifier with the OCPP poll's
+                # session tracker — prevents double-counted sessions when both
+                # see the same charging cycle.
+                ocpp_charger_id = opts.get("ocpp_charger_id", "ocpp_charger")
+                pseudo_vin = f"ocpp_{ocpp_charger_id}"
                 results[pseudo_vin] = decision
 
                 vehicle_state = self._get_or_create_vehicle_state(pseudo_vin)
@@ -5704,9 +5719,9 @@ class PriceLevelChargingExecutor:
                 )
 
                 if should_charge and not vehicle_state.is_charging:
-                    await self._start_charging(mode, reason)
+                    await self._start_charging(mode, reason, vehicle_vin=pseudo_vin)
                 elif not should_charge and vehicle_state.is_charging:
-                    await self._stop_charging(reason)
+                    await self._stop_charging(reason, vehicle_vin=pseudo_vin)
                 else:
                     vehicle_state.last_decision = "charging" if vehicle_state.is_charging else "waiting"
                     vehicle_state.last_decision_reason = reason

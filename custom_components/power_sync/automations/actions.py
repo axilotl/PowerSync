@@ -1751,15 +1751,43 @@ async def _action_restore_inverter(
 
 
 async def _start_ocpp_charging(hass: HomeAssistant, charger_id: str) -> bool:
-    """Start charging on an OCPP charger via its HA switch entity."""
+    """Start charging on an OCPP charger via its HA switch entity.
+
+    When the connector is in "Finishing" (the post-stop state some chargers
+    sit in until the cable is unplugged), a plain turn_on can be a no-op:
+    HACS lbbrhzn/ocpp's charge_control switch caches its is_on state and the
+    underlying RemoteStartTransaction never gets sent. Toggle off→on first
+    in that case to force a fresh RemoteStartTransaction.
+    """
     entity_id = f"switch.{charger_id}_charge_control"
     state = hass.states.get(entity_id)
     if not state:
         _LOGGER.error("OCPP start: entity %s not found", entity_id)
         return False
+
+    connector_state = hass.states.get(f"sensor.{charger_id}_status_connector")
+    needs_reset = (
+        connector_state is not None
+        and connector_state.state.lower() == "finishing"
+    )
+
     try:
+        if needs_reset:
+            try:
+                await hass.services.async_call(
+                    "switch", "turn_off", {"entity_id": entity_id}, blocking=True
+                )
+                await asyncio.sleep(1)
+            except Exception as off_err:
+                _LOGGER.debug("OCPP pre-start reset turn_off failed for %s: %s", charger_id, off_err)
         await hass.services.async_call("switch", "turn_on", {"entity_id": entity_id}, blocking=True)
-        _LOGGER.info("OCPP charger %s: start charging via %s", charger_id, entity_id)
+        if needs_reset:
+            _LOGGER.info(
+                "OCPP charger %s: start charging via %s (reset from Finishing)",
+                charger_id, entity_id,
+            )
+        else:
+            _LOGGER.info("OCPP charger %s: start charging via %s", charger_id, entity_id)
         return True
     except Exception as e:
         _LOGGER.error("OCPP start charging failed for %s: %s", charger_id, e)

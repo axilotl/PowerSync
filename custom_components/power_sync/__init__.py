@@ -11296,6 +11296,27 @@ class OCPPChargerStartView(HomeAssistantView):
                     status=404,
                 )
 
+            # When the connector is in "Finishing" the charge_control switch can
+            # latch its is_on state and silently skip a fresh RemoteStartTransaction.
+            # Toggle off→on first to force the OCPP integration to send a new
+            # start command.
+            connector_state = self._hass.states.get(f"sensor.{charger_id}_status_connector")
+            needs_reset = (
+                connector_state is not None
+                and connector_state.state.lower() == "finishing"
+            )
+            if needs_reset:
+                try:
+                    await self._hass.services.async_call(
+                        "switch", "turn_off", {"entity_id": entity_id}, blocking=True,
+                    )
+                    await asyncio.sleep(1)
+                except Exception as off_err:
+                    _LOGGER.debug(
+                        "OCPP pre-start reset turn_off failed for %s: %s",
+                        charger_id, off_err,
+                    )
+
             await self._hass.services.async_call(
                 "switch",
                 "turn_on",
@@ -11303,7 +11324,11 @@ class OCPPChargerStartView(HomeAssistantView):
                 blocking=True,
             )
 
-            _LOGGER.info("OCPP charger %s: start charging via %s", charger_id, entity_id)
+            _LOGGER.info(
+                "OCPP charger %s: start charging via %s%s",
+                charger_id, entity_id,
+                " (reset from Finishing)" if needs_reset else "",
+            )
             return web.json_response({
                 "success": True,
                 "message": f"Charging started on {charger_id}",
@@ -22459,6 +22484,133 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
         hass.data[DOMAIN][entry.entry_id]["unsub_zaptec_poll"] = unsub_zaptec_poll
 
+    # OCPP charger session tracking — detect sessions whether they were started
+    # by PowerSync (price-level / app button) or externally (HA UI, RFID card,
+    # button on the charger). Polls connector status + power meter per charger
+    # and opens/closes ChargingSession records to match.
+    if all_opts.get(CONF_OCPP_ENABLED):
+        import re as _re
+        _OCPP_SUFFIXES = _re.compile(
+            r"^(sensor|switch|number)\.(\w+?)_(status|availability|charge_control|current_power|energy_meter)$",
+            _re.IGNORECASE,
+        )
+        # Per-charger last-seen status to detect transitions across polls
+        hass.data[DOMAIN][entry.entry_id].setdefault("ocpp_session_state", {})
+
+        async def _poll_ocpp_sessions(now=None):
+            """Poll OCPP chargers and track ChargingSession lifecycle."""
+            try:
+                from homeassistant.helpers import entity_registry as _er
+                from .automations.ev_charging_session import get_session_manager
+
+                sm = get_session_manager()
+                if sm is None:
+                    return
+
+                entity_reg = _er.async_get(hass)
+                charger_ids = set()
+                for reg_entry in entity_reg.entities.values():
+                    if reg_entry.platform != "ocpp":
+                        continue
+                    m = _OCPP_SUFFIXES.match(reg_entry.entity_id)
+                    if m:
+                        charger_ids.add(m.group(2))
+
+                ed = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+                state_map: dict = ed.setdefault("ocpp_session_state", {})
+
+                # Pull current prices once for all chargers
+                import_price = 30.0
+                export_price = 8.0
+                amber_coord = ed.get("amber_coordinator")
+                if amber_coord and amber_coord.data:
+                    for p in amber_coord.data.get("current", []):
+                        if p.get("channelType") == "general":
+                            import_price = p.get("perKwh", 30.0)
+                        elif p.get("channelType") == "feedIn":
+                            export_price = abs(p.get("perKwh", 8.0))
+                elif ed.get("tariff_schedule"):
+                    import_price = ed["tariff_schedule"].get("buy_price", 30.0)
+                    export_price = ed["tariff_schedule"].get("sell_price", 8.0)
+
+                _CHARGING_STATES = {"charging"}
+                _ACTIVE_STATES = {"preparing", "charging", "suspendedev",
+                                  "suspendedevse", "finishing"}
+
+                for cid in charger_ids:
+                    vid = f"ocpp_{cid}"
+                    status_state = hass.states.get(f"sensor.{cid}_status_connector")
+                    if status_state is None or status_state.state in ("unavailable", "unknown"):
+                        # Skip chargers we can't read — don't end sessions on
+                        # transient unavailability (network blip etc).
+                        continue
+                    status_lower = status_state.state.lower()
+
+                    power_state = hass.states.get(f"sensor.{cid}_current_power")
+                    power_w = 0.0
+                    if power_state is not None and power_state.state not in ("unavailable", "unknown"):
+                        try:
+                            power_w = float(power_state.state)
+                        except (ValueError, TypeError):
+                            power_w = 0.0
+
+                    is_charging = status_lower in _CHARGING_STATES
+                    has_session = vid in sm.active_sessions
+                    prev = state_map.get(cid, {})
+
+                    # Start a session on transition into "Charging" (and only
+                    # when no PowerSync-initiated session already exists for
+                    # this charger).
+                    if is_charging and not has_session:
+                        await sm.start_session(vehicle_id=vid, mode="ocpp")
+                        _LOGGER.info(
+                            "📊 OCPP %s: started session (status=%s)",
+                            cid, status_state.state,
+                        )
+
+                    # Update active session with the latest power reading.
+                    # Stop crediting power once the connector leaves "Charging"
+                    # (e.g. Finishing / SuspendedEV) so the session totals
+                    # don't keep growing while idle.
+                    if has_session or (is_charging and vid in sm.active_sessions):
+                        amps = 0
+                        # Heuristic: assume single-phase 230V to derive amps if
+                        # the charger doesn't expose them directly.
+                        if power_w > 0:
+                            amps = int(power_w / 230)
+                        await sm.update_session(
+                            vehicle_id=vid,
+                            power_kw=(power_w / 1000) if is_charging else 0.0,
+                            amps=amps if is_charging else 0,
+                            is_solar=False,
+                            import_price_cents=import_price,
+                            export_price_cents=export_price,
+                        )
+
+                    # End the session once the connector is no longer in any
+                    # active state (vehicle unplugged, fault, etc).
+                    if not is_charging and has_session and status_lower not in _ACTIVE_STATES:
+                        await sm.end_session(
+                            vehicle_id=vid,
+                            reason=f"connector_{status_lower}",
+                        )
+                        _LOGGER.info(
+                            "📊 OCPP %s: ended session (status=%s)",
+                            cid, status_state.state,
+                        )
+
+                    state_map[cid] = {"status": status_lower, "power_w": power_w}
+
+            except Exception as e:
+                _LOGGER.debug("OCPP session poll error: %s", e)
+
+        await _poll_ocpp_sessions()
+        unsub_ocpp_poll = async_track_time_interval(
+            hass, _poll_ocpp_sessions, timedelta(seconds=30)
+        )
+        hass.data[DOMAIN][entry.entry_id]["unsub_ocpp_poll"] = unsub_ocpp_poll
+        _LOGGER.info("📊 OCPP charging session tracker started (30s poll)")
+
     # Register HTTP endpoints for EV/Tesla vehicles (for mobile app EV section)
     hass.http.register_view(EVStatusView(hass))
     hass.http.register_view(EVVehiclesView(hass))
@@ -24426,6 +24578,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if zaptec_client := entry_data.get("zaptec_client"):
         await zaptec_client.close()
         _LOGGER.debug("Closed Zaptec Cloud client")
+
+    # Cancel OCPP session polling
+    if unsub_ocpp := entry_data.get("unsub_ocpp_poll"):
+        unsub_ocpp()
+        _LOGGER.debug("Cancelled OCPP session polling")
 
     # Cancel the AEMO spike timer if it exists
     if aemo_spike_cancel := entry_data.get("aemo_spike_cancel"):
