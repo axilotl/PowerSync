@@ -834,22 +834,25 @@ def _optimizer_window_attributes(data: dict[str, Any] | None, action: str) -> di
 OPTIMIZER_ACTION_SENSORS: tuple[PowerSyncSensorEntityDescription, ...] = (
     PowerSyncSensorEntityDescription(
         key=SENSOR_TYPE_OPTIMIZATION_STATUS,
-        name="Optimizer Current Action",
+        name="Current Action",
         icon="mdi:battery-sync",
         value_fn=lambda data: data.get("current_action") if data else None,
         attr_fn=lambda data: {
             "power_w": data.get("current_power_w"),
             "status": data.get("status"),
+            "until": data.get("current_action_end_time"),
         } if data else {},
     ),
     PowerSyncSensorEntityDescription(
         key=SENSOR_TYPE_OPTIMIZATION_NEXT_ACTION,
-        name="Optimizer Next Action",
+        name="Next Scheduled Change",
         icon="mdi:clock-fast",
         value_fn=lambda data: data.get("next_action") if data else None,
         attr_fn=lambda data: {
             "time": data.get("next_action_time"),
             "power_w": data.get("next_action_power_w"),
+            "current_action": data.get("current_action"),
+            "current_until": data.get("current_action_end_time"),
             "next_actions": data.get("next_actions", []),
             "force_charge_windows": _future_optimizer_action_windows(data, "charge"),
         } if data else {},

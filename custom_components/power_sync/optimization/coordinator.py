@@ -4146,6 +4146,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Get current action info
         current_action = "idle"
         current_power_w = self._get_actual_battery_power_w()
+        current_action_end_time = None  # When the current scheduled action segment ends
         next_action = "idle"
         next_action_time = None
         next_action_power_w = 0
@@ -4155,8 +4156,18 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if ca:
                 current_action = ca.action
 
-            # Find next different action
             now = dt_util.now()
+
+            # First future action of any type tells us when the current segment ends.
+            # That's a separate concern from "next different action" — the existing
+            # next_action field skips ahead past long self_consumption stretches,
+            # which is useful but reads as misleading without an "until" timestamp.
+            for a in self._current_schedule.actions:
+                if a.timestamp > now:
+                    current_action_end_time = a.timestamp.isoformat()
+                    break
+
+            # Find next different action (used by the Next Scheduled Change sensor)
             for a in self._current_schedule.actions:
                 if a.timestamp > now and a.action != current_action:
                     next_action = a.action
@@ -4195,6 +4206,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "optimization_status": "active" if optimizer_available else "not_available",
             "current_action": current_action,
             "current_power_w": current_power_w,
+            "current_action_end_time": current_action_end_time,
             "next_action": next_action,
             "next_action_time": next_action_time,
             "next_action_power_w": next_action_power_w,
