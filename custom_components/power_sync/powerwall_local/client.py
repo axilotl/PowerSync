@@ -600,6 +600,11 @@ _DCQ_ISLAND_MODE_TO_GRID_STATUS = {
     "Normal": "SystemGridConnected",
 }
 
+# Powerwall reserves the bottom 5% of nominal capacity for cell health and
+# won't discharge past it. Tesla's user-facing apps rescale operational SOC
+# across the usable 5–100% range, so 24% raw shows as 20% in the Tesla app.
+_LOW_SOE_RESERVE_PCT = 5.0
+
 
 def _snapshot_from_dcq(
     dcq: dict[str, Any], cfg: dict[str, Any] | None
@@ -632,11 +637,16 @@ def _snapshot_from_dcq(
         return _float_or_none(m.get("realPowerW"))
 
     # SOC % from energy ratios. Either field missing → leave SOC None.
+    # The Powerwall protects a 5% low-SOE reserve for cell health and won't
+    # discharge past it. The Tesla app and Tesla cloud apps both report
+    # operational SOC scaled across the usable 5–100% range; report the
+    # same so PowerSync's reading matches the Tesla app exactly.
     sys_status = control.get("systemStatus") or {}
     full_wh = _float_or_none(sys_status.get("nominalFullPackEnergyWh"))
     rem_wh = _float_or_none(sys_status.get("nominalEnergyRemainingWh"))
     if full_wh and full_wh > 0 and rem_wh is not None:
-        soc_pct: float | None = max(0.0, min(100.0, (rem_wh / full_wh) * 100.0))
+        raw_soc = max(0.0, min(100.0, (rem_wh / full_wh) * 100.0))
+        soc_pct: float | None = max(0.0, (raw_soc - _LOW_SOE_RESERVE_PCT) / (100.0 - _LOW_SOE_RESERVE_PCT) * 100.0)
     else:
         soc_pct = None
 
