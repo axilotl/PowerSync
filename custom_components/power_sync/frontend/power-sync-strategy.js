@@ -1044,8 +1044,46 @@ function _batteryControls(hass) {
       {
         square: false,
         type: 'grid',
-        columns: 1,
+        columns: 2,
         cards: [
+          {
+            type: 'custom:button-card',
+            name: 'Hold SoC',
+            icon: 'mdi:battery-lock',
+            styles: {
+              card: [
+                { height: '40px' },
+                { 'border-radius': '18px' },
+                { padding: '4px 12px' },
+                { background: 'rgba(var(--rgb-blue-color, 33, 150, 243), 0.1)' },
+              ],
+              grid: [
+                { 'grid-template-areas': '"i n"' },
+                { 'grid-template-columns': '24px 1fr' },
+              ],
+              icon: [
+                { 'grid-area': 'i' },
+                { width: '24px' },
+                { color: 'var(--blue-color, #2196F3)' },
+              ],
+              name: [
+                { 'grid-area': 'n' },
+                { 'text-align': 'left' },
+                { 'padding-left': '8px' },
+                { 'font-weight': '600' },
+              ],
+            },
+            tap_action: {
+              action: 'call-service',
+              service: 'power_sync.hold_battery_soc',
+              data: {
+                duration: "[[[ return (states['select.power_sync_force_discharge_duration'] ? states['select.power_sync_force_discharge_duration'].state : '60'); ]]]",
+              },
+              confirmation: {
+                text: "[[[ const dur = states['select.power_sync_force_discharge_duration']?.state ?? '60'; return 'Hold battery at current SoC for ' + dur + ' min?'; ]]]",
+              },
+            },
+          },
           {
             type: 'custom:button-card',
             name: 'Restore',
