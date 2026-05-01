@@ -2841,7 +2841,25 @@ class AutoScheduleSettings:
     # Optional entity overrides for generic chargers
     charger_switch_entity: Optional[str] = None
     charger_amps_entity: Optional[str] = None
+    charger_status_entity: Optional[str] = None
     ocpp_charger_id: Optional[int] = None
+
+    def apply_charger_config(self, config: Mapping[str, Any]) -> None:
+        """Apply app-managed physical charger settings to these settings."""
+        field_map = {
+            "max_amps": "max_charge_amps",
+            "min_amps": "min_charge_amps",
+            "voltage": "voltage",
+            "phases": "phases",
+            "charger_type": "charger_type",
+            "charger_switch_entity": "charger_switch_entity",
+            "charger_amps_entity": "charger_amps_entity",
+            "charger_status_entity": "charger_status_entity",
+            "ocpp_charger_id": "ocpp_charger_id",
+        }
+        for source_key, attr_name in field_map.items():
+            if source_key in config:
+                setattr(self, attr_name, config[source_key])
 
     def to_dict(self) -> dict:
         """Convert to dictionary."""
@@ -2882,6 +2900,7 @@ class AutoScheduleSettings:
             "min_surplus_kw": self.get_min_surplus_kw(),  # Calculated from phases/voltage/amps
             "charger_switch_entity": self.charger_switch_entity,
             "charger_amps_entity": self.charger_amps_entity,
+            "charger_status_entity": self.charger_status_entity,
             "ocpp_charger_id": self.ocpp_charger_id,
         }
 
@@ -2982,6 +3001,7 @@ class AutoScheduleSettings:
             phases=data.get("phases", 1),
             charger_switch_entity=data.get("charger_switch_entity"),
             charger_amps_entity=data.get("charger_amps_entity"),
+            charger_status_entity=data.get("charger_status_entity"),
             ocpp_charger_id=data.get("ocpp_charger_id"),
         )
 
@@ -3252,6 +3272,7 @@ class AutoScheduleExecutor:
             "charger_type": settings.charger_type,
             "charger_switch_entity": settings.charger_switch_entity,
             "charger_amps_entity": settings.charger_amps_entity,
+            "charger_status_entity": settings.charger_status_entity,
             "ocpp_charger_id": settings.ocpp_charger_id,
         }
 
@@ -3870,22 +3891,7 @@ class AutoScheduleExecutor:
             stored_data = getattr(self._store, '_data', {}) or {}
             for vc in stored_data.get("vehicle_charging_configs", []):
                 if vc.get("vehicle_id") == vehicle_id:
-                    if "max_amps" in vc:
-                        settings.max_charge_amps = vc["max_amps"]
-                    if "min_amps" in vc:
-                        settings.min_charge_amps = vc["min_amps"]
-                    if "voltage" in vc:
-                        settings.voltage = vc["voltage"]
-                    if "phases" in vc:
-                        settings.phases = vc["phases"]
-                    if "charger_type" in vc:
-                        settings.charger_type = vc["charger_type"]
-                    if "charger_switch_entity" in vc:
-                        settings.charger_switch_entity = vc["charger_switch_entity"]
-                    if "charger_amps_entity" in vc:
-                        settings.charger_amps_entity = vc["charger_amps_entity"]
-                    if "ocpp_charger_id" in vc:
-                        settings.ocpp_charger_id = vc["ocpp_charger_id"]
+                    settings.apply_charger_config(vc)
                     return
         except Exception:
             pass
@@ -4838,6 +4844,7 @@ class AutoScheduleExecutor:
             "stop_at_battery_floor": settings.get_effective_stop_at_battery_floor(dt_util.now().weekday()),
             "charger_switch_entity": settings.charger_switch_entity,
             "charger_amps_entity": settings.charger_amps_entity,
+            "charger_status_entity": settings.charger_status_entity,
             "ocpp_charger_id": settings.ocpp_charger_id,
             "no_grid_import": settings.get_effective_limit_grid_import(dt_util.now().weekday()),
             **_get_optimizer_battery_params(self.hass, self.config_entry),
@@ -5052,11 +5059,20 @@ def _with_configured_charger_entities(
             CONF_GENERIC_CHARGER_SWITCH_ENTITY,
         )
 
-        params["charger_switch_entity"] = opts.get(CONF_GENERIC_CHARGER_SWITCH_ENTITY, "")
-        params["charger_amps_entity"] = opts.get(CONF_GENERIC_CHARGER_AMPS_ENTITY, "")
-        params["charger_status_entity"] = opts.get(CONF_GENERIC_CHARGER_STATUS_ENTITY, "")
+        params["charger_switch_entity"] = params.get("charger_switch_entity") or opts.get(
+            CONF_GENERIC_CHARGER_SWITCH_ENTITY,
+            "",
+        )
+        params["charger_amps_entity"] = params.get("charger_amps_entity") or opts.get(
+            CONF_GENERIC_CHARGER_AMPS_ENTITY,
+            "",
+        )
+        params["charger_status_entity"] = params.get("charger_status_entity") or opts.get(
+            CONF_GENERIC_CHARGER_STATUS_ENTITY,
+            "",
+        )
     elif charger_type == "ocpp":
-        params["ocpp_charger_id"] = opts.get("ocpp_charger_id", "ocpp_charger")
+        params["ocpp_charger_id"] = params.get("ocpp_charger_id") or opts.get("ocpp_charger_id", "ocpp_charger")
     return params
 
 
@@ -5072,7 +5088,13 @@ def _build_dynamic_charging_params(
     no_grid_import: bool = False,
 ) -> dict:
     """Build dynamic EV start params consistently for all coordinated modes."""
-    charger_type = _configured_charger_type(opts)
+    vehicle_charger_params = _get_vehicle_charger_params(
+        hass,
+        domain,
+        config_entry,
+        vehicle_vin,
+    )
+    charger_type = vehicle_charger_params.get("charger_type") or _configured_charger_type(opts)
     loadpoint_id = vehicle_vin
     if charger_type == "zaptec":
         loadpoint_id = vehicle_vin or "zaptec_standalone"
@@ -5082,7 +5104,7 @@ def _build_dynamic_charging_params(
         "vehicle_id": loadpoint_id,
         "dynamic_mode": dynamic_mode,
         "owner_mode": owner_mode,
-        **_get_vehicle_charger_params(hass, domain, config_entry, loadpoint_id),
+        **vehicle_charger_params,
         **_get_optimizer_battery_params(hass, config_entry),
         "charger_type": charger_type,
     }
@@ -5271,21 +5293,41 @@ def _get_vehicle_charger_params(
             configs = stored_data.get("vehicle_charging_configs", [])
             for vc in configs:
                 if vehicle_vin and vc.get("vehicle_id") == vehicle_vin:
-                    return {
+                    params = {
                         "min_charge_amps": vc.get("min_amps", 5),
                         "max_charge_amps": vc.get("max_amps", 32),
                         "voltage": vc.get("voltage", 230),
                         "phases": vc.get("phases", 1),
                     }
+                    for key in (
+                        "charger_type",
+                        "charger_switch_entity",
+                        "charger_amps_entity",
+                        "charger_status_entity",
+                        "ocpp_charger_id",
+                    ):
+                        if vc.get(key) is not None:
+                            params[key] = vc.get(key)
+                    return params
             # No VIN match — use first config
             if configs:
                 vc = configs[0]
-                return {
+                params = {
                     "min_charge_amps": vc.get("min_amps", 5),
                     "max_charge_amps": vc.get("max_amps", 32),
                     "voltage": vc.get("voltage", 230),
                     "phases": vc.get("phases", 1),
                 }
+                for key in (
+                    "charger_type",
+                    "charger_switch_entity",
+                    "charger_amps_entity",
+                    "charger_status_entity",
+                    "ocpp_charger_id",
+                ):
+                    if vc.get(key) is not None:
+                        params[key] = vc.get(key)
+                return params
     except Exception:
         pass
 
@@ -5301,6 +5343,11 @@ def _get_vehicle_charger_params(
                             "max_charge_amps": settings.max_charge_amps,
                             "voltage": settings.voltage,
                             "phases": settings.phases,
+                            "charger_type": settings.charger_type,
+                            "charger_switch_entity": settings.charger_switch_entity,
+                            "charger_amps_entity": settings.charger_amps_entity,
+                            "charger_status_entity": settings.charger_status_entity,
+                            "ocpp_charger_id": settings.ocpp_charger_id,
                         }
             # No VIN match — use first available settings
             for vid, settings in exec_instance._settings.items():
@@ -5309,6 +5356,11 @@ def _get_vehicle_charger_params(
                     "max_charge_amps": settings.max_charge_amps,
                     "voltage": settings.voltage,
                     "phases": settings.phases,
+                    "charger_type": settings.charger_type,
+                    "charger_switch_entity": settings.charger_switch_entity,
+                    "charger_amps_entity": settings.charger_amps_entity,
+                    "charger_status_entity": settings.charger_status_entity,
+                    "ocpp_charger_id": settings.ocpp_charger_id,
                 }
     except Exception:
         pass

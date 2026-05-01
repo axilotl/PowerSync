@@ -9929,7 +9929,7 @@ class VehicleChargingConfigView(HomeAssistantView):
         params = state.get("params", {}) or {}
         if config.get("charger_type") and params.get("charger_type") != config.get("charger_type"):
             return False
-        for key in ("charger_switch_entity", "charger_amps_entity", "ocpp_charger_id"):
+        for key in ("charger_switch_entity", "charger_amps_entity", "charger_status_entity", "ocpp_charger_id"):
             if config.get(key) and params.get(key) == config.get(key):
                 return True
         return False
@@ -10068,6 +10068,7 @@ class VehicleChargingConfigView(HomeAssistantView):
                     "charger_type": data.get("charger_type", "tesla"),
                     "charger_switch_entity": data.get("charger_switch_entity"),
                     "charger_amps_entity": data.get("charger_amps_entity"),
+                    "charger_status_entity": data.get("charger_status_entity"),
                     "ocpp_charger_id": data.get("ocpp_charger_id"),
                     "min_amps": data.get("min_amps", 5),
                     "max_amps": data.get("max_amps", 32),
@@ -10096,22 +10097,27 @@ class VehicleChargingConfigView(HomeAssistantView):
                     )
                     if saved_config and vehicle_id in executor._settings:
                         settings = executor._settings[vehicle_id]
-                        if "max_amps" in saved_config:
-                            settings.max_charge_amps = saved_config["max_amps"]
-                        if "min_amps" in saved_config:
-                            settings.min_charge_amps = saved_config["min_amps"]
-                        if "voltage" in saved_config:
-                            settings.voltage = saved_config["voltage"]
-                        if "phases" in saved_config:
-                            settings.phases = saved_config["phases"]
-                        if "charger_type" in saved_config:
-                            settings.charger_type = saved_config["charger_type"]
-                        if "charger_switch_entity" in saved_config:
-                            settings.charger_switch_entity = saved_config["charger_switch_entity"]
-                        if "charger_amps_entity" in saved_config:
-                            settings.charger_amps_entity = saved_config["charger_amps_entity"]
-                        if "ocpp_charger_id" in saved_config:
-                            settings.ocpp_charger_id = saved_config["ocpp_charger_id"]
+                        if hasattr(settings, "apply_charger_config"):
+                            settings.apply_charger_config(saved_config)
+                        else:
+                            if "max_amps" in saved_config:
+                                settings.max_charge_amps = saved_config["max_amps"]
+                            if "min_amps" in saved_config:
+                                settings.min_charge_amps = saved_config["min_amps"]
+                            if "voltage" in saved_config:
+                                settings.voltage = saved_config["voltage"]
+                            if "phases" in saved_config:
+                                settings.phases = saved_config["phases"]
+                            if "charger_type" in saved_config:
+                                settings.charger_type = saved_config["charger_type"]
+                            if "charger_switch_entity" in saved_config:
+                                settings.charger_switch_entity = saved_config["charger_switch_entity"]
+                            if "charger_amps_entity" in saved_config:
+                                settings.charger_amps_entity = saved_config["charger_amps_entity"]
+                            if "charger_status_entity" in saved_config:
+                                settings.charger_status_entity = saved_config["charger_status_entity"]
+                            if "ocpp_charger_id" in saved_config:
+                                settings.ocpp_charger_id = saved_config["ocpp_charger_id"]
                         _LOGGER.debug(
                             "Synced charger params to auto-schedule for %s: "
                             "max=%dA, voltage=%dV, phases=%d",
@@ -10872,6 +10878,7 @@ class ChargingBoostView(HomeAssistantView):
             if boost_vehicle_id == "generic_ev":
                 from .const import (
                     CONF_GENERIC_CHARGER_AMPS_ENTITY,
+                    CONF_GENERIC_CHARGER_STATUS_ENTITY,
                     CONF_GENERIC_CHARGER_SWITCH_ENTITY,
                 )
 
@@ -10882,6 +10889,7 @@ class ChargingBoostView(HomeAssistantView):
                     "vehicle_vin": None,
                     "charger_switch_entity": opts.get(CONF_GENERIC_CHARGER_SWITCH_ENTITY, ""),
                     "charger_amps_entity": opts.get(CONF_GENERIC_CHARGER_AMPS_ENTITY, ""),
+                    "charger_status_entity": opts.get(CONF_GENERIC_CHARGER_STATUS_ENTITY, ""),
                 })
             elif (
                 boost_vehicle_id == "zaptec_standalone"
@@ -24034,6 +24042,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                                                     vc["max_amps"] = _settings.max_charge_amps
                                                 if vc.get("voltage") is None:
                                                     vc["voltage"] = _settings.voltage
+                                                if vc.get("charger_status_entity") is None:
+                                                    vc["charger_status_entity"] = _settings.charger_status_entity
                                                 _matched = True
                                                 break
                                         if not _matched:
@@ -24046,6 +24056,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                                                         vc["max_amps"] = _settings.max_charge_amps
                                                     if vc.get("voltage") is None:
                                                         vc["voltage"] = _settings.voltage
+                                                    if vc.get("charger_status_entity") is None:
+                                                        vc["charger_status_entity"] = _settings.charger_status_entity
                                                     break
                                 except Exception:
                                     pass
@@ -24055,7 +24067,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                             # Determine charger_type: vehicle config > config entry > default
                             vc_charger_type = vc.get("charger_type")
                             if not vc_charger_type:
-                                from .const import CONF_GENERIC_CHARGER_ENABLED, CONF_GENERIC_CHARGER_SWITCH_ENTITY, CONF_GENERIC_CHARGER_AMPS_ENTITY
+                                from .const import (
+                                    CONF_GENERIC_CHARGER_AMPS_ENTITY,
+                                    CONF_GENERIC_CHARGER_ENABLED,
+                                    CONF_GENERIC_CHARGER_STATUS_ENTITY,
+                                    CONF_GENERIC_CHARGER_SWITCH_ENTITY,
+                                )
                                 _opts = {**entry.data, **entry.options}
                                 if _opts.get(CONF_GENERIC_CHARGER_ENABLED):
                                     vc_charger_type = "generic"
@@ -24063,6 +24080,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                                         vc["charger_switch_entity"] = _opts.get(CONF_GENERIC_CHARGER_SWITCH_ENTITY, "")
                                     if not vc.get("charger_amps_entity"):
                                         vc["charger_amps_entity"] = _opts.get(CONF_GENERIC_CHARGER_AMPS_ENTITY, "")
+                                    if not vc.get("charger_status_entity"):
+                                        vc["charger_status_entity"] = _opts.get(CONF_GENERIC_CHARGER_STATUS_ENTITY, "")
                                 elif _opts.get("ocpp_enabled"):
                                     vc_charger_type = "ocpp"
                                 else:
@@ -24078,6 +24097,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                                 "phases": vc_phases,
                                 "charger_switch_entity": vc.get("charger_switch_entity"),
                                 "charger_amps_entity": vc.get("charger_amps_entity"),
+                                "charger_status_entity": vc.get("charger_status_entity"),
                                 "ocpp_charger_id": vc.get("ocpp_charger_id"),
                                 "household_buffer_kw": surplus_config.get("household_buffer_kw", 0.5),
                                 "surplus_calculation": surplus_config.get("surplus_calculation", "grid_based"),

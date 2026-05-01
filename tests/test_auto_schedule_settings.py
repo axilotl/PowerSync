@@ -59,3 +59,59 @@ def test_empty_per_day_overrides_clear_legacy_aliases():
     assert settings.departure_limit_grid_import == {}
     assert settings.departure_consume_battery_level == {}
     assert settings.departure_stop_at_battery_floor == {}
+
+
+def test_generic_status_entity_round_trips_with_auto_schedule_settings():
+    settings = ev_planner.AutoScheduleSettings.from_dict({
+        "charger_type": "generic",
+        "charger_switch_entity": "switch.garage_ev",
+        "charger_amps_entity": "number.garage_ev_current",
+        "charger_status_entity": "sensor.garage_ev_status",
+    })
+
+    assert settings.charger_status_entity == "sensor.garage_ev_status"
+    assert settings.to_dict()["charger_status_entity"] == "sensor.garage_ev_status"
+
+
+def test_vehicle_charger_config_syncs_generic_status_entity():
+    settings = ev_planner.AutoScheduleSettings()
+
+    settings.apply_charger_config({
+        "charger_type": "generic",
+        "min_amps": 6,
+        "max_amps": 24,
+        "voltage": 240,
+        "phases": 3,
+        "charger_switch_entity": "switch.garage_ev",
+        "charger_amps_entity": "number.garage_ev_current",
+        "charger_status_entity": "sensor.garage_ev_status",
+    })
+
+    assert settings.charger_type == "generic"
+    assert settings.min_charge_amps == 6
+    assert settings.max_charge_amps == 24
+    assert settings.voltage == 240
+    assert settings.phases == 3
+    assert settings.charger_status_entity == "sensor.garage_ev_status"
+
+
+def test_configured_generic_entities_preserve_vehicle_overrides():
+    params = {
+        "charger_switch_entity": "switch.vehicle_ev",
+        "charger_amps_entity": "number.vehicle_ev_current",
+        "charger_status_entity": "sensor.vehicle_ev_status",
+    }
+
+    result = ev_planner._with_configured_charger_entities(
+        params,
+        {
+            "generic_charger_switch_entity": "switch.global_ev",
+            "generic_charger_amps_entity": "number.global_ev_current",
+            "generic_charger_status_entity": "sensor.global_ev_status",
+        },
+        "generic",
+    )
+
+    assert result["charger_switch_entity"] == "switch.vehicle_ev"
+    assert result["charger_amps_entity"] == "number.vehicle_ev_current"
+    assert result["charger_status_entity"] == "sensor.vehicle_ev_status"
