@@ -8,6 +8,8 @@ import sys
 import types
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 
 ROOT = Path(__file__).resolve().parent.parent / "custom_components" / "power_sync"
@@ -63,16 +65,19 @@ class _Services:
 
 
 class _ConfigEntries:
+    def __init__(self, entries=None) -> None:
+        self._entries = entries or []
+
     def async_entries(self, domain: str):
-        return []
+        return self._entries if domain == "power_sync" else []
 
 
 class _Hass:
-    def __init__(self) -> None:
+    def __init__(self, entries=None) -> None:
         self.data = {"power_sync": {"entry-1": {}}}
         self.states = _States()
         self.services = _Services()
-        self.config_entries = _ConfigEntries()
+        self.config_entries = _ConfigEntries(entries)
 
 
 def test_optimizer_ev_start_is_blocked_by_existing_owner():
@@ -153,3 +158,169 @@ def test_optimizer_ev_stop_releases_owned_loadpoint():
     assert last_command["command"] == "stop_ev_coordinator"
     assert last_command["success"] is True
     assert last_command["reason"] == "target reached"
+
+
+def test_optimizer_zaptec_uses_existing_client_without_password():
+    entry = SimpleNamespace(
+        entry_id="entry-1",
+        data={},
+        options={
+            "zaptec_standalone_enabled": True,
+            "zaptec_username": "user@example.com",
+            "zaptec_charger_id": "charger-1",
+        },
+    )
+    hass = _Hass(entries=[entry])
+    client = SimpleNamespace(
+        resume_charging=AsyncMock(return_value=True),
+        set_installation_current=AsyncMock(return_value=True),
+    )
+    hass.data["power_sync"]["entry-1"]["zaptec_client"] = client
+    config = ev_coordinator.EVConfig(entity_id="switch.garage_ev", name="Garage EV")
+    coordinator = ev_coordinator.EVCoordinator(hass, [config], config_entry=_Entry())
+
+    result = asyncio.run(coordinator._start_charging(config))
+
+    assert result is True
+    client.resume_charging.assert_awaited_once_with("charger-1")
+    lease = ev_ownership.get_ev_ownerships(hass, _Entry())["switch.garage_ev"]
+    assert lease["owner_mode"] == "ev_coordinator"
+
+
+def test_optimizer_zaptec_waiting_requires_installation_current():
+    entry = SimpleNamespace(
+        entry_id="entry-1",
+        data={},
+        options={
+            "zaptec_standalone_enabled": True,
+            "zaptec_username": "user@example.com",
+            "zaptec_charger_id": "charger-1",
+        },
+    )
+    hass = _Hass(entries=[entry])
+    client = SimpleNamespace(
+        resume_charging=AsyncMock(return_value=True),
+        set_installation_current=AsyncMock(return_value=True),
+    )
+    hass.data["power_sync"]["entry-1"].update(
+        {
+            "zaptec_client": client,
+            "zaptec_cached_state": {"charger_operation_mode": "connected_waiting"},
+        }
+    )
+    config = ev_coordinator.EVConfig(entity_id="switch.garage_ev", name="Garage EV")
+    coordinator = ev_coordinator.EVCoordinator(hass, [config], config_entry=_Entry())
+
+    result = asyncio.run(coordinator._start_charging(config))
+
+    assert result is False
+    client.resume_charging.assert_not_awaited()
+    client.set_installation_current.assert_not_awaited()
+    assert ev_ownership.get_ev_ownerships(hass, _Entry()) == {}
+    last_command = ev_ownership.get_ev_last_commands(hass, _Entry())["switch.garage_ev"]
+    assert last_command["command"] == "start_ev_coordinator"
+    assert last_command["success"] is False
+    assert "installation current" in last_command["reason"]
+
+
+def test_optimizer_zaptec_waiting_sets_current_and_claims():
+    entry = SimpleNamespace(
+        entry_id="entry-1",
+        data={},
+        options={
+            "zaptec_standalone_enabled": True,
+            "zaptec_username": "user@example.com",
+            "zaptec_charger_id": "charger-1",
+            "zaptec_installation_id_cloud": "installation-1",
+        },
+    )
+    hass = _Hass(entries=[entry])
+    client = SimpleNamespace(
+        resume_charging=AsyncMock(return_value=True),
+        set_installation_current=AsyncMock(return_value=True),
+    )
+    hass.data["power_sync"]["entry-1"].update(
+        {
+            "zaptec_client": client,
+            "zaptec_cached_state": {"charger_operation_mode": "connected_waiting"},
+        }
+    )
+    config = ev_coordinator.EVConfig(entity_id="switch.garage_ev", name="Garage EV")
+    coordinator = ev_coordinator.EVCoordinator(hass, [config], config_entry=_Entry())
+
+    result = asyncio.run(coordinator._start_charging(config, power_w=3680))
+
+    assert result is True
+    client.set_installation_current.assert_awaited_once_with("installation-1", 16)
+    client.resume_charging.assert_not_awaited()
+    lease = ev_ownership.get_ev_ownerships(hass, _Entry())["switch.garage_ev"]
+    assert lease["owner_mode"] == "ev_coordinator"
+
+
+def test_optimizer_zaptec_already_charging_updates_current_without_resume():
+    entry = SimpleNamespace(
+        entry_id="entry-1",
+        data={},
+        options={
+            "zaptec_standalone_enabled": True,
+            "zaptec_username": "user@example.com",
+            "zaptec_charger_id": "charger-1",
+            "zaptec_installation_id_cloud": "installation-1",
+        },
+    )
+    hass = _Hass(entries=[entry])
+    client = SimpleNamespace(
+        resume_charging=AsyncMock(return_value=True),
+        set_installation_current=AsyncMock(return_value=True),
+    )
+    hass.data["power_sync"]["entry-1"].update(
+        {
+            "zaptec_client": client,
+            "zaptec_cached_state": {"charger_operation_mode": "charging"},
+        }
+    )
+    config = ev_coordinator.EVConfig(entity_id="switch.garage_ev", name="Garage EV")
+    coordinator = ev_coordinator.EVCoordinator(hass, [config], config_entry=_Entry())
+
+    result = asyncio.run(coordinator._start_charging(config, power_w=2300))
+
+    assert result is True
+    client.set_installation_current.assert_awaited_once_with("installation-1", 10)
+    client.resume_charging.assert_not_awaited()
+
+
+def test_optimizer_zaptec_idle_stop_releases_without_stop_command():
+    entry = SimpleNamespace(
+        entry_id="entry-1",
+        data={},
+        options={
+            "zaptec_standalone_enabled": True,
+            "zaptec_username": "user@example.com",
+            "zaptec_charger_id": "charger-1",
+        },
+    )
+    hass = _Hass(entries=[entry])
+    client = SimpleNamespace(stop_charging=AsyncMock(return_value=True))
+    hass.data["power_sync"]["entry-1"].update(
+        {
+            "zaptec_client": client,
+            "zaptec_cached_state": {"charger_operation_mode": "connected_waiting"},
+        }
+    )
+    config = ev_coordinator.EVConfig(entity_id="switch.garage_ev", name="Garage EV")
+    coordinator = ev_coordinator.EVCoordinator(hass, [config], config_entry=_Entry())
+    ev_ownership.claim_ev_ownership(
+        hass,
+        _Entry(),
+        "switch.garage_ev",
+        owner_mode="ev_coordinator",
+    )
+
+    result = asyncio.run(coordinator._stop_charging(config, reason="waiting"))
+
+    assert result is True
+    client.stop_charging.assert_not_awaited()
+    assert ev_ownership.get_ev_ownerships(hass, _Entry()) == {}
+    last_command = ev_ownership.get_ev_last_commands(hass, _Entry())["switch.garage_ev"]
+    assert last_command["command"] == "release"
+    assert last_command["reason"] == "waiting"
