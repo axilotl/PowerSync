@@ -17,12 +17,39 @@ ROOT = Path(__file__).resolve().parent.parent / "custom_components" / "power_syn
 
 def _install_ha_stubs() -> None:
     ha_root = sys.modules.setdefault("homeassistant", types.ModuleType("homeassistant"))
+    ha_config_entries = sys.modules.setdefault(
+        "homeassistant.config_entries", types.ModuleType("homeassistant.config_entries")
+    )
     ha_core = sys.modules.setdefault("homeassistant.core", types.ModuleType("homeassistant.core"))
+    ha_helpers = sys.modules.setdefault(
+        "homeassistant.helpers", types.ModuleType("homeassistant.helpers")
+    )
+    ha_er = sys.modules.setdefault(
+        "homeassistant.helpers.entity_registry",
+        types.ModuleType("homeassistant.helpers.entity_registry"),
+    )
+    ha_dr = sys.modules.setdefault(
+        "homeassistant.helpers.device_registry",
+        types.ModuleType("homeassistant.helpers.device_registry"),
+    )
+    ha_event = sys.modules.setdefault(
+        "homeassistant.helpers.event", types.ModuleType("homeassistant.helpers.event")
+    )
     ha_util = sys.modules.setdefault("homeassistant.util", types.ModuleType("homeassistant.util"))
     ha_dt = sys.modules.setdefault("homeassistant.util.dt", types.ModuleType("homeassistant.util.dt"))
 
     ha_core.HomeAssistant = type("HomeAssistant", (), {})
+    ha_config_entries.ConfigEntry = type("ConfigEntry", (), {})
+    ha_er.async_get = lambda hass: getattr(hass, "entity_registry", SimpleNamespace(entities={}))
+    ha_dr.async_get = lambda hass: SimpleNamespace(devices={})
+    ha_event.async_track_time_interval = lambda *args, **kwargs: (lambda: None)
+    ha_event.async_track_point_in_time = lambda *args, **kwargs: (lambda: None)
     ha_dt.now = lambda *args, **kwargs: datetime.now(timezone.utc)
+    ha_dt.utcnow = lambda *args, **kwargs: datetime.now(timezone.utc)
+    ha_helpers.entity_registry = ha_er
+    ha_helpers.device_registry = ha_dr
+    ha_helpers.event = ha_event
+    ha_root.helpers = ha_helpers
     ha_util.dt = ha_dt
     ha_root.util = ha_util
 
@@ -60,7 +87,7 @@ class _Services:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, dict]] = []
 
-    async def async_call(self, domain: str, service: str, data: dict):
+    async def async_call(self, domain: str, service: str, data: dict, **kwargs):
         self.calls.append((domain, service, data))
 
 
@@ -175,7 +202,12 @@ def test_optimizer_zaptec_uses_existing_client_without_password():
         resume_charging=AsyncMock(return_value=True),
         set_installation_current=AsyncMock(return_value=True),
     )
-    hass.data["power_sync"]["entry-1"]["zaptec_client"] = client
+    hass.data["power_sync"]["entry-1"].update(
+        {
+            "zaptec_client": client,
+            "zaptec_cached_state": {"cable_locked": True},
+        }
+    )
     config = ev_coordinator.EVConfig(entity_id="switch.garage_ev", name="Garage EV")
     coordinator = ev_coordinator.EVCoordinator(hass, [config], config_entry=_Entry())
 

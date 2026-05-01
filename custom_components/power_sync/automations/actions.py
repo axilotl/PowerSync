@@ -1916,7 +1916,7 @@ def _get_zaptec_standalone(
     candidates = [config_entry]
     try:
         for entry in hass.config_entries.async_entries(DOMAIN):
-            if entry.entry_id != config_entry.entry_id:
+            if entry is not config_entry:
                 candidates.append(entry)
     except Exception:
         pass
