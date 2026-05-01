@@ -2993,6 +2993,7 @@ class CalendarHistoryView(HomeAssistantView):
         is_goodwe = False
         is_solax = False
         is_saj_h2 = False
+        sigenergy_coordinator = None
         foxess_coordinator = None
         goodwe_coordinator = None
         solax_coordinator = None
@@ -3002,6 +3003,7 @@ class CalendarHistoryView(HomeAssistantView):
                 # Check battery system types
                 if data.get("is_sigenergy", False):
                     is_sigenergy = True
+                    sigenergy_coordinator = data.get("sigenergy_coordinator")
                 if data.get("is_sungrow", False):
                     is_sungrow = True
                 if data.get("foxess_coordinator") is not None:
@@ -3021,18 +3023,6 @@ class CalendarHistoryView(HomeAssistantView):
                     tesla_coordinator = data["tesla_coordinator"]
                     break  # Found it, no need to continue
 
-        # Check if this is a Sigenergy setup - calendar history not available
-        if is_sigenergy:
-            _LOGGER.info("Calendar history not available for Sigenergy battery systems")
-            return web.json_response(
-                {
-                    "success": False,
-                    "error": "Calendar history is not available for Sigenergy battery systems",
-                    "reason": "sigenergy_not_supported"
-                },
-                status=200  # Return 200 with error in body so mobile app handles gracefully
-            )
-
         # Look up tariff schedule for cost calculation (shared across all battery types)
         tariff_schedule = None
         for _eid, _data in self._hass.data.get(DOMAIN, {}).items():
@@ -3041,6 +3031,43 @@ class CalendarHistoryView(HomeAssistantView):
                 if ts and ts.get("buy_rates"):
                     tariff_schedule = ts
                     break
+
+        if is_sigenergy and sigenergy_coordinator and not tesla_coordinator:
+            # Sigenergy: expose today's coordinator totals to the mobile app.
+            from homeassistant.util import dt as dt_util
+
+            energy_data = {}
+            if sigenergy_coordinator.data:
+                energy_data = sigenergy_coordinator.data.get("energy_summary", {})
+
+            time_series = [{
+                "timestamp": dt_util.utcnow().isoformat(),
+                "solar_generation": energy_data.get("pv_today_kwh", 0) * 1000,
+                "battery_discharge": energy_data.get("discharge_today_kwh", 0) * 1000,
+                "battery_charge": energy_data.get("charge_today_kwh", 0) * 1000,
+                "grid_import": energy_data.get("grid_import_today_kwh", 0) * 1000,
+                "grid_export": energy_data.get("grid_export_today_kwh", 0) * 1000,
+                "home_consumption": energy_data.get("load_today_kwh", 0) * 1000,
+            }]
+
+            result = {
+                "success": True,
+                "period": period,
+                "time_series": time_series,
+                "serial_number": None,
+                "installation_date": None,
+            }
+            cost_summary = await _calculate_cost_from_statistics(self._hass, period, end_date)
+            if not cost_summary and tariff_schedule:
+                cost_summary = _calculate_cost_from_tariff(tariff_schedule, time_series)
+            if cost_summary:
+                load_kwh = sum(e.get("home_consumption", 0) for e in time_series) / 1000
+                if load_kwh > 0:
+                    cost_summary["avg_cost_per_kwh"] = round(
+                        ((cost_summary.get("import_cost") or 0) - (cost_summary.get("export_earnings") or 0)) / load_kwh, 4
+                    )
+                result["cost_summary"] = cost_summary
+            return web.json_response(result)
 
         if is_sungrow and not tesla_coordinator:
             # Sungrow: return accumulated daily energy from coordinator
@@ -24880,6 +24907,11 @@ class OptimizationSettingsView(HomeAssistantView):
                 from .const import CONF_OPTIMIZATION_EV_INTEGRATION
                 new_options[CONF_OPTIMIZATION_EV_INTEGRATION] = settings["ev_integration"]
                 changes.append(f"Set EV integration to {settings['ev_integration']}")
+
+            if "profit_max_enabled" in settings:
+                from .const import CONF_PROFIT_MAX_ENABLED
+                new_options[CONF_PROFIT_MAX_ENABLED] = bool(settings["profit_max_enabled"])
+                changes.append(f"Set profit maximisation mode to {settings['profit_max_enabled']}")
 
             if "cost_function" in settings:
                 from .const import CONF_OPTIMIZATION_COST_FUNCTION

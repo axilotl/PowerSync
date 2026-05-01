@@ -10,6 +10,7 @@ from homeassistant.components.switch import SwitchEntity, SwitchEntityDescriptio
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_track_time_interval
 
@@ -677,8 +678,27 @@ class ProfitMaxModeSwitch(SwitchEntity):
         self._attr_name = "Profit Maximisation Mode"
         self._attr_icon = "mdi:cash-plus"
         from .const import CONF_PROFIT_MAX_ENABLED
-        enabled = entry.options.get(CONF_PROFIT_MAX_ENABLED, False) or entry.data.get(CONF_PROFIT_MAX_ENABLED, False)
+        enabled = entry.options.get(
+            CONF_PROFIT_MAX_ENABLED,
+            entry.data.get(CONF_PROFIT_MAX_ENABLED, False),
+        )
         self._attr_is_on = bool(enabled)
+
+    async def async_added_to_hass(self) -> None:
+        """Register for optimizer setting changes made outside this switch."""
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                f"{DOMAIN}_{self._entry.entry_id}_profit_max_mode",
+                self._handle_profit_max_update,
+            )
+        )
+
+    @callback
+    def _handle_profit_max_update(self, enabled: bool) -> None:
+        """Update the HA switch state after API-driven changes."""
+        self._attr_is_on = bool(enabled)
+        self.async_write_ha_state()
 
     @property
     def device_info(self):
@@ -687,7 +707,7 @@ class ProfitMaxModeSwitch(SwitchEntity):
     @property
     def is_on(self) -> bool:
         """Return True if profit maximisation mode is active."""
-        return self._attr_is_on
+        return self._coordinator.profit_max_mode
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Enable profit maximisation mode."""

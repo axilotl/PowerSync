@@ -324,10 +324,21 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if self._load_estimator:
             self._load_estimator.invalidate_cache()
         _LOGGER.info("Profit Maximisation mode %s", "ENABLED" if enabled else "DISABLED")
+        if self.hass and self.entry_id:
+            from homeassistant.helpers.dispatcher import async_dispatcher_send
+
+            from ..const import DOMAIN
+
+            async_dispatcher_send(
+                self.hass,
+                f"{DOMAIN}_{self.entry_id}_profit_max_mode",
+                enabled,
+            )
         if self._entry:
-            from ..const import CONF_PROFIT_MAX_ENABLED
+            from ..const import CONF_PROFIT_MAX_ENABLED, DOMAIN
             new_options = dict(self._entry.options)
             new_options[CONF_PROFIT_MAX_ENABLED] = enabled
+            self.hass.data.setdefault(DOMAIN, {}).setdefault(self.entry_id, {})["_skip_reload"] = True
             self.hass.config_entries.async_update_entry(self._entry, options=new_options)
 
     def _summarise_load_forecast(self) -> dict | None:
@@ -485,7 +496,10 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         if self._entry:
             from ..const import CONF_PROFIT_MAX_ENABLED
-            profit_max = self._entry.options.get(CONF_PROFIT_MAX_ENABLED, False) or self._entry.data.get(CONF_PROFIT_MAX_ENABLED, False)
+            profit_max = self._entry.options.get(
+                CONF_PROFIT_MAX_ENABLED,
+                self._entry.data.get(CONF_PROFIT_MAX_ENABLED, False),
+            )
             self._config.profit_max_enabled = bool(profit_max)
             if self._optimizer:
                 self._optimizer.terminal_weight = 0.3 if profit_max else 1.0
