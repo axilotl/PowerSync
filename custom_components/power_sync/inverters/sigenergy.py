@@ -1087,19 +1087,32 @@ class SigenergyController(InverterController):
                 return False
             _LOGGER.info("Remote EMS control mode set to DISCHARGE")
 
-            # 3. Set grid export limit directly (bypass safety cap for force discharge)
-            # The safety cap reads REG_GRID_EXPORT_LIMIT which creates a circular
-            # dependency — force discharge needs to write a high value, but the cap
-            # clamps it to whatever was previously written (often a low curtailment value).
-            scaled_value = int(power_kw * self.GAIN_POWER)
+            # 3. Set grid export limit. The dynamic safety cap is bypassed because
+            # path 5 of _get_effective_export_safety_cap_kw reads back
+            # REG_GRID_EXPORT_LIMIT itself — a curtailment-set low value would
+            # then clamp force_discharge to that low value. The user-configured
+            # DNSP limit is still honored (it's path 1 of the cap chain and not
+            # circular).
+            effective_kw = power_kw
+            if self._configured_max_export_limit_kw is not None:
+                if effective_kw > self._configured_max_export_limit_kw:
+                    _LOGGER.info(
+                        "Force discharge target %.2f kW exceeds configured DNSP "
+                        "export limit %.2f kW — clamping",
+                        effective_kw,
+                        self._configured_max_export_limit_kw,
+                    )
+                    effective_kw = self._configured_max_export_limit_kw
+
+            scaled_value = int(effective_kw * self.GAIN_POWER)
             values = self._from_unsigned32(scaled_value)
             rate_result = await self._write_holding_registers(self.REG_GRID_EXPORT_LIMIT, values)
             if not rate_result:
-                _LOGGER.error(f"Failed to set grid export limit to {power_kw} kW")
+                _LOGGER.error(f"Failed to set grid export limit to {effective_kw} kW")
                 return False
-            _LOGGER.info(f"Sigenergy grid export limit set to {power_kw} kW (direct, bypassed safety cap)")
+            _LOGGER.info(f"Sigenergy grid export limit set to {effective_kw} kW")
 
-            _LOGGER.info(f"Sigenergy FORCE DISCHARGE active — target {power_kw} kW, export limit {power_kw} kW")
+            _LOGGER.info(f"Sigenergy FORCE DISCHARGE active — target {effective_kw} kW, export limit {effective_kw} kW")
             return True
 
         except Exception as e:
