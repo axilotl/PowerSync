@@ -17,7 +17,7 @@ Supported actions:
 - set_discharge_rate: Set discharge rate limit (Sigenergy only)
 - set_export_limit: Set export power limit (Sigenergy only)
 
-EV Actions (Tesla Fleet/Teslemetry or Tesla BLE):
+EV Actions (Tesla Fleet/Teslemetry, Tesla BLE, OCPP, generic HA, Zaptec, or HA-native chargers):
 - start_ev_charging: Start charging an EV
 - stop_ev_charging: Stop charging an EV
 - set_ev_charge_limit: Set EV charge limit percentage
@@ -1947,7 +1947,7 @@ def _generic_charger_ready_for_start(
 
 def _get_zaptec_standalone(
     hass: HomeAssistant,
-    config_entry: ConfigEntry,
+    config_entry: ConfigEntry | None,
 ) -> Optional[Dict[str, Any]]:
     """Return the configured Zaptec standalone client and cached charger state."""
     from ..const import (
@@ -1957,7 +1957,7 @@ def _get_zaptec_standalone(
         CONF_ZAPTEC_USERNAME,
     )
 
-    candidates = [config_entry]
+    candidates = [config_entry] if config_entry is not None else []
     try:
         for entry in hass.config_entries.async_entries(DOMAIN):
             if entry is not config_entry:
@@ -1997,7 +1997,7 @@ def _zaptec_state_value(cached_state: Dict[str, Any], key: str, default: Any = N
 
 async def _set_zaptec_charging_amps(
     hass: HomeAssistant,
-    config_entry: ConfigEntry,
+    config_entry: ConfigEntry | None,
     amps: int,
 ) -> bool:
     """Set Zaptec standalone installation current."""
@@ -2023,7 +2023,7 @@ async def _set_zaptec_charging_amps(
 
 async def _start_zaptec_charging(
     hass: HomeAssistant,
-    config_entry: ConfigEntry,
+    config_entry: ConfigEntry | None,
     amps: Optional[int] = None,
 ) -> bool:
     """Start Zaptec standalone charging with state-aware command selection."""
@@ -2072,7 +2072,7 @@ async def _start_zaptec_charging(
 
 async def _stop_zaptec_charging(
     hass: HomeAssistant,
-    config_entry: ConfigEntry,
+    config_entry: ConfigEntry | None,
 ) -> bool:
     """Stop Zaptec standalone charging, treating already-idle states as success."""
     zaptec = _get_zaptec_standalone(hass, config_entry)
@@ -2161,6 +2161,20 @@ async def _action_start_ev_charging(
         except Exception as e:
             _LOGGER.error("Generic charger start failed: %s", e)
             return False
+
+    # HA-native charger integrations: Wallbox, Easee, native Zaptec, ev_charger,
+    # and similar entities that expose service-domain start/stop methods.
+    if _is_ha_native_charger_type(charger_type):
+        amps = params.get("amps")
+        if amps is None:
+            amps = params.get("charging_amps")
+        if amps is not None:
+            amps_ok = await _set_ha_native_charging_amps(hass, params, int(amps))
+            if not amps_ok:
+                _LOGGER.debug(
+                    "HA-native charger start will continue although current limit update failed"
+                )
+        return await _start_ha_native_charger(hass, params)
 
     # Tesla charger: existing logic below
     ev_config = _get_ev_config(config_entry)
@@ -2352,6 +2366,10 @@ async def _action_stop_ev_charging(
             _LOGGER.error("Generic charger stop failed: %s", e)
             return False
 
+    # HA-native charger integrations
+    if _is_ha_native_charger_type(charger_type):
+        return await _stop_ha_native_charger(hass, params)
+
     # Tesla charger: existing logic below
     ev_config = _get_ev_config(config_entry)
     ev_provider = ev_config["ev_provider"]
@@ -2537,6 +2555,10 @@ async def _action_set_ev_charging_amps(
     if charger_type == "zaptec":
         return await _set_zaptec_charging_amps(hass, config_entry, int(amps))
 
+    # HA-native charger integrations
+    if _is_ha_native_charger_type(charger_type):
+        return await _set_ha_native_charging_amps(hass, params, int(amps))
+
     # Generic charger
     if charger_type == "generic":
         amps_entity = params.get("charger_amps_entity")
@@ -2651,6 +2673,219 @@ _ev_scheduled_stop: Dict[str, Any] = {}
 
 # Default vehicle ID for single-vehicle setups
 DEFAULT_VEHICLE_ID = "_default"
+
+# Internal charger type for HA-native charger integrations that expose their
+# own service domains rather than the generic switch/number model.
+HA_NATIVE_CHARGER_TYPES = {
+    "ha_native",
+    "native",
+    "ev_charger",
+    "wallbox",
+    "easee",
+    "zaptec_native",
+}
+
+
+def _is_ha_native_charger_type(charger_type: Any) -> bool:
+    """Return whether params refer to a HA-native charger integration."""
+    return str(charger_type or "").lower() in HA_NATIVE_CHARGER_TYPES
+
+
+def _ha_native_charger_entity(params: Dict[str, Any]) -> str:
+    """Return the HA entity id used by a HA-native charger adapter."""
+    return str(
+        params.get("charger_entity_id")
+        or params.get("entity_id")
+        or params.get("charger_switch_entity")
+        or ""
+    ).strip()
+
+
+def _ha_native_charger_domain(params: Dict[str, Any], entity_id: str) -> str:
+    """Return the HA service domain for a native charger entity."""
+    configured_domain = str(params.get("charger_domain") or "").strip()
+    if configured_domain:
+        return configured_domain
+    if "." in entity_id:
+        return entity_id.split(".", 1)[0]
+    charger_type = str(params.get("charger_type") or "").strip()
+    if charger_type in HA_NATIVE_CHARGER_TYPES and charger_type not in ("ha_native", "native", "zaptec_native"):
+        return charger_type
+    if charger_type == "zaptec_native":
+        return "zaptec"
+    return "homeassistant"
+
+
+def _ha_native_charger_amps_entity(hass: HomeAssistant, params: Dict[str, Any], entity_id: str) -> str:
+    """Find a number entity that controls HA-native charger amps."""
+    explicit_entity = str(params.get("charger_amps_entity") or "").strip()
+    if explicit_entity:
+        return explicit_entity
+
+    candidates: list[str] = []
+    if entity_id:
+        candidates.append(
+            entity_id.replace("switch.", "number.").replace("_charger", "_charging_amps")
+        )
+        candidates.extend(
+            entity_id.replace("switch.", "number.") + suffix
+            for suffix in ("_amps", "_charging_amps", "_current", "_charging_current")
+        )
+
+    for number_entity in candidates:
+        if hass.states.get(number_entity):
+            return number_entity
+    return ""
+
+
+async def _set_ha_native_charging_amps(
+    hass: HomeAssistant,
+    params: Dict[str, Any],
+    amps: int,
+) -> bool:
+    """Set charging current for HA-native charger integrations."""
+    entity_id = _ha_native_charger_entity(params)
+    domain = _ha_native_charger_domain(params, entity_id)
+
+    if not entity_id and domain != "zaptec":
+        _LOGGER.error("HA-native charger set amps: no charger entity configured")
+        return False
+
+    try:
+        if domain == "wallbox":
+            await hass.services.async_call(
+                "wallbox",
+                "set_charging_current",
+                {"entity_id": entity_id, "charging_current": amps},
+                blocking=True,
+            )
+            _LOGGER.debug("Set Wallbox charging amps to %dA", amps)
+            return True
+
+        if domain == "easee":
+            await hass.services.async_call(
+                "easee",
+                "set_charger_dynamic_limit",
+                {"entity_id": entity_id, "current": amps},
+                blocking=True,
+            )
+            _LOGGER.debug("Set Easee charging amps to %dA", amps)
+            return True
+
+        if domain == "zaptec":
+            installation_id = str(
+                params.get("zaptec_installation_id")
+                or params.get("zaptec_installation_id_cloud")
+                or ""
+            ).strip()
+            if installation_id:
+                await hass.services.async_call(
+                    "zaptec",
+                    "limit_current",
+                    {"device_id": installation_id, "available_current": amps},
+                    blocking=True,
+                )
+                _LOGGER.debug("Set HA Zaptec charging amps to %dA", amps)
+                return True
+
+        if domain == "ocpp":
+            await hass.services.async_call(
+                "ocpp",
+                "set_charge_rate",
+                {"entity_id": entity_id, "limit_amps": amps},
+                blocking=True,
+            )
+            _LOGGER.debug("Set native OCPP charging amps to %dA", amps)
+            return True
+
+        amps_entity = _ha_native_charger_amps_entity(hass, params, entity_id)
+        if amps_entity:
+            await hass.services.async_call(
+                "number",
+                "set_value",
+                {"entity_id": amps_entity, "value": amps},
+                blocking=True,
+            )
+            _LOGGER.debug("Set HA-native charger amps via %s to %dA", amps_entity, amps)
+            return True
+    except Exception as err:
+        _LOGGER.error("Failed to set HA-native charger amps: %s", err)
+        return False
+
+    _LOGGER.debug("No HA-native charger amp control found for %s", entity_id or domain)
+    return False
+
+
+async def _start_ha_native_charger(
+    hass: HomeAssistant,
+    params: Dict[str, Any],
+) -> bool:
+    """Start charging through a HA-native charger integration."""
+    entity_id = _ha_native_charger_entity(params)
+    domain = _ha_native_charger_domain(params, entity_id)
+
+    if not entity_id:
+        _LOGGER.error("HA-native charger start: no charger entity configured")
+        return False
+
+    try:
+        if domain == "switch":
+            service_domain = "switch"
+            service = "turn_on"
+        elif domain in ("ev_charger", "ocpp", "wallbox", "easee", "zaptec"):
+            service_domain = domain
+            service = "resume_charging" if domain == "zaptec" else "start_charging"
+        else:
+            service_domain = "homeassistant"
+            service = "turn_on"
+
+        await hass.services.async_call(
+            service_domain,
+            service,
+            {"entity_id": entity_id},
+            blocking=True,
+        )
+        _LOGGER.info("Started HA-native charger via %s.%s for %s", service_domain, service, entity_id)
+        return True
+    except Exception as err:
+        _LOGGER.error("HA-native charger start failed: %s", err)
+        return False
+
+
+async def _stop_ha_native_charger(
+    hass: HomeAssistant,
+    params: Dict[str, Any],
+) -> bool:
+    """Stop charging through a HA-native charger integration."""
+    entity_id = _ha_native_charger_entity(params)
+    domain = _ha_native_charger_domain(params, entity_id)
+
+    if not entity_id:
+        _LOGGER.error("HA-native charger stop: no charger entity configured")
+        return False
+
+    try:
+        if domain == "switch":
+            service_domain = "switch"
+            service = "turn_off"
+        elif domain in ("ev_charger", "ocpp", "wallbox", "easee", "zaptec"):
+            service_domain = domain
+            service = "stop_charging"
+        else:
+            service_domain = "homeassistant"
+            service = "turn_off"
+
+        await hass.services.async_call(
+            service_domain,
+            service,
+            {"entity_id": entity_id},
+            blocking=True,
+        )
+        _LOGGER.info("Stopped HA-native charger via %s.%s for %s", service_domain, service, entity_id)
+        return True
+    except Exception as err:
+        _LOGGER.error("HA-native charger stop failed: %s", err)
+        return False
 
 
 async def record_manual_ev_charging_session(
@@ -3104,7 +3339,7 @@ async def _solar_surplus_switch_to_next_vehicle(
 
 async def _set_vehicle_amps(
     hass: HomeAssistant,
-    config_entry: ConfigEntry,
+    config_entry: ConfigEntry | None,
     vehicle_id: str,
     amps: int,
     params: dict
@@ -3153,6 +3388,19 @@ async def _set_vehicle_amps(
         if amps == 0:
             return await _stop_zaptec_charging(hass, config_entry)
         return await _start_zaptec_charging(hass, config_entry, amps)
+
+    elif _is_ha_native_charger_type(charger_type):
+        if amps == 0:
+            return await _stop_ha_native_charger(hass, params)
+
+        amps_ok = await _set_ha_native_charging_amps(hass, params, amps)
+        start_ok = await _start_ha_native_charger(hass, params)
+        if not amps_ok:
+            _LOGGER.debug(
+                "HA-native charger start command %s even though current limit update failed",
+                "succeeded" if start_ok else "failed",
+            )
+        return start_ok
 
     elif charger_type == "generic":
         # Use HA service calls to switch and number entities

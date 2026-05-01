@@ -187,6 +187,67 @@ def test_optimizer_ev_stop_releases_owned_loadpoint():
     assert last_command["reason"] == "target reached"
 
 
+def test_optimizer_wallbox_routes_through_shared_native_adapter():
+    hass = _Hass()
+    entry = _Entry()
+    config = ev_coordinator.EVConfig(entity_id="wallbox.garage", name="Garage Wallbox")
+    coordinator = ev_coordinator.EVCoordinator(hass, [config], config_entry=entry)
+
+    result = asyncio.run(coordinator._start_charging(config, power_w=3680))
+
+    assert result is True
+    assert hass.services.calls == [
+        ("wallbox", "set_charging_current", {"entity_id": "wallbox.garage", "charging_current": 16}),
+        ("wallbox", "start_charging", {"entity_id": "wallbox.garage"}),
+    ]
+    lease = ev_ownership.get_ev_ownerships(hass, entry)["wallbox.garage"]
+    assert lease["owner_mode"] == "ev_coordinator"
+
+    hass.services.calls.clear()
+
+    result = asyncio.run(coordinator._stop_charging(config, reason="window ended"))
+
+    assert result is True
+    assert hass.services.calls == [
+        ("wallbox", "stop_charging", {"entity_id": "wallbox.garage"})
+    ]
+    assert ev_ownership.get_ev_ownerships(hass, entry) == {}
+
+
+def test_optimizer_easee_routes_through_shared_native_adapter():
+    hass = _Hass()
+    entry = _Entry()
+    config = ev_coordinator.EVConfig(entity_id="easee.garage", name="Garage Easee")
+    coordinator = ev_coordinator.EVCoordinator(hass, [config], config_entry=entry)
+
+    result = asyncio.run(coordinator._start_charging(config, power_w=2300))
+
+    assert result is True
+    assert hass.services.calls == [
+        ("easee", "set_charger_dynamic_limit", {"entity_id": "easee.garage", "current": 10}),
+        ("easee", "start_charging", {"entity_id": "easee.garage"}),
+    ]
+
+
+def test_optimizer_native_zaptec_routes_through_shared_native_adapter():
+    entry = SimpleNamespace(
+        entry_id="entry-1",
+        data={},
+        options={"zaptec_installation_id": "installation-device"},
+    )
+    hass = _Hass(entries=[entry])
+    config = ev_coordinator.EVConfig(entity_id="zaptec.garage", name="Garage Zaptec")
+    coordinator = ev_coordinator.EVCoordinator(hass, [config], config_entry=_Entry())
+
+    result = asyncio.run(coordinator._start_charging(config, power_w=2300))
+
+    assert result is True
+    assert hass.services.calls == [
+        ("zaptec", "limit_current", {"device_id": "installation-device", "available_current": 10}),
+        ("zaptec", "resume_charging", {"entity_id": "zaptec.garage"}),
+    ]
+
+
 def test_optimizer_zaptec_uses_existing_client_without_password():
     entry = SimpleNamespace(
         entry_id="entry-1",
