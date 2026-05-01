@@ -871,8 +871,8 @@ def _ev_action_loadpoint_id(params: Dict[str, Any]) -> str:
     if charger_type == "generic":
         return "generic_ev"
     if charger_type == "ocpp":
-        charger_id = params.get("ocpp_charger_id") or "ocpp_charger"
-        return f"ocpp_{charger_id}"
+        charger_id = str(params.get("ocpp_charger_id") or "ocpp_charger")
+        return charger_id if charger_id.startswith("ocpp_") else f"ocpp_{charger_id}"
     if charger_type == "zaptec":
         return "zaptec_standalone"
 

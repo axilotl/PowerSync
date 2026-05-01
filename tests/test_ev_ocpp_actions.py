@@ -192,6 +192,18 @@ def test_ocpp_vehicle_start_succeeds_when_only_switch_control_exists():
     ]
 
 
+def test_ocpp_loadpoint_id_does_not_double_prefix():
+    assert actions._ev_action_loadpoint_id({
+        "charger_type": "ocpp",
+        "ocpp_charger_id": "evse_1",
+    }) == "ocpp_evse_1"
+
+    assert actions._ev_action_loadpoint_id({
+        "charger_type": "ocpp",
+        "ocpp_charger_id": "ocpp_evse_1",
+    }) == "ocpp_evse_1"
+
+
 def test_generic_start_blocks_when_status_available_and_no_connector_present():
     hass = _Hass([
         _State("switch.garage_ev", "off"),

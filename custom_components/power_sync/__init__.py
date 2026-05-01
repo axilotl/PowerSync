@@ -9175,7 +9175,9 @@ class EVVehicleCommandView(HomeAssistantView):
         returning them as-is for robustness.
         """
         # Accept pseudo-VINs for non-Tesla chargers directly
-        if vehicle_id in ("generic_ev", "zaptec_standalone"):
+        if vehicle_id in ("generic_ev", "zaptec_standalone") or (
+            vehicle_id and vehicle_id.startswith("ocpp_")
+        ):
             return vehicle_id
 
         # Accept BLE identifiers directly (e.g. "ble_joanna_model_3_local")
@@ -9480,6 +9482,13 @@ class EVVehicleCommandView(HomeAssistantView):
         if vehicle_vin in (None, "zaptec_standalone") and self._get_zaptec_standalone():
             return "zaptec_standalone", {"charger_type": "zaptec"}
 
+        if vehicle_vin and vehicle_vin.startswith("ocpp_"):
+            charger_id = self._ocpp_charger_id_from_loadpoint(vehicle_vin)
+            return vehicle_vin, {
+                "charger_type": "ocpp",
+                "ocpp_charger_id": charger_id,
+            }
+
         if vehicle_vin == "generic_ev":
             from .const import (
                 CONF_GENERIC_CHARGER_AMPS_ENTITY,
@@ -9499,6 +9508,20 @@ class EVVehicleCommandView(HomeAssistantView):
                     }
 
         return vehicle_vin, {"charger_type": "tesla"}
+
+    def _ocpp_charger_id_from_loadpoint(self, loadpoint_id: str) -> str:
+        """Resolve an OCPP loadpoint id to the raw HA charger prefix."""
+        candidates = [loadpoint_id]
+        if loadpoint_id.startswith("ocpp_"):
+            candidates.append(loadpoint_id[5:])
+
+        for candidate in candidates:
+            if self._hass.states.get(f"switch.{candidate}_charge_control"):
+                return candidate
+
+        if loadpoint_id != "ocpp_charger" and loadpoint_id.startswith("ocpp_"):
+            return loadpoint_id[5:]
+        return loadpoint_id
 
     def _manual_action_params(self, vehicle_vin: str | None) -> dict:
         """Build shared action parameters for mobile/manual EV commands."""
