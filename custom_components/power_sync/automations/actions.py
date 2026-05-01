@@ -1901,6 +1901,50 @@ def _find_ocpp_current_limit_entity(hass: HomeAssistant, charger_id: str) -> Opt
     return sorted(set(candidates), key=_priority)[0]
 
 
+def _generic_charger_ready_for_start(
+    hass: HomeAssistant,
+    params: Dict[str, Any],
+) -> tuple[bool, str | None]:
+    """Return whether a generic charger appears to have a vehicle connected."""
+    status_entity = params.get("charger_status_entity")
+    if not status_entity:
+        return True, None
+
+    state = hass.states.get(status_entity)
+    if not state or state.state in ("unavailable", "unknown"):
+        return True, None
+
+    status_lower = state.state.lower()
+    if status_lower not in ("available", "disconnected"):
+        return True, None
+
+    car_present_states = {
+        "preparing",
+        "charging",
+        "suspendedev",
+        "suspendedevse",
+        "suspended_ev",
+        "suspended_evse",
+        "finishing",
+    }
+    car_on_connector = any(
+        s.state.lower() in car_present_states
+        for s in hass.states.async_all()
+        if s.entity_id.startswith("sensor.")
+        and s.entity_id.endswith("_status_connector")
+        and s.state not in ("unavailable", "unknown")
+    )
+    if car_on_connector:
+        _LOGGER.debug(
+            "Generic charger: %s=%s but connector shows car present",
+            status_entity,
+            state.state,
+        )
+        return True, None
+
+    return False, "Vehicle is not plugged in"
+
+
 def _get_zaptec_standalone(
     hass: HomeAssistant,
     config_entry: ConfigEntry,
@@ -2098,9 +2142,17 @@ async def _action_start_ev_charging(
 
     # Generic charger: use configured switch entity
     if charger_type == "generic":
-        switch_entity = params.get("charger_switch_entity")
+        ready, block_reason = _generic_charger_ready_for_start(hass, params)
+        if not ready:
+            _LOGGER.warning("Generic charger start blocked: %s", block_reason)
+            return False
+
+        switch_entity = (params.get("charger_switch_entity") or "").strip()
         if not switch_entity:
             _LOGGER.error("Generic charger start: no switch entity configured")
+            return False
+        if "." not in switch_entity:
+            _LOGGER.error("Generic charger start: invalid switch entity %s", switch_entity)
             return False
         try:
             await hass.services.async_call("switch", "turn_on", {"entity_id": switch_entity}, blocking=True)
@@ -2285,9 +2337,12 @@ async def _action_stop_ev_charging(
 
     # Generic charger
     if charger_type == "generic":
-        switch_entity = params.get("charger_switch_entity")
+        switch_entity = (params.get("charger_switch_entity") or "").strip()
         if not switch_entity:
             _LOGGER.error("Generic charger stop: no switch entity configured")
+            return False
+        if "." not in switch_entity:
+            _LOGGER.error("Generic charger stop: invalid switch entity %s", switch_entity)
             return False
         try:
             await hass.services.async_call("switch", "turn_off", {"entity_id": switch_entity}, blocking=True)
@@ -3125,6 +3180,10 @@ async def _set_vehicle_amps(
                     )
             else:
                 # Set amps and ensure charger is on
+                ready, block_reason = _generic_charger_ready_for_start(hass, params)
+                if not ready:
+                    _LOGGER.warning("Generic charger set amps blocked: %s", block_reason)
+                    return False
                 if amps_entity:
                     await hass.services.async_call(
                         "number", "set_value",
@@ -4372,6 +4431,7 @@ async def _action_start_ev_charging_dynamic_locked(
         # Pass through generic charger entities if present
         "charger_switch_entity": params.get("charger_switch_entity"),
         "charger_amps_entity": params.get("charger_amps_entity"),
+        "charger_status_entity": params.get("charger_status_entity"),
         "ocpp_charger_id": params.get("ocpp_charger_id"),
     }
 

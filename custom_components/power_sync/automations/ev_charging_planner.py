@@ -5048,11 +5048,13 @@ def _with_configured_charger_entities(
     if charger_type == "generic":
         from ..const import (
             CONF_GENERIC_CHARGER_AMPS_ENTITY,
+            CONF_GENERIC_CHARGER_STATUS_ENTITY,
             CONF_GENERIC_CHARGER_SWITCH_ENTITY,
         )
 
         params["charger_switch_entity"] = opts.get(CONF_GENERIC_CHARGER_SWITCH_ENTITY, "")
         params["charger_amps_entity"] = opts.get(CONF_GENERIC_CHARGER_AMPS_ENTITY, "")
+        params["charger_status_entity"] = opts.get(CONF_GENERIC_CHARGER_STATUS_ENTITY, "")
     elif charger_type == "ocpp":
         params["ocpp_charger_id"] = opts.get("ocpp_charger_id", "ocpp_charger")
     return params

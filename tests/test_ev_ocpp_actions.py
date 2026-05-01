@@ -192,6 +192,53 @@ def test_ocpp_vehicle_start_succeeds_when_only_switch_control_exists():
     ]
 
 
+def test_generic_start_blocks_when_status_available_and_no_connector_present():
+    hass = _Hass([
+        _State("switch.garage_ev", "off"),
+        _State("sensor.garage_ev_status", "Available"),
+    ])
+
+    result = asyncio.run(
+        actions._action_start_ev_charging(
+            hass,
+            _Entry(),
+            {
+                "charger_type": "generic",
+                "charger_switch_entity": "switch.garage_ev",
+                "charger_status_entity": "sensor.garage_ev_status",
+            },
+        )
+    )
+
+    assert result is False
+    assert hass.services.calls == []
+
+
+def test_generic_start_allows_available_status_when_connector_has_car():
+    hass = _Hass([
+        _State("switch.garage_ev", "off"),
+        _State("sensor.garage_ev_status", "Available"),
+        _State("sensor.garage_ev_status_connector", "Preparing"),
+    ])
+
+    result = asyncio.run(
+        actions._action_start_ev_charging(
+            hass,
+            _Entry(),
+            {
+                "charger_type": "generic",
+                "charger_switch_entity": " switch.garage_ev ",
+                "charger_status_entity": "sensor.garage_ev_status",
+            },
+        )
+    )
+
+    assert result is True
+    assert hass.services.calls == [
+        ("switch", "turn_on", {"entity_id": "switch.garage_ev"})
+    ]
+
+
 def test_direct_ev_start_action_records_manual_ownership(monkeypatch):
     async def fake_start(*args, **kwargs):
         return True
