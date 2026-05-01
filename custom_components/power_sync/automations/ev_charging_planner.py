@@ -6051,9 +6051,9 @@ class PriceLevelChargingExecutor:
                 )
 
                 if should_charge and not vehicle_state.is_charging:
-                    await self._start_charging(mode, reason)
+                    await self._start_charging(mode, reason, vehicle_vin=pseudo_vin)
                 elif not should_charge and vehicle_state.is_charging:
-                    await self._stop_charging(reason)
+                    await self._stop_charging(reason, vehicle_vin=pseudo_vin)
                 else:
                     vehicle_state.last_decision = "charging" if vehicle_state.is_charging else "waiting"
                     vehicle_state.last_decision_reason = reason

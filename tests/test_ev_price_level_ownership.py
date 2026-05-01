@@ -126,6 +126,10 @@ async def _one_vehicle(*args, **kwargs):
     return [{"vin": VIN, "name": "Model 3"}]
 
 
+async def _no_vehicles(*args, **kwargs):
+    return []
+
+
 def test_price_level_leaves_solar_surplus_owned_session_alone(monkeypatch, fake_actions):
     fake_actions._dynamic_ev_state = {
         "entry-1": {
@@ -288,6 +292,38 @@ def test_price_level_start_uses_vehicle_charger_config(fake_actions):
     assert params["charger_status_entity"] == "sensor.garage_ev_status"
     assert params["max_charge_amps"] == 24
     assert params["phases"] == 3
+
+
+def test_generic_price_level_start_uses_generic_loadpoint_id(monkeypatch, fake_actions):
+    fake_actions._action_start_ev_charging_dynamic = AsyncMock(return_value=True)
+
+    class GenericEntry(_FakeConfigEntry):
+        options = {
+            "generic_charger_enabled": True,
+            "generic_charger_switch_entity": "switch.garage_ev",
+            "generic_charger_amps_entity": "number.garage_ev_current",
+        }
+
+    async def wants_charge(self, current_price_cents):
+        return True, "Cheap price", "price_level_opportunity"
+
+    monkeypatch.setattr(ev_planner, "discover_all_tesla_vehicles", _no_vehicles)
+    monkeypatch.setattr(
+        ev_planner.PriceLevelChargingExecutor,
+        "get_charging_decision",
+        wants_charge,
+    )
+
+    executor = ev_planner.PriceLevelChargingExecutor(_FakeHass(), GenericEntry())
+    results = asyncio.run(executor.evaluate_all_vehicles(5))
+
+    assert results["generic_ev"] == (True, "Cheap price", "price_level_opportunity")
+    fake_actions._action_start_ev_charging_dynamic.assert_awaited_once()
+    _hass, _entry, params = fake_actions._action_start_ev_charging_dynamic.await_args.args
+    assert params["vehicle_id"] == "generic_ev"
+    assert params["vehicle_vin"] == "generic_ev"
+    assert params["charger_type"] == "generic"
+    assert params["charger_switch_entity"] == "switch.garage_ev"
 
 
 def test_price_level_stop_uses_vehicle_charger_config(fake_actions):
