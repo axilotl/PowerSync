@@ -3221,6 +3221,19 @@ class AutoScheduleExecutor:
 
         return amps
 
+    def _power_to_amps_for_settings(
+        self,
+        power_w: float,
+        settings: "AutoScheduleSettings",
+    ) -> int:
+        """Convert watts to amps using the vehicle's charger configuration."""
+        return self._power_to_amps(
+            power_w,
+            settings.voltage,
+            settings.phases,
+            settings.max_charge_amps,
+        )
+
     async def _set_vehicle_charge_rate(
         self,
         vehicle_id: str,
@@ -3245,13 +3258,8 @@ class AutoScheduleExecutor:
         """
         from .actions import _set_vehicle_amps
 
-        # Get home power settings for voltage/phases
-        home_config = await self._get_home_power_settings()
-        phases = 1 if home_config.get("phase_type") == "single" else 3
-        voltage = 230  # Australia standard
-
         # Convert power to amps (use per-vehicle max from settings)
-        target_amps = self._power_to_amps(power_w, voltage, phases, settings.max_charge_amps)
+        target_amps = self._power_to_amps_for_settings(power_w, settings)
 
         if target_amps == 0:
             return False
@@ -3285,7 +3293,7 @@ class AutoScheduleExecutor:
                 self._current_charge_amps[vehicle_id] = target_amps
                 _LOGGER.info(
                     f"⚡ Variable charge rate: Set {vehicle_id} to {target_amps}A "
-                    f"({power_w/1000:.1f}kW @ {voltage}V/{phases}ph)"
+                    f"({power_w/1000:.1f}kW @ {settings.voltage}V/{settings.phases}ph)"
                 )
                 return True
             else:
@@ -3970,7 +3978,7 @@ class AutoScheduleExecutor:
             next_start, next_end, next_power = ml_schedule.get_next_charging_window(now)
 
             # Calculate target amps for logging (use per-vehicle max)
-            target_amps = self._power_to_amps(power_w, max_amps=settings.max_charge_amps) if power_w > 0 else 0
+            target_amps = self._power_to_amps_for_settings(power_w, settings) if power_w > 0 else 0
 
             if should_charge:
                 reason = f"Smart Optimization: charge at {power_w/1000:.1f}kW ({target_amps}A)"
@@ -4121,10 +4129,6 @@ class AutoScheduleExecutor:
             allow_parallel = solar_config.get("allow_parallel_charging", False)
             max_battery_charge_kw = solar_config.get("max_battery_charge_rate_kw", 5.0)
 
-            # Get home power settings for phases
-            home_power = await self._get_home_power_settings()
-            phases = 3 if home_power.get("phase_type") == "three" else 1
-
             # Check if battery needs priority (battery below threshold)
             if battery_soc < min_battery_for_ev:
                 # Check if parallel charging is available
@@ -4173,7 +4177,8 @@ class AutoScheduleExecutor:
                     _LOGGER.info(
                         f"Auto-schedule: In solar window but no surplus - "
                         f"solar={solar_power_kw:.1f}kW, load={load_power_kw:.1f}kW, "
-                        f"surplus={current_surplus_kw:.1f}kW < {min_surplus:.1f}kW needed (phases={phases})"
+                        f"surplus={current_surplus_kw:.1f}kW < {min_surplus:.1f}kW needed "
+                        f"(phases={settings.phases})"
                     )
 
         # Find current window (if in one)

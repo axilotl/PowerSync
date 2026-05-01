@@ -115,3 +115,21 @@ def test_configured_generic_entities_preserve_vehicle_overrides():
     assert result["charger_switch_entity"] == "switch.vehicle_ev"
     assert result["charger_amps_entity"] == "number.vehicle_ev_current"
     assert result["charger_status_entity"] == "sensor.vehicle_ev_status"
+
+
+def test_power_to_amps_uses_vehicle_charger_phase_settings():
+    executor = object.__new__(ev_planner.AutoScheduleExecutor)
+
+    single_phase = ev_planner.AutoScheduleSettings(
+        voltage=230,
+        phases=1,
+        max_charge_amps=32,
+    )
+    three_phase = ev_planner.AutoScheduleSettings(
+        voltage=230,
+        phases=3,
+        max_charge_amps=32,
+    )
+
+    assert executor._power_to_amps_for_settings(6900, single_phase) == 30
+    assert executor._power_to_amps_for_settings(6900, three_phase) == 10
