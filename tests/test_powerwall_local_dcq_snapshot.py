@@ -129,7 +129,8 @@ def test_snapshot_from_dcq_full_payload():
     assert snap.battery_w == -2000.0
     assert snap.grid_w == 1234.5
     assert snap.load_w == 3500.0
-    assert snap.soc == 30.0  # 8100 / 27000 * 100
+    # PowerSync reports Tesla app SOC, scaled across the usable 5-100% range.
+    assert snap.soc == 26.31578947368421
     assert snap.grid_status == "SystemGridConnected"
     assert snap.operation_mode == "self_consumption"
     assert snap.backup_reserve_percent == 20
@@ -159,7 +160,7 @@ def test_snapshot_from_dcq_no_config():
     assert snap.operation_mode is None
     assert snap.backup_reserve_percent is None
     # Other fields still populate from DCQ.
-    assert snap.soc == 30.0
+    assert snap.soc == 26.31578947368421
     assert snap.grid_w == 1234.5
 
 

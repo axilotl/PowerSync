@@ -1,0 +1,449 @@
+"""Tests for OCPP EV action fallbacks and ownership guards."""
+
+from __future__ import annotations
+
+import asyncio
+import importlib
+import sys
+import types
+from pathlib import Path
+from types import SimpleNamespace
+
+
+ROOT = Path(__file__).resolve().parent.parent / "custom_components" / "power_sync"
+
+
+def _install_ha_stubs() -> None:
+    ha_root = sys.modules.setdefault("homeassistant", types.ModuleType("homeassistant"))
+    ha_config_entries = sys.modules.setdefault(
+        "homeassistant.config_entries", types.ModuleType("homeassistant.config_entries")
+    )
+    ha_core = sys.modules.setdefault("homeassistant.core", types.ModuleType("homeassistant.core"))
+    ha_helpers = sys.modules.setdefault(
+        "homeassistant.helpers", types.ModuleType("homeassistant.helpers")
+    )
+    ha_er = sys.modules.setdefault(
+        "homeassistant.helpers.entity_registry",
+        types.ModuleType("homeassistant.helpers.entity_registry"),
+    )
+    ha_dr = sys.modules.setdefault(
+        "homeassistant.helpers.device_registry",
+        types.ModuleType("homeassistant.helpers.device_registry"),
+    )
+    ha_event = sys.modules.setdefault(
+        "homeassistant.helpers.event", types.ModuleType("homeassistant.helpers.event")
+    )
+    ha_util = sys.modules.setdefault("homeassistant.util", types.ModuleType("homeassistant.util"))
+    ha_dt = sys.modules.setdefault("homeassistant.util.dt", types.ModuleType("homeassistant.util.dt"))
+
+    ha_core.HomeAssistant = type("HomeAssistant", (), {})
+    ha_config_entries.ConfigEntry = type("ConfigEntry", (), {})
+    ha_er.async_get = lambda hass: hass.entity_registry
+    ha_dr.async_get = lambda hass: SimpleNamespace(devices={})
+    ha_event.async_track_time_interval = lambda *args, **kwargs: (lambda: None)
+    ha_event.async_track_point_in_time = lambda *args, **kwargs: (lambda: None)
+    ha_dt.now = getattr(ha_dt, "now", lambda *args, **kwargs: None)
+    ha_dt.utcnow = getattr(ha_dt, "utcnow", lambda *args, **kwargs: None)
+
+    ha_helpers.entity_registry = ha_er
+    ha_helpers.device_registry = ha_dr
+    ha_helpers.event = ha_event
+    ha_util.dt = ha_dt
+    ha_root.helpers = ha_helpers
+    ha_root.util = ha_util
+
+
+_install_ha_stubs()
+
+_ps = types.ModuleType("power_sync")
+_ps.__path__ = [str(ROOT)]
+sys.modules["power_sync"] = _ps
+
+_automations = types.ModuleType("power_sync.automations")
+_automations.__path__ = [str(ROOT / "automations")]
+sys.modules["power_sync.automations"] = _automations
+
+if not hasattr(sys.modules.get("power_sync.const"), "CONF_EV_PROVIDER"):
+    sys.modules.pop("power_sync.const", None)
+sys.modules.pop("power_sync.automations.actions", None)
+actions = importlib.import_module("power_sync.automations.actions")
+
+
+class _State:
+    def __init__(self, entity_id: str, state: str, attributes: dict | None = None) -> None:
+        self.entity_id = entity_id
+        self.state = state
+        self.attributes = attributes or {}
+
+
+class _States:
+    def __init__(self, states: list[_State]) -> None:
+        self._states = {state.entity_id: state for state in states}
+
+    def get(self, entity_id: str):
+        return self._states.get(entity_id)
+
+    def async_entity_ids(self, domain: str | None = None):
+        if domain is None:
+            return list(self._states)
+        return [entity_id for entity_id in self._states if entity_id.startswith(f"{domain}.")]
+
+    def async_all(self, domain: str | None = None):
+        if domain is None:
+            return list(self._states.values())
+        return [
+            state for entity_id, state in self._states.items()
+            if entity_id.startswith(f"{domain}.")
+        ]
+
+
+class _Services:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, dict]] = []
+
+    async def async_call(self, domain: str, service: str, data: dict, blocking: bool = True):
+        self.calls.append((domain, service, data))
+
+
+class _Hass:
+    def __init__(self, states: list[_State], registry_entities: dict[str, object] | None = None) -> None:
+        self.data = {"power_sync": {"entry-1": {}}}
+        self.states = _States(states)
+        self.services = _Services()
+        self.entity_registry = SimpleNamespace(entities=registry_entities or {})
+
+
+class _Entry:
+    entry_id = "entry-1"
+    data = {}
+    options = {}
+
+
+def test_ocpp_amps_falls_back_to_hacs_number_entity():
+    entity_id = "number.evse_1_maximum_current"
+    hass = _Hass(
+        [
+            _State(entity_id, "16", {"min": 6, "max": 32}),
+        ],
+        {
+            entity_id: SimpleNamespace(entity_id=entity_id, platform="ocpp"),
+        },
+    )
+
+    assert asyncio.run(actions._set_ocpp_charging_amps(hass, "evse_1", 40)) is True
+    assert hass.services.calls == [
+        ("number", "set_value", {"entity_id": entity_id, "value": 32})
+    ]
+
+
+def test_ocpp_vehicle_start_succeeds_when_only_switch_control_exists():
+    hass = _Hass([_State("switch.evse_1_charge_control", "off")])
+
+    result = asyncio.run(
+        actions._set_vehicle_amps(
+            hass,
+            _Entry(),
+            "ocpp_evse_1",
+            16,
+            {"charger_type": "ocpp", "ocpp_charger_id": "evse_1"},
+        )
+    )
+
+    assert result is True
+    assert hass.services.calls == [
+        ("switch", "turn_on", {"entity_id": "switch.evse_1_charge_control"})
+    ]
+
+
+def test_direct_ev_start_action_records_manual_ownership(monkeypatch):
+    async def fake_start(*args, **kwargs):
+        return True
+
+    monkeypatch.setattr(actions, "_action_start_ev_charging", fake_start)
+    hass = _Hass([])
+
+    result = asyncio.run(
+        actions._execute_single_action(
+            hass,
+            _Entry(),
+            "start_ev_charging",
+            {
+                "charger_type": "generic",
+                "charger_switch_entity": "switch.garage_ev",
+            },
+        )
+    )
+
+    assert result is True
+    lease = hass.data["power_sync"]["entry-1"]["ev_ownership"]["generic_ev"]
+    assert lease["owner_mode"] == "manual"
+    assert lease["last_command"]["command"] == "start"
+
+
+def test_direct_ev_start_action_can_skip_ownership(monkeypatch):
+    async def fake_start(*args, **kwargs):
+        return True
+
+    monkeypatch.setattr(actions, "_action_start_ev_charging", fake_start)
+    hass = _Hass([])
+
+    result = asyncio.run(
+        actions._execute_single_action(
+            hass,
+            _Entry(),
+            "start_ev_charging",
+            {
+                "charger_type": "generic",
+                "charger_switch_entity": "switch.garage_ev",
+                "skip_ownership": True,
+            },
+        )
+    )
+
+    assert result is True
+    assert "ev_ownership" not in hass.data["power_sync"]["entry-1"]
+
+
+def test_untracked_dynamic_stop_is_passive_by_default():
+    hass = _Hass([_State("switch.evse_1_charge_control", "on")])
+    actions._dynamic_ev_state.clear()
+
+    result = asyncio.run(
+        actions._action_stop_ev_charging_dynamic(
+            hass,
+            _Entry(),
+            {
+                "vehicle_id": "ocpp_evse_1",
+                "charger_type": "ocpp",
+                "ocpp_charger_id": "evse_1",
+            },
+        )
+    )
+
+    assert result is True
+    assert hass.services.calls == []
+
+
+def test_explicit_untracked_dynamic_stop_controls_ocpp_charger():
+    hass = _Hass([_State("switch.evse_1_charge_control", "on")])
+    actions._dynamic_ev_state.clear()
+
+    result = asyncio.run(
+        actions._action_stop_ev_charging_dynamic(
+            hass,
+            _Entry(),
+            {
+                "vehicle_id": "ocpp_evse_1",
+                "charger_type": "ocpp",
+                "ocpp_charger_id": "evse_1",
+                "stop_untracked": True,
+            },
+        )
+    )
+
+    assert result is True
+    assert hass.services.calls == [
+        ("switch", "turn_off", {"entity_id": "switch.evse_1_charge_control"})
+    ]
+    assert (
+        hass.data["power_sync"]["entry-1"]["ev_last_command"]["ocpp_evse_1"]["command"]
+        == "stop"
+    )
+
+
+def test_dynamic_start_claims_business_owner_mode():
+    hass = _Hass([_State("switch.evse_1_charge_control", "off")])
+    actions._dynamic_ev_state.clear()
+
+    result = asyncio.run(
+        actions._action_start_ev_charging_dynamic(
+            hass,
+            _Entry(),
+            {
+                "vehicle_vin": "ocpp_evse_1",
+                "dynamic_mode": "battery_target",
+                "owner_mode": "price_level_recovery",
+                "charger_type": "ocpp",
+                "ocpp_charger_id": "evse_1",
+                "max_charge_amps": 16,
+            },
+            context=None,
+        )
+    )
+
+    assert result is True
+    state = actions._dynamic_ev_state["entry-1"]["ocpp_evse_1"]
+    assert state["params"]["dynamic_mode"] == "battery_target"
+    assert state["params"]["owner_mode"] == "price_level_recovery"
+    assert state["ownership"]["owner_mode"] == "price_level_recovery"
+    assert (
+        hass.data["power_sync"]["entry-1"]["ev_ownership"]["ocpp_evse_1"]["last_command"]["command"]
+        == "start_price_level_recovery"
+    )
+
+
+def test_dynamic_start_is_blocked_by_manual_owner():
+    hass = _Hass([_State("switch.evse_1_charge_control", "off")])
+    actions._dynamic_ev_state.clear()
+    hass.data["power_sync"]["entry-1"]["ev_ownership"] = {
+        "ocpp_evse_1": {"owner": "powersync", "owner_mode": "manual"}
+    }
+
+    result = asyncio.run(
+        actions._action_start_ev_charging_dynamic(
+            hass,
+            _Entry(),
+            {
+                "vehicle_vin": "ocpp_evse_1",
+                "dynamic_mode": "battery_target",
+                "owner_mode": "price_level_recovery",
+                "charger_type": "ocpp",
+                "ocpp_charger_id": "evse_1",
+            },
+            context=None,
+        )
+    )
+
+    assert result is False
+    assert hass.services.calls == []
+    assert actions._dynamic_ev_state == {}
+    last_command = hass.data["power_sync"]["entry-1"]["ev_last_command"]["ocpp_evse_1"]
+    assert last_command["command"] == "start_price_level_recovery"
+    assert last_command["success"] is False
+    assert "manual already owns" in last_command["reason"]
+
+
+def test_dynamic_start_updates_same_owner_family_without_restarting():
+    hass = _Hass([_State("switch.evse_1_charge_control", "on")])
+    actions._dynamic_ev_state.clear()
+    actions._dynamic_ev_state["entry-1"] = {
+        "ocpp_evse_1": {
+            "active": True,
+            "params": {
+                "dynamic_mode": "battery_target",
+                "owner_mode": "price_level_recovery",
+                "charger_type": "ocpp",
+            },
+            "session_id": "sess-1",
+        }
+    }
+    hass.data["power_sync"]["entry-1"]["ev_ownership"] = {
+        "ocpp_evse_1": {
+            "owner": "powersync",
+            "owner_mode": "price_level_recovery",
+            "session_id": "sess-1",
+        }
+    }
+
+    result = asyncio.run(
+        actions._action_start_ev_charging_dynamic(
+            hass,
+            _Entry(),
+            {
+                "vehicle_vin": "ocpp_evse_1",
+                "dynamic_mode": "battery_target",
+                "owner_mode": "price_level_opportunity",
+                "charger_type": "ocpp",
+                "ocpp_charger_id": "evse_1",
+            },
+            context=None,
+        )
+    )
+
+    assert result is True
+    assert hass.services.calls == []
+    state = actions._dynamic_ev_state["entry-1"]["ocpp_evse_1"]
+    assert state["params"]["owner_mode"] == "price_level_opportunity"
+    ownership = hass.data["power_sync"]["entry-1"]["ev_ownership"]["ocpp_evse_1"]
+    assert ownership["owner_mode"] == "price_level_opportunity"
+    assert ownership["last_command"]["command"] == "update_price_level_opportunity"
+
+
+def test_dynamic_start_is_blocked_by_legacy_foreign_state():
+    hass = _Hass([_State("switch.evse_1_charge_control", "off")])
+    actions._dynamic_ev_state.clear()
+    actions._dynamic_ev_state["entry-1"] = {
+        "ocpp_evse_1": {
+            "active": True,
+            "params": {
+                "dynamic_mode": "solar_surplus",
+                "charger_type": "ocpp",
+            },
+            "session_id": "sess-1",
+        }
+    }
+
+    result = asyncio.run(
+        actions._action_start_ev_charging_dynamic(
+            hass,
+            _Entry(),
+            {
+                "vehicle_vin": "ocpp_evse_1",
+                "dynamic_mode": "battery_target",
+                "owner_mode": "price_level_recovery",
+                "charger_type": "ocpp",
+                "ocpp_charger_id": "evse_1",
+            },
+            context=None,
+        )
+    )
+
+    assert result is False
+    assert hass.services.calls == []
+    assert "ocpp_evse_1" in actions._dynamic_ev_state["entry-1"]
+    last_command = hass.data["power_sync"]["entry-1"]["ev_last_command"]["ocpp_evse_1"]
+    assert last_command["success"] is False
+    assert "solar_surplus already owns" in last_command["reason"]
+
+
+def test_manual_session_replaces_existing_owner_without_physical_stop():
+    hass = _Hass([_State("switch.ev_charge", "on")])
+    cancelled = []
+    actions._dynamic_ev_state.clear()
+    actions._dynamic_ev_state["entry-1"] = {
+        "VIN123": {
+            "active": True,
+            "params": {"dynamic_mode": "solar_surplus"},
+            "cancel_timer": lambda: cancelled.append(True),
+            "session_id": None,
+        }
+    }
+
+    asyncio.run(
+        actions.record_manual_ev_charging_session(
+            hass,
+            _Entry(),
+            "VIN123",
+            {"charger_type": "tesla"},
+        )
+    )
+
+    state = actions._dynamic_ev_state["entry-1"]["VIN123"]
+    assert state["active"] is True
+    assert state["charging_started"] is True
+    assert state["params"]["dynamic_mode"] == "manual"
+    assert state["ownership"]["owner_mode"] == "manual"
+    assert state["ownership"]["last_command"]["command"] == "start"
+    assert hass.data["power_sync"]["entry-1"]["ev_ownership"]["VIN123"]["owner_mode"] == "manual"
+    assert cancelled == [True]
+    assert hass.services.calls == []
+
+
+def test_clear_tracked_session_does_not_send_physical_stop():
+    hass = _Hass([_State("switch.ev_charge", "on")])
+    actions._dynamic_ev_state.clear()
+    actions._dynamic_ev_state["entry-1"] = {
+        "VIN123": {
+            "active": True,
+            "params": {"dynamic_mode": "manual", "charger_type": "tesla"},
+            "cancel_timer": None,
+            "session_id": None,
+        }
+    }
+
+    asyncio.run(actions.clear_tracked_ev_charging_session(hass, _Entry(), "VIN123"))
+
+    assert actions._dynamic_ev_state == {}
+    assert hass.data["power_sync"]["entry-1"]["ev_ownership"] == {}
+    assert hass.data["power_sync"]["entry-1"]["ev_last_command"]["VIN123"]["command"] == "release"
+    assert hass.services.calls == []

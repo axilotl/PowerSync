@@ -789,6 +789,9 @@ def _merge_amber_forecasts(forecast_5min: list, forecast_30min: list) -> list:
 class AmberPriceCoordinator(DataUpdateCoordinator):
     """Coordinator to fetch Amber electricity price data."""
 
+    _FORECAST_5MIN_TTL = timedelta(minutes=4, seconds=30)
+    _FORECAST_30MIN_TTL = timedelta(minutes=30)
+
     def __init__(
         self,
         hass: HomeAssistant,
@@ -801,6 +804,10 @@ class AmberPriceCoordinator(DataUpdateCoordinator):
         self.site_id = site_id
         self.session = async_get_clientsession(hass)
         self.ws_client = ws_client  # WebSocket client for real-time prices
+        self._forecast_5min_cache: list[dict[str, Any]] | None = None
+        self._forecast_5min_fetched_at: datetime | None = None
+        self._forecast_30min_cache: list[dict[str, Any]] | None = None
+        self._forecast_30min_fetched_at: datetime | None = None
 
         super().__init__(
             hass,
@@ -808,6 +815,60 @@ class AmberPriceCoordinator(DataUpdateCoordinator):
             name=f"{DOMAIN}_amber_prices",
             update_interval=UPDATE_INTERVAL_PRICES,
         )
+
+    async def _fetch_forecast_with_cache(
+        self,
+        *,
+        url: str,
+        headers: dict[str, str],
+        params: dict[str, Any],
+        label: str,
+        ttl: timedelta,
+        cache_attr: str,
+        fetched_at_attr: str,
+    ) -> list[dict[str, Any]]:
+        """Fetch Amber forecast data, reusing cached data within the TTL."""
+        cached = getattr(self, cache_attr)
+        fetched_at = getattr(self, fetched_at_attr)
+        now = dt_util.utcnow()
+
+        if cached is not None and fetched_at is not None and now - fetched_at < ttl:
+            age_seconds = (now - fetched_at).total_seconds()
+            _LOGGER.debug(
+                "Using cached Amber %s forecast (age %.0fs, ttl %.0fs)",
+                label,
+                age_seconds,
+                ttl.total_seconds(),
+            )
+            return cached
+
+        try:
+            forecast = await _fetch_with_retry(
+                self.session,
+                url,
+                headers,
+                params=params,
+                max_retries=2,
+                timeout_seconds=30,
+            )
+        except UpdateFailed:
+            if cached is not None:
+                age_minutes = (
+                    (now - fetched_at).total_seconds() / 60
+                    if fetched_at is not None
+                    else -1
+                )
+                _LOGGER.warning(
+                    "Amber %s forecast refresh failed; using cached data (age %.1fm)",
+                    label,
+                    age_minutes,
+                )
+                return cached
+            raise
+
+        setattr(self, cache_attr, forecast or [])
+        setattr(self, fetched_at_attr, now)
+        return forecast or []
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch data from Amber API with WebSocket-first approach."""
@@ -859,24 +920,26 @@ class AmberPriceCoordinator(DataUpdateCoordinator):
             #    not /prices (which is date-range based and ignores `next`).
 
             # Step 1: Get 5-min resolution data for current period spike detection
-            forecast_5min = await _fetch_with_retry(
-                self.session,
-                f"{AMBER_API_BASE_URL}/sites/{self.site_id}/prices",
-                headers,
+            forecast_5min = await self._fetch_forecast_with_cache(
+                url=f"{AMBER_API_BASE_URL}/sites/{self.site_id}/prices",
+                headers=headers,
                 params={"resolution": 5},
-                max_retries=2,
-                timeout_seconds=30,
+                label="5-minute",
+                ttl=self._FORECAST_5MIN_TTL,
+                cache_attr="_forecast_5min_cache",
+                fetched_at_attr="_forecast_5min_fetched_at",
             )
 
             # Step 2: Get 30-min forecast via /prices/current (supports `next`)
             # Request 288 intervals (144h) — API returns whatever AEMO has (~40h)
-            forecast_30min = await _fetch_with_retry(
-                self.session,
-                f"{AMBER_API_BASE_URL}/sites/{self.site_id}/prices/current",
-                headers,
+            forecast_30min = await self._fetch_forecast_with_cache(
+                url=f"{AMBER_API_BASE_URL}/sites/{self.site_id}/prices/current",
+                headers=headers,
                 params={"next": 288, "resolution": 30},
-                max_retries=2,
-                timeout_seconds=30,
+                label="30-minute",
+                ttl=self._FORECAST_30MIN_TTL,
+                cache_attr="_forecast_30min_cache",
+                fetched_at_attr="_forecast_30min_fetched_at",
             )
 
             return {

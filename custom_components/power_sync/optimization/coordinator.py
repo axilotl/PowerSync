@@ -539,6 +539,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             price_getter=self._get_price_data_for_ev,
             battery_schedule_getter=self._get_battery_schedule_for_ev,
             solar_forecast_getter=self._get_solar_forecast,
+            config_entry=self._entry,
         )
         _LOGGER.debug("EV coordinator initialized")
 

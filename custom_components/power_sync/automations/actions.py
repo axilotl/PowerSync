@@ -861,6 +861,22 @@ async def execute_actions(
     return success_count > 0
 
 
+def _ev_action_loadpoint_id(params: Dict[str, Any]) -> str:
+    """Return the loadpoint id for direct EV start/stop automation actions."""
+    vehicle_id = params.get("vehicle_id") or params.get("vehicle_vin")
+    if vehicle_id:
+        return str(vehicle_id)
+
+    charger_type = params.get("charger_type")
+    if charger_type == "generic":
+        return "generic_ev"
+    if charger_type == "ocpp":
+        charger_id = params.get("ocpp_charger_id") or "ocpp_charger"
+        return f"ocpp_{charger_id}"
+
+    return DEFAULT_VEHICLE_ID
+
+
 
 
 async def _execute_single_action(
@@ -921,9 +937,26 @@ async def _execute_single_action(
         return await _action_set_export_limit(hass, config_entry, params)
     # EV Charging Actions (pass context for time window support)
     elif action_type == "start_ev_charging":
-        return await _action_start_ev_charging(hass, config_entry, params, context)
+        success = await _action_start_ev_charging(hass, config_entry, params, context)
+        if success and not params.get("skip_ownership"):
+            await record_manual_ev_charging_session(
+                hass,
+                config_entry,
+                _ev_action_loadpoint_id(params),
+                params,
+                reason=params.get("reason", "Manual automation start"),
+            )
+        return success
     elif action_type == "stop_ev_charging":
-        return await _action_stop_ev_charging(hass, config_entry, params)
+        success = await _action_stop_ev_charging(hass, config_entry, params)
+        if success and not params.get("skip_ownership"):
+            await clear_tracked_ev_charging_session(
+                hass,
+                config_entry,
+                _ev_action_loadpoint_id(params),
+                reason=params.get("reason", "Manual automation stop"),
+            )
+        return success
     elif action_type == "set_ev_charge_limit":
         return await _action_set_ev_charge_limit(hass, config_entry, params)
     elif action_type == "set_ev_charging_amps":
@@ -1811,6 +1844,61 @@ async def _stop_ocpp_charging(hass: HomeAssistant, charger_id: str) -> bool:
         return False
 
 
+def _find_ocpp_current_limit_entity(hass: HomeAssistant, charger_id: str) -> Optional[str]:
+    """Find a HACS OCPP number entity that can set a charger's current limit."""
+    charger_key = str(charger_id).lower()
+    current_keys = (
+        "maximum_current",
+        "max_current",
+        "current_limit",
+        "charging_current",
+        "charge_current",
+        "current",
+        "amps",
+    )
+
+    def _matches(entity_id: str) -> bool:
+        entity_lower = entity_id.lower()
+        if not entity_lower.startswith("number."):
+            return False
+        object_id = entity_lower.split(".", 1)[1]
+        if not object_id.startswith(f"{charger_key}_"):
+            return False
+        return any(key in object_id for key in current_keys)
+
+    candidates: List[str] = []
+
+    try:
+        entity_reg = er.async_get(hass)
+        for entity in entity_reg.entities.values():
+            if getattr(entity, "platform", None) != "ocpp":
+                continue
+            if _matches(entity.entity_id):
+                candidates.append(entity.entity_id)
+    except Exception:
+        pass
+
+    if not candidates:
+        try:
+            for entity_id in hass.states.async_entity_ids("number"):
+                if _matches(entity_id):
+                    candidates.append(entity_id)
+        except Exception:
+            pass
+
+    if not candidates:
+        return None
+
+    def _priority(entity_id: str) -> int:
+        object_id = entity_id.lower().split(".", 1)[1]
+        for idx, key in enumerate(current_keys):
+            if object_id.endswith(key) or f"_{key}_" in object_id:
+                return idx
+        return len(current_keys)
+
+    return sorted(set(candidates), key=_priority)[0]
+
+
 async def _action_start_ev_charging(
     hass: HomeAssistant,
     config_entry: ConfigEntry,
@@ -1957,7 +2045,14 @@ async def _action_start_ev_charging(
             async def stop_charging_at_window_end(now) -> None:
                 """Stop charging when time window ends."""
                 _LOGGER.info(f"⏰ Time window ended, stopping EV charging")
-                await _action_stop_ev_charging(hass, config_entry, params)
+                stop_success = await _action_stop_ev_charging(hass, config_entry, params)
+                if stop_success and not params.get("skip_ownership"):
+                    await clear_tracked_ev_charging_session(
+                        hass,
+                        config_entry,
+                        _ev_action_loadpoint_id(params),
+                        reason="time window ended",
+                    )
                 # Send notification that charging stopped
                 await _send_expo_push(hass, "EV Charging", "Stopped - time window ended")
                 # Clean up the scheduled stop entry
@@ -2179,8 +2274,11 @@ async def _action_set_ev_charging_amps(
     """
     Set EV charging amperage via Tesla, OCPP, or generic charger.
     """
-    # Accept both "amps" and "charging_amps" for flexibility
-    amps = params.get("amps") or params.get("charging_amps")
+    # Accept both "amps" and "charging_amps" for flexibility. Preserve 0A
+    # values for charger APIs that use amps=0 as a pause/stop command.
+    amps = params.get("amps")
+    if amps is None:
+        amps = params.get("charging_amps")
     if amps is None:
         _LOGGER.error("set_ev_charging_amps: missing amps parameter")
         return False
@@ -2309,6 +2407,105 @@ _ev_scheduled_stop: Dict[str, Any] = {}
 
 # Default vehicle ID for single-vehicle setups
 DEFAULT_VEHICLE_ID = "_default"
+
+
+async def record_manual_ev_charging_session(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+    vehicle_id: Optional[str] = None,
+    params: Optional[Dict[str, Any]] = None,
+    reason: str = "Manual charging",
+) -> None:
+    """Record a user-started EV session so automation modes do not fight it."""
+    from ..const import DOMAIN
+
+    entry_id = config_entry.entry_id
+    resolved_vehicle_id = vehicle_id or DEFAULT_VEHICLE_ID
+
+    # If another PowerSync mode owned this loadpoint, release its timers and
+    # session bookkeeping without sending another physical stop command.
+    await clear_tracked_ev_charging_session(
+        hass,
+        config_entry,
+        resolved_vehicle_id,
+        reason="manual override",
+    )
+
+    full_params = {
+        "dynamic_mode": "manual",
+        "owner_mode": "manual",
+        "vehicle_id": resolved_vehicle_id,
+        "vehicle_vin": None if resolved_vehicle_id == DEFAULT_VEHICLE_ID else resolved_vehicle_id,
+        **(params or {}),
+    }
+
+    if entry_id not in _dynamic_ev_state:
+        _dynamic_ev_state[entry_id] = {}
+
+    session_id = None
+    try:
+        from .ev_charging_session import get_session_manager
+        session_manager = get_session_manager()
+        if session_manager:
+            session = await session_manager.start_session(
+                vehicle_id=resolved_vehicle_id,
+                mode="manual",
+            )
+            session_id = session.id
+    except Exception as e:
+        _LOGGER.debug("Manual EV: could not start session tracking: %s", e)
+
+    _dynamic_ev_state[entry_id][resolved_vehicle_id] = {
+        "active": True,
+        "params": full_params,
+        "current_amps": 0,
+        "target_amps": 0,
+        "cancel_timer": None,
+        "priority": 0,
+        "paused": False,
+        "paused_reason": None,
+        "charging_started": True,
+        "entity_max_rechecked": True,
+        "allocated_surplus_kw": 0,
+        "reason": reason,
+        "vehicle_name": full_params.get("vehicle_name"),
+        "session_id": session_id,
+    }
+    from .ev_ownership import claim_ev_ownership
+    _dynamic_ev_state[entry_id][resolved_vehicle_id]["ownership"] = claim_ev_ownership(
+        hass,
+        config_entry,
+        resolved_vehicle_id,
+        owner_mode="manual",
+        session_id=session_id,
+        reason=reason,
+        command="start",
+        extra={"charger_type": full_params.get("charger_type", "tesla")},
+    )
+
+    if DOMAIN in hass.data and entry_id in hass.data[DOMAIN]:
+        hass.data[DOMAIN][entry_id]["dynamic_ev_state"] = _dynamic_ev_state[entry_id]
+
+    _LOGGER.info("Manual EV charging session recorded for %s", resolved_vehicle_id)
+
+
+async def clear_tracked_ev_charging_session(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+    vehicle_id: Optional[str] = None,
+    reason: str = "manual stop",
+) -> None:
+    """Clear PowerSync EV ownership without sending a physical stop command."""
+    await _action_stop_ev_charging_dynamic(
+        hass,
+        config_entry,
+        {
+            "vehicle_id": vehicle_id or DEFAULT_VEHICLE_ID,
+            "stop_charging": False,
+            "manual_stop": True,
+            "stop_reason": reason,
+        },
+    )
 
 
 def _calculate_solar_surplus(live_status: dict, current_ev_power_kw: float, config: dict) -> float:
@@ -2700,8 +2897,13 @@ async def _set_vehicle_amps(
             return await _stop_ocpp_charging(hass, ocpp_charger_id)
         # Set amps then ensure charger is on (idempotent)
         amps_ok = await _set_ocpp_charging_amps(hass, ocpp_charger_id, amps)
-        await _start_ocpp_charging(hass, ocpp_charger_id)
-        return amps_ok
+        start_ok = await _start_ocpp_charging(hass, ocpp_charger_id)
+        if not amps_ok:
+            _LOGGER.debug(
+                "OCPP charger %s start command %s even though current limit update failed",
+                ocpp_charger_id, "succeeded" if start_ok else "failed",
+            )
+        return start_ok
 
     elif charger_type == "generic":
         # Use HA service calls to switch and number entities
@@ -2755,22 +2957,62 @@ async def _set_ocpp_charging_amps(hass: HomeAssistant, charger_id: int, amps: in
     """Set charging amps for an OCPP charger."""
     from ..const import DOMAIN
 
+    charger_id = str(charger_id)
+    server_found = False
+
     try:
         # Find the OCPP charger controller in hass.data
         for entry_id, entry_data in hass.data.get(DOMAIN, {}).items():
             if isinstance(entry_data, dict) and "ocpp_server" in entry_data:
                 ocpp_server = entry_data["ocpp_server"]
                 if hasattr(ocpp_server, "set_charging_profile"):
+                    server_found = True
                     success = await ocpp_server.set_charging_profile(charger_id, amps)
                     if success:
                         _LOGGER.info(f"Set OCPP charger {charger_id} to {amps}A")
                         return True
 
-        _LOGGER.warning(f"OCPP server not found or charger {charger_id} not available")
-        return False
     except Exception as e:
-        _LOGGER.error(f"Failed to set OCPP charging amps: {e}")
-        return False
+        _LOGGER.error(f"Failed to set OCPP charging amps through server: {e}")
+
+    current_entity = _find_ocpp_current_limit_entity(hass, charger_id)
+    if current_entity:
+        try:
+            target_amps = int(amps)
+            entity_state = hass.states.get(current_entity)
+            if entity_state:
+                entity_min = entity_state.attributes.get("min")
+                entity_max = entity_state.attributes.get("max")
+                if entity_min is not None:
+                    target_amps = max(int(entity_min), target_amps)
+                if entity_max is not None:
+                    target_amps = min(int(entity_max), target_amps)
+
+            await hass.services.async_call(
+                "number",
+                "set_value",
+                {"entity_id": current_entity, "value": target_amps},
+                blocking=True,
+            )
+            _LOGGER.info(
+                "Set OCPP charger %s to %dA via %s",
+                charger_id, target_amps, current_entity,
+            )
+            return True
+        except Exception as e:
+            _LOGGER.error("Failed to set OCPP amps via %s: %s", current_entity, e)
+
+    if server_found:
+        _LOGGER.warning(
+            "OCPP charger %s current limit not updated: server command failed and no current-limit number entity was found",
+            charger_id,
+        )
+    else:
+        _LOGGER.warning(
+            "OCPP charger %s current limit not updated: no OCPP server or current-limit number entity found",
+            charger_id,
+        )
+    return False
 
 
 def _parse_time_window(time_str: str) -> Optional[dt_time]:
@@ -2871,6 +3113,7 @@ async def _get_tesla_live_status(hass: HomeAssistant, config_entry: ConfigEntry)
         - grid_power: Positive = importing, Negative = exporting
     """
     from ..const import DOMAIN
+    from .live_status import coordinator_data_to_ev_live_status
 
     entry_data = hass.data.get(DOMAIN, {}).get(config_entry.entry_id, {})
 
@@ -2878,14 +3121,7 @@ async def _get_tesla_live_status(hass: HomeAssistant, config_entry: ConfigEntry)
     for coord_key in ("tesla_coordinator", "sigenergy_coordinator", "sungrow_coordinator"):
         coordinator = entry_data.get(coord_key)
         if coordinator and coordinator.data:
-            data = coordinator.data
-            return {
-                "battery_soc": data.get("battery_level"),
-                "grid_power": (data.get("grid_power", 0) or 0) * 1000,
-                "solar_power": (data.get("solar_power", 0) or 0) * 1000,
-                "battery_power": (data.get("battery_power", 0) or 0) * 1000,
-                "load_power": (data.get("load_power", 0) or 0) * 1000,
-            }
+            return coordinator_data_to_ev_live_status(coordinator.data)
 
     # Fall back to direct API call
     token_getter = entry_data.get("token_getter")
@@ -3545,7 +3781,7 @@ async def _dynamic_ev_update(
                 f"ev_relevant={ev_grid_check:.2f}kW, inverter_max={max_inverter_kw}kW), "
                 f"reducing to {new_amps}A"
             )
-            success = await _action_set_ev_charging_amps(hass, config_entry, {"amps": new_amps})
+            success = await _set_vehicle_amps(hass, config_entry, vehicle_id, new_amps, params)
             if success:
                 state["current_amps"] = new_amps
             return
@@ -3566,9 +3802,7 @@ async def _dynamic_ev_update(
             f"(battery={battery_power_kw:.1f}kW, grid={grid_power_kw:.1f}kW, "
             f"available={available_power_kw:.1f}kW)"
         )
-        success = await _action_set_ev_charging_amps(
-            hass, config_entry, {"amps": new_amps}
-        )
+        success = await _set_vehicle_amps(hass, config_entry, vehicle_id, new_amps, params)
         if success:
             state["current_amps"] = new_amps
         else:
@@ -3646,6 +3880,8 @@ async def _action_start_ev_charging_dynamic(
 
     Common parameters:
         dynamic_mode: "battery_target" or "solar_surplus" (default battery_target)
+        owner_mode: Business mode that owns the session, e.g. smart_schedule,
+            price_level_recovery, scheduled, solar_surplus. Defaults to dynamic_mode.
         min_charge_amps: Minimum EV charge amps (default 5)
         max_charge_amps: Maximum EV charge amps (default 32)
         voltage: Assumed charging voltage (default 240)
@@ -3676,19 +3912,135 @@ async def _action_start_ev_charging_dynamic_locked(
 
     # Determine mode
     dynamic_mode = params.get("dynamic_mode", "battery_target")
+    owner_mode = params.get("owner_mode", dynamic_mode)
+    allow_takeover = bool(params.get("allow_ownership_takeover", False))
+
+    from .ev_ownership import (
+        can_claim_ev_ownership,
+        claim_ev_ownership,
+        owner_family,
+        record_ev_command,
+    )
+
+    entry_vehicles = _dynamic_ev_state.get(entry_id, {})
+
+    def _same_loadpoint(candidate_id: str) -> bool:
+        return (
+            candidate_id == vehicle_id
+            or candidate_id == DEFAULT_VEHICLE_ID
+            or vehicle_id == DEFAULT_VEHICLE_ID
+        )
+
+    allowed, _lease_id, _lease, block_reason = can_claim_ev_ownership(
+        hass,
+        config_entry,
+        vehicle_id,
+        owner_mode=owner_mode,
+        allow_takeover=allow_takeover,
+    )
+    if not allowed:
+        reason = block_reason or "another EV mode owns this loadpoint"
+        _LOGGER.info(
+            "Dynamic EV: %s start blocked for %s because %s",
+            owner_mode,
+            vehicle_id,
+            reason,
+        )
+        record_ev_command(
+            hass,
+            config_entry,
+            vehicle_id,
+            command=f"start_{owner_mode}",
+            success=False,
+            reason=reason,
+        )
+        return False
+
+    # Legacy fallback for runtime state created before explicit ownership was
+    # claimed. This keeps old dynamic sessions from being hijacked by another
+    # automated mode during an in-place upgrade.
+    for vid, v_state in entry_vehicles.items():
+        if not v_state.get("active") or not _same_loadpoint(vid):
+            continue
+        existing_params = v_state.get("params") or {}
+        existing_owner_mode = (
+            existing_params.get("owner_mode")
+            or existing_params.get("dynamic_mode")
+            or "dynamic"
+        )
+        if (
+            owner_family(existing_owner_mode) != owner_family(owner_mode)
+            and owner_family(owner_mode) != "manual"
+            and not allow_takeover
+        ):
+            reason = f"{existing_owner_mode} already owns this loadpoint"
+            _LOGGER.info(
+                "Dynamic EV: %s start blocked for %s because legacy state says %s",
+                owner_mode,
+                vehicle_id,
+                reason,
+            )
+            record_ev_command(
+                hass,
+                config_entry,
+                vehicle_id,
+                command=f"start_{owner_mode}",
+                success=False,
+                reason=reason,
+            )
+            return False
 
     # Prevent duplicate sessions for the same vehicle/mode
     # _default and a resolved VIN (e.g. LRWYHCEK3PC907290) refer to the same physical
     # vehicle in single-vehicle setups. Treat them as duplicates to prevent two update
     # loops fighting over the same car's charge current.
-    entry_vehicles = _dynamic_ev_state.get(entry_id, {})
     for vid, v_state in entry_vehicles.items():
-        if v_state.get("active") and v_state.get("params", {}).get("dynamic_mode") == dynamic_mode:
+        if (
+            v_state.get("active")
+            and _same_loadpoint(vid)
+            and v_state.get("params", {}).get("dynamic_mode") == dynamic_mode
+        ):
             if vid == vehicle_id:
+                existing_params = v_state.setdefault("params", {})
+                existing_owner_mode = (
+                    existing_params.get("owner_mode")
+                    or existing_params.get("dynamic_mode")
+                    or dynamic_mode
+                )
+                if owner_family(existing_owner_mode) == owner_family(owner_mode):
+                    existing_params["owner_mode"] = owner_mode
+                    v_state["ownership"] = claim_ev_ownership(
+                        hass,
+                        config_entry,
+                        vehicle_id,
+                        owner_mode=owner_mode,
+                        session_id=v_state.get("session_id"),
+                        reason=v_state.get("reason") or None,
+                        command=f"update_{owner_mode}",
+                        extra={"charger_type": existing_params.get("charger_type", "tesla")},
+                    )
                 _LOGGER.debug(f"Dynamic session ({dynamic_mode}) already active for vehicle {vid}, skipping duplicate")
                 return True
             # _default overlaps with any VIN (single-vehicle setup)
             if vid == DEFAULT_VEHICLE_ID or vehicle_id == DEFAULT_VEHICLE_ID:
+                existing_params = v_state.setdefault("params", {})
+                existing_owner_mode = (
+                    existing_params.get("owner_mode")
+                    or existing_params.get("dynamic_mode")
+                    or dynamic_mode
+                )
+                if owner_family(existing_owner_mode) == owner_family(owner_mode):
+                    existing_params["owner_mode"] = owner_mode
+                    v_state["ownership"] = claim_ev_ownership(
+                        hass,
+                        config_entry,
+                        vid,
+                        owner_mode=owner_mode,
+                        session_id=v_state.get("session_id"),
+                        reason=v_state.get("reason") or None,
+                        command=f"update_{owner_mode}",
+                        extra={"charger_type": existing_params.get("charger_type", "tesla")},
+                    )
                 _LOGGER.info(
                     f"Dynamic session ({dynamic_mode}) already active for {vid}, "
                     f"skipping duplicate start for {vehicle_id}"
@@ -3768,11 +4120,20 @@ async def _action_start_ev_charging_dynamic_locked(
         start_success = await _action_start_ev_charging(hass, config_entry, params, context)
         if not start_success:
             _LOGGER.info("Dynamic EV: Could not start EV charging (vehicle may be disconnected)")
+            record_ev_command(
+                hass,
+                config_entry,
+                vehicle_id,
+                command=f"start_{owner_mode}",
+                success=False,
+                reason="physical start failed",
+            )
             return False
 
-        # Set initial amps
-        amps_success = await _action_set_ev_charging_amps(
-            hass, config_entry, {"amps": start_amps}
+        # Set initial amps through the charger abstraction so OCPP and generic
+        # chargers do not fall back to the Tesla-only amperage path.
+        amps_success = await _set_vehicle_amps(
+            hass, config_entry, vehicle_id, start_amps, params
         )
         if not amps_success:
             # This is expected - Tesla reports lower max amps until charging actually starts
@@ -3801,6 +4162,7 @@ async def _action_start_ev_charging_dynamic_locked(
     # Build full params dict
     full_params = {
         "dynamic_mode": dynamic_mode,
+        "owner_mode": owner_mode,
         "vehicle_vin": params.get("vehicle_vin"),
         "vehicle_name": params.get("vehicle_name"),
         "min_charge_amps": min_charge_amps,
@@ -3875,13 +4237,25 @@ async def _action_start_ev_charging_dynamic_locked(
 
             session = await session_manager.start_session(
                 vehicle_id=vehicle_id,
-                mode=dynamic_mode,
+                mode=owner_mode,
                 start_soc=int(initial_soc) if initial_soc else None,
             )
             _dynamic_ev_state[entry_id][vehicle_id]["session_id"] = session.id
             _LOGGER.info(f"📊 Started charging session {session.id}")
     except Exception as e:
         _LOGGER.debug(f"Could not start session tracking: {e}")
+
+    session_id = _dynamic_ev_state[entry_id][vehicle_id].get("session_id")
+    _dynamic_ev_state[entry_id][vehicle_id]["ownership"] = claim_ev_ownership(
+        hass,
+        config_entry,
+        vehicle_id,
+        owner_mode=owner_mode,
+        session_id=session_id,
+        reason=_dynamic_ev_state[entry_id][vehicle_id].get("reason") or None,
+        command=f"start_{owner_mode}",
+        extra={"charger_type": charger_type},
+    )
 
     # Also store in hass.data for access from other places (for API endpoints)
     if DOMAIN in hass.data and entry_id in hass.data[DOMAIN]:
@@ -3943,21 +4317,32 @@ async def _action_stop_ev_charging_dynamic(
             vehicle_ids_to_stop = list(vehicles.keys())  # Stop all (single vehicle)
         else:
             # Caller asked to stop a specific vehicle that isn't tracked in
-            # dynamic state. Tesla auto-charges on plug-in, and reloads wipe
-            # the in-memory state — in both cases the per-vehicle cleanup is
-            # a no-op but we still need to send the stop command downstream.
-            vehicle_ids_to_stop = [vehicle_id]
+            # dynamic state. Treat that as a cleanup no-op unless the caller
+            # explicitly owns the session and asks to stop an untracked vehicle.
+            if params.get("stop_untracked"):
+                vehicle_ids_to_stop = [vehicle_id]
+            else:
+                _LOGGER.debug(
+                    "Dynamic EV: no tracked session for %s; skipping downstream stop",
+                    vehicle_id,
+                )
+                vehicle_ids_to_stop = []
     else:
         # Stop all vehicles for this entry
         vehicle_ids_to_stop = list(vehicles.keys())
 
     # Collect per-vehicle params before deleting state (needed for stop)
     vehicle_params: Dict[str, dict] = {}
+    released_vehicle_ids: set[str] = set()
 
     for vid in vehicle_ids_to_stop:
         state = vehicles.get(vid)
         if state:
             vehicle_params[vid] = state.get("params", {})
+        elif params.get("stop_untracked") and vid == vehicle_id:
+            vehicle_params[vid] = params
+
+        if state:
 
             # Cancel the timer
             cancel_timer = state.get("cancel_timer")
@@ -4008,6 +4393,15 @@ async def _action_stop_ev_charging_dynamic(
                     _LOGGER.debug(f"Could not send stop notification: {e}")
 
             state["active"] = False
+            from .ev_ownership import release_ev_ownership
+            release_ev_ownership(
+                hass,
+                config_entry,
+                vid,
+                reason=params.get("stop_reason", "manual" if params.get("manual_stop") else "stopped"),
+                command="stop" if stop_charging else "release",
+            )
+            released_vehicle_ids.add(vid)
             del vehicles[vid]
             _LOGGER.info(f"⚡ Dynamic EV charging stopped for {vid}")
 
@@ -4029,11 +4423,21 @@ async def _action_stop_ev_charging_dynamic(
             charger_type = v_params.get("charger_type", "tesla")
             if charger_type in ("generic", "ocpp"):
                 # Use _set_vehicle_amps which handles all charger types
-                await _set_vehicle_amps(hass, config_entry, vid_to_stop, 0, v_params)
+                stop_success = await _set_vehicle_amps(hass, config_entry, vid_to_stop, 0, v_params)
             else:
                 stop_params = dict(params)
                 stop_params["vehicle_vin"] = vid_to_stop
-                await _action_stop_ev_charging(hass, config_entry, stop_params)
+                stop_success = await _action_stop_ev_charging(hass, config_entry, stop_params)
+            if params.get("stop_untracked") and vid_to_stop not in released_vehicle_ids:
+                from .ev_ownership import release_ev_ownership
+                release_ev_ownership(
+                    hass,
+                    config_entry,
+                    vid_to_stop,
+                    reason=params.get("stop_reason", "stopped"),
+                    command="stop",
+                    success=stop_success,
+                )
         return True
 
     return True

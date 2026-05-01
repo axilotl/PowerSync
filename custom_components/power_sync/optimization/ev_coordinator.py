@@ -32,8 +32,18 @@ from ..const import (
     CONF_ZAPTEC_CHARGER_ID,
     CONF_ZAPTEC_INSTALLATION_ID_CLOUD,
 )
+from ..automations.ev_ownership import (
+    DEFAULT_VEHICLE_ID,
+    can_claim_ev_ownership,
+    claim_ev_ownership,
+    get_active_ev_owner_mode,
+    owner_family,
+    record_ev_command,
+    release_ev_ownership,
+)
 
 _LOGGER = logging.getLogger(__name__)
+EV_COORDINATOR_OWNER_MODE = "ev_coordinator"
 
 
 class EVChargingMode(Enum):
@@ -112,6 +122,7 @@ class EVCoordinator:
         battery_schedule_getter: Callable[[], Any] | None = None,
         solar_forecast_getter: Callable[[], list[float]] | None = None,
         grid_capacity_w: float = 7400,  # 32A single phase default
+        config_entry: Any | None = None,
     ):
         """Initialize EV coordinator.
 
@@ -129,6 +140,7 @@ class EVCoordinator:
         self._get_battery_schedule = battery_schedule_getter
         self._get_solar_forecast = solar_forecast_getter
         self._grid_capacity_w = grid_capacity_w
+        self._config_entry = config_entry
 
         self._mode = EVChargingMode.SMART
         self._enabled = False
@@ -316,7 +328,7 @@ class EVCoordinator:
                 continue
 
             if status.soc and status.soc >= config.target_soc:
-                await self._stop_charging(config)
+                await self._stop_charging(config, reason="target reached")
                 continue
 
             # Check if we should charge now
@@ -328,8 +340,9 @@ class EVCoordinator:
             if should_charge:
                 if not status.charging:
                     # Start charging with calculated power
-                    await self._start_charging(config, power_w=available_power)
-                    self._ev_statuses[config.entity_id].state = EVChargingState.CHARGING
+                    started = await self._start_charging(config, power_w=available_power)
+                    if started:
+                        self._ev_statuses[config.entity_id].state = EVChargingState.CHARGING
                 else:
                     # Already charging - adjust amps if power changed significantly
                     current_amps = self._current_charge_amps.get(config.entity_id, 0)
@@ -339,8 +352,9 @@ class EVCoordinator:
                         self._current_charge_amps[config.entity_id] = new_amps
                         _LOGGER.debug(f"Adjusted {config.name} charging: {current_amps}A -> {new_amps}A")
             elif status.charging:
-                await self._stop_charging(config)
-                self._ev_statuses[config.entity_id].state = EVChargingState.WAITING_CHEAP_RATE
+                stopped = await self._stop_charging(config, reason="waiting for cheap rate")
+                if stopped:
+                    self._ev_statuses[config.entity_id].state = EVChargingState.WAITING_CHEAP_RATE
 
     async def _get_price_data(self) -> list[dict]:
         """Get price forecast data."""
@@ -599,13 +613,64 @@ class EVCoordinator:
         self._zaptec_client = client
         return client
 
-    async def _start_charging(self, config: EVConfig, power_w: float | None = None) -> None:
+    def _ownership_vehicle_id(self, config: EVConfig) -> str:
+        """Use the charger entity as this legacy coordinator's loadpoint id."""
+        return config.entity_id or DEFAULT_VEHICLE_ID
+
+    def _can_control_loadpoint(self, config: EVConfig, command: str) -> bool:
+        """Return whether the optimizer EV coordinator may control this charger."""
+        if self._config_entry is None:
+            return True
+
+        vehicle_id = self._ownership_vehicle_id(config)
+        allowed, _lease_id, _lease, reason = can_claim_ev_ownership(
+            self.hass,
+            self._config_entry,
+            DEFAULT_VEHICLE_ID,
+            owner_mode=EV_COORDINATOR_OWNER_MODE,
+        )
+        if allowed:
+            return True
+
+        block_reason = reason or "another EV mode owns this loadpoint"
+        _LOGGER.info(
+            "EV optimizer coordinator: %s blocked for %s because %s",
+            command,
+            config.name,
+            block_reason,
+        )
+        record_ev_command(
+            self.hass,
+            self._config_entry,
+            vehicle_id,
+            command=command,
+            success=False,
+            reason=block_reason,
+        )
+        return False
+
+    def _owns_loadpoint(self, config: EVConfig) -> bool:
+        """Return whether this coordinator currently owns the charger."""
+        if self._config_entry is None:
+            return True
+
+        owner_mode = get_active_ev_owner_mode(
+            self.hass,
+            self._config_entry,
+            self._ownership_vehicle_id(config),
+        )
+        return owner_family(owner_mode) == owner_family(EV_COORDINATOR_OWNER_MODE)
+
+    async def _start_charging(self, config: EVConfig, power_w: float | None = None) -> bool:
         """Start EV charging with dynamic amp adjustment.
 
         Args:
             config: EV charger configuration
             power_w: Available power in watts (used to calculate amps)
         """
+        if not self._can_control_loadpoint(config, "start_ev_coordinator"):
+            return False
+
         entity_id = config.entity_id
         domain = entity_id.split(".")[0]
 
@@ -645,8 +710,18 @@ class EVCoordinator:
                         _LOGGER.info("Zaptec in connected_waiting: MaxCurrent set, skipping Resume")
                     else:
                         await client.resume_charging(charger_id)
+                    if self._config_entry is not None:
+                        claim_ev_ownership(
+                            self.hass,
+                            self._config_entry,
+                            self._ownership_vehicle_id(config),
+                            owner_mode=EV_COORDINATOR_OWNER_MODE,
+                            command="start_ev_coordinator",
+                            reason=f"{self._mode.value} charging",
+                            extra={"charger_entity_id": entity_id},
+                        )
                     _LOGGER.info(f"Started Zaptec standalone charging: {charger_id}")
-                    return
+                    return True
                 else:
                     _LOGGER.warning("Zaptec standalone configured but missing client or charger_id")
 
@@ -672,8 +747,29 @@ class EVCoordinator:
                     "homeassistant", "turn_on",
                     {"entity_id": entity_id}
                 )
+            if self._config_entry is not None:
+                claim_ev_ownership(
+                    self.hass,
+                    self._config_entry,
+                    self._ownership_vehicle_id(config),
+                    owner_mode=EV_COORDINATOR_OWNER_MODE,
+                    command="start_ev_coordinator",
+                    reason=f"{self._mode.value} charging",
+                    extra={"charger_entity_id": entity_id},
+                )
+            return True
         except Exception as e:
             _LOGGER.error(f"Failed to start EV charging: {e}")
+            if self._config_entry is not None:
+                record_ev_command(
+                    self.hass,
+                    self._config_entry,
+                    self._ownership_vehicle_id(config),
+                    command="start_ev_coordinator",
+                    success=False,
+                    reason=str(e),
+                )
+            return False
 
     async def _set_charging_amps(self, config: EVConfig, amps: int) -> None:
         """Set EV charging amps for dynamic power sharing.
@@ -779,8 +875,24 @@ class EVCoordinator:
 
         _LOGGER.debug(f"No method found to set charging amps for {entity_id}")
 
-    async def _stop_charging(self, config: EVConfig) -> None:
+    async def _stop_charging(self, config: EVConfig, reason: str = "stopped") -> bool:
         """Stop EV charging."""
+        if not self._owns_loadpoint(config):
+            _LOGGER.info(
+                "EV optimizer coordinator: stop blocked for %s because it does not own the loadpoint",
+                config.name,
+            )
+            if self._config_entry is not None:
+                record_ev_command(
+                    self.hass,
+                    self._config_entry,
+                    self._ownership_vehicle_id(config),
+                    command="stop_ev_coordinator",
+                    success=False,
+                    reason="not owned by EV optimizer coordinator",
+                )
+            return False
+
         _LOGGER.info(f"Stopping EV charging: {config.name}")
 
         entity_id = config.entity_id
@@ -794,8 +906,16 @@ class EVCoordinator:
                 charger_id = zaptec_config.get(CONF_ZAPTEC_CHARGER_ID, "")
                 if client and charger_id:
                     await client.stop_charging(charger_id)
+                    if self._config_entry is not None:
+                        release_ev_ownership(
+                            self.hass,
+                            self._config_entry,
+                            self._ownership_vehicle_id(config),
+                            reason=reason,
+                            command="stop_ev_coordinator",
+                        )
                     _LOGGER.info(f"Stopped Zaptec standalone charging: {charger_id}")
-                    return
+                    return True
 
             if domain == "switch":
                 await self.hass.services.async_call(
@@ -812,15 +932,36 @@ class EVCoordinator:
                     "homeassistant", "turn_off",
                     {"entity_id": entity_id}
                 )
+            if self._config_entry is not None:
+                release_ev_ownership(
+                    self.hass,
+                    self._config_entry,
+                    self._ownership_vehicle_id(config),
+                    reason=reason,
+                    command="stop_ev_coordinator",
+                )
+            return True
         except Exception as e:
             _LOGGER.error(f"Failed to stop EV charging: {e}")
+            if self._config_entry is not None:
+                record_ev_command(
+                    self.hass,
+                    self._config_entry,
+                    self._ownership_vehicle_id(config),
+                    command="stop_ev_coordinator",
+                    success=False,
+                    reason=str(e),
+                )
+            return False
 
     async def _start_all_charging(self) -> None:
         """Start charging all connected EVs (immediate mode)."""
         for config in self._ev_configs:
             status = self._ev_statuses.get(config.entity_id)
             if status and status.connected and not status.charging:
-                await self._start_charging(config)
+                started = await self._start_charging(config)
+                if started:
+                    self._ev_statuses[config.entity_id].state = EVChargingState.CHARGING
 
     def _get_zaptec_installation_id(self, charger_entity_id: str) -> str | None:
         """Get the Zaptec installation device_id from config or device registry.

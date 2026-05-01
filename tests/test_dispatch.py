@@ -16,12 +16,11 @@ tree — Python then imports submodules directly without running __init__.py.
 
 from __future__ import annotations
 
+import asyncio
 import sys
 import types
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
-
-import pytest
 
 # ----- HomeAssistant API stubs (just what dispatch.py and friends touch) -----
 _ha_root = types.ModuleType("homeassistant")
@@ -102,8 +101,7 @@ def _unpaired():
 
 
 # ----- Tests -----
-@pytest.mark.asyncio
-async def test_unpaired_skips_local():
+async def _test_unpaired_skips_local():
     local = AsyncMock()
     cloud = AsyncMock(return_value="cloud-ok")
     hass = MagicMock()
@@ -116,8 +114,11 @@ async def test_unpaired_skips_local():
     assert cloud.await_count == 1
 
 
-@pytest.mark.asyncio
-async def test_paired_local_success_skips_cloud():
+def test_unpaired_skips_local():
+    asyncio.run(_test_unpaired_skips_local())
+
+
+async def _test_paired_local_success_skips_cloud():
     local = AsyncMock(return_value=True)
     cloud = AsyncMock(return_value="cloud-ok")
     hass = _hass_with_transport(TEDAPIv1rTransport())
@@ -129,8 +130,11 @@ async def test_paired_local_success_skips_cloud():
     assert cloud.await_count == 0
 
 
-@pytest.mark.asyncio
-async def test_paired_local_raises_falls_back_to_cloud():
+def test_paired_local_success_skips_cloud():
+    asyncio.run(_test_paired_local_success_skips_cloud())
+
+
+async def _test_paired_local_raises_falls_back_to_cloud():
     local = AsyncMock(side_effect=PowerwallUnreachableError("unreachable"))
     cloud = AsyncMock(return_value="cloud-ok")
     hass = _hass_with_transport(TEDAPIv1rTransport())
@@ -143,8 +147,11 @@ async def test_paired_local_raises_falls_back_to_cloud():
     assert cloud.await_count == 1
 
 
-@pytest.mark.asyncio
-async def test_paired_local_falsy_retries_then_cloud():
+def test_paired_local_raises_falls_back_to_cloud():
+    asyncio.run(_test_paired_local_raises_falls_back_to_cloud())
+
+
+async def _test_paired_local_falsy_retries_then_cloud():
     local = AsyncMock(return_value=False)
     cloud = AsyncMock(return_value="cloud-ok")
     hass = _hass_with_transport(TEDAPIv1rTransport())
@@ -156,8 +163,11 @@ async def test_paired_local_falsy_retries_then_cloud():
     assert cloud.await_count == 1
 
 
-@pytest.mark.asyncio
-async def test_paired_signature_error_falls_back():
+def test_paired_local_falsy_retries_then_cloud():
+    asyncio.run(_test_paired_local_falsy_retries_then_cloud())
+
+
+async def _test_paired_signature_error_falls_back():
     local = AsyncMock(side_effect=PowerwallSignatureError("bad sig"))
     cloud = AsyncMock(return_value="cloud-ok")
     hass = _hass_with_transport(TEDAPIv1rTransport())
@@ -168,8 +178,11 @@ async def test_paired_signature_error_falls_back():
     assert result == "cloud-ok"
 
 
-@pytest.mark.asyncio
-async def test_paired_no_transport_short_circuits_to_cloud():
+def test_paired_signature_error_falls_back():
+    asyncio.run(_test_paired_signature_error_falls_back())
+
+
+async def _test_paired_no_transport_short_circuits_to_cloud():
     hass = MagicMock()
     hass.data = {"power_sync": {"abc": {"powerwall_local": {"client": None}}}}
     local = AsyncMock(return_value=True)
@@ -179,6 +192,10 @@ async def test_paired_no_transport_short_circuits_to_cloud():
     )
     assert result == "cloud-ok"
     assert local.await_count == 0
+
+
+def test_paired_no_transport_short_circuits_to_cloud():
+    asyncio.run(_test_paired_no_transport_short_circuits_to_cloud())
 
 
 def test_is_local_preferred():
