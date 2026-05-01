@@ -11351,7 +11351,11 @@ class EVWidgetDataView(HomeAssistantView):
     async def get(self, request):
         """Get widget data for EV charging status."""
         try:
-            from .automations.actions import _dynamic_ev_state, _calculate_solar_surplus
+            from .automations.actions import (
+                DEFAULT_VEHICLE_ID,
+                _dynamic_ev_state,
+                _calculate_solar_surplus,
+            )
 
             entry_id = self._config_entry.entry_id
             entry_data = self._hass.data.get(DOMAIN, {}).get(entry_id, {})
@@ -11421,6 +11425,18 @@ class EVWidgetDataView(HomeAssistantView):
                     continue
 
                 params = state.get("params", {})
+
+                # Skip the legacy "_default" placeholder when no display name
+                # is set. It is internal bookkeeping (single-vehicle/manual
+                # paths) and would otherwise render as "_DEFAULT" in the
+                # mobile app alongside the real vehicle, which is added later
+                # via the tesla_vehicles / BYD discovery paths.
+                if (
+                    vehicle_id == DEFAULT_VEHICLE_ID
+                    and not (params.get("vehicle_name") or state.get("vehicle_name"))
+                ):
+                    continue
+
                 current_amps = state.get("current_amps", 0)
                 voltage = params.get("voltage", 240)
                 phases = params.get("phases", 1)
