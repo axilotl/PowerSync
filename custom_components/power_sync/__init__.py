@@ -9470,15 +9470,21 @@ class EVVehicleCommandView(HomeAssistantView):
                     return client, charger_id, cached_state
         return None
 
+    def _get_powersync_entry(self) -> ConfigEntry | None:
+        """Return the integration config entry used for EV action dispatch."""
+        entries = self._hass.config_entries.async_entries(DOMAIN)
+        return entries[0] if entries else None
+
     def _manual_session_identity(self, vehicle_vin: str | None) -> tuple[str | None, dict]:
         """Return the loadpoint id and charger params for manual command ownership."""
-        if self._get_zaptec_standalone():
-            return vehicle_vin or "zaptec_standalone", {"charger_type": "zaptec"}
+        if vehicle_vin in (None, "zaptec_standalone") and self._get_zaptec_standalone():
+            return "zaptec_standalone", {"charger_type": "zaptec"}
 
         if vehicle_vin == "generic_ev":
             from .const import (
                 CONF_GENERIC_CHARGER_AMPS_ENTITY,
                 CONF_GENERIC_CHARGER_ENABLED,
+                CONF_GENERIC_CHARGER_STATUS_ENTITY,
                 CONF_GENERIC_CHARGER_SWITCH_ENTITY,
             )
 
@@ -9489,400 +9495,188 @@ class EVVehicleCommandView(HomeAssistantView):
                         "charger_type": "generic",
                         "charger_switch_entity": opts.get(CONF_GENERIC_CHARGER_SWITCH_ENTITY, ""),
                         "charger_amps_entity": opts.get(CONF_GENERIC_CHARGER_AMPS_ENTITY, ""),
+                        "charger_status_entity": opts.get(CONF_GENERIC_CHARGER_STATUS_ENTITY, ""),
                     }
 
         return vehicle_vin, {"charger_type": "tesla"}
 
+    def _manual_action_params(self, vehicle_vin: str | None) -> dict:
+        """Build shared action parameters for mobile/manual EV commands."""
+        manual_vehicle_id, manual_params = self._manual_session_identity(vehicle_vin)
+        params = dict(manual_params)
+        params["vehicle_id"] = manual_vehicle_id
+
+        if params.get("charger_type") == "tesla":
+            params["vehicle_vin"] = vehicle_vin
+        else:
+            params["vehicle_vin"] = None
+
+        return params
+
+    def _generic_charger_ready_for_start(self, params: dict) -> tuple[bool, str]:
+        """Return whether the configured generic charger appears connected."""
+        status_entity = params.get("charger_status_entity", "")
+        if not status_entity:
+            return True, ""
+
+        state = self._hass.states.get(status_entity)
+        if not state:
+            return True, ""
+
+        if state.state.lower() not in ("available", "disconnected"):
+            return True, ""
+
+        car_present_states = {
+            "preparing",
+            "charging",
+            "suspendedev",
+            "suspendedevse",
+            "suspended_ev",
+            "suspended_evse",
+            "finishing",
+        }
+        car_on_connector = any(
+            s.state.lower() in car_present_states
+            for s in self._hass.states.async_all()
+            if s.entity_id.startswith("sensor.")
+            and s.entity_id.endswith("_status_connector")
+            and s.state not in ("unavailable", "unknown")
+        )
+        if car_on_connector:
+            _LOGGER.debug(
+                "Generic Charger: %s = %s but connector shows car present, proceeding",
+                status_entity,
+                state.state,
+            )
+            return True, ""
+
+        _LOGGER.warning(
+            "Generic Charger: %s = %s, no connector shows car present",
+            status_entity,
+            state.state,
+        )
+        return False, "Vehicle is not plugged in"
+
+    async def _execute_manual_ev_action(
+        self,
+        action_type: str,
+        vehicle_vin: str | None,
+        params_extra: dict | None,
+        reason: str,
+    ) -> bool:
+        """Execute an EV command through the shared automation action layer."""
+        entry = self._get_powersync_entry()
+        if not entry:
+            return False
+
+        from .automations.actions import _execute_single_action
+
+        params = self._manual_action_params(vehicle_vin)
+        params.update(params_extra or {})
+        params["reason"] = reason
+        return await _execute_single_action(self._hass, entry, action_type, params)
+
     async def _start_charging(self, vehicle_vin: str | None = None) -> tuple[bool, str]:
         """Start charging. Returns (success, message)."""
-        # Zaptec standalone path — check before Tesla preconditions
-        zaptec = self._get_zaptec_standalone()
-        if zaptec:
-            client, charger_id, cached_state = zaptec
-            mode = cached_state.get("charger_operation_mode", "")
-            if mode == "charging":
-                return True, "Zaptec charger is already charging"
-            if mode not in ("connected_waiting", "charging") and cached_state.get("total_charge_power_w", 0) <= 50:
-                if not cached_state.get("cable_locked"):
-                    msg = "Vehicle is not plugged in (Zaptec cable not locked)"
-                    _LOGGER.warning(msg)
-                    return False, msg
-            try:
-                await client.resume_charging(charger_id)
-                _LOGGER.info("Started charging via Zaptec Cloud API")
+        params = self._manual_action_params(vehicle_vin)
+        charger_type = params.get("charger_type", "tesla")
+
+        if charger_type == "generic":
+            ready, message = self._generic_charger_ready_for_start(params)
+            if not ready:
+                return False, message
+            switch_entity = params.get("charger_switch_entity", "").strip()
+            if not switch_entity:
+                return False, "Generic Charger: no switch entity configured"
+            if "." not in switch_entity:
+                return False, f"Generic Charger: switch entity '{switch_entity}' is not a valid entity_id (missing domain, e.g. 'switch.charger_charge')"
+            if not self._hass.states.get(switch_entity):
+                return False, f"Generic Charger: switch entity '{switch_entity}' not found in Home Assistant"
+
+        if charger_type == "tesla":
+            if not await self._is_vehicle_at_home(vehicle_vin):
+                msg = "Vehicle is not at home"
+                _LOGGER.warning(msg)
+                return False, msg
+
+            if not await self._is_vehicle_plugged_in(vehicle_vin):
+                msg = "Vehicle is not plugged in"
+                _LOGGER.warning(msg)
+                return False, msg
+
+        success = await self._execute_manual_ev_action(
+            "start_ev_charging",
+            vehicle_vin,
+            None,
+            "Manual start from mobile",
+        )
+        if success:
+            if charger_type == "zaptec":
                 return True, "Charging started via Zaptec"
-            except Exception as e:
-                _LOGGER.error(f"Zaptec start charging failed: {e}")
-                return False, f"Failed to start Zaptec charging: {e}"
+            return True, "Charging started"
 
-        # Generic Charger path (OCPP / any switch-based charger) — bypasses Tesla preconditions
-        if vehicle_vin == "generic_ev":
-            from .const import (
-                CONF_GENERIC_CHARGER_ENABLED,
-                CONF_GENERIC_CHARGER_STATUS_ENTITY,
-                CONF_GENERIC_CHARGER_SWITCH_ENTITY,
-            )
-            for entry in self._hass.config_entries.async_entries(DOMAIN):
-                opts = {**entry.data, **entry.options}
-                if not opts.get(CONF_GENERIC_CHARGER_ENABLED):
-                    continue
-                status_entity = opts.get(CONF_GENERIC_CHARGER_STATUS_ENTITY, "")
-                switch_entity = opts.get(CONF_GENERIC_CHARGER_SWITCH_ENTITY, "")
-                if status_entity:
-                    cs = self._hass.states.get(status_entity)
-                    if cs and cs.state.lower() in ("available", "disconnected"):
-                        # Charger-level entity can show "Available" even when a car is
-                        # connected — connector-level entities are more reliable.
-                        # Fall back to checking any _status_connector entity before rejecting.
-                        _OCPP_CAR_PRESENT = {"preparing", "charging", "suspendedev", "suspendedevse", "finishing"}
-                        car_on_connector = any(
-                            s.state.lower() in _OCPP_CAR_PRESENT
-                            for s in self._hass.states.async_all()
-                            if s.entity_id.startswith("sensor.") and s.entity_id.endswith("_status_connector")
-                            and s.state not in ("unavailable", "unknown")
-                        )
-                        if not car_on_connector:
-                            msg = "Vehicle is not plugged in"
-                            _LOGGER.warning(f"Generic Charger: {status_entity} = {cs.state}, no connector shows car present")
-                            return False, msg
-                        _LOGGER.debug(f"Generic Charger: {status_entity} = {cs.state} but connector shows car present, proceeding")
-                _LOGGER.debug(f"Generic Charger: switch_entity={switch_entity!r}, status_entity={status_entity!r}")
-                if not switch_entity or not switch_entity.strip():
-                    return False, "Generic Charger: no switch entity configured"
-                switch_entity = switch_entity.strip()
-                if "." not in switch_entity:
-                    return False, f"Generic Charger: switch entity '{switch_entity}' is not a valid entity_id (missing domain, e.g. 'switch.charger_charge')"
-                if not self._hass.states.get(switch_entity):
-                    return False, f"Generic Charger: switch entity '{switch_entity}' not found in Home Assistant"
-                try:
-                    await self._hass.services.async_call(
-                        "switch", "turn_on",
-                        {"entity_id": switch_entity},
-                        blocking=True,
-                    )
-                    _LOGGER.info(f"Started charging via Generic Charger: {switch_entity}")
-                    return True, "Charging started"
-                except Exception as e:
-                    _LOGGER.error(f"Generic Charger start charging failed: switch_entity={switch_entity!r}, error={e}")
-                    return False, f"Failed to start charging: {e}"
-            return False, "Generic Charger not configured"
-
-        # Check preconditions (Tesla path)
-        if not await self._is_vehicle_at_home(vehicle_vin):
-            msg = "Vehicle is not at home"
-            _LOGGER.warning(msg)
-            return False, msg
-
-        if not await self._is_vehicle_plugged_in(vehicle_vin):
-            msg = "Vehicle is not plugged in"
-            _LOGGER.warning(msg)
-            return False, msg
-
-        charging_state = await self._get_vehicle_charging_state(vehicle_vin)
-        if charging_state == "charging":
-            msg = "Vehicle is already charging"
-            _LOGGER.info(msg)
-            return True, msg  # Return success since desired state is achieved
-
-        config = self._get_powersync_config()
-        ev_provider = config.get(CONF_EV_PROVIDER, EV_PROVIDER_FLEET_API)
-        ble_prefix = _ble_prefix_for_vehicle(self._hass, config, vehicle_vin)
-
-        # Try Teslemetry Bluetooth first
-        if ev_provider in (EV_PROVIDER_TESLEMETRY_BT, EV_PROVIDER_BOTH):
-            tbt_prefix = _resolve_teslemetry_bt_prefix(self._hass)
-            if tbt_prefix:
-                tbt_entity = TESLEMETRY_BT_SWITCH_CHARGE.format(prefix=tbt_prefix)
-                if self._hass.states.get(tbt_entity):
-                    try:
-                        await self._hass.services.async_call(
-                            "switch", "turn_on",
-                            {"entity_id": tbt_entity},
-                            blocking=True,
-                        )
-                        _LOGGER.info(f"Started charging via Teslemetry BT: {tbt_entity}")
-                        return True, "Charging started"
-                    except Exception as e:
-                        _LOGGER.warning(f"Teslemetry BT start charging failed: {e}")
-
-        # Try ESPHome BLE
-        if ev_provider in (EV_PROVIDER_TESLA_BLE, EV_PROVIDER_BOTH):
-            charger_entity = TESLA_BLE_SWITCH_CHARGER.format(prefix=ble_prefix)
-            if self._hass.states.get(charger_entity):
-                try:
-                    await self._hass.services.async_call(
-                        "switch", "turn_on",
-                        {"entity_id": charger_entity},
-                        blocking=True,
-                    )
-                    _LOGGER.info(f"Started charging via BLE: {charger_entity}")
-                    return True, "Charging started"
-                except Exception as e:
-                    _LOGGER.warning(f"BLE start charging failed: {e}")
-
-        # Try Fleet API
-        if ev_provider in (EV_PROVIDER_FLEET_API, EV_PROVIDER_BOTH):
-            await self._wake_vehicle(vehicle_vin)
-            # Tesla Fleet uses switch.X_charge, not button.X_charge_start
-            charge_switch_entity = await self._get_tesla_ev_entity(r"switch\..*_charge$", vehicle_vin)
-            if charge_switch_entity:
-                try:
-                    # Use timeout to prevent hanging on slow Tesla API responses
-                    await asyncio.wait_for(
-                        self._hass.services.async_call(
-                            "switch", "turn_on",
-                            {"entity_id": charge_switch_entity},
-                            blocking=True,
-                        ),
-                        timeout=30.0
-                    )
-                    _LOGGER.info(f"Started charging via Fleet API: {charge_switch_entity}")
-                    return True, "Charging started"
-                except asyncio.TimeoutError:
-                    _LOGGER.warning(f"Start charging command timed out (30s) - command may still be processing")
-                    return True, "Charging command sent (response timed out)"
-                except Exception as e:
-                    _LOGGER.error(f"Fleet API start charging failed: {e}")
-                    return False, f"Failed to start charging: {e}"
-            else:
-                _LOGGER.error("Could not find charge switch entity for Tesla vehicle")
-
-        msg = f"Start charging failed - no suitable entity found (provider: {ev_provider})"
-        _LOGGER.warning(msg)
-        return False, msg
+        return False, "Failed to start charging"
 
     async def _stop_charging(self, vehicle_vin: str | None = None) -> tuple[bool, str]:
         """Stop charging. Returns (success, message)."""
-        # Zaptec standalone path — check before Tesla preconditions
-        zaptec = self._get_zaptec_standalone()
-        if zaptec:
-            client, charger_id, cached_state = zaptec
-            mode = cached_state.get("charger_operation_mode", "")
-            power_w = cached_state.get("total_charge_power_w", 0)
-            if mode != "charging" and power_w <= 50:
-                msg = f"Zaptec charger is not charging (state: {mode})"
-                _LOGGER.info(msg)
-                return True, msg
-            try:
-                await client.stop_charging(charger_id)
-                _LOGGER.info("Stopped charging via Zaptec Cloud API")
+        charger_type = self._manual_action_params(vehicle_vin).get("charger_type", "tesla")
+        success = await self._execute_manual_ev_action(
+            "stop_ev_charging",
+            vehicle_vin,
+            None,
+            "Manual stop from mobile",
+        )
+        if success:
+            if charger_type == "zaptec":
                 return True, "Charging stopped via Zaptec"
-            except Exception as e:
-                _LOGGER.error(f"Zaptec stop charging failed: {e}")
-                return False, f"Failed to stop Zaptec charging: {e}"
+            return True, "Charging stopped"
 
-        # Generic Charger path — bypasses Tesla preconditions
-        if vehicle_vin == "generic_ev":
-            from .const import (
-                CONF_GENERIC_CHARGER_ENABLED,
-                CONF_GENERIC_CHARGER_SWITCH_ENTITY,
-            )
-            for entry in self._hass.config_entries.async_entries(DOMAIN):
-                opts = {**entry.data, **entry.options}
-                if not opts.get(CONF_GENERIC_CHARGER_ENABLED):
-                    continue
-                switch_entity = opts.get(CONF_GENERIC_CHARGER_SWITCH_ENTITY, "")
-                if not switch_entity:
-                    return False, "Generic Charger: no switch entity configured"
-                try:
-                    await self._hass.services.async_call(
-                        "switch", "turn_off",
-                        {"entity_id": switch_entity},
-                        blocking=True,
-                    )
-                    _LOGGER.info(f"Stopped charging via Generic Charger: {switch_entity}")
-                    return True, "Charging stopped"
-                except Exception as e:
-                    _LOGGER.error(f"Generic Charger stop charging failed: {e}")
-                    return False, f"Failed to stop charging: {e}"
-            return False, "Generic Charger not configured"
-
-        # Check if actually charging (Tesla path)
-        charging_state = await self._get_vehicle_charging_state(vehicle_vin)
-        if charging_state and charging_state != "charging":
-            msg = f"Vehicle is not charging (state: {charging_state})"
-            _LOGGER.info(msg)
-            return True, msg  # Return success since desired state is achieved
-
-        config = self._get_powersync_config()
-        ev_provider = config.get(CONF_EV_PROVIDER, EV_PROVIDER_FLEET_API)
-        ble_prefix = _ble_prefix_for_vehicle(self._hass, config, vehicle_vin)
-
-        # Try Teslemetry Bluetooth first
-        if ev_provider in (EV_PROVIDER_TESLEMETRY_BT, EV_PROVIDER_BOTH):
-            tbt_prefix = _resolve_teslemetry_bt_prefix(self._hass)
-            if tbt_prefix:
-                tbt_entity = TESLEMETRY_BT_SWITCH_CHARGE.format(prefix=tbt_prefix)
-                if self._hass.states.get(tbt_entity):
-                    try:
-                        await self._hass.services.async_call(
-                            "switch", "turn_off",
-                            {"entity_id": tbt_entity},
-                            blocking=True,
-                        )
-                        _LOGGER.info(f"Stopped charging via Teslemetry BT: {tbt_entity}")
-                        return True, "Charging stopped"
-                    except Exception as e:
-                        _LOGGER.warning(f"Teslemetry BT stop charging failed: {e}")
-
-        # Try ESPHome BLE
-        if ev_provider in (EV_PROVIDER_TESLA_BLE, EV_PROVIDER_BOTH):
-            charger_entity = TESLA_BLE_SWITCH_CHARGER.format(prefix=ble_prefix)
-            if self._hass.states.get(charger_entity):
-                try:
-                    await self._hass.services.async_call(
-                        "switch", "turn_off",
-                        {"entity_id": charger_entity},
-                        blocking=True,
-                    )
-                    _LOGGER.info(f"Stopped charging via BLE: {charger_entity}")
-                    return True, "Charging stopped"
-                except Exception as e:
-                    _LOGGER.warning(f"BLE stop charging failed: {e}")
-
-        # Try Fleet API
-        if ev_provider in (EV_PROVIDER_FLEET_API, EV_PROVIDER_BOTH):
-            await self._wake_vehicle(vehicle_vin)
-            # Tesla Fleet uses switch.X_charge, not button.X_charge_stop
-            charge_switch_entity = await self._get_tesla_ev_entity(r"switch\..*_charge$", vehicle_vin)
-            if charge_switch_entity:
-                try:
-                    # Use timeout to prevent hanging on slow Tesla API responses
-                    await asyncio.wait_for(
-                        self._hass.services.async_call(
-                            "switch", "turn_off",
-                            {"entity_id": charge_switch_entity},
-                            blocking=True,
-                        ),
-                        timeout=30.0
-                    )
-                    _LOGGER.info(f"Stopped charging via Fleet API: {charge_switch_entity}")
-                    return True, "Charging stopped"
-                except asyncio.TimeoutError:
-                    _LOGGER.warning(f"Stop charging command timed out (30s) - command may still be processing")
-                    return True, "Stop command sent (response timed out)"
-                except Exception as e:
-                    _LOGGER.error(f"Fleet API stop charging failed: {e}")
-                    return False, f"Failed to stop charging: {e}"
-
-        return False, "No suitable entity found to stop charging"
+        return False, "Failed to stop charging"
 
     async def _set_charge_limit(self, percent: int, vehicle_vin: str | None = None) -> tuple[bool, str]:
         """Set charge limit percentage. Returns (success, message)."""
         # Clamp to valid range (50-100%)
         percent = max(50, min(100, int(percent)))
 
-        config = self._get_powersync_config()
-        ev_provider = config.get(CONF_EV_PROVIDER, EV_PROVIDER_FLEET_API)
-        ble_prefix = _ble_prefix_for_vehicle(self._hass, config, vehicle_vin)
+        charger_type = self._manual_action_params(vehicle_vin).get("charger_type", "tesla")
+        success = await self._execute_manual_ev_action(
+            "set_ev_charge_limit",
+            vehicle_vin,
+            {"percent": percent},
+            "Manual charge limit from mobile",
+        )
+        if success:
+            if charger_type in ("generic", "ocpp", "zaptec"):
+                return True, "Charge limit is not supported for this charger"
+            return True, f"Charge limit set to {percent}%"
 
-        # Teslemetry BT doesn't support charge limit — skip to Fleet API
-        # Try ESPHome BLE first
-        if ev_provider in (EV_PROVIDER_TESLA_BLE, EV_PROVIDER_BOTH):
-            limit_entity = TESLA_BLE_NUMBER_CHARGING_LIMIT.format(prefix=ble_prefix)
-            if self._hass.states.get(limit_entity):
-                try:
-                    await self._hass.services.async_call(
-                        "number", "set_value",
-                        {"entity_id": limit_entity, "value": percent},
-                        blocking=True,
-                    )
-                    _LOGGER.info(f"Set charge limit to {percent}% via BLE: {limit_entity}")
-                    return True, f"Charge limit set to {percent}%"
-                except Exception as e:
-                    _LOGGER.warning(f"BLE set charge limit failed: {e}")
-
-        # Try Fleet API (also used as fallback for Teslemetry BT which lacks charge limit)
-        if ev_provider in (EV_PROVIDER_FLEET_API, EV_PROVIDER_TESLEMETRY_BT, EV_PROVIDER_BOTH):
-            await self._wake_vehicle(vehicle_vin)
-            limit_entity = await self._get_tesla_ev_entity(r"number\..*charge_limit$", vehicle_vin)
-            if limit_entity:
-                try:
-                    await self._hass.services.async_call(
-                        "number", "set_value",
-                        {"entity_id": limit_entity, "value": percent},
-                        blocking=True,
-                    )
-                    _LOGGER.info(f"Set charge limit to {percent}% via Fleet API: {limit_entity}")
-                    return True, f"Charge limit set to {percent}%"
-                except Exception as e:
-                    _LOGGER.error(f"Fleet API set charge limit failed: {e}")
-                    return False, f"Failed to set charge limit: {e}"
-
-        return False, "No suitable entity found to set charge limit"
+        return False, "Failed to set charge limit"
 
     async def _set_charging_amps(self, amps: int, vehicle_vin: str | None = None) -> tuple[bool, str]:
         """Set charging amperage. Returns (success, message)."""
         # Clamp to valid range (1-48A for most, up to 80A for some)
         amps = max(1, min(80, int(amps)))
 
-        # Check if plugged in - can only set amps when connected
-        if not await self._is_vehicle_plugged_in(vehicle_vin):
+        params = self._manual_action_params(vehicle_vin)
+        charger_type = params.get("charger_type", "tesla")
+
+        # Tesla vehicles can only set amps when connected. Charger-native
+        # integrations validate this through their own status/action handlers.
+        if charger_type == "tesla" and not await self._is_vehicle_plugged_in(vehicle_vin):
             msg = "Vehicle is not plugged in - cannot set charging amps"
             _LOGGER.warning(msg)
             return False, msg
 
-        config = self._get_powersync_config()
-        ev_provider = config.get(CONF_EV_PROVIDER, EV_PROVIDER_FLEET_API)
-        ble_prefix = _ble_prefix_for_vehicle(self._hass, config, vehicle_vin)
+        success = await self._execute_manual_ev_action(
+            "set_ev_charging_amps",
+            vehicle_vin,
+            {"amps": amps},
+            "Manual charging amps from mobile",
+        )
+        if success:
+            return True, f"Charging amps set to {amps}A"
 
-        # Try Teslemetry Bluetooth first
-        if ev_provider in (EV_PROVIDER_TESLEMETRY_BT, EV_PROVIDER_BOTH):
-            tbt_prefix = _resolve_teslemetry_bt_prefix(self._hass)
-            if tbt_prefix:
-                tbt_amps_entity = TESLEMETRY_BT_NUMBER_CHARGE_AMPS.format(prefix=tbt_prefix)
-                tbt_state = self._hass.states.get(tbt_amps_entity)
-                if tbt_state:
-                    min_val = float(tbt_state.attributes.get("min", 0))
-                    max_val = float(tbt_state.attributes.get("max", 32))
-                    capped = max(int(min_val), min(amps, int(max_val)))
-                    try:
-                        await self._hass.services.async_call(
-                            "number", "set_value",
-                            {"entity_id": tbt_amps_entity, "value": capped},
-                            blocking=True,
-                        )
-                        _LOGGER.info(f"Set charging amps to {capped}A via Teslemetry BT: {tbt_amps_entity}")
-                        return True, f"Charging amps set to {capped}A"
-                    except Exception as e:
-                        _LOGGER.warning(f"Teslemetry BT set charging amps failed: {e}")
-
-        # Try ESPHome BLE (BLE supports same 5-32A range as cloud API)
-        if ev_provider in (EV_PROVIDER_TESLA_BLE, EV_PROVIDER_BOTH):
-            amps_entity = TESLA_BLE_NUMBER_CHARGING_AMPS.format(prefix=ble_prefix)
-            if self._hass.states.get(amps_entity):
-                # Tesla vehicles refuse charging below 5A
-                ble_amps = max(5, min(32, amps))
-                try:
-                    await self._hass.services.async_call(
-                        "number", "set_value",
-                        {"entity_id": amps_entity, "value": ble_amps},
-                        blocking=True,
-                    )
-                    _LOGGER.info(f"Set charging amps to {ble_amps}A via BLE: {amps_entity}")
-                    return True, f"Charging amps set to {ble_amps}A"
-                except Exception as e:
-                    _LOGGER.warning(f"BLE set charging amps failed: {e}")
-
-        # Try Fleet API
-        if ev_provider in (EV_PROVIDER_FLEET_API, EV_PROVIDER_BOTH):
-            await self._wake_vehicle(vehicle_vin)
-            # Tesla Fleet uses charge_current, Teslemetry uses charging_amps
-            amps_entity = await self._get_tesla_ev_entity(r"number\..*(charging_amps|charge_current)$", vehicle_vin)
-            if amps_entity:
-                try:
-                    await self._hass.services.async_call(
-                        "number", "set_value",
-                        {"entity_id": amps_entity, "value": amps},
-                        blocking=True,
-                    )
-                    _LOGGER.info(f"Set charging amps to {amps}A via Fleet API: {amps_entity}")
-                    return True, f"Charging amps set to {amps}A"
-                except Exception as e:
-                    _LOGGER.error(f"Fleet API set charging amps failed: {e}")
-                    return False, f"Failed to set charging amps: {e}"
-
-        return False, "No suitable entity found to set charging amps"
+        return False, "Failed to set charging amps"
 
     async def post(self, request: web.Request, vehicle_id: str) -> web.Response:
         """Handle POST request to send vehicle command."""
@@ -9919,32 +9713,9 @@ class EVVehicleCommandView(HomeAssistantView):
 
             elif command == "start_charging":
                 success, message = await self._start_charging(vehicle_vin)
-                if success:
-                    from .automations.actions import record_manual_ev_charging_session
-                    entries = self._hass.config_entries.async_entries(DOMAIN)
-                    if entries:
-                        manual_vehicle_id, manual_params = self._manual_session_identity(vehicle_vin)
-                        await record_manual_ev_charging_session(
-                            self._hass,
-                            entries[0],
-                            manual_vehicle_id,
-                            manual_params,
-                            reason="Manual start from mobile",
-                        )
 
             elif command == "stop_charging":
                 success, message = await self._stop_charging(vehicle_vin)
-                if success:
-                    from .automations.actions import clear_tracked_ev_charging_session
-                    entries = self._hass.config_entries.async_entries(DOMAIN)
-                    if entries:
-                        manual_vehicle_id, _manual_params = self._manual_session_identity(vehicle_vin)
-                        await clear_tracked_ev_charging_session(
-                            self._hass,
-                            entries[0],
-                            manual_vehicle_id,
-                            reason="manual stop",
-                        )
 
             elif command == "set_charge_limit":
                 percent = data.get("value") or data.get("percent") or data.get("limit")
@@ -11091,13 +10862,48 @@ class ChargingBoostView(HomeAssistantView):
             # Execute start_ev_charging action with max amps
             boost_vehicle_id = vehicle_id if vehicle_id and vehicle_id != "_default" else "_default"
             action_vehicle_vin = None if boost_vehicle_id == "_default" else boost_vehicle_id
+            action_params = {
+                "vehicle_vin": action_vehicle_vin,
+                "skip_ownership": True,
+            }
             warnings: list[str] = []
+
+            opts = {**self._config_entry.data, **self._config_entry.options}
+            if boost_vehicle_id == "generic_ev":
+                from .const import (
+                    CONF_GENERIC_CHARGER_AMPS_ENTITY,
+                    CONF_GENERIC_CHARGER_SWITCH_ENTITY,
+                )
+
+                action_vehicle_vin = None
+                action_params.update({
+                    "charger_type": "generic",
+                    "vehicle_id": "generic_ev",
+                    "vehicle_vin": None,
+                    "charger_switch_entity": opts.get(CONF_GENERIC_CHARGER_SWITCH_ENTITY, ""),
+                    "charger_amps_entity": opts.get(CONF_GENERIC_CHARGER_AMPS_ENTITY, ""),
+                })
+            elif (
+                boost_vehicle_id == "zaptec_standalone"
+                or (
+                    boost_vehicle_id == "_default"
+                    and opts.get(CONF_ZAPTEC_STANDALONE_ENABLED)
+                    and opts.get(CONF_ZAPTEC_USERNAME)
+                )
+            ):
+                boost_vehicle_id = "zaptec_standalone"
+                action_vehicle_vin = None
+                action_params.update({
+                    "charger_type": "zaptec",
+                    "vehicle_id": "zaptec_standalone",
+                    "vehicle_vin": None,
+                })
 
             if target_soc_value is not None and target_soc_value >= 50:
                 limit_success = await execute_actions(self._hass, self._config_entry, [{
                     "action_type": "set_ev_charge_limit",
                     "parameters": {
-                        "vehicle_vin": action_vehicle_vin,
+                        **action_params,
                         "percent": target_soc_value,
                     }
                 }])
@@ -11109,8 +10915,8 @@ class ChargingBoostView(HomeAssistantView):
             actions = [{
                 "action_type": "start_ev_charging",
                 "parameters": {
-                    "vehicle_vin": action_vehicle_vin,
-                    "skip_ownership": True,
+                    **action_params,
+                    "amps": 32,
                 }
             }]
 
@@ -11121,8 +10927,8 @@ class ChargingBoostView(HomeAssistantView):
                 amps_actions = [{
                     "action_type": "set_ev_charging_amps",
                     "parameters": {
+                        **action_params,
                         "amps": 32,  # Max standard amps
-                        "vehicle_vin": action_vehicle_vin,
                     }
                 }]
                 amps_success = await execute_actions(self._hass, self._config_entry, amps_actions)
@@ -11180,8 +10986,7 @@ class ChargingBoostView(HomeAssistantView):
                     stop_success = await execute_actions(self._hass, self._config_entry, [{
                         "action_type": "stop_ev_charging",
                         "parameters": {
-                            "vehicle_vin": action_vehicle_vin,
-                            "skip_ownership": True,
+                            **action_params,
                         },
                     }])
                     if stop_success:
@@ -11395,53 +11200,28 @@ class OCPPChargerStartView(HomeAssistantView):
                     status=404,
                 )
 
-            # When the connector is in "Finishing" the charge_control switch can
-            # latch its is_on state and silently skip a fresh RemoteStartTransaction.
-            # Toggle off→on first to force the OCPP integration to send a new
-            # start command.
-            connector_state = self._hass.states.get(f"sensor.{charger_id}_status_connector")
-            needs_reset = (
-                connector_state is not None
-                and connector_state.state.lower() == "finishing"
-            )
-            if needs_reset:
-                try:
-                    await self._hass.services.async_call(
-                        "switch", "turn_off", {"entity_id": entity_id}, blocking=True,
-                    )
-                    await asyncio.sleep(1)
-                except Exception as off_err:
-                    _LOGGER.debug(
-                        "OCPP pre-start reset turn_off failed for %s: %s",
-                        charger_id, off_err,
-                    )
+            from .automations.actions import _execute_single_action
 
-            await self._hass.services.async_call(
-                "switch",
-                "turn_on",
-                {"entity_id": entity_id},
-                blocking=True,
+            success = await _execute_single_action(
+                self._hass,
+                self._entry,
+                "start_ev_charging",
+                {
+                    "charger_type": "ocpp",
+                    "ocpp_charger_id": charger_id,
+                    "vehicle_id": f"ocpp_{charger_id}",
+                    "reason": "Manual OCPP start from mobile",
+                },
             )
-            from .automations.ev_ownership import claim_ev_ownership
-
-            for loadpoint_id in (charger_id, f"ocpp_{charger_id}"):
-                claim_ev_ownership(
-                    self._hass,
-                    self._entry,
-                    loadpoint_id,
-                    owner_mode="manual",
-                    command="start_manual",
-                    reason="Manual OCPP start from mobile",
-                    extra={
-                        "charger_id": charger_id,
-                        "charger_entity_id": entity_id,
-                    },
+            if not success:
+                return web.json_response(
+                    {"success": False, "error": f"Failed to start charging on {charger_id}"},
+                    status=500,
                 )
 
             _LOGGER.info(
-                "OCPP charger %s: start charging via %s%s",
-                charger_id, entity_id,
-                " (reset from Finishing)" if needs_reset else "",
+                "OCPP charger %s: start charging via shared action layer",
+                charger_id,
             )
             return web.json_response({
                 "success": True,
@@ -11490,24 +11270,26 @@ class OCPPChargerStopView(HomeAssistantView):
                     status=404,
                 )
 
-            await self._hass.services.async_call(
-                "switch",
-                "turn_off",
-                {"entity_id": entity_id},
-                blocking=True,
-            )
-            from .automations.ev_ownership import release_ev_ownership
+            from .automations.actions import _execute_single_action
 
-            for loadpoint_id in (charger_id, f"ocpp_{charger_id}"):
-                release_ev_ownership(
-                    self._hass,
-                    self._entry,
-                    loadpoint_id,
-                    command="stop_manual",
-                    reason="Manual OCPP stop from mobile",
+            success = await _execute_single_action(
+                self._hass,
+                self._entry,
+                "stop_ev_charging",
+                {
+                    "charger_type": "ocpp",
+                    "ocpp_charger_id": charger_id,
+                    "vehicle_id": f"ocpp_{charger_id}",
+                    "reason": "Manual OCPP stop from mobile",
+                },
+            )
+            if not success:
+                return web.json_response(
+                    {"success": False, "error": f"Failed to stop charging on {charger_id}"},
+                    status=500,
                 )
 
-            _LOGGER.info("OCPP charger %s: stop charging via %s", charger_id, entity_id)
+            _LOGGER.info("OCPP charger %s: stop charging via shared action layer", charger_id)
             return web.json_response({
                 "success": True,
                 "message": f"Charging stopped on {charger_id}",

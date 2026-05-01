@@ -119,6 +119,43 @@ class _Entry:
     options = {}
 
 
+class _ZaptecClient:
+    def __init__(self) -> None:
+        self.calls: list[tuple] = []
+
+    async def set_installation_current(self, installation_id: str, amps: int):
+        self.calls.append(("set_installation_current", installation_id, amps))
+
+    async def resume_charging(self, charger_id: str):
+        self.calls.append(("resume_charging", charger_id))
+
+    async def stop_charging(self, charger_id: str):
+        self.calls.append(("stop_charging", charger_id))
+
+
+def _zaptec_entry(installation_id: str = ""):
+    return SimpleNamespace(
+        entry_id="entry-1",
+        data={},
+        options={
+            "zaptec_standalone_enabled": True,
+            "zaptec_username": "user@example.com",
+            "zaptec_charger_id": "charger-1",
+            "zaptec_installation_id_cloud": installation_id,
+        },
+    )
+
+
+def _zaptec_hass(cached_state: dict):
+    client = _ZaptecClient()
+    hass = _Hass([])
+    hass.data["power_sync"]["entry-1"].update({
+        "zaptec_client": client,
+        "zaptec_cached_state": cached_state,
+    })
+    return hass, client
+
+
 def test_ocpp_amps_falls_back_to_hacs_number_entity():
     entity_id = "number.evse_1_maximum_current"
     hass = _Hass(
@@ -447,3 +484,63 @@ def test_clear_tracked_session_does_not_send_physical_stop():
     assert hass.data["power_sync"]["entry-1"]["ev_ownership"] == {}
     assert hass.data["power_sync"]["entry-1"]["ev_last_command"]["VIN123"]["command"] == "release"
     assert hass.services.calls == []
+
+
+def test_zaptec_waiting_without_installation_current_fails_start():
+    hass, client = _zaptec_hass({"charger_operation_mode": "connected_waiting"})
+
+    result = asyncio.run(
+        actions._action_start_ev_charging(
+            hass,
+            _zaptec_entry(),
+            {"charger_type": "zaptec"},
+        )
+    )
+
+    assert result is False
+    assert client.calls == []
+
+
+def test_zaptec_waiting_sets_current_without_resume():
+    hass, client = _zaptec_hass({"charger_operation_mode": "connected_waiting"})
+
+    result = asyncio.run(
+        actions._action_start_ev_charging(
+            hass,
+            _zaptec_entry("installation-1"),
+            {"charger_type": "zaptec"},
+        )
+    )
+
+    assert result is True
+    assert client.calls == [("set_installation_current", "installation-1", 16)]
+
+
+def test_zaptec_already_charging_updates_current_without_resume():
+    hass, client = _zaptec_hass({"charger_operation_mode": "charging"})
+
+    result = asyncio.run(
+        actions._action_start_ev_charging(
+            hass,
+            _zaptec_entry("installation-1"),
+            {"charger_type": "zaptec", "amps": 12},
+        )
+    )
+
+    assert result is True
+    assert client.calls == [("set_installation_current", "installation-1", 12)]
+
+
+def test_zaptec_idle_stop_is_passive_success():
+    hass, client = _zaptec_hass({"charger_operation_mode": "connected_waiting"})
+
+    result = asyncio.run(
+        actions._action_stop_ev_charging(
+            hass,
+            _zaptec_entry("installation-1"),
+            {"charger_type": "zaptec"},
+        )
+    )
+
+    assert result is True
+    assert client.calls == []

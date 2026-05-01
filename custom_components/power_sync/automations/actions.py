@@ -873,6 +873,8 @@ def _ev_action_loadpoint_id(params: Dict[str, Any]) -> str:
     if charger_type == "ocpp":
         charger_id = params.get("ocpp_charger_id") or "ocpp_charger"
         return f"ocpp_{charger_id}"
+    if charger_type == "zaptec":
+        return "zaptec_standalone"
 
     return DEFAULT_VEHICLE_ID
 
@@ -1899,6 +1901,164 @@ def _find_ocpp_current_limit_entity(hass: HomeAssistant, charger_id: str) -> Opt
     return sorted(set(candidates), key=_priority)[0]
 
 
+def _get_zaptec_standalone(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+) -> Optional[Dict[str, Any]]:
+    """Return the configured Zaptec standalone client and cached charger state."""
+    from ..const import (
+        CONF_ZAPTEC_CHARGER_ID,
+        CONF_ZAPTEC_INSTALLATION_ID_CLOUD,
+        CONF_ZAPTEC_STANDALONE_ENABLED,
+        CONF_ZAPTEC_USERNAME,
+    )
+
+    candidates = [config_entry]
+    try:
+        for entry in hass.config_entries.async_entries(DOMAIN):
+            if entry.entry_id != config_entry.entry_id:
+                candidates.append(entry)
+    except Exception:
+        pass
+
+    for entry in candidates:
+        opts = {**getattr(entry, "data", {}), **getattr(entry, "options", {})}
+        if not (
+            opts.get(CONF_ZAPTEC_STANDALONE_ENABLED)
+            and opts.get(CONF_ZAPTEC_USERNAME)
+        ):
+            continue
+
+        entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+        client = entry_data.get("zaptec_client")
+        charger_id = opts.get(CONF_ZAPTEC_CHARGER_ID, "")
+        if not client or not charger_id:
+            continue
+
+        return {
+            "client": client,
+            "charger_id": charger_id,
+            "installation_id": opts.get(CONF_ZAPTEC_INSTALLATION_ID_CLOUD, ""),
+            "cached_state": entry_data.get("zaptec_cached_state", {}),
+        }
+
+    return None
+
+
+def _zaptec_state_value(cached_state: Dict[str, Any], key: str, default: Any = None) -> Any:
+    """Read Zaptec cached state defensively; tests use simple dict stubs."""
+    value = cached_state.get(key, default)
+    return default if value is None else value
+
+
+async def _set_zaptec_charging_amps(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+    amps: int,
+) -> bool:
+    """Set Zaptec standalone installation current."""
+    zaptec = _get_zaptec_standalone(hass, config_entry)
+    if not zaptec:
+        _LOGGER.error("Zaptec set amps: standalone charger is not configured")
+        return False
+
+    installation_id = zaptec.get("installation_id")
+    if not installation_id:
+        _LOGGER.error("Zaptec set amps: no installation ID configured")
+        return False
+
+    target_amps = max(0, min(80, int(amps)))
+    try:
+        await zaptec["client"].set_installation_current(installation_id, target_amps)
+        _LOGGER.info("Zaptec charger set to %dA", target_amps)
+        return True
+    except Exception as e:
+        _LOGGER.error("Zaptec set amps failed: %s", e)
+        return False
+
+
+async def _start_zaptec_charging(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+    amps: Optional[int] = None,
+) -> bool:
+    """Start Zaptec standalone charging with state-aware command selection."""
+    zaptec = _get_zaptec_standalone(hass, config_entry)
+    if not zaptec:
+        _LOGGER.error("Zaptec start: standalone charger is not configured")
+        return False
+
+    cached_state = zaptec.get("cached_state") or {}
+    charger_mode = str(_zaptec_state_value(cached_state, "charger_operation_mode", "")).lower()
+    try:
+        power_w = float(_zaptec_state_value(cached_state, "total_charge_power_w", 0) or 0)
+    except (TypeError, ValueError):
+        power_w = 0
+    cable_locked = bool(_zaptec_state_value(cached_state, "cable_locked", False))
+
+    if charger_mode not in ("connected_waiting", "charging") and power_w <= 50 and not cable_locked:
+        _LOGGER.warning("Zaptec start: vehicle is not plugged in")
+        return False
+
+    target_amps = int(amps) if amps is not None else None
+
+    if charger_mode == "charging":
+        if target_amps is not None:
+            await _set_zaptec_charging_amps(hass, config_entry, target_amps)
+        _LOGGER.info("Zaptec charger is already charging")
+        return True
+
+    if charger_mode == "connected_waiting":
+        if not await _set_zaptec_charging_amps(hass, config_entry, target_amps or 16):
+            _LOGGER.warning("Zaptec start: waiting charger could not be assigned current")
+            return False
+        _LOGGER.info("Zaptec charger waiting: set installation current instead of resume")
+        return True
+
+    try:
+        if target_amps is not None and zaptec.get("installation_id"):
+            await _set_zaptec_charging_amps(hass, config_entry, target_amps)
+        await zaptec["client"].resume_charging(zaptec["charger_id"])
+        _LOGGER.info("Zaptec charger resumed via Cloud API")
+        return True
+    except Exception as e:
+        _LOGGER.error("Zaptec start charging failed: %s", e)
+        return False
+
+
+async def _stop_zaptec_charging(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+) -> bool:
+    """Stop Zaptec standalone charging, treating already-idle states as success."""
+    zaptec = _get_zaptec_standalone(hass, config_entry)
+    if not zaptec:
+        _LOGGER.error("Zaptec stop: standalone charger is not configured")
+        return False
+
+    cached_state = zaptec.get("cached_state") or {}
+    charger_mode = str(_zaptec_state_value(cached_state, "charger_operation_mode", "")).lower()
+    try:
+        power_w = float(_zaptec_state_value(cached_state, "total_charge_power_w", 0) or 0)
+    except (TypeError, ValueError):
+        power_w = 0
+
+    if charger_mode in ("connected_waiting", "disconnected", "") and power_w <= 50:
+        _LOGGER.info(
+            "Zaptec charger already in %s mode, skipping stop command",
+            charger_mode or "unknown",
+        )
+        return True
+
+    try:
+        await zaptec["client"].stop_charging(zaptec["charger_id"])
+        _LOGGER.info("Zaptec charger stopped via Cloud API")
+        return True
+    except Exception as e:
+        _LOGGER.error("Zaptec stop charging failed: %s", e)
+        return False
+
+
 async def _action_start_ev_charging(
     hass: HomeAssistant,
     config_entry: ConfigEntry,
@@ -1906,10 +2066,11 @@ async def _action_start_ev_charging(
     context: Optional[Dict[str, Any]] = None
 ) -> bool:
     """
-    Start EV charging via Tesla, OCPP, or generic charger.
+    Start EV charging via Tesla, OCPP, generic, or Zaptec charger.
 
     Dispatches based on charger_type parameter. Tesla uses BLE/Fleet API,
-    OCPP uses HA switch entities, generic uses configured switch entity.
+    OCPP uses HA switch entities, generic uses configured switch entity,
+    Zaptec uses the standalone Cloud client.
 
     Parameters:
         stop_outside_window: If True, schedule charging to stop at end of time window
@@ -1923,6 +2084,17 @@ async def _action_start_ev_charging(
             _LOGGER.error("OCPP start: no charger ID configured")
             return False
         return await _start_ocpp_charging(hass, ocpp_charger_id)
+
+    # Zaptec standalone charger: use configured Cloud API client
+    if charger_type == "zaptec":
+        amps = params.get("amps")
+        if amps is None:
+            amps = params.get("charging_amps")
+        return await _start_zaptec_charging(
+            hass,
+            config_entry,
+            int(amps) if amps is not None else None,
+        )
 
     # Generic charger: use configured switch entity
     if charger_type == "generic":
@@ -2082,7 +2254,7 @@ async def _action_stop_ev_charging(
     params: Dict[str, Any]
 ) -> bool:
     """
-    Stop EV charging via Tesla, OCPP, or generic charger.
+    Stop EV charging via Tesla, OCPP, generic, or Zaptec charger.
 
     Dispatches based on charger_type parameter.
     Also cancels any scheduled stop from stop_outside_window.
@@ -2107,6 +2279,10 @@ async def _action_stop_ev_charging(
             return False
         return await _stop_ocpp_charging(hass, ocpp_charger_id)
 
+    # Zaptec standalone charger
+    if charger_type == "zaptec":
+        return await _stop_zaptec_charging(hass, config_entry)
+
     # Generic charger
     if charger_type == "generic":
         switch_entity = params.get("charger_switch_entity")
@@ -2126,6 +2302,15 @@ async def _action_stop_ev_charging(
     ev_provider = ev_config["ev_provider"]
     vehicle_vin = params.get("vehicle_vin")
     ble_prefix = _resolve_ble_prefix_for_vehicle(hass, config_entry, vehicle_vin)
+
+    charging_entity = await _get_tesla_ev_entity(hass, r"sensor\..*_charging$", vehicle_vin)
+    if charging_entity:
+        charging_state = hass.states.get(charging_entity)
+        if charging_state and charging_state.state not in ("unavailable", "unknown"):
+            state_lower = charging_state.state.lower()
+            if state_lower and state_lower != "charging":
+                _LOGGER.info("EV is not charging (state: %s) - treating stop as complete", state_lower)
+                return True
 
     # Try Teslemetry Bluetooth first if configured
     if ev_provider in (EV_PROVIDER_TESLEMETRY_BT, EV_PROVIDER_BOTH):
@@ -2193,10 +2378,10 @@ async def _action_set_ev_charge_limit(
 ) -> bool:
     """
     Set EV charge limit percentage via Tesla Fleet/Teslemetry or Tesla BLE.
-    OCPP and generic chargers don't support charge limits — returns True (no-op).
+    OCPP, generic, and Zaptec chargers don't support vehicle charge limits — returns True (no-op).
     """
     charger_type = params.get("charger_type", "tesla")
-    if charger_type in ("ocpp", "generic"):
+    if charger_type in ("ocpp", "generic", "zaptec"):
         _LOGGER.info("set_ev_charge_limit: not supported for %s chargers (no-op)", charger_type)
         return True
 
@@ -2272,7 +2457,7 @@ async def _action_set_ev_charging_amps(
     params: Dict[str, Any]
 ) -> bool:
     """
-    Set EV charging amperage via Tesla, OCPP, or generic charger.
+    Set EV charging amperage via Tesla, OCPP, generic, or Zaptec charger.
     """
     # Accept both "amps" and "charging_amps" for flexibility. Preserve 0A
     # values for charger APIs that use amps=0 as a pause/stop command.
@@ -2292,6 +2477,10 @@ async def _action_set_ev_charging_amps(
             _LOGGER.error("OCPP set amps: no charger ID configured")
             return False
         return await _set_ocpp_charging_amps(hass, ocpp_charger_id, int(amps))
+
+    # Zaptec standalone charger
+    if charger_type == "zaptec":
+        return await _set_zaptec_charging_amps(hass, config_entry, int(amps))
 
     # Generic charger
     if charger_type == "generic":
@@ -2866,7 +3055,7 @@ async def _set_vehicle_amps(
     params: dict
 ) -> bool:
     """
-    Set charging amps for any charger type (Tesla, OCPP, generic HA entities).
+    Set charging amps for any charger type (Tesla, OCPP, generic HA entities, Zaptec).
 
     Args:
         hass: Home Assistant instance
@@ -2904,6 +3093,11 @@ async def _set_vehicle_amps(
                 ocpp_charger_id, "succeeded" if start_ok else "failed",
             )
         return start_ok
+
+    elif charger_type == "zaptec":
+        if amps == 0:
+            return await _stop_zaptec_charging(hass, config_entry)
+        return await _start_zaptec_charging(hass, config_entry, amps)
 
     elif charger_type == "generic":
         # Use HA service calls to switch and number entities
@@ -3887,7 +4081,7 @@ async def _action_start_ev_charging_dynamic(
         voltage: Assumed charging voltage (default 240)
         stop_outside_window: Stop when outside time window (default False)
         vehicle_vin: Optional VIN to filter by specific vehicle
-        charger_type: "tesla", "ocpp", or "generic" (default tesla)
+        charger_type: "tesla", "ocpp", "generic", or "zaptec" (default tesla)
         priority: Vehicle priority for dual-vehicle setups (default 1)
     """
     from ..const import DOMAIN
