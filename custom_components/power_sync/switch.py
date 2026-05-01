@@ -32,6 +32,7 @@ from .const import (
     SENSOR_FAMILY_LP_OPTIMIZER,
     SENSOR_FAMILY_BATTERY,
     SENSOR_FAMILY_CONTROLS,
+    TESLA_SITE_INFO_CONTROL_MAX_AGE_SECONDS,
 )
 
 # Providers that use TOU schedule syncing (Amber, Octopus, Flow Power)
@@ -705,6 +706,7 @@ class _TeslaSiteSwitchBase(SwitchEntity):
     """Base for Tesla Energy Site switches that call coordinator methods."""
 
     _attr_has_entity_name = True
+    _attr_should_poll = True
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry, key: str, name: str, icon: str) -> None:
         self.hass = hass
@@ -721,6 +723,21 @@ class _TeslaSiteSwitchBase(SwitchEntity):
 
     def _tesla_coord(self):
         return self.hass.data.get(DOMAIN, {}).get(self._entry.entry_id, {}).get("tesla_coordinator")
+
+    async def async_update(self) -> None:
+        """Refresh Tesla site_info often enough for controls changed elsewhere."""
+        coord = self._tesla_coord()
+        if coord is None:
+            return
+        try:
+            await coord.async_get_site_info(
+                max_age=TESLA_SITE_INFO_CONTROL_MAX_AGE_SECONDS,
+            )
+        except Exception:
+            _LOGGER.debug(
+                "Could not refresh Tesla site_info for switch entity",
+                exc_info=True,
+            )
 
 
 class GridChargingSwitch(_TeslaSiteSwitchBase):

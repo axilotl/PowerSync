@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from homeassistant.components.select import SelectEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -16,7 +18,10 @@ from .const import (
     family_device_info,
     SENSOR_FAMILY_BATTERY,
     SENSOR_FAMILY_GRID_HOME,
+    TESLA_SITE_INFO_CONTROL_MAX_AGE_SECONDS,
 )
+
+_LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(
@@ -149,6 +154,7 @@ class _TeslaSiteSelectBase(SelectEntity):
     """Base for Tesla Energy Site select entities (Operation Mode, Grid Export)."""
 
     _attr_has_entity_name = True
+    _attr_should_poll = True
     # User-facing — these are primary controls, belong in Controls section.
 
     def __init__(
@@ -178,6 +184,21 @@ class _TeslaSiteSelectBase(SelectEntity):
             .get(self._entry.entry_id, {})
             .get("tesla_coordinator")
         )
+
+    async def async_update(self) -> None:
+        """Refresh Tesla site_info often enough for controls changed elsewhere."""
+        coord = self._tesla_coord()
+        if coord is None:
+            return
+        try:
+            await coord.async_get_site_info(
+                max_age=TESLA_SITE_INFO_CONTROL_MAX_AGE_SECONDS,
+            )
+        except Exception:
+            _LOGGER.debug(
+                "Could not refresh Tesla site_info for select entity",
+                exc_info=True,
+            )
 
 
 class TeslaOperationModeSelect(_TeslaSiteSelectBase):

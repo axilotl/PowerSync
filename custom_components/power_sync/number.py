@@ -25,6 +25,7 @@ from .const import (
     family_device_info,
     SENSOR_FAMILY_BATTERY,
     SENSOR_FAMILY_EV_CHARGING,
+    TESLA_SITE_INFO_CONTROL_MAX_AGE_SECONDS,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -77,6 +78,7 @@ async def async_setup_entry(
 
 class _TeslaSiteNumberBase(NumberEntity):
     _attr_has_entity_name = True
+    _attr_should_poll = True
     _attr_mode = NumberMode.SLIDER
     _attr_native_min_value = 0
     _attr_native_max_value = 100
@@ -110,6 +112,21 @@ class _TeslaSiteNumberBase(NumberEntity):
             .get(self._entry.entry_id, {})
             .get("tesla_coordinator")
         )
+
+    async def async_update(self) -> None:
+        """Refresh Tesla site_info often enough for controls changed elsewhere."""
+        coord = self._tesla_coord()
+        if coord is None:
+            return
+        try:
+            await coord.async_get_site_info(
+                max_age=TESLA_SITE_INFO_CONTROL_MAX_AGE_SECONDS,
+            )
+        except Exception:
+            _LOGGER.debug(
+                "Could not refresh Tesla site_info for number entity",
+                exc_info=True,
+            )
 
 
 class BackupReserveNumber(_TeslaSiteNumberBase):

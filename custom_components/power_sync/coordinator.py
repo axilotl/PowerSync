@@ -41,6 +41,7 @@ from .const import (
     MIN_TWAP_SAMPLES,
     FLOW_POWER_MARKET_AVG,
     CONF_FLEET_API_BASE_URL,
+    TESLA_SITE_INFO_CACHE_TTL_SECONDS,
 )
 
 
@@ -1582,7 +1583,7 @@ class TeslaEnergyCoordinator(DataUpdateCoordinator):
         self._entry_id = entry_id
         self._fleet_base_url = fleet_base_url  # Per-entry regional URL override
         self.session = async_get_clientsession(hass)
-        self._site_info_cache = None  # Cache site_info (refreshed every 6 hours)
+        self._site_info_cache = None  # Cache site_info (normally refreshed every 6 hours)
         self._site_info_last_fetch: float = 0  # Timestamp of last successful fetch
         self._site_info_fetch_failed = False  # Negative cache to avoid retrying on every sync cycle
         self._energy_acc = EnergyAccumulator(hass, "tesla")
@@ -1738,7 +1739,9 @@ class TeslaEnergyCoordinator(DataUpdateCoordinator):
             self._energy_acc.update(max(0, solar_kw), grid_kw, battery_kw, load_kw, buy, sell)
 
             # Fetch site_info periodically to detect firmware updates (every 6 hours)
-            _site_info_stale = (time.monotonic() - self._site_info_last_fetch) > 21600
+            _site_info_stale = (
+                time.monotonic() - self._site_info_last_fetch
+            ) > TESLA_SITE_INFO_CACHE_TTL_SECONDS
             if _site_info_stale and not self._site_info_fetch_failed:
                 try:
                     await self.async_get_site_info()
@@ -1945,7 +1948,10 @@ class TeslaEnergyCoordinator(DataUpdateCoordinator):
                 raise
             raise UpdateFailed(f"Unexpected error fetching Tesla energy data: {err}") from err
 
-    async def async_get_site_info(self) -> dict[str, Any] | None:
+    async def async_get_site_info(
+        self,
+        max_age: float | None = None,
+    ) -> dict[str, Any] | None:
         """
         Fetch site_info from Tesla API (Teslemetry or Fleet API).
 
@@ -1955,8 +1961,17 @@ class TeslaEnergyCoordinator(DataUpdateCoordinator):
         Returns:
             Site info dict containing installation_time_zone, or None if fetch fails
         """
-        # Return cached value if still fresh (< 6 hours old)
-        if self._site_info_cache and (time.monotonic() - self._site_info_last_fetch) <= 21600:
+        cache_ttl = (
+            TESLA_SITE_INFO_CACHE_TTL_SECONDS
+            if max_age is None
+            else max(0, float(max_age))
+        )
+
+        # Return cached value if still fresh.
+        if (
+            self._site_info_cache
+            and (time.monotonic() - self._site_info_last_fetch) <= cache_ttl
+        ):
             _LOGGER.debug("Returning cached site_info")
             return self._site_info_cache
 
@@ -2093,13 +2108,10 @@ class TeslaEnergyCoordinator(DataUpdateCoordinator):
         up to six hours until the next natural refresh.
         """
         # Clear the cached payload itself, not just the timestamp.
-        # async_get_site_info() checks `if self._site_info_cache and age
-        # <= 21600` — resetting _site_info_last_fetch to 0 only invalidates
-        # via the age check when time.monotonic() > 21600, i.e. after HA
-        # has been running 6+ hours. On shorter uptimes the age check
-        # still passes (time.monotonic() - 0 is small), and the stale
-        # _site_info_cache is returned anyway. Clearing _site_info_cache
-        # makes the first half of the `and` fail unconditionally.
+        # async_get_site_info() returns cached data while it is inside the
+        # caller's max_age window. Resetting only _site_info_last_fetch can
+        # still leave a shorter-uptime HA instance inside that window, so clear
+        # the cached payload itself to force the next call to refetch.
         self._site_info_cache = None
         self._site_info_last_fetch = 0
         self._site_info_fetch_failed = False
