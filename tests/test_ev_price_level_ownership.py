@@ -326,6 +326,49 @@ def test_generic_price_level_start_uses_generic_loadpoint_id(monkeypatch, fake_a
     assert params["charger_switch_entity"] == "switch.garage_ev"
 
 
+def test_scheduled_generic_start_uses_generic_loadpoint_id(fake_actions):
+    fake_actions._action_start_ev_charging_dynamic = AsyncMock(return_value=True)
+
+    class GenericEntry(_FakeConfigEntry):
+        options = {
+            "generic_charger_enabled": True,
+            "generic_charger_switch_entity": "switch.garage_ev",
+            "generic_charger_amps_entity": "number.garage_ev_current",
+        }
+
+    executor = ev_planner.ScheduledChargingExecutor(_FakeHass(), GenericEntry())
+    result = asyncio.run(executor._start_charging("Scheduled window"))
+
+    assert result is True
+    fake_actions._action_start_ev_charging_dynamic.assert_awaited_once()
+    _hass, _entry, params = fake_actions._action_start_ev_charging_dynamic.await_args.args
+    assert params["vehicle_id"] == "generic_ev"
+    assert params["vehicle_vin"] == "generic_ev"
+    assert params["charger_type"] == "generic"
+    assert params["charger_switch_entity"] == "switch.garage_ev"
+
+
+def test_scheduled_ocpp_start_uses_ocpp_loadpoint_id(fake_actions):
+    fake_actions._action_start_ev_charging_dynamic = AsyncMock(return_value=True)
+
+    class OcppEntry(_FakeConfigEntry):
+        options = {
+            "ocpp_enabled": True,
+            "ocpp_charger_id": "evse_1",
+        }
+
+    executor = ev_planner.ScheduledChargingExecutor(_FakeHass(), OcppEntry())
+    result = asyncio.run(executor._start_charging("Scheduled window"))
+
+    assert result is True
+    fake_actions._action_start_ev_charging_dynamic.assert_awaited_once()
+    _hass, _entry, params = fake_actions._action_start_ev_charging_dynamic.await_args.args
+    assert params["vehicle_id"] == "ocpp_evse_1"
+    assert params["vehicle_vin"] == "ocpp_evse_1"
+    assert params["charger_type"] == "ocpp"
+    assert params["ocpp_charger_id"] == "evse_1"
+
+
 def test_price_level_stop_uses_vehicle_charger_config(fake_actions):
     fake_actions._action_stop_ev_charging_dynamic = AsyncMock(return_value=True)
 

@@ -5064,6 +5064,25 @@ def _configured_charger_type(opts: Mapping[str, Any]) -> str:
     return "tesla"
 
 
+def _resolve_dynamic_loadpoint_id(
+    charger_type: str,
+    vehicle_vin: Optional[str],
+    params: Mapping[str, Any],
+    configured_vehicle_id: Optional[str] = None,
+) -> Optional[str]:
+    """Return the runtime loadpoint id for a configured charger backend."""
+    if vehicle_vin:
+        return vehicle_vin
+    if charger_type == "zaptec":
+        return "zaptec_standalone"
+    if charger_type == "generic":
+        return configured_vehicle_id or "generic_ev"
+    if charger_type == "ocpp":
+        charger_id = str(params.get("ocpp_charger_id") or "ocpp_charger")
+        return charger_id if charger_id.startswith("ocpp_") else f"ocpp_{charger_id}"
+    return vehicle_vin
+
+
 def _with_configured_charger_entities(
     params: dict,
     opts: Mapping[str, Any],
@@ -5112,14 +5131,10 @@ def _build_dynamic_charging_params(
         config_entry,
         vehicle_vin,
     )
+    configured_vehicle_id = vehicle_charger_params.pop("_configured_vehicle_id", None)
     charger_type = vehicle_charger_params.get("charger_type") or _configured_charger_type(opts)
-    loadpoint_id = vehicle_vin
-    if charger_type == "zaptec":
-        loadpoint_id = vehicle_vin or "zaptec_standalone"
 
     params = {
-        "vehicle_vin": loadpoint_id,
-        "vehicle_id": loadpoint_id,
         "dynamic_mode": dynamic_mode,
         "owner_mode": owner_mode,
         **vehicle_charger_params,
@@ -5128,7 +5143,16 @@ def _build_dynamic_charging_params(
     }
     if no_grid_import:
         params["no_grid_import"] = True
-    return _with_configured_charger_entities(params, opts, charger_type)
+    params = _with_configured_charger_entities(params, opts, charger_type)
+    loadpoint_id = _resolve_dynamic_loadpoint_id(
+        charger_type,
+        vehicle_vin,
+        params,
+        configured_vehicle_id,
+    )
+    params["vehicle_vin"] = loadpoint_id
+    params["vehicle_id"] = loadpoint_id
+    return params
 
 
 def _build_dynamic_stop_params(
@@ -5148,22 +5172,27 @@ def _build_dynamic_stop_params(
         config_entry,
         vehicle_vin,
     )
+    configured_vehicle_id = vehicle_charger_params.pop("_configured_vehicle_id", None)
     charger_type = vehicle_charger_params.get("charger_type") or _configured_charger_type(opts)
-    loadpoint_id = vehicle_vin
-    if charger_type == "zaptec":
-        loadpoint_id = vehicle_vin or "zaptec_standalone"
 
     params = {
         **vehicle_charger_params,
-        "vehicle_id": loadpoint_id,
-        "vehicle_vin": loadpoint_id,
         "charger_type": charger_type,
     }
     if stop_untracked:
         params["stop_untracked"] = True
     if reason:
         params["stop_reason"] = reason
-    return _with_configured_charger_entities(params, opts, charger_type)
+    params = _with_configured_charger_entities(params, opts, charger_type)
+    loadpoint_id = _resolve_dynamic_loadpoint_id(
+        charger_type,
+        vehicle_vin,
+        params,
+        configured_vehicle_id,
+    )
+    params["vehicle_id"] = loadpoint_id
+    params["vehicle_vin"] = loadpoint_id
+    return params
 
 
 async def _start_coordinated_charging(
@@ -5322,6 +5351,7 @@ def _get_vehicle_charger_params(
             for vc in configs:
                 if vehicle_vin and vc.get("vehicle_id") == vehicle_vin:
                     params = {
+                        "_configured_vehicle_id": vc.get("vehicle_id"),
                         "min_charge_amps": vc.get("min_amps", 5),
                         "max_charge_amps": vc.get("max_amps", 32),
                         "voltage": vc.get("voltage", 230),
@@ -5341,6 +5371,7 @@ def _get_vehicle_charger_params(
             if configs:
                 vc = configs[0]
                 params = {
+                    "_configured_vehicle_id": vc.get("vehicle_id"),
                     "min_charge_amps": vc.get("min_amps", 5),
                     "max_charge_amps": vc.get("max_amps", 32),
                     "voltage": vc.get("voltage", 230),
@@ -5367,6 +5398,7 @@ def _get_vehicle_charger_params(
                 for vid, settings in exec_instance._settings.items():
                     if vid == vehicle_vin:
                         return {
+                            "_configured_vehicle_id": vid,
                             "min_charge_amps": settings.min_charge_amps,
                             "max_charge_amps": settings.max_charge_amps,
                             "voltage": settings.voltage,
@@ -5380,6 +5412,7 @@ def _get_vehicle_charger_params(
             # No VIN match — use first available settings
             for vid, settings in exec_instance._settings.items():
                 return {
+                    "_configured_vehicle_id": vid,
                     "min_charge_amps": settings.min_charge_amps,
                     "max_charge_amps": settings.max_charge_amps,
                     "voltage": settings.voltage,
