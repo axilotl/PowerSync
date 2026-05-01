@@ -95,6 +95,24 @@ class _FakeHass:
         }
 
 
+class _FakeStates:
+    def __init__(self, states: dict[str, str] | None = None) -> None:
+        self._states = {
+            entity_id: SimpleNamespace(entity_id=entity_id, state=state)
+            for entity_id, state in (states or {}).items()
+        }
+
+    def get(self, entity_id: str):
+        return self._states.get(entity_id)
+
+    def async_all(self):
+        return list(self._states.values())
+
+    def async_entity_ids(self, domain: str):
+        prefix = f"{domain}."
+        return [entity_id for entity_id in self._states if entity_id.startswith(prefix)]
+
+
 @pytest.fixture
 def fake_actions(monkeypatch):
     actions = types.ModuleType("power_sync.automations.actions")
@@ -422,6 +440,54 @@ def test_price_level_disabled_does_not_stop_unowned_charging(monkeypatch, fake_a
     state = executor._get_or_create_vehicle_state(VIN)
     assert state.last_decision == "disabled"
     assert state.last_decision_reason == "Price-level charging is disabled"
+
+
+def test_generic_plug_detection_allows_missing_status_entity():
+    hass = _FakeHass()
+    hass.states = _FakeStates()
+    entry = SimpleNamespace(
+        entry_id="entry-1",
+        data={},
+        options={
+            "generic_charger_enabled": True,
+            "generic_charger_status_entity": "",
+        },
+    )
+
+    assert asyncio.run(ev_planner.is_ev_plugged_in(hass, entry)) is True
+
+
+def test_generic_plug_detection_uses_connector_fallback():
+    hass = _FakeHass()
+    hass.states = _FakeStates({
+        "sensor.garage_ev_status": "Available",
+        "sensor.evse_status_connector": "Preparing",
+    })
+    entry = SimpleNamespace(
+        entry_id="entry-1",
+        data={},
+        options={
+            "generic_charger_enabled": True,
+            "generic_charger_status_entity": "sensor.garage_ev_status",
+        },
+    )
+
+    assert asyncio.run(ev_planner.is_ev_plugged_in(hass, entry)) is True
+
+
+def test_generic_plug_detection_blocks_available_without_connector():
+    hass = _FakeHass()
+    hass.states = _FakeStates({"sensor.garage_ev_status": "Available"})
+    entry = SimpleNamespace(
+        entry_id="entry-1",
+        data={},
+        options={
+            "generic_charger_enabled": True,
+            "generic_charger_status_entity": "sensor.garage_ev_status",
+        },
+    )
+
+    assert asyncio.run(ev_planner.is_ev_plugged_in(hass, entry)) is False
 
 
 def test_enabled_price_level_still_stops_external_high_price_charging(

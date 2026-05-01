@@ -546,6 +546,10 @@ async def is_ev_plugged_in(
         opts = {**config_entry.data, **config_entry.options}
         if opts.get(CONF_GENERIC_CHARGER_ENABLED):
             status_entity = opts.get(CONF_GENERIC_CHARGER_STATUS_ENTITY, "")
+            if not status_entity:
+                _LOGGER.debug("Generic charger has no status entity configured, skipping plug detection")
+                return True
+
             if status_entity:
                 state = hass.states.get(status_entity)
                 if state:
@@ -573,15 +577,24 @@ async def is_ev_plugged_in(
                                     )
                                     plugged = True
                                     break
+                        elif not plugged:
+                            _LOGGER.debug(
+                                "Generic charger status %s=%s is not a known unplugged state, treating as ready",
+                                status_entity,
+                                state.state,
+                            )
+                            plugged = True
                     _LOGGER.debug(
                         "Generic charger plugged_in check: %s state=%s → %s",
                         status_entity, state.state, plugged,
                     )
                     return plugged
                 else:
-                    _LOGGER.debug("Generic charger status entity %s not found", status_entity)
-            # No status entity configured — can't determine plug state,
-            # fall through (returns False at end of function)
+                    _LOGGER.debug(
+                        "Generic charger status entity %s not found, skipping plug detection",
+                        status_entity,
+                    )
+                    return True
 
     # Method 0: Teslemetry Bluetooth — check sensor.*_charging_state
     import re as _re
