@@ -191,6 +191,36 @@ def test_stop_guard_allows_same_owner_family():
     assert allowed is True
 
 
+def test_price_level_stop_allows_unowned_high_price_stop(fake_actions):
+    fake_actions._action_stop_ev_charging_dynamic = AsyncMock(return_value=True)
+
+    executor = ev_planner.PriceLevelChargingExecutor(_FakeHass(), _FakeConfigEntry())
+    result = asyncio.run(executor._stop_charging("Price above threshold", vehicle_vin=VIN))
+
+    assert result is True
+    fake_actions._action_stop_ev_charging_dynamic.assert_awaited_once()
+    _hass, _entry, params = fake_actions._action_stop_ev_charging_dynamic.await_args.args
+    assert params["vehicle_id"] == VIN
+    assert params["vehicle_vin"] == VIN
+    assert params["stop_untracked"] is True
+    assert params["stop_reason"] == "Price above threshold"
+
+
+def test_price_level_stop_blocks_manual_owned_dynamic_stop(fake_actions):
+    ev_ownership = importlib.import_module("power_sync.automations.ev_ownership")
+    fake_actions._action_stop_ev_charging_dynamic = AsyncMock(return_value=True)
+
+    hass = _FakeHass()
+    entry = _FakeConfigEntry()
+    ev_ownership.claim_ev_ownership(hass, entry, VIN, owner_mode="manual")
+
+    executor = ev_planner.PriceLevelChargingExecutor(hass, entry)
+    result = asyncio.run(executor._stop_charging("Price above threshold", vehicle_vin=VIN))
+
+    assert result is False
+    fake_actions._action_stop_ev_charging_dynamic.assert_not_awaited()
+
+
 def test_price_level_leaves_ownership_lease_session_alone(monkeypatch, fake_actions):
     fake_actions._dynamic_ev_state = {}
 
