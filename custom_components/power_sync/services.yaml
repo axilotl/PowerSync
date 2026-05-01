@@ -234,7 +234,7 @@ set_vpp_enrollment:
 
 get_calendar_history:
   name: Get Calendar History
-  description: Fetch energy history from Tesla API for mobile app energy summaries
+  description: Fetch energy history from the configured battery system for mobile app energy summaries
   fields:
     period:
       name: Period

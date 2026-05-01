@@ -479,9 +479,18 @@ class PowerSyncStrategy {
         continue;
       }
       // Registered as Lovelace resource (installed via HACS, just not loaded yet)
-      const inResources = lovelaceResources.some(r =>
-        r.url && r.url.includes(c.element.replace(/-/g, ''))
-      );
+      const resourceNames = [
+        c.element,
+        c.hacs,
+        c.element.replace(/-/g, ''),
+        c.hacs?.replace(/-/g, ''),
+      ]
+        .filter(Boolean)
+        .map(name => name.toLowerCase());
+      const inResources = lovelaceResources.some(r => {
+        const url = String(r.url || '').toLowerCase();
+        return resourceNames.some(name => url.includes(name));
+      });
       loaded[c.element] = inResources;
     }
 

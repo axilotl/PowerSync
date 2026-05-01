@@ -360,6 +360,7 @@ from .const import (
 
 # Combined network tariff key for config flow
 CONF_NETWORK_TARIFF_COMBINED = "network_tariff_combined"
+CUSTOM_TOU_PROVIDER_OPTIONS = ("globird", "aemo_vpp", "other", "tou_only")
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -3637,7 +3638,7 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 return await self.async_step_amber_options()
             if provider == "flow_power":
                 return await self.async_step_flow_power_options()
-            if provider in ("globird", "aemo_vpp"):
+            if provider in CUSTOM_TOU_PROVIDER_OPTIONS:
                 return await self.async_step_globird_options()
             if provider == "localvolts":
                 return await self.async_step_localvolts_options()
@@ -4698,7 +4699,7 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     return await self.async_step_amber_options()
                 elif self._provider == "flow_power":
                     return await self.async_step_flow_power_options()
-                elif self._provider in ("globird", "aemo_vpp"):
+                elif self._provider in CUSTOM_TOU_PROVIDER_OPTIONS:
                     return await self.async_step_globird_options()
                 elif self._provider == "localvolts":
                     return await self.async_step_localvolts_options()
@@ -4926,7 +4927,7 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     return await self.async_step_amber_options()
                 elif self._provider == "flow_power":
                     return await self.async_step_flow_power_options()
-                elif self._provider in ("globird", "aemo_vpp"):
+                elif self._provider in CUSTOM_TOU_PROVIDER_OPTIONS:
                     return await self.async_step_globird_options()
                 elif self._provider == "octopus":
                     return await self.async_step_octopus_options()
@@ -5140,7 +5141,7 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     return await self.async_step_amber_options()
                 elif self._provider == "flow_power":
                     return await self.async_step_flow_power_options()
-                elif self._provider in ("globird", "aemo_vpp"):
+                elif self._provider in CUSTOM_TOU_PROVIDER_OPTIONS:
                     return await self.async_step_globird_options()
                 elif self._provider == "octopus":
                     return await self.async_step_octopus_options()
@@ -5335,7 +5336,7 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     return await self.async_step_amber_options()
                 elif self._provider == "flow_power":
                     return await self.async_step_flow_power_options()
-                elif self._provider in ("globird", "aemo_vpp"):
+                elif self._provider in CUSTOM_TOU_PROVIDER_OPTIONS:
                     return await self.async_step_globird_options()
                 elif self._provider == "octopus":
                     return await self.async_step_octopus_options()
@@ -5501,7 +5502,7 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     return await self.async_step_amber_options()
                 elif self._provider == "flow_power":
                     return await self.async_step_flow_power_options()
-                elif self._provider in ("globird", "aemo_vpp"):
+                elif self._provider in CUSTOM_TOU_PROVIDER_OPTIONS:
                     return await self.async_step_globird_options()
                 elif self._provider == "octopus":
                     return await self.async_step_octopus_options()
@@ -5609,11 +5610,12 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
         provider = getattr(self, "_provider", None) or self._get_option(
             CONF_ELECTRICITY_PROVIDER, "amber"
         )
+        self._provider = provider
         if provider == "amber":
             return await self.async_step_amber_options()
         if provider == "flow_power":
             return await self.async_step_flow_power_options()
-        if provider in ("globird", "aemo_vpp"):
+        if provider in CUSTOM_TOU_PROVIDER_OPTIONS:
             return await self.async_step_globird_options()
         if provider == "localvolts":
             return await self.async_step_localvolts_options()
@@ -7215,7 +7217,11 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
         """Step 2c: Globird specific options."""
         if user_input is not None:
             # Add provider to the data
-            user_input[CONF_ELECTRICITY_PROVIDER] = self._provider
+            user_input[CONF_ELECTRICITY_PROVIDER] = getattr(
+                self,
+                "_provider",
+                self._get_option(CONF_ELECTRICITY_PROVIDER, "globird"),
+            )
 
             # If spike not enabled, ensure region/threshold don't cause issues
             if not user_input.get(CONF_AEMO_SPIKE_ENABLED, False):

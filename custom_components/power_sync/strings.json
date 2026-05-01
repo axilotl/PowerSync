@@ -1250,8 +1250,8 @@
         "submit": "Save"
       },
       "globird_options": {
-        "title": "Globird settings",
-        "description": "Configure your Globird plan and optional AEMO spike export. Changes apply after the next sync cycle.\n\n{tariff_hint}",
+        "title": "Custom TOU / AEMO settings",
+        "description": "Configure your custom tariff plan and optional AEMO spike export. Changes apply after the next sync cycle.\n\n{tariff_hint}",
         "data": {
           "aemo_spike_enabled": "Enable AEMO spike export",
           "aemo_region": "AEMO NEM region",
@@ -1259,7 +1259,7 @@
           "configure_custom_tariff": "Configure custom tariff"
         },
         "data_description": {
-          "aemo_spike_enabled": "Enable if your Globird plan includes payments for exporting during AEMO price spikes.",
+          "aemo_spike_enabled": "Enable if your plan includes payments for exporting during AEMO price spikes.",
           "aemo_region": "Your NEM region. Check your electricity bill if unsure.",
           "aemo_spike_threshold": "Battery exports when the AEMO wholesale price exceeds this value. Default $3,000/MWh.",
           "configure_custom_tariff": "Recommended: TOU rates are needed for accurate price sensors, optimization, and EV charging."
