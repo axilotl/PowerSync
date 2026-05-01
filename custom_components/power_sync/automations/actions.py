@@ -4612,16 +4612,19 @@ async def _action_stop_ev_charging_dynamic(
 
     # Stop EV charging if requested
     if stop_charging and vehicle_ids_to_stop:
+        physical_stop_failed = False
         for vid_to_stop in vehicle_ids_to_stop:
             v_params = vehicle_params.get(vid_to_stop, {})
             charger_type = v_params.get("charger_type", "tesla")
-            if charger_type in ("generic", "ocpp"):
+            if charger_type in ("generic", "ocpp", "zaptec"):
                 # Use _set_vehicle_amps which handles all charger types
                 stop_success = await _set_vehicle_amps(hass, config_entry, vid_to_stop, 0, v_params)
             else:
                 stop_params = dict(params)
                 stop_params["vehicle_vin"] = vid_to_stop
                 stop_success = await _action_stop_ev_charging(hass, config_entry, stop_params)
+            if not stop_success:
+                physical_stop_failed = True
             if params.get("stop_untracked") and vid_to_stop not in released_vehicle_ids:
                 from .ev_ownership import release_ev_ownership
                 release_ev_ownership(
@@ -4632,6 +4635,6 @@ async def _action_stop_ev_charging_dynamic(
                     command="stop",
                     success=stop_success,
                 )
-        return True
+        return not physical_stop_failed
 
     return True

@@ -18,9 +18,36 @@ ROOT = Path(__file__).resolve().parent.parent / "custom_components" / "power_syn
 sys.modules.setdefault("aiohttp", types.ModuleType("aiohttp"))
 
 _ha_root = sys.modules.setdefault("homeassistant", types.ModuleType("homeassistant"))
+_ha_config_entries = sys.modules.setdefault(
+    "homeassistant.config_entries", types.ModuleType("homeassistant.config_entries")
+)
+_ha_core = sys.modules.setdefault("homeassistant.core", types.ModuleType("homeassistant.core"))
+_ha_helpers = sys.modules.setdefault("homeassistant.helpers", types.ModuleType("homeassistant.helpers"))
+_ha_er = sys.modules.setdefault(
+    "homeassistant.helpers.entity_registry",
+    types.ModuleType("homeassistant.helpers.entity_registry"),
+)
+_ha_dr = sys.modules.setdefault(
+    "homeassistant.helpers.device_registry",
+    types.ModuleType("homeassistant.helpers.device_registry"),
+)
+_ha_event = sys.modules.setdefault(
+    "homeassistant.helpers.event", types.ModuleType("homeassistant.helpers.event")
+)
 _ha_util = sys.modules.setdefault("homeassistant.util", types.ModuleType("homeassistant.util"))
 _ha_dt = sys.modules.setdefault("homeassistant.util.dt", types.ModuleType("homeassistant.util.dt"))
+_ha_core.HomeAssistant = type("HomeAssistant", (), {})
+_ha_config_entries.ConfigEntry = type("ConfigEntry", (), {})
+_ha_er.async_get = lambda hass: getattr(hass, "entity_registry", SimpleNamespace(entities={}))
+_ha_dr.async_get = lambda hass: SimpleNamespace(devices={})
+_ha_event.async_track_time_interval = lambda *args, **kwargs: (lambda: None)
+_ha_event.async_track_point_in_time = lambda *args, **kwargs: (lambda: None)
 _ha_dt.now = getattr(_ha_dt, "now", lambda *args, **kwargs: None)
+_ha_dt.utcnow = getattr(_ha_dt, "utcnow", lambda *args, **kwargs: None)
+_ha_helpers.entity_registry = _ha_er
+_ha_helpers.device_registry = _ha_dr
+_ha_helpers.event = _ha_event
+_ha_root.helpers = _ha_helpers
 _ha_util.dt = _ha_dt
 _ha_root.util = _ha_util
 
