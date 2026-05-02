@@ -1822,6 +1822,28 @@ class ChargingPlanner:
         self._get_battery_schedule = battery_schedule_getter
         self._grid_capacity_kw = grid_capacity_kw
 
+    def _is_grid_charging_blocked_at(self, when: datetime) -> bool:
+        """Return True if grid charging is blocked at `when` due to demand window.
+
+        Honors the user's CONF_DEMAND_ALLOW_GRID_CHARGING override. Solar surplus
+        is always allowed; this only filters grid-source charging options.
+        """
+        from ..const import DOMAIN, CONF_DEMAND_ALLOW_GRID_CHARGING
+        entry_data = self.hass.data.get(DOMAIN, {}).get(self.config_entry.entry_id, {})
+        dc_coord = entry_data.get("demand_charge_coordinator")
+        if not dc_coord or not dc_coord.enabled:
+            return False
+        allow_override = self.config_entry.options.get(
+            CONF_DEMAND_ALLOW_GRID_CHARGING,
+            self.config_entry.data.get(CONF_DEMAND_ALLOW_GRID_CHARGING, False),
+        )
+        if allow_override:
+            return False
+        try:
+            return dc_coord._is_in_peak_period(when)
+        except Exception:
+            return False
+
     async def _get_battery_power_schedule(self, hours: int = 24) -> Dict[str, float]:
         """Get battery power usage per hour from optimizer schedule.
 
@@ -2177,6 +2199,10 @@ class ChargingPlanner:
                 hour_dt = datetime.fromisoformat(price_data.hour)
                 hour_key = hour_dt.replace(minute=0, second=0, microsecond=0).isoformat()
 
+                # Skip hours that fall inside a demand window (unless override set)
+                if self._is_grid_charging_blocked_at(hour_dt):
+                    continue
+
                 # Dynamic power sharing: cheap hours = battery charging too
                 available_power = self._get_available_ev_power(
                     hour_key,
@@ -2350,7 +2376,11 @@ class ChargingPlanner:
             else:
                 grid_power = charger_power_kw - max(0, solar_available)
 
-            if grid_power > 0.5:  # At least 0.5kW from grid
+            # Skip grid hours that fall inside a demand-charge peak window unless
+            # the user has opted into grid charging during demand windows.
+            grid_blocked = self._is_grid_charging_blocked_at(hour_dt)
+
+            if grid_power > 0.5 and not grid_blocked:  # At least 0.5kW from grid
                 charging_options.append({
                     "hour": price.hour,
                     "hour_dt": hour_dt,
@@ -2576,6 +2606,11 @@ class ChargingPlanner:
                 cost = 0
                 solar_energy += min(energy_this_hour, energy_needed_kwh - energy_allocated)
             else:
+                # Skip grid hours that fall inside a demand window (unless override set).
+                # If this leaves the deadline unmet, the warning/can_meet_target fields
+                # will reflect that — user can opt into demand_allow_grid_charging if needed.
+                if self._is_grid_charging_blocked_at(hour_dt):
+                    continue
                 # Use grid
                 energy_this_hour = charger_power_kw * usable_fraction
                 source = f"grid_{price.period}"
@@ -4110,6 +4145,15 @@ class AutoScheduleExecutor:
             elif effective_priority == ChargingPriority.SOLAR_ONLY:
                 should_charge = False
                 reason = "Solar-only mode - no grid charging"
+
+            # Block grid charging during demand-charge peak windows.
+            # Mirrors the existing Tesla Powerwall block in __init__.py — when
+            # demand_allow_grid_charging is False, grid imports during the peak
+            # window would raise the billed peak. Manual/automation-initiated
+            # charging (HA service calls, switch presses) bypasses this path.
+            elif self.planner._is_grid_charging_blocked_at(dt_util.now()):
+                should_charge = False
+                reason = "In demand peak period - grid charging blocked (toggle 'Allow grid charging during demand windows' to override)"
 
         # For opportunistic grid charging, defer to price-level policy if configured.
         # The plan's cheapest window (e.g. 30c) can make even 12c look "opportunistic",
@@ -5668,6 +5712,28 @@ class PriceLevelChargingExecutor:
         _LOGGER.warning(f"Could not find EV battery level from any source (VIN: {vehicle_vin})")
         return None
 
+    def _is_grid_charging_blocked_now(self) -> bool:
+        """Return True if grid charging is blocked right now due to demand window.
+
+        Honors the user's CONF_DEMAND_ALLOW_GRID_CHARGING override. Price-level
+        charging is always grid-sourced, so this gates the entire decision path.
+        """
+        from ..const import CONF_DEMAND_ALLOW_GRID_CHARGING
+        entry_data = self.hass.data.get(self._domain, {}).get(self.config_entry.entry_id, {})
+        dc_coord = entry_data.get("demand_charge_coordinator")
+        if not dc_coord or not dc_coord.enabled:
+            return False
+        allow_override = self.config_entry.options.get(
+            CONF_DEMAND_ALLOW_GRID_CHARGING,
+            self.config_entry.data.get(CONF_DEMAND_ALLOW_GRID_CHARGING, False),
+        )
+        if allow_override:
+            return False
+        try:
+            return dc_coord._is_in_peak_period(dt_util.now())
+        except Exception:
+            return False
+
     def _get_or_create_vehicle_state(self, vehicle_vin: str) -> PriceLevelChargingState:
         """Get or create per-vehicle charging state."""
         if vehicle_vin not in self._vehicle_states:
@@ -5781,6 +5847,15 @@ class PriceLevelChargingExecutor:
             self._state.last_decision = "disabled"
             self._state.last_decision_reason = "Price-level charging is disabled"
             return False, "Price-level charging is disabled", ""
+
+        # Block grid charging during demand-charge peak windows.
+        # Price-level charging is always grid-sourced. Manual/automation-initiated
+        # charging (HA service calls, switch presses) bypasses this path.
+        if self._is_grid_charging_blocked_now():
+            reason = "In demand peak period - grid charging blocked (toggle 'Allow grid charging during demand windows' to override)"
+            self._state.last_decision = "waiting"
+            self._state.last_decision_reason = reason
+            return False, reason, ""
 
         # Check if vehicle is at home
         location = await get_ev_location(self.hass, self.config_entry)
@@ -5903,6 +5978,15 @@ class PriceLevelChargingExecutor:
             vehicle_state.last_decision = "disabled"
             vehicle_state.last_decision_reason = "Price-level charging is disabled"
             return False, "Price-level charging is disabled", ""
+
+        # Block grid charging during demand-charge peak windows.
+        # Price-level charging is always grid-sourced. Manual/automation-initiated
+        # charging (HA service calls, switch presses) bypasses this path.
+        if self._is_grid_charging_blocked_now():
+            reason = "In demand peak period - grid charging blocked (toggle 'Allow grid charging during demand windows' to override)"
+            vehicle_state.last_decision = "waiting"
+            vehicle_state.last_decision_reason = reason
+            return False, reason, ""
 
         # Check if vehicle is at home
         location = await get_ev_location(self.hass, self.config_entry, vehicle_vin)
