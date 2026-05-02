@@ -424,7 +424,13 @@ from .const import (
     CONF_OPTIMIZATION_COST_FUNCTION,
     CONF_OPTIMIZATION_INTERVAL,
     CONF_OPTIMIZATION_BACKUP_RESERVE,
+    CONF_HARDWARE_BACKUP_RESERVE,
+    CONF_OPTIMIZATION_BATTERY_CAPACITY_WH,
+    CONF_OPTIMIZATION_MAX_CHARGE_W,
+    CONF_OPTIMIZATION_MAX_DISCHARGE_W,
     DEFAULT_OPTIMIZATION_BACKUP_RESERVE,
+    BATTERY_CAPACITY_DEFAULTS,
+    BATTERY_POWER_DEFAULTS,
 )
 from .inverters import get_inverter_controller
 from .optimization.coordinator import OptimizationCoordinator
@@ -24323,6 +24329,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             else:
                 saved_backup_reserve = DEFAULT_OPTIMIZATION_BACKUP_RESERVE  # 0.20
 
+            def _positive_int_setting(key: str) -> int | None:
+                value = entry.options.get(key, entry.data.get(key))
+                try:
+                    parsed = int(float(value))
+                except (TypeError, ValueError):
+                    return None
+                return parsed if parsed > 0 else None
+
+            saved_capacity_wh = _positive_int_setting(
+                CONF_OPTIMIZATION_BATTERY_CAPACITY_WH
+            )
+            saved_max_charge_w = _positive_int_setting(
+                CONF_OPTIMIZATION_MAX_CHARGE_W
+            )
+            saved_max_discharge_w = _positive_int_setting(
+                CONF_OPTIMIZATION_MAX_DISCHARGE_W
+            )
+
             optimization_coordinator = OptimizationCoordinator(
                 hass=hass,
                 entry_id=entry.entry_id,
@@ -24342,11 +24366,30 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
             # Set cost function, interval, and backup reserve from saved settings
             optimization_coordinator.set_cost_function(saved_cost_function)
-            optimization_coordinator.update_config(
-                interval_minutes=saved_interval_minutes,
-                backup_reserve=saved_backup_reserve,
+            optimizer_config_updates = {
+                "interval_minutes": saved_interval_minutes,
+                "backup_reserve": saved_backup_reserve,
+            }
+            if saved_capacity_wh is not None:
+                optimizer_config_updates["battery_capacity_wh"] = saved_capacity_wh
+            if saved_max_charge_w is not None:
+                optimizer_config_updates["max_charge_w"] = saved_max_charge_w
+            if saved_max_discharge_w is not None:
+                optimizer_config_updates["max_discharge_w"] = saved_max_discharge_w
+            optimization_coordinator.update_config(**optimizer_config_updates)
+            if any(v is not None for v in (saved_capacity_wh, saved_max_charge_w, saved_max_discharge_w)):
+                optimization_coordinator._battery_specs_source = "manual"
+            _LOGGER.info(
+                "Smart Optimization cost function: %s, interval: %smin, "
+                "backup_reserve: %.0f%%, battery specs: %.1fkWh charge %.1fkW discharge %.1fkW (%s)",
+                saved_cost_function,
+                saved_interval_minutes,
+                saved_backup_reserve * 100,
+                optimization_coordinator._config.battery_capacity_wh / 1000,
+                optimization_coordinator._config.max_charge_w / 1000,
+                optimization_coordinator._config.max_discharge_w / 1000,
+                optimization_coordinator._battery_specs_source,
             )
-            _LOGGER.info(f"Smart Optimization cost function: {saved_cost_function}, interval: {saved_interval_minutes}min, backup_reserve: {saved_backup_reserve:.0%}")
 
             # Load hardware backup reserve (user-configured restore target)
             from .const import CONF_HARDWARE_BACKUP_RESERVE
@@ -24714,18 +24757,100 @@ class OptimizationSettingsView(HomeAssistantView):
         """Handle GET request for optimization settings."""
         # Find the optimization coordinator
         opt_coordinator = None
+        config_entry = None
+        entries = self._hass.config_entries.async_entries(DOMAIN)
+        if entries:
+            config_entry = entries[0]
         for entry_id, data in self._hass.data.get(DOMAIN, {}).items():
             if isinstance(data, dict) and "optimization_coordinator" in data:
                 opt_coordinator = data["optimization_coordinator"]
                 break
 
         if not opt_coordinator:
+            battery_system = (
+                config_entry.data.get(CONF_BATTERY_SYSTEM, "tesla")
+                if config_entry
+                else "tesla"
+            )
+            default_capacity_wh = BATTERY_CAPACITY_DEFAULTS.get(battery_system, 13500)
+            default_power_w = BATTERY_POWER_DEFAULTS.get(battery_system, 5000)
+
+            def _entry_int_setting(key: str, default: int) -> int:
+                if not config_entry:
+                    return default
+                value = config_entry.options.get(
+                    key,
+                    config_entry.data.get(key, default),
+                )
+                try:
+                    parsed = int(float(value))
+                except (TypeError, ValueError):
+                    return default
+                return parsed if parsed > 0 else default
+
+            backup_reserve = DEFAULT_OPTIMIZATION_BACKUP_RESERVE
+            hardware_reserve = 0
+            if config_entry:
+                raw_backup = config_entry.options.get(
+                    CONF_OPTIMIZATION_BACKUP_RESERVE,
+                    config_entry.data.get(
+                        CONF_OPTIMIZATION_BACKUP_RESERVE,
+                        DEFAULT_OPTIMIZATION_BACKUP_RESERVE,
+                    ),
+                )
+                try:
+                    backup_reserve = float(raw_backup)
+                    if backup_reserve > 1:
+                        backup_reserve = backup_reserve / 100
+                except (TypeError, ValueError):
+                    backup_reserve = DEFAULT_OPTIMIZATION_BACKUP_RESERVE
+                raw_hardware = config_entry.options.get(
+                    CONF_HARDWARE_BACKUP_RESERVE,
+                    config_entry.data.get(CONF_HARDWARE_BACKUP_RESERVE, 0),
+                )
+                try:
+                    hardware_reserve = float(raw_hardware)
+                    if hardware_reserve <= 1:
+                        hardware_reserve = hardware_reserve * 100
+                except (TypeError, ValueError):
+                    hardware_reserve = 0
+
             return web.json_response({
                 "success": True,
-                "enabled": False,
+                "enabled": bool(
+                    config_entry
+                    and config_entry.options.get(CONF_OPTIMIZATION_ENABLED, False)
+                ),
                 "cost_function": "cost",
-                "backup_reserve": int(DEFAULT_OPTIMIZATION_BACKUP_RESERVE * 100),
+                "backup_reserve": round(backup_reserve * 100),
                 "ev_integration": False,
+                "config": {
+                    "battery_capacity_wh": _entry_int_setting(
+                        CONF_OPTIMIZATION_BATTERY_CAPACITY_WH,
+                        default_capacity_wh,
+                    ),
+                    "max_charge_w": _entry_int_setting(
+                        CONF_OPTIMIZATION_MAX_CHARGE_W,
+                        default_power_w,
+                    ),
+                    "max_discharge_w": _entry_int_setting(
+                        CONF_OPTIMIZATION_MAX_DISCHARGE_W,
+                        default_power_w,
+                    ),
+                    "backup_reserve": round(backup_reserve * 100),
+                    "hardware_backup_reserve": round(hardware_reserve),
+                    "battery_specs_source": "manual"
+                    if config_entry
+                    and (
+                        config_entry.options.get(CONF_OPTIMIZATION_BATTERY_CAPACITY_WH)
+                        or config_entry.data.get(CONF_OPTIMIZATION_BATTERY_CAPACITY_WH)
+                        or config_entry.options.get(CONF_OPTIMIZATION_MAX_CHARGE_W)
+                        or config_entry.data.get(CONF_OPTIMIZATION_MAX_CHARGE_W)
+                        or config_entry.options.get(CONF_OPTIMIZATION_MAX_DISCHARGE_W)
+                        or config_entry.data.get(CONF_OPTIMIZATION_MAX_DISCHARGE_W)
+                    )
+                    else "default",
+                },
             })
 
         return web.json_response({
@@ -24838,6 +24963,25 @@ class OptimizationSettingsView(HomeAssistantView):
                 if opt_coord:
                     opt_coord._startup_backup_reserve = int(hw_reserve * 100)
                     _LOGGER.info("Updated startup backup reserve to %d%%", int(hw_reserve * 100))
+
+            spec_key_map = {
+                "battery_capacity_wh": CONF_OPTIMIZATION_BATTERY_CAPACITY_WH,
+                "max_charge_w": CONF_OPTIMIZATION_MAX_CHARGE_W,
+                "max_discharge_w": CONF_OPTIMIZATION_MAX_DISCHARGE_W,
+            }
+            for payload_key, option_key in spec_key_map.items():
+                if payload_key not in settings:
+                    continue
+                try:
+                    spec_value = int(float(settings[payload_key]))
+                except (TypeError, ValueError):
+                    continue
+                if spec_value > 0:
+                    new_options[option_key] = spec_value
+                    changes.append(f"Set {payload_key} to {spec_value}")
+                else:
+                    new_options.pop(option_key, None)
+                    changes.append(f"Cleared {payload_key}")
 
             # Update the config entry (both data and options)
             self._hass.config_entries.async_update_entry(config_entry, data=new_data, options=new_options)

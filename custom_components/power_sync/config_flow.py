@@ -311,8 +311,13 @@ from .const import (
     CONF_OPTIMIZATION_ENABLED,
     CONF_OPTIMIZATION_COST_FUNCTION,
     CONF_OPTIMIZATION_BACKUP_RESERVE,
+    CONF_OPTIMIZATION_BATTERY_CAPACITY_WH,
+    CONF_OPTIMIZATION_MAX_CHARGE_W,
+    CONF_OPTIMIZATION_MAX_DISCHARGE_W,
     COST_FUNCTION_COST,
     DEFAULT_OPTIMIZATION_BACKUP_RESERVE,
+    BATTERY_CAPACITY_DEFAULTS,
+    BATTERY_POWER_DEFAULTS,
     # Optimization provider selection
     CONF_OPTIMIZATION_PROVIDER,
     OPT_PROVIDER_NATIVE,
@@ -366,6 +371,54 @@ CONF_NETWORK_TARIFF_COMBINED = "network_tariff_combined"
 CUSTOM_TOU_PROVIDER_OPTIONS = ("globird", "aemo_vpp", "other", "tou_only")
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _stored_wh_to_kwh(value: Any, default_wh: int) -> float:
+    """Convert a stored Wh/kWh value to kWh for config flow display."""
+    try:
+        amount = float(value)
+    except (TypeError, ValueError):
+        amount = float(default_wh)
+    return amount / 1000.0 if amount > 1000 else amount
+
+
+def _stored_w_to_kw(value: Any, default_w: int) -> float:
+    """Convert a stored W/kW value to kW for config flow display."""
+    try:
+        amount = float(value)
+    except (TypeError, ValueError):
+        amount = float(default_w)
+    return amount / 1000.0 if amount > 100 else amount
+
+
+def _form_kwh_to_wh(value: Any, default_kwh: float) -> int:
+    """Convert a config flow kWh field to Wh for persisted optimizer config."""
+    try:
+        amount = float(value)
+    except (TypeError, ValueError):
+        amount = default_kwh
+    return int(round(amount * 1000))
+
+
+def _form_kw_to_w(value: Any, default_kw: float) -> int:
+    """Convert a config flow kW field to W for persisted optimizer config."""
+    try:
+        amount = float(value)
+    except (TypeError, ValueError):
+        amount = default_kw
+    return int(round(amount * 1000))
+
+
+def _default_optimizer_specs_for(battery_system: str) -> tuple[int, int, int]:
+    capacity_wh = BATTERY_CAPACITY_DEFAULTS.get(
+        battery_system,
+        BATTERY_CAPACITY_DEFAULTS[BATTERY_SYSTEM_TESLA],
+    )
+    power_w = BATTERY_POWER_DEFAULTS.get(
+        battery_system,
+        BATTERY_POWER_DEFAULTS[BATTERY_SYSTEM_TESLA],
+    )
+    return capacity_wh, power_w, power_w
 
 
 async def validate_amber_token(hass: HomeAssistant, api_token: str) -> dict[str, Any]:
@@ -1619,7 +1672,15 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_ml_options(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Configure Smart Optimization options - backup reserve."""
+        """Configure Smart Optimization options."""
+        battery_system = self._selected_battery_system or BATTERY_SYSTEM_TESLA
+        default_capacity_wh, default_charge_w, default_discharge_w = (
+            _default_optimizer_specs_for(battery_system)
+        )
+        default_capacity_kwh = default_capacity_wh / 1000
+        default_charge_kw = default_charge_w / 1000
+        default_discharge_kw = default_discharge_w / 1000
+
         if user_input is not None:
             self._ml_options = {
                 CONF_OPTIMIZATION_COST_FUNCTION: COST_FUNCTION_COST,
@@ -1628,6 +1689,18 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     int(DEFAULT_OPTIMIZATION_BACKUP_RESERVE * 100),
                 )
                 / 100.0,
+                CONF_OPTIMIZATION_BATTERY_CAPACITY_WH: _form_kwh_to_wh(
+                    user_input.get(CONF_OPTIMIZATION_BATTERY_CAPACITY_WH),
+                    default_capacity_kwh,
+                ),
+                CONF_OPTIMIZATION_MAX_CHARGE_W: _form_kw_to_w(
+                    user_input.get(CONF_OPTIMIZATION_MAX_CHARGE_W),
+                    default_charge_kw,
+                ),
+                CONF_OPTIMIZATION_MAX_DISCHARGE_W: _form_kw_to_w(
+                    user_input.get(CONF_OPTIMIZATION_MAX_DISCHARGE_W),
+                    default_discharge_kw,
+                ),
             }
             # Proceed to battery connection setup
             return await self._route_to_battery_setup()
@@ -1646,6 +1719,42 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             step=5,
                             unit_of_measurement="%",
                             mode=NumberSelectorMode.SLIDER,
+                        )
+                    ),
+                    vol.Required(
+                        CONF_OPTIMIZATION_BATTERY_CAPACITY_WH,
+                        default=default_capacity_kwh,
+                    ): NumberSelector(
+                        NumberSelectorConfig(
+                            min=1,
+                            max=200,
+                            step=0.1,
+                            unit_of_measurement="kWh",
+                            mode=NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Required(
+                        CONF_OPTIMIZATION_MAX_CHARGE_W,
+                        default=default_charge_kw,
+                    ): NumberSelector(
+                        NumberSelectorConfig(
+                            min=0.1,
+                            max=50,
+                            step=0.1,
+                            unit_of_measurement="kW",
+                            mode=NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Required(
+                        CONF_OPTIMIZATION_MAX_DISCHARGE_W,
+                        default=default_discharge_kw,
+                    ): NumberSelector(
+                        NumberSelectorConfig(
+                            min=0.1,
+                            max=50,
+                            step=0.1,
+                            unit_of_measurement="kW",
+                            mode=NumberSelectorMode.BOX,
                         )
                     ),
                 }
@@ -4557,19 +4666,52 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 CONF_OPTIMIZATION_PROVIDER, OPT_PROVIDER_NATIVE
             )
             new_data = dict(self.config_entry.data)
+            new_options = dict(self.config_entry.options)
             new_data[CONF_OPTIMIZATION_PROVIDER] = optimization_provider
             if optimization_provider == OPT_PROVIDER_POWERSYNC:
-                new_data[CONF_OPTIMIZATION_COST_FUNCTION] = COST_FUNCTION_COST
-                new_data[CONF_OPTIMIZATION_BACKUP_RESERVE] = (
+                default_capacity_wh, default_charge_w, default_discharge_w = (
+                    _default_optimizer_specs_for(
+                        self.config_entry.data.get(
+                            CONF_BATTERY_SYSTEM,
+                            BATTERY_SYSTEM_TESLA,
+                        )
+                    )
+                )
+                default_capacity_kwh = default_capacity_wh / 1000
+                default_charge_kw = default_charge_w / 1000
+                default_discharge_kw = default_discharge_w / 1000
+                backup_reserve = (
                     user_input.get(
                         CONF_OPTIMIZATION_BACKUP_RESERVE,
                         int(DEFAULT_OPTIMIZATION_BACKUP_RESERVE * 100),
                     )
                     / 100.0
                 )
+                capacity_wh = _form_kwh_to_wh(
+                    user_input.get(CONF_OPTIMIZATION_BATTERY_CAPACITY_WH),
+                    default_capacity_kwh,
+                )
+                charge_w = _form_kw_to_w(
+                    user_input.get(CONF_OPTIMIZATION_MAX_CHARGE_W),
+                    default_charge_kw,
+                )
+                discharge_w = _form_kw_to_w(
+                    user_input.get(CONF_OPTIMIZATION_MAX_DISCHARGE_W),
+                    default_discharge_kw,
+                )
+                new_data[CONF_OPTIMIZATION_COST_FUNCTION] = COST_FUNCTION_COST
+                new_options[CONF_OPTIMIZATION_COST_FUNCTION] = COST_FUNCTION_COST
+                new_data[CONF_OPTIMIZATION_BACKUP_RESERVE] = backup_reserve
+                new_options[CONF_OPTIMIZATION_BACKUP_RESERVE] = backup_reserve
+                new_data[CONF_OPTIMIZATION_BATTERY_CAPACITY_WH] = capacity_wh
+                new_options[CONF_OPTIMIZATION_BATTERY_CAPACITY_WH] = capacity_wh
+                new_data[CONF_OPTIMIZATION_MAX_CHARGE_W] = charge_w
+                new_options[CONF_OPTIMIZATION_MAX_CHARGE_W] = charge_w
+                new_data[CONF_OPTIMIZATION_MAX_DISCHARGE_W] = discharge_w
+                new_options[CONF_OPTIMIZATION_MAX_DISCHARGE_W] = discharge_w
 
             self.hass.config_entries.async_update_entry(
-                self.config_entry, data=new_data
+                self.config_entry, data=new_data, options=new_options
             )
             return self.async_create_entry(
                 title="", data=dict(self.config_entry.options)
@@ -4581,8 +4723,45 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
         current_opt_provider = self.config_entry.data.get(
             CONF_OPTIMIZATION_PROVIDER, OPT_PROVIDER_NATIVE
         )
-        current_backup_reserve = self.config_entry.data.get(
-            CONF_OPTIMIZATION_BACKUP_RESERVE, DEFAULT_OPTIMIZATION_BACKUP_RESERVE
+        current_backup_reserve = self._get_option(
+            CONF_OPTIMIZATION_BACKUP_RESERVE,
+            self.config_entry.data.get(
+                CONF_OPTIMIZATION_BACKUP_RESERVE,
+                DEFAULT_OPTIMIZATION_BACKUP_RESERVE,
+            ),
+        )
+        default_capacity_wh, default_charge_w, default_discharge_w = (
+            _default_optimizer_specs_for(battery_system)
+        )
+        current_capacity_kwh = _stored_wh_to_kwh(
+            self._get_option(
+                CONF_OPTIMIZATION_BATTERY_CAPACITY_WH,
+                self.config_entry.data.get(
+                    CONF_OPTIMIZATION_BATTERY_CAPACITY_WH,
+                    default_capacity_wh,
+                ),
+            ),
+            default_capacity_wh,
+        )
+        current_charge_kw = _stored_w_to_kw(
+            self._get_option(
+                CONF_OPTIMIZATION_MAX_CHARGE_W,
+                self.config_entry.data.get(
+                    CONF_OPTIMIZATION_MAX_CHARGE_W,
+                    default_charge_w,
+                ),
+            ),
+            default_charge_w,
+        )
+        current_discharge_kw = _stored_w_to_kw(
+            self._get_option(
+                CONF_OPTIMIZATION_MAX_DISCHARGE_W,
+                self.config_entry.data.get(
+                    CONF_OPTIMIZATION_MAX_DISCHARGE_W,
+                    default_discharge_w,
+                ),
+            ),
+            default_discharge_w,
         )
 
         # Build native label based on battery system
@@ -4622,6 +4801,27 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     ): NumberSelector(NumberSelectorConfig(
                         min=0, max=100, step=1, unit_of_measurement="%",
                         mode=NumberSelectorMode.SLIDER,
+                    )),
+                    vol.Required(
+                        CONF_OPTIMIZATION_BATTERY_CAPACITY_WH,
+                        default=current_capacity_kwh,
+                    ): NumberSelector(NumberSelectorConfig(
+                        min=1, max=200, step=0.1, unit_of_measurement="kWh",
+                        mode=NumberSelectorMode.BOX,
+                    )),
+                    vol.Required(
+                        CONF_OPTIMIZATION_MAX_CHARGE_W,
+                        default=current_charge_kw,
+                    ): NumberSelector(NumberSelectorConfig(
+                        min=0.1, max=50, step=0.1, unit_of_measurement="kW",
+                        mode=NumberSelectorMode.BOX,
+                    )),
+                    vol.Required(
+                        CONF_OPTIMIZATION_MAX_DISCHARGE_W,
+                        default=current_discharge_kw,
+                    ): NumberSelector(NumberSelectorConfig(
+                        min=0.1, max=50, step=0.1, unit_of_measurement="kW",
+                        mode=NumberSelectorMode.BOX,
                     )),
                 }
             ),
