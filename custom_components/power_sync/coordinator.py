@@ -47,6 +47,15 @@ from .const import (
 
 ENERGY_ACC_STORE_VERSION = 1
 ENERGY_ACC_SAVE_DELAY = 300  # Flush at most every 5 minutes
+LIFETIME_TOTALS_STORE_VERSION = 1
+LIFETIME_TOTAL_KEYS = (
+    "lifetime_solar_kwh",
+    "lifetime_grid_import_kwh",
+    "lifetime_grid_export_kwh",
+    "lifetime_battery_charged_kwh",
+    "lifetime_battery_discharged_kwh",
+    "lifetime_home_kwh",
+)
 
 
 class EnergyAccumulator:
@@ -1615,6 +1624,12 @@ class TeslaEnergyCoordinator(DataUpdateCoordinator):
         self._lifetime_totals: dict[str, float] | None = None
         self._lifetime_last_fetch: float = 0
         self._lifetime_fetch_failed: bool = False
+        self._lifetime_totals_restored: bool = False
+        self._lifetime_totals_store = Store(
+            hass,
+            LIFETIME_TOTALS_STORE_VERSION,
+            f"power_sync.lifetime_totals.{entry_id or site_id}",
+        )
 
         # Determine API base URL based on provider
         if api_provider == TESLA_PROVIDER_POWERSYNC:
@@ -1664,10 +1679,76 @@ class TeslaEnergyCoordinator(DataUpdateCoordinator):
                 return None
         return self._api_token
 
+    def _coerce_lifetime_totals(self, data: Any) -> dict[str, float]:
+        """Extract persisted lifetime totals as floats."""
+        if not isinstance(data, dict):
+            return {}
+        totals: dict[str, float] = {}
+        for key in LIFETIME_TOTAL_KEYS:
+            value = data.get(key)
+            if value is None:
+                continue
+            try:
+                totals[key] = float(value)
+            except (TypeError, ValueError):
+                continue
+        return totals
+
+    def _clamp_lifetime_totals(self, totals: dict[str, float]) -> dict[str, float]:
+        """Keep lifetime counters monotonic for total_increasing sensors."""
+        previous = self._lifetime_totals or {}
+        if not previous:
+            return totals
+
+        clamped = dict(totals)
+        for key, value in totals.items():
+            previous_value = previous.get(key)
+            if previous_value is None or value >= previous_value:
+                continue
+            clamped[key] = previous_value
+            _LOGGER.debug(
+                "Keeping %s monotonic: Tesla reported %.3f kWh after %.3f kWh",
+                key,
+                value,
+                previous_value,
+            )
+        return clamped
+
+    async def async_restore_lifetime_totals(self) -> None:
+        """Restore persisted lifetime totals before the first coordinator state."""
+        if self._lifetime_totals_restored:
+            return
+        self._lifetime_totals_restored = True
+
+        if not hasattr(self._lifetime_totals_store, "async_load"):
+            return
+        try:
+            data = await self._lifetime_totals_store.async_load()
+        except Exception as err:
+            _LOGGER.warning("Failed to load persisted lifetime totals: %s", err)
+            return
+
+        totals = self._coerce_lifetime_totals(data)
+        if not totals:
+            return
+
+        self._lifetime_totals = totals
+        _LOGGER.info("Restored Tesla lifetime totals from storage")
+
+    async def async_flush_lifetime_totals(self) -> None:
+        """Persist lifetime totals so recorder-safe maxima survive restarts."""
+        if not self._lifetime_totals or not hasattr(self._lifetime_totals_store, "async_save"):
+            return
+        await self._lifetime_totals_store.async_save(
+            {key: round(value, 3) for key, value in self._lifetime_totals.items()}
+        )
+
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch data from Tesla API (Teslemetry or Fleet API)."""
         if not self._energy_acc._last_update:
             await self._energy_acc.async_restore()
+        if not self._lifetime_totals_restored:
+            await self.async_restore_lifetime_totals()
 
         current_token = self._get_current_token()
         if not current_token:
@@ -2627,14 +2708,7 @@ class TeslaEnergyCoordinator(DataUpdateCoordinator):
         if not history:
             return self._lifetime_totals
 
-        totals = {
-            "lifetime_solar_kwh": 0.0,
-            "lifetime_grid_import_kwh": 0.0,
-            "lifetime_grid_export_kwh": 0.0,
-            "lifetime_battery_charged_kwh": 0.0,
-            "lifetime_battery_discharged_kwh": 0.0,
-            "lifetime_home_kwh": 0.0,
-        }
+        totals = {key: 0.0 for key in LIFETIME_TOTAL_KEYS}
         for ts in history.get("time_series", []) or []:
             totals["lifetime_solar_kwh"] += (ts.get("solar_energy_exported") or 0)
             totals["lifetime_grid_import_kwh"] += (ts.get("grid_energy_imported") or 0)
@@ -2657,8 +2731,10 @@ class TeslaEnergyCoordinator(DataUpdateCoordinator):
         for k in totals:
             totals[k] = round(totals[k] / 1000.0, 3)
 
+        totals = self._clamp_lifetime_totals(totals)
         self._lifetime_totals = totals
         self._lifetime_last_fetch = time.monotonic()
+        await self.async_flush_lifetime_totals()
         return totals
 
 

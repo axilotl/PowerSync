@@ -1101,7 +1101,6 @@ class SyncCoordinator:
 
     def _get_current_period(self):
         """Get the current 5-minute period timestamp."""
-        from homeassistant.util import dt as dt_util
         now = dt_util.utcnow()
         current_period = now.replace(second=0, microsecond=0)
         return current_period.replace(minute=current_period.minute - (current_period.minute % 5))
@@ -1279,7 +1278,6 @@ class AEMOSpikeManager:
 
     async def check_and_handle_spike(self) -> None:
         """Check AEMO prices and handle spike mode transitions."""
-        from homeassistant.util import dt as dt_util
 
         self._last_check = dt_util.utcnow()
 
@@ -1313,7 +1311,6 @@ class AEMOSpikeManager:
 
     async def _enter_spike_mode(self, current_price: float) -> None:
         """Enter spike mode: save tariff, switch to autonomous, upload spike tariff."""
-        from homeassistant.util import dt as dt_util
 
         _LOGGER.warning(
             "SPIKE DETECTED: $%.2f/MWh >= $%.0f/MWh threshold - entering spike mode",
@@ -1493,7 +1490,6 @@ class AEMOSpikeManager:
 
         Uses very high sell rates to encourage Powerwall to export all energy.
         """
-        from homeassistant.util import dt as dt_util
 
         # Convert $/MWh to $/kWh (divide by 1000) and apply 3x markup
         # This creates a HUGE sell incentive that Powerwall will respond to
@@ -1661,7 +1657,6 @@ class GenericAEMOSpikeManager:
 
     async def check_and_handle_spike(self) -> None:
         """Check AEMO prices and handle spike mode transitions."""
-        from homeassistant.util import dt as dt_util
 
         self._last_check = dt_util.utcnow()
 
@@ -1696,7 +1691,6 @@ class GenericAEMOSpikeManager:
 
     async def _enter_spike_mode(self, current_price: float) -> None:
         """Enter spike mode: force discharge via service call and notify user."""
-        from homeassistant.util import dt as dt_util
 
         _LOGGER.warning(
             "%s SPIKE DETECTED: $%.2f/MWh >= $%.0f/MWh threshold - starting force discharge",
@@ -1735,7 +1729,6 @@ class GenericAEMOSpikeManager:
 
     async def _exit_spike_mode(self, current_price: float) -> None:
         """Exit spike mode: restore normal operation via service call and notify user."""
-        from homeassistant.util import dt as dt_util
 
         _LOGGER.info(
             "%s: Price normalized: $%.2f/MWh < $%.0f/MWh threshold - restoring normal operation",
@@ -1874,7 +1867,6 @@ class SavingSessionTariffManager:
 
     async def _enter_session_mode(self, session) -> None:
         """Save tariff, create session tariff, upload to Tesla."""
-        from homeassistant.util import dt as dt_util
 
         _LOGGER.warning(
             "SAVING SESSION STARTING: %s (%s - %s, %d octopoints/kWh) - entering session mode",
@@ -2162,7 +2154,6 @@ class GenericSavingSessionManager:
 
     async def _enter_session_mode(self, session) -> None:
         """Force discharge battery during saving session."""
-        from homeassistant.util import dt as dt_util
 
         _LOGGER.warning(
             "%s SAVING SESSION STARTING: %s (%d octopoints/kWh) - force discharging",
@@ -2848,7 +2839,6 @@ async def _calculate_cost_from_statistics(
     (e.g. new installation, sensors not yet recorded).
     """
     from datetime import datetime as dt, timedelta
-    from homeassistant.util import dt as dt_util
 
     try:
         now = dt_util.now()
@@ -4516,7 +4506,6 @@ class InverterStatusView(HomeAssistantView):
                     is_night = sun_state.state == "below_horizon"
                 else:
                     # Fallback to hour-based check (6pm-6am) — use HA tz, not container UTC
-                    from homeassistant.util import dt as dt_util
                     local_hour = dt_util.now().hour
                     is_night = local_hour >= 18 or local_hour < 6
             except Exception:
@@ -4555,7 +4544,6 @@ class InverterStatusView(HomeAssistantView):
                     is_night = sun_state.state == "below_horizon"
                 else:
                     # Fallback to hour-based check (6pm-6am) — use HA tz, not container UTC
-                    from homeassistant.util import dt as dt_util
                     local_hour = dt_util.now().hour
                     is_night = local_hour >= 18 or local_hour < 6
             except Exception:
@@ -6723,7 +6711,6 @@ class TariffPriceView(HomeAssistantView):
           - Sell rates at saved_tariff["sell_tariff"]["energy_charges"][season]["rates"][period]
         """
         try:
-            from homeassistant.util import dt as dt_util
             from .tariff_time import find_matching_tou_period
 
             now = dt_util.now()  # HA tz; container UTC would mis-classify season/period
@@ -6990,7 +6977,6 @@ def convert_custom_tariff_to_schedule(custom_tariff: dict) -> dict:
         tariff_schedule dict with: current_period, current_season, buy_price, sell_price,
         buy_rates, sell_rates, tou_periods, seasons, utility, plan_name, last_sync
     """
-    from homeassistant.util import dt as dt_util
     from .tariff_time import find_matching_tou_period
 
     try:
@@ -7096,7 +7082,6 @@ def get_current_price_from_tariff_schedule(tariff_schedule: dict) -> tuple[float
     Returns:
         Tuple of (buy_price_cents, sell_price_cents, current_period)
     """
-    from homeassistant.util import dt as dt_util
     from .tariff_time import find_matching_tou_period
 
     try:
@@ -8504,7 +8489,6 @@ class EVVehiclesView(HomeAssistantView):
         # Cache definitive BLE readings so they survive BLE disconnects.
         # When BLE loses connection, charge_flap goes "unavailable" — we use
         # the cached value (max 2h) to avoid falling back to stale Fleet API data.
-        from homeassistant.util import dt as dt_util
         now_utc = dt_util.utcnow()
         ble_plug_cache_key = f"ev_ble_plug_cache_{prefix}"
         if plugged_in_definitive:
@@ -9305,7 +9289,6 @@ class EVVehicleCommandView(HomeAssistantView):
             ble_plug_cache_key = f"ev_ble_plug_cache_{ble_prefix}"
             cached = self._hass.data.get(DOMAIN, {}).get("_ev_cache", {}).get(ble_plug_cache_key)
             if cached:
-                from homeassistant.util import dt as dt_util
                 if (dt_util.utcnow() - cached["cached_at"]).total_seconds() < 7200:
                     return cached["is_plugged_in"]
             _LOGGER.debug(f"BLE vehicle {ble_prefix}: cannot determine plug state")
@@ -15867,7 +15850,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if force_discharge_state.get("active"):
             expires_at = force_discharge_state.get("expires_at")
             if expires_at:
-                from homeassistant.util import dt as dt_util
                 remaining = (expires_at - dt_util.utcnow()).total_seconds() / 60
                 _LOGGER.info(f"⏭️  TOU sync skipped - Force discharge active ({remaining:.1f} min remaining)")
             else:
@@ -15878,7 +15860,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if force_charge_state.get("active"):
             expires_at = force_charge_state.get("expires_at")
             if expires_at:
-                from homeassistant.util import dt as dt_util
                 remaining = (expires_at - dt_util.utcnow()).total_seconds() / 60
                 _LOGGER.info(f"⏭️  TOU sync skipped - Force charge active ({remaining:.1f} min remaining)")
             else:
@@ -16657,7 +16638,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             # --- Calibration detection helper ---
             def _record_mode_stick_failure(hass, entry_id):
                 """Record a mode-verification failure and check for calibration pattern."""
-                from homeassistant.util import dt as dt_util
                 entry_data = hass.data.get(DOMAIN, {}).get(entry_id, {})
                 failures = entry_data.get("_mode_stick_failures", [])
                 now = dt_util.utcnow()
@@ -16719,7 +16699,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         # Check if we recently toggled - if so, Tesla might have reverted the mode
                         # Only re-toggle once after the initial toggle to avoid infinite loops
                         # (if self_consumption persists after our re-toggle, it's the user's choice)
-                        from homeassistant.util import dt as dt_util
                         last_toggle_time = hass.data[DOMAIN].get(entry.entry_id, {}).get("last_force_toggle_time")
                         retoggle_attempted = hass.data[DOMAIN].get(entry.entry_id, {}).get("retoggle_attempted", False)
                         now = dt_util.utcnow()
@@ -16822,7 +16801,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                                                 # Only update toggle time on fresh toggles, not re-toggles
                                                 # This prevents the re-toggle window from refreshing indefinitely
                                                 if not force_retoggle:
-                                                    from homeassistant.util import dt as dt_util
                                                     if entry.entry_id not in hass.data[DOMAIN]:
                                                         hass.data[DOMAIN][entry.entry_id] = {}
                                                     hass.data[DOMAIN][entry.entry_id]["last_force_toggle_time"] = dt_util.utcnow()
@@ -16836,7 +16814,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                                             _LOGGER.warning("Could not verify mode (status %s) - assuming success", verify_response.status)
                                             switched_back = True
                                             if not force_retoggle:
-                                                from homeassistant.util import dt as dt_util
                                                 if entry.entry_id not in hass.data[DOMAIN]:
                                                     hass.data[DOMAIN][entry.entry_id] = {}
                                                 hass.data[DOMAIN][entry.entry_id]["last_force_toggle_time"] = dt_util.utcnow()
@@ -16997,7 +16974,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             entry_data = hass.data[DOMAIN].get(entry.entry_id, {})
             dc_coordinator = entry_data.get("demand_charge_coordinator")
             if dc_coordinator and dc_coordinator.enabled and not entry_data.get("demand_allow_grid_charging", False):
-                from homeassistant.util import dt as dt_util
                 current_time = dt_util.now()
                 in_peak = dc_coordinator._is_in_peak_period(current_time)
 
@@ -18126,7 +18102,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Restore force mode state from persistence (after HA restart)
     async def restore_force_mode_from_persistence():
         """Restore force charge/discharge state after HA restart."""
-        from homeassistant.util import dt as dt_util
 
         if not persisted_force_state:
             return
@@ -18288,7 +18263,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     async def handle_force_discharge(call: ServiceCall) -> None:
         """Force discharge mode - switches to autonomous with high export tariff."""
-        from homeassistant.util import dt as dt_util
 
         # Warn if calibration suspected (don't block — user manual command)
         _fd_entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
@@ -19107,7 +19081,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             The expiry datetime is aligned to the end of the tariff window,
             ensuring the timer doesn't fire before the tariff window ends.
         """
-        from homeassistant.util import dt as dt_util
 
         # Very high sell rate to encourage Powerwall to export all energy
         sell_rate_discharge = 99.00  # $99/kWh - huge incentive to discharge
@@ -19274,7 +19247,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     async def handle_force_charge(call: ServiceCall) -> None:
         """Force charge mode - switches to autonomous with free import tariff."""
-        from homeassistant.util import dt as dt_util
 
         # Warn if calibration suspected (don't block — user manual command)
         _fc_entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
@@ -20149,7 +20121,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             The expiry datetime is aligned to the end of the tariff window,
             ensuring the timer doesn't fire before the tariff window ends.
         """
-        from homeassistant.util import dt as dt_util
 
         # Rates during charge window - free to buy, no sell incentive
         buy_rate_charge = 0.00    # $0/kWh - maximum incentive to charge
@@ -20312,7 +20283,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     async def handle_restore_normal(call: ServiceCall) -> None:
         """Restore normal operation - restore saved tariff or trigger Amber sync."""
-        from homeassistant.util import dt as dt_util
         # Log call context for debugging (helps identify if called by automation)
         context = call.context
         source = call.data.get("source", "user")
@@ -21033,7 +21003,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         Source-aware: optimizer-sourced calls skip state management so the
         user-facing Controls screen never displays automated activity.
         """
-        from homeassistant.util import dt as dt_util
 
         raw_duration = call.data.get("duration", DEFAULT_DISCHARGE_DURATION)
         try:
@@ -21195,7 +21164,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         - Does NOT restore TOU tariff
         - Does NOT send push notifications
         """
-        from homeassistant.util import dt as dt_util
 
         source = call.data.get("source", "user")
         _LOGGER.info("Setting pure self-consumption mode (source=%s)", source)
@@ -23704,7 +23672,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if demand_charge_coordinator:
         async def auto_demand_charging_check(now):
             """Automatically check demand period and toggle grid charging."""
-            from homeassistant.util import dt as dt_util
             try:
                 entry_data = hass.data[DOMAIN].get(entry.entry_id, {})
                 dc_coordinator = entry_data.get("demand_charge_coordinator")
@@ -23768,7 +23735,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         # Perform initial demand period check
         _LOGGER.info("Performing initial demand period grid charging check")
-        from homeassistant.util import dt as dt_util
         await auto_demand_charging_check(dt_util.now())
 
     # ========================================
@@ -23923,7 +23889,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     if buy_prices:
                         # Find current time slot price
                         # Format: [{"timeRange": "10:00-10:30", "price": 25.0}, ...]
-                        from homeassistant.util import dt as dt_util
                         now = dt_util.now()  # HA tz; container UTC would pick wrong slot
                         current_time = f"{now.hour:02d}:{30 if now.minute >= 30 else 0:02d}"
                         for slot in buy_prices:
@@ -24492,7 +24457,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     try:
                         from .aemo_api import AEMOAPIClient
                         from homeassistant.helpers.aiohttp_client import async_get_clientsession
-                        from homeassistant.util import dt as dt_util
 
                         session = async_get_clientsession(hass)
                         client = AEMOAPIClient(session)
@@ -25211,6 +25175,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 await coord._energy_acc.async_flush()
             except Exception as e:
                 _LOGGER.debug("Failed to flush energy accumulator for %s: %s", coord_key, e)
+        if coord and hasattr(coord, "async_flush_lifetime_totals"):
+            try:
+                await coord.async_flush_lifetime_totals()
+            except Exception as e:
+                _LOGGER.debug("Failed to flush lifetime totals for %s: %s", coord_key, e)
 
     # Unload platforms
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)

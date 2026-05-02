@@ -236,3 +236,42 @@ def test_octopus_integration_synthesizes_export_when_integration_has_import_only
     assert next(p for p in current if p["channelType"] == "general")["perKwh"] == 24.5
     assert next(p for p in current if p["channelType"] == "feedIn")["perKwh"] == -4.1
     assert result["export_rates"][0]["channelType"] == "feedIn"
+
+
+def test_tesla_lifetime_totals_clamp_prevents_recorder_decrease():
+    tesla = coordinator.TeslaEnergyCoordinator(
+        _FakeHass(),
+        "site-1",
+        "token",
+        entry_id="entry-1",
+    )
+    previous = {key: 0.0 for key in coordinator.LIFETIME_TOTAL_KEYS}
+    previous["lifetime_solar_kwh"] = 1000.0
+    previous["lifetime_grid_export_kwh"] = 604.96
+    tesla._lifetime_totals = previous
+
+    updated = dict(previous)
+    updated["lifetime_solar_kwh"] = 1000.2
+    updated["lifetime_grid_export_kwh"] = 604.958
+
+    clamped = tesla._clamp_lifetime_totals(updated)
+
+    assert clamped["lifetime_solar_kwh"] == 1000.2
+    assert clamped["lifetime_grid_export_kwh"] == 604.96
+
+
+def test_tesla_lifetime_totals_coerces_persisted_values():
+    tesla = coordinator.TeslaEnergyCoordinator(
+        _FakeHass(),
+        "site-1",
+        "token",
+        entry_id="entry-1",
+    )
+
+    totals = tesla._coerce_lifetime_totals({
+        "lifetime_grid_export_kwh": "604.96",
+        "lifetime_solar_kwh": None,
+        "lifetime_home_kwh": "not-a-number",
+    })
+
+    assert totals == {"lifetime_grid_export_kwh": 604.96}
