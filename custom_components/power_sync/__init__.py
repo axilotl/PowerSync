@@ -14123,9 +14123,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         entry.data.get(CONF_FLOW_POWER_STATE, "NSW1")
     )
 
-    # Check for "aemo_sensor" (legacy) or "aemo" (new) price source
-    # Both now use the direct AEMO API
-    use_aemo_pricing = flow_power_price_source in ("aemo_sensor", "aemo")
+    # Check for "aemo_sensor" (legacy) or "aemo" (new) price source.
+    # Both now use the direct AEMO API, but only Flow Power uses AEMO as an
+    # optimizer price feed. Other providers can retain stale Flow Power
+    # options after a provider switch and must not inherit AEMO prices.
+    use_aemo_pricing = (
+        electricity_provider == "flow_power"
+        and flow_power_price_source in ("aemo_sensor", "aemo")
+    )
 
     if use_aemo_pricing and flow_power_state:
         from .coordinator import AEMOPriceCoordinator

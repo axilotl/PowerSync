@@ -641,6 +641,16 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if not self.price_coordinator:
             return
 
+        if self._prefers_static_tou_pricing():
+            if self._price_listener_unsub:
+                self._price_listener_unsub()
+                self._price_listener_unsub = None
+            if self._octopus_gate_listener_unsub:
+                self._octopus_gate_listener_unsub()
+                self._octopus_gate_listener_unsub = None
+            self._is_dynamic_pricing = False
+            return
+
         coordinator_name = type(self.price_coordinator).__name__
         dynamic_providers = ["AmberPriceCoordinator", "AEMOPriceCoordinator"]
 
@@ -693,6 +703,69 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "Octopus tariff %s detected as dynamic — enabling price-triggered LP",
             getattr(self.price_coordinator, "tariff_code", "?"),
         )
+
+    def _electricity_provider(self) -> str:
+        """Return the configured electricity provider for this entry."""
+        if not self._entry:
+            return ""
+        from ..const import CONF_ELECTRICITY_PROVIDER
+
+        return self._entry.options.get(
+            CONF_ELECTRICITY_PROVIDER,
+            self._entry.data.get(CONF_ELECTRICITY_PROVIDER, ""),
+        )
+
+    def _prefers_static_tou_pricing(self) -> bool:
+        """Return True for providers whose optimizer source is the TOU schedule.
+
+        Values match CONF_ELECTRICITY_PROVIDER. New Zealand retailers (Octopus
+        NZ, Electric Kiwi, Contact, etc.) all set the provider to "nz"; the
+        retailer choice itself lives in CONF_NZ_RETAILER and is not checked
+        here. tou_only is set internally by __init__.py:14540 for Tesla-only
+        TOU users without a retailer integration.
+        """
+        return self._electricity_provider() in (
+            "globird",
+            "aemo_vpp",
+            "other",
+            "tou_only",
+            "nz",
+        )
+
+    def _get_tou_tariff_schedule(self) -> dict | None:
+        """Get the cached TOU tariff schedule, falling back to hass.data."""
+        tariff = self._tariff_schedule
+        if tariff:
+            return tariff
+
+        from ..const import DOMAIN
+
+        tariff = (
+            self.hass.data.get(DOMAIN, {})
+            .get(self.entry_id, {})
+            .get("tariff_schedule")
+        )
+        if tariff:
+            _LOGGER.info("Using tariff_schedule from hass.data (not constructor)")
+            self._tariff_schedule = tariff
+        return tariff
+
+    def _get_tou_price_forecast_if_available(
+        self,
+    ) -> tuple[list[float], list[float]] | None:
+        """Generate a TOU price forecast when a tariff schedule is available."""
+        tariff = self._get_tou_tariff_schedule()
+        if tariff and tariff.get("tou_periods"):
+            periods = tariff["tou_periods"]
+            _LOGGER.info(
+                "TOU tariff available: %s, periods=%s, buy_rates=%s, sell_rates=%s",
+                tariff.get("plan_name", "unknown"),
+                list(periods.keys()),
+                {k: f"{v*100:.0f}c" for k, v in tariff.get("buy_rates", {}).items()},
+                {k: f"{v*100:.0f}c" for k, v in tariff.get("sell_rates", {}).items()},
+            )
+            return self._generate_tou_price_forecast(tariff)
+        return None
 
     def _on_price_update(self) -> None:
         """Callback when price coordinator updates."""
@@ -2968,6 +3041,28 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         For dynamic providers (Amber, Flow Power): reads from price_coordinator.
         For static TOU providers (GloBird, etc.): generates from tariff_schedule.
         """
+        if self._prefers_static_tou_pricing():
+            tou_prices = self._get_tou_price_forecast_if_available()
+            if tou_prices is not None:
+                if self.price_coordinator and self.price_coordinator.data:
+                    _LOGGER.debug(
+                        "Using TOU tariff prices for static provider %s; ignoring %s data",
+                        self._electricity_provider(),
+                        type(self.price_coordinator).__name__,
+                    )
+                return tou_prices
+
+            # No tariff schedule cached yet — never fall through to the
+            # dynamic-pricing path for static-TOU providers. A leftover
+            # AEMOPriceCoordinator (e.g. set up before a provider switch)
+            # could still hold stale data and silently feed it to the LP.
+            _LOGGER.debug(
+                "Static-TOU provider %s but tariff_schedule not yet cached; "
+                "skipping dynamic-pricing fallback",
+                self._electricity_provider(),
+            )
+            return None
+
         # Dynamic pricing (Amber, Flow Power, etc.)
         if self.price_coordinator and self.price_coordinator.data:
             data = self.price_coordinator.data
@@ -3250,37 +3345,17 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         )
                         return (import_prices, export_prices)
 
-        # Static TOU pricing (GloBird, custom tariff, etc.)
-        # Generate 576-point price forecast from tariff schedule
-        tariff = self._tariff_schedule
-        if not tariff:
-            # Try reading from hass.data (updated by fetch_tesla_tariff_schedule)
-            from ..const import DOMAIN
-            tariff = (
-                self.hass.data.get(DOMAIN, {})
-                .get(self.entry_id, {})
-                .get("tariff_schedule")
-            )
-            if tariff:
-                _LOGGER.info("Using tariff_schedule from hass.data (not constructor)")
-                self._tariff_schedule = tariff  # Cache for next time
-
-        if tariff and tariff.get("tou_periods"):
-            periods = tariff["tou_periods"]
-            _LOGGER.info(
-                "TOU tariff available: %s, periods=%s, buy_rates=%s, sell_rates=%s",
-                tariff.get("plan_name", "unknown"),
-                list(periods.keys()),
-                {k: f"{v*100:.0f}c" for k, v in tariff.get("buy_rates", {}).items()},
-                {k: f"{v*100:.0f}c" for k, v in tariff.get("sell_rates", {}).items()},
-            )
-            return self._generate_tou_price_forecast(tariff)
+        # Static TOU pricing fallback (GloBird, custom tariff, etc.)
+        # Generate 576-point price forecast from tariff schedule.
+        tou_prices = self._get_tou_price_forecast_if_available()
+        if tou_prices is not None:
+            return tou_prices
 
         _LOGGER.warning(
             "No price data available! price_coordinator=%s, tariff=%s. "
             "Optimizer will use default flat rates.",
             self.price_coordinator is not None,
-            tariff is not None,
+            self._get_tou_tariff_schedule() is not None,
         )
         return None
 
