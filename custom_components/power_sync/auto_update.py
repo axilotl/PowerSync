@@ -11,8 +11,9 @@ from typing import Any
 from homeassistant.components.update import UpdateEntityFeature
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import ATTR_ENTITY_ID
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import async_track_time_change
+from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
 from .const import (
@@ -30,6 +31,14 @@ SERVICE_INSTALL = "install"
 SERVICE_RESTART = "restart"
 SERVICE_UPDATE_ENTITY = "update_entity"
 AUTO_UPDATE_RESTART_DELAY = 60
+HACS_REFRESH_RETRIES = 3
+HACS_REFRESH_INTERVAL_S = 60
+# Width of the trigger window after the configured time. Lets a late integration
+# reload (e.g. options-update reload landing at 03:00:30) still pick up the day's
+# run on the next minute-tick instead of waiting until tomorrow. Bounded so HA
+# boots later in the day don't surprise users with a daytime restart.
+TRIGGER_WINDOW_HOURS = 4
+LAST_RUN_STORE_VERSION = 1
 POWER_SYNC_UPDATE_HINTS = (
     "power_sync",
     "powersync",
@@ -117,24 +126,8 @@ def find_power_sync_update_entities(
     return matches
 
 
-async def async_install_power_sync_update(
-    hass: HomeAssistant,
-    *,
-    exclude_entity_id: str | None = None,
-) -> str | None:
-    """Install the currently available PowerSync HACS update, if one exists."""
-    entity_ids = find_power_sync_update_entities(
-        hass,
-        require_install=True,
-        exclude_entity_id=exclude_entity_id,
-    )
-    if not entity_ids:
-        _LOGGER.warning(
-            "PowerSync auto-update enabled, but no install-capable HACS update "
-            "entity was found"
-        )
-        return None
-
+async def _refresh_hacs_entities(hass: HomeAssistant, entity_ids: list[str]) -> None:
+    """Best-effort refresh of HACS update entities."""
     try:
         await hass.services.async_call(
             HOMEASSISTANT_DOMAIN,
@@ -143,25 +136,77 @@ async def async_install_power_sync_update(
             blocking=True,
         )
     except Exception as err:
-        _LOGGER.debug("PowerSync update entity refresh failed: %s", err)
+        _LOGGER.debug("PowerSync auto-update: HACS entity refresh raised: %s", err)
 
-    for entity_id in entity_ids:
-        state = hass.states.get(entity_id)
-        if state is None or state.state != "on":
-            continue
 
-        _LOGGER.info("Installing PowerSync update via %s", entity_id)
-        await hass.services.async_call(
-            UPDATE_DOMAIN,
-            SERVICE_INSTALL,
-            {ATTR_ENTITY_ID: entity_id},
-            blocking=True,
+async def async_install_power_sync_update(
+    hass: HomeAssistant,
+    *,
+    exclude_entity_id: str | None = None,
+) -> str | None:
+    """Install the currently available PowerSync HACS update, if one exists.
+
+    The homeassistant.update_entity service refreshes the entity from HACS's
+    cached state but does not force HACS to re-fetch from GitHub. HACS has its
+    own coordinator with its own check schedule, so when our scheduler fires
+    the entity may report no-update-available even though one was just
+    published. Retry a few times with a delay to give HACS room to catch up.
+    """
+    entity_ids = find_power_sync_update_entities(
+        hass,
+        require_install=True,
+        exclude_entity_id=exclude_entity_id,
+    )
+    if not entity_ids:
+        _LOGGER.warning(
+            "PowerSync auto-update: no install-capable HACS update entity "
+            "found. Verify PowerSync is installed via HACS."
         )
-        return entity_id
+        return None
 
-    _LOGGER.debug(
-        "PowerSync auto-update checked %s; no update is currently available",
+    _LOGGER.info(
+        "PowerSync auto-update: candidate HACS update entities: %s",
         entity_ids,
+    )
+
+    for attempt in range(1, HACS_REFRESH_RETRIES + 1):
+        await _refresh_hacs_entities(hass, entity_ids)
+
+        for entity_id in entity_ids:
+            state = hass.states.get(entity_id)
+            if state is None:
+                continue
+            if state.state == "on":
+                _LOGGER.info(
+                    "PowerSync auto-update: installing via %s "
+                    "(attempt %d, installed=%s, latest=%s)",
+                    entity_id,
+                    attempt,
+                    state.attributes.get("installed_version"),
+                    state.attributes.get("latest_version"),
+                )
+                await hass.services.async_call(
+                    UPDATE_DOMAIN,
+                    SERVICE_INSTALL,
+                    {ATTR_ENTITY_ID: entity_id},
+                    blocking=True,
+                )
+                return entity_id
+
+        if attempt < HACS_REFRESH_RETRIES:
+            _LOGGER.info(
+                "PowerSync auto-update: HACS reports no update yet "
+                "(attempt %d/%d) — waiting %ds before retry",
+                attempt,
+                HACS_REFRESH_RETRIES,
+                HACS_REFRESH_INTERVAL_S,
+            )
+            await asyncio.sleep(HACS_REFRESH_INTERVAL_S)
+
+    _LOGGER.info(
+        "PowerSync auto-update: HACS reports no update available after "
+        "%d refresh attempts",
+        HACS_REFRESH_RETRIES,
     )
     return None
 
@@ -169,12 +214,31 @@ async def async_install_power_sync_update(
 async def async_run_power_sync_auto_update(
     hass: HomeAssistant,
     entry: ConfigEntry,
+    last_run_store: Store,
 ) -> None:
     """Install a pending PowerSync HACS update and restart Home Assistant."""
     entry_data = hass.data.setdefault(DOMAIN, {}).setdefault(entry.entry_id, {})
+    now_local = dt_util.now()
     entry_data["auto_update_last_run"] = dt_util.utcnow().isoformat()
 
-    entity_id = await async_install_power_sync_update(hass)
+    # Persist before any heavy work so a reload mid-install (options change,
+    # auto-detection, etc.) doesn't re-trigger the same day's run.
+    try:
+        await last_run_store.async_save(
+            {"last_run_date": now_local.date().isoformat()}
+        )
+    except Exception as err:
+        _LOGGER.warning(
+            "PowerSync auto-update: failed to persist last_run_date: %s", err
+        )
+
+    try:
+        entity_id = await async_install_power_sync_update(hass)
+    except Exception as err:
+        _LOGGER.exception("PowerSync auto-update: install raised: %s", err)
+        entry_data["auto_update_last_result"] = "error"
+        return
+
     if not entity_id:
         entry_data["auto_update_last_result"] = "no_update"
         return
@@ -182,7 +246,8 @@ async def async_run_power_sync_auto_update(
     entry_data["auto_update_last_entity"] = entity_id
     entry_data["auto_update_last_result"] = "installed"
     _LOGGER.info(
-        "PowerSync update installed via %s; restarting Home Assistant in %d seconds",
+        "PowerSync auto-update: installed via %s; restarting Home Assistant "
+        "in %d seconds",
         entity_id,
         AUTO_UPDATE_RESTART_DELAY,
     )
@@ -194,18 +259,47 @@ async def async_run_power_sync_auto_update(
     )
 
 
-def async_setup_auto_update(
+async def async_setup_auto_update(
     hass: HomeAssistant,
     entry: ConfigEntry,
 ) -> Callable[[], None]:
-    """Set up the once-per-day auto-update scheduler."""
-    last_run_date: date | None = None
+    """Set up the once-per-day auto-update scheduler.
 
+    The schedule fires once per local day, anywhere within a TRIGGER_WINDOW_HOURS
+    window starting at the configured time, as long as it hasn't already run
+    that day. The "already ran today" flag is persisted to disk so that the
+    integration's own option-update reload (which destroys the in-memory
+    listener and creates a fresh closure) cannot cause double-fires within a
+    day, and equally cannot cause a same-day skip when reload happens during
+    the trigger minute.
+    """
+    last_run_store = Store(
+        hass,
+        LAST_RUN_STORE_VERSION,
+        f"{DOMAIN}.auto_update_last_run.{entry.entry_id}",
+    )
+
+    persisted = await last_run_store.async_load()
+    last_run_date: date | None = None
+    if isinstance(persisted, dict):
+        try:
+            last_run_date = date.fromisoformat(persisted.get("last_run_date") or "")
+        except (TypeError, ValueError):
+            last_run_date = None
+
+    entry_data = hass.data.setdefault(DOMAIN, {}).setdefault(entry.entry_id, {})
+
+    def _record_check(decision: str) -> None:
+        entry_data["auto_update_last_check_at"] = dt_util.utcnow().isoformat()
+        entry_data["auto_update_last_check_decision"] = decision
+
+    @callback
     def _check_schedule(now: datetime) -> None:
         nonlocal last_run_date
 
         enabled = _entry_option(entry, CONF_AUTO_UPDATE_ENABLED, False)
         if not enabled:
+            _record_check("disabled")
             return
 
         try:
@@ -215,15 +309,41 @@ def async_setup_auto_update(
         except ValueError:
             hour, minute = parse_auto_update_time(DEFAULT_AUTO_UPDATE_TIME)
 
-        if now.hour != hour or now.minute != minute:
+        configured_min = hour * 60 + minute
+        current_min = now.hour * 60 + now.minute
+
+        if current_min < configured_min:
+            _record_check("before_window")
+            return
+        if current_min >= configured_min + TRIGGER_WINDOW_HOURS * 60:
+            _record_check("past_window")
             return
         if last_run_date == now.date():
+            _record_check("already_ran_today")
             return
 
         last_run_date = now.date()
+        _record_check("triggered")
+        _LOGGER.info(
+            "PowerSync auto-update: triggering install (configured=%02d:%02d, "
+            "current=%s, last_run_date now=%s)",
+            hour,
+            minute,
+            now.strftime("%H:%M:%S"),
+            last_run_date,
+        )
         hass.async_create_task(
-            async_run_power_sync_auto_update(hass, entry),
+            async_run_power_sync_auto_update(hass, entry, last_run_store),
             name=f"{DOMAIN}_auto_update",
         )
+
+    _LOGGER.info(
+        "PowerSync auto-update: scheduler registered "
+        "(enabled=%s, time=%s, restored_last_run=%s, window_hours=%d)",
+        _entry_option(entry, CONF_AUTO_UPDATE_ENABLED, False),
+        _entry_option(entry, CONF_AUTO_UPDATE_TIME, DEFAULT_AUTO_UPDATE_TIME),
+        last_run_date,
+        TRIGGER_WINDOW_HOURS,
+    )
 
     return async_track_time_change(hass, _check_schedule, second=0)

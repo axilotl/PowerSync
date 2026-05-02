@@ -364,6 +364,8 @@ class AutoUpdateSwitch(SwitchEntity):
             "last_run": entry_data.get("auto_update_last_run"),
             "last_result": entry_data.get("auto_update_last_result"),
             "last_update_entity": entry_data.get("auto_update_last_entity"),
+            "last_check_at": entry_data.get("auto_update_last_check_at"),
+            "last_check_decision": entry_data.get("auto_update_last_check_decision"),
         }
 
 
