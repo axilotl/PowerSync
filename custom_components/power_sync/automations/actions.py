@@ -3034,7 +3034,13 @@ async def record_manual_ev_charging_session(
         session_id=session_id,
         reason=reason,
         command="start",
-        extra={"charger_type": full_params.get("charger_type", "tesla")},
+        extra={
+            "charger_type": full_params.get("charger_type", "tesla"),
+            "source_mode": full_params.get("source_mode"),
+            "duration_minutes": full_params.get("duration_minutes"),
+            "expires_at": full_params.get("expires_at"),
+            "quick_control": full_params.get("quick_control"),
+        },
     )
 
     if DOMAIN in hass.data and entry_id in hass.data[DOMAIN]:

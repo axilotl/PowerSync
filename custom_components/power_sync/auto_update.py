@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
 
@@ -25,6 +26,7 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
+HACS_DOMAIN = "hacs"
 HOMEASSISTANT_DOMAIN = "homeassistant"
 UPDATE_DOMAIN = "update"
 SERVICE_INSTALL = "install"
@@ -46,6 +48,17 @@ POWER_SYNC_UPDATE_HINTS = (
     "tesla_amber_sync",
     "tesla amber sync",
 )
+POWER_SYNC_HACS_REPOSITORY = "bolagnaise/powersync"
+AUTO_UPDATE_ACTION_INSTALLED = "installed"
+AUTO_UPDATE_ACTION_PENDING_RESTART = "pending_restart"
+
+
+@dataclass(frozen=True)
+class AutoUpdateInstallResult:
+    """Outcome that requires Home Assistant to restart."""
+
+    entity_id: str
+    action: str
 
 
 def parse_auto_update_time(value: Any) -> tuple[int, int]:
@@ -106,6 +119,144 @@ def _supports_install(state: Any) -> bool:
     return bool(supported & int(UpdateEntityFeature.INSTALL))
 
 
+def _version_is_newer(latest: Any, installed: Any) -> bool:
+    """Return True when latest appears newer than installed."""
+    if not latest or not installed:
+        return False
+
+    latest_text = str(latest).strip().lstrip("v")
+    installed_text = str(installed).strip().lstrip("v")
+    if not latest_text or not installed_text or latest_text == installed_text:
+        return False
+
+    try:
+        from packaging.version import Version
+
+        return Version(latest_text) > Version(installed_text)
+    except Exception:
+        pass
+
+    try:
+        latest_parts = tuple(int(part) for part in latest_text.split("."))
+        installed_parts = tuple(int(part) for part in installed_text.split("."))
+    except ValueError:
+        return latest_text != installed_text
+
+    return latest_parts > installed_parts
+
+
+def _state_has_pending_update(state: Any) -> bool:
+    """Return True when an update state should be installed."""
+    if state.state == "on":
+        return True
+
+    attrs = state.attributes or {}
+    return _version_is_newer(
+        attrs.get("latest_version"),
+        attrs.get("installed_version"),
+    )
+
+
+def _state_needs_restart(state: Any) -> bool:
+    """Return True when HACS has downloaded an update pending HA restart."""
+    attrs = state.attributes or {}
+    release_summary = str(attrs.get("release_summary", "")).lower()
+    return "restart" in release_summary and "home assistant" in release_summary
+
+
+def _hacs_repository_haystack(repository: Any) -> str:
+    """Build searchable text for a HACS repository object."""
+    data = getattr(repository, "data", None)
+    values = [
+        getattr(data, "full_name", ""),
+        getattr(data, "domain", ""),
+        getattr(data, "name", ""),
+        getattr(data, "id", ""),
+        getattr(repository, "display_name", ""),
+        getattr(repository, "name", ""),
+        getattr(repository, "string", ""),
+    ]
+    return (
+        " ".join(str(value) for value in values if value)
+        .lower()
+        .replace("-", "_")
+    )
+
+
+def _is_power_sync_hacs_repository(repository: Any) -> bool:
+    """Return True when a HACS repository object looks like PowerSync."""
+    data = getattr(repository, "data", None)
+    full_name = str(getattr(data, "full_name", "")).lower()
+    domain = str(getattr(data, "domain", "")).lower()
+    if full_name == POWER_SYNC_HACS_REPOSITORY or domain == DOMAIN:
+        return True
+
+    haystack = _hacs_repository_haystack(repository)
+    return POWER_SYNC_HACS_REPOSITORY in haystack or any(
+        hint in haystack for hint in POWER_SYNC_UPDATE_HINTS
+    )
+
+
+def _find_power_sync_hacs_repositories(hass: HomeAssistant) -> list[Any]:
+    """Find downloaded HACS repository objects for PowerSync."""
+    hacs = getattr(hass, "data", {}).get(HACS_DOMAIN)
+    repositories = getattr(getattr(hacs, "repositories", None), "list_downloaded", [])
+    if callable(repositories):
+        repositories = repositories()
+    return [
+        repository
+        for repository in repositories or []
+        if _is_power_sync_hacs_repository(repository)
+    ]
+
+
+async def _refresh_hacs_repository_metadata(hass: HomeAssistant) -> bool:
+    """Force-refresh PowerSync metadata through HACS internals when available."""
+    hacs = getattr(hass, "data", {}).get(HACS_DOMAIN)
+    repositories = _find_power_sync_hacs_repositories(hass)
+    if not hacs or not repositories:
+        return False
+
+    refreshed = False
+    for repository in repositories:
+        update_repository = getattr(repository, "update_repository", None)
+        if update_repository is None:
+            continue
+        try:
+            try:
+                await update_repository(ignore_issues=True, force=True)
+            except TypeError:
+                await update_repository(ignore_issues=True)
+        except Exception as err:
+            _LOGGER.debug(
+                "PowerSync auto-update: HACS metadata refresh raised for %s: %s",
+                getattr(getattr(repository, "data", None), "full_name", repository),
+                err,
+            )
+            continue
+        refreshed = True
+
+        category = getattr(getattr(repository, "data", None), "category", None)
+        coordinator = getattr(hacs, "coordinators", {}).get(category)
+        if coordinator is not None and hasattr(coordinator, "async_update_listeners"):
+            coordinator.async_update_listeners()
+
+    if refreshed:
+        data_store = getattr(hacs, "data", None)
+        async_write = getattr(data_store, "async_write", None)
+        if async_write is not None:
+            try:
+                await async_write()
+            except Exception as err:
+                _LOGGER.debug(
+                    "PowerSync auto-update: HACS metadata save raised: %s",
+                    err,
+                )
+        _LOGGER.info("PowerSync auto-update: refreshed PowerSync metadata via HACS")
+
+    return refreshed
+
+
 def find_power_sync_update_entities(
     hass: HomeAssistant,
     *,
@@ -143,14 +294,13 @@ async def async_install_power_sync_update(
     hass: HomeAssistant,
     *,
     exclude_entity_id: str | None = None,
-) -> str | None:
+) -> AutoUpdateInstallResult | None:
     """Install the currently available PowerSync HACS update, if one exists.
 
-    The homeassistant.update_entity service refreshes the entity from HACS's
-    cached state but does not force HACS to re-fetch from GitHub. HACS has its
-    own coordinator with its own check schedule, so when our scheduler fires
-    the entity may report no-update-available even though one was just
-    published. Retry a few times with a delay to give HACS room to catch up.
+    The homeassistant.update_entity service only asks HACS's entity to write
+    its cached state. When HACS is available, force-refresh the PowerSync
+    repository metadata first so the scheduled run does not miss a release
+    that HACS has not found on its background cadence yet.
     """
     entity_ids = find_power_sync_update_entities(
         hass,
@@ -170,13 +320,26 @@ async def async_install_power_sync_update(
     )
 
     for attempt in range(1, HACS_REFRESH_RETRIES + 1):
+        await _refresh_hacs_repository_metadata(hass)
         await _refresh_hacs_entities(hass, entity_ids)
 
         for entity_id in entity_ids:
             state = hass.states.get(entity_id)
             if state is None:
                 continue
-            if state.state == "on":
+
+            if _state_needs_restart(state):
+                _LOGGER.info(
+                    "PowerSync auto-update: %s is already pending a Home "
+                    "Assistant restart",
+                    entity_id,
+                )
+                return AutoUpdateInstallResult(
+                    entity_id=entity_id,
+                    action=AUTO_UPDATE_ACTION_PENDING_RESTART,
+                )
+
+            if _state_has_pending_update(state):
                 _LOGGER.info(
                     "PowerSync auto-update: installing via %s "
                     "(attempt %d, installed=%s, latest=%s)",
@@ -191,7 +354,10 @@ async def async_install_power_sync_update(
                     {ATTR_ENTITY_ID: entity_id},
                     blocking=True,
                 )
-                return entity_id
+                return AutoUpdateInstallResult(
+                    entity_id=entity_id,
+                    action=AUTO_UPDATE_ACTION_INSTALLED,
+                )
 
         if attempt < HACS_REFRESH_RETRIES:
             _LOGGER.info(
@@ -233,22 +399,23 @@ async def async_run_power_sync_auto_update(
         )
 
     try:
-        entity_id = await async_install_power_sync_update(hass)
+        result = await async_install_power_sync_update(hass)
     except Exception as err:
         _LOGGER.exception("PowerSync auto-update: install raised: %s", err)
         entry_data["auto_update_last_result"] = "error"
         return
 
-    if not entity_id:
+    if not result:
         entry_data["auto_update_last_result"] = "no_update"
         return
 
-    entry_data["auto_update_last_entity"] = entity_id
-    entry_data["auto_update_last_result"] = "installed"
+    entry_data["auto_update_last_entity"] = result.entity_id
+    entry_data["auto_update_last_result"] = result.action
     _LOGGER.info(
-        "PowerSync auto-update: installed via %s; restarting Home Assistant "
-        "in %d seconds",
-        entity_id,
+        "PowerSync auto-update: %s via %s; restarting Home Assistant in %d "
+        "seconds",
+        result.action,
+        result.entity_id,
         AUTO_UPDATE_RESTART_DELAY,
     )
     await asyncio.sleep(AUTO_UPDATE_RESTART_DELAY)

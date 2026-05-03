@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import enum
 import importlib
 import sys
@@ -82,6 +83,13 @@ _ps = types.ModuleType("power_sync")
 _ps.__path__ = [str(ROOT)]
 sys.modules["power_sync"] = _ps
 
+_ps_const = types.ModuleType("power_sync.const")
+_ps_const.CONF_AUTO_UPDATE_ENABLED = "auto_update_enabled"
+_ps_const.CONF_AUTO_UPDATE_TIME = "auto_update_time"
+_ps_const.DEFAULT_AUTO_UPDATE_TIME = "03:00"
+_ps_const.DOMAIN = "power_sync"
+sys.modules["power_sync.const"] = _ps_const
+
 sys.modules.pop("power_sync.auto_update", None)
 auto_update = importlib.import_module("power_sync.auto_update")
 
@@ -101,10 +109,85 @@ class _States:
         assert domain == "update"
         return self._states
 
+    def get(self, entity_id: str) -> _State | None:
+        for state in self._states:
+            if state.entity_id == entity_id:
+                return state
+        return None
+
+
+class _Services:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, dict | None, bool]] = []
+
+    async def async_call(
+        self,
+        domain: str,
+        service: str,
+        data: dict | None = None,
+        *,
+        blocking: bool = False,
+    ) -> None:
+        self.calls.append((domain, service, data, blocking))
+
 
 class _Hass:
     def __init__(self, states: list[_State]) -> None:
         self.states = _States(states)
+        self.services = _Services()
+        self.data = {}
+
+
+class _HacsStore:
+    def __init__(self) -> None:
+        self.write_count = 0
+
+    async def async_write(self) -> None:
+        self.write_count += 1
+
+
+class _Coordinator:
+    def __init__(self) -> None:
+        self.update_count = 0
+
+    def async_update_listeners(self) -> None:
+        self.update_count += 1
+
+
+class _Repositories:
+    def __init__(self, repositories: list) -> None:
+        self.list_downloaded = repositories
+
+
+class _Hacs:
+    def __init__(self, repositories: list, coordinator: _Coordinator) -> None:
+        self.repositories = _Repositories(repositories)
+        self.coordinators = {"integration": coordinator}
+        self.data = _HacsStore()
+
+
+class _HacsRepository:
+    def __init__(self, state: _State) -> None:
+        self.data = types.SimpleNamespace(
+            full_name="bolagnaise/PowerSync",
+            domain="power_sync",
+            category="integration",
+        )
+        self.display_name = "PowerSync"
+        self.refresh_count = 0
+        self._state = state
+
+    async def update_repository(
+        self,
+        *,
+        ignore_issues: bool = False,
+        force: bool = False,
+    ) -> None:
+        assert ignore_issues is True
+        assert force is True
+        self.refresh_count += 1
+        self._state.state = "on"
+        self._state.attributes["latest_version"] = "2.12.273"
 
 
 def test_auto_update_time_normalizes_hhmm_and_hhmmss():
@@ -150,3 +233,62 @@ def test_find_power_sync_update_entities_requires_install_capability():
         "update.power_sync_update",
         "update.tesla_amber_sync_update",
     ]
+
+
+def test_install_force_refreshes_hacs_metadata_before_install():
+    state = _State(
+        "update.power_sync_update",
+        "off",
+        {
+            "friendly_name": "PowerSync Update",
+            "supported_features": 1,
+            "installed_version": "2.12.272",
+            "latest_version": "2.12.272",
+        },
+    )
+    hass = _Hass([state])
+    coordinator = _Coordinator()
+    repository = _HacsRepository(state)
+    hass.data["hacs"] = _Hacs([repository], coordinator)
+
+    result = asyncio.run(auto_update.async_install_power_sync_update(hass))
+
+    assert result == auto_update.AutoUpdateInstallResult(
+        entity_id="update.power_sync_update",
+        action=auto_update.AUTO_UPDATE_ACTION_INSTALLED,
+    )
+    assert repository.refresh_count == 1
+    assert coordinator.update_count == 1
+    assert hass.data["hacs"].data.write_count == 1
+    assert (
+        "update",
+        "install",
+        {"entity_id": "update.power_sync_update"},
+        True,
+    ) in hass.services.calls
+
+
+def test_install_handles_hacs_pending_restart_without_reinstalling():
+    state = _State(
+        "update.power_sync_update",
+        "off",
+        {
+            "friendly_name": "PowerSync Update",
+            "supported_features": 1,
+            "installed_version": "2.12.273",
+            "latest_version": "2.12.273",
+            "release_summary": "Restart of Home Assistant required",
+        },
+    )
+    hass = _Hass([state])
+
+    result = asyncio.run(auto_update.async_install_power_sync_update(hass))
+
+    assert result == auto_update.AutoUpdateInstallResult(
+        entity_id="update.power_sync_update",
+        action=auto_update.AUTO_UPDATE_ACTION_PENDING_RESTART,
+    )
+    assert not any(
+        domain == "update" and service == "install"
+        for domain, service, _data, _blocking in hass.services.calls
+    )

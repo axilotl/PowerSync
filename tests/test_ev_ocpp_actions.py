@@ -766,6 +766,37 @@ def test_manual_session_replaces_existing_owner_without_physical_stop():
     assert hass.services.calls == []
 
 
+def test_manual_session_records_quick_control_metadata():
+    hass = _Hass([_State("switch.ev_charge", "on")])
+    actions._dynamic_ev_state.clear()
+
+    asyncio.run(
+        actions.record_manual_ev_charging_session(
+            hass,
+            _Entry(),
+            "VIN123",
+            {
+                "charger_type": "tesla",
+                "source_mode": "grid_allowed",
+                "duration_minutes": 90,
+                "expires_at": "2026-05-01T01:30:00+00:00",
+                "quick_control": True,
+            },
+        )
+    )
+
+    state = actions._dynamic_ev_state["entry-1"]["VIN123"]
+    ownership = hass.data["power_sync"]["entry-1"]["ev_ownership"]["VIN123"]
+    assert state["params"]["source_mode"] == "grid_allowed"
+    assert state["params"]["duration_minutes"] == 90
+    assert state["params"]["expires_at"] == "2026-05-01T01:30:00+00:00"
+    assert state["params"]["quick_control"] is True
+    assert ownership["source_mode"] == "grid_allowed"
+    assert ownership["duration_minutes"] == 90
+    assert ownership["expires_at"] == "2026-05-01T01:30:00+00:00"
+    assert ownership["quick_control"] is True
+
+
 def test_solar_surplus_stop_delay_holds_current_amps_on_first_low_sample(monkeypatch):
     hass = _Hass([])
     vehicle_id = "VIN123"
@@ -851,12 +882,13 @@ def test_solar_surplus_stop_delay_stops_after_elapsed_delay(monkeypatch):
 
 def test_clear_tracked_session_does_not_send_physical_stop():
     hass = _Hass([_State("switch.ev_charge", "on")])
+    cancelled = []
     actions._dynamic_ev_state.clear()
     actions._dynamic_ev_state["entry-1"] = {
         "VIN123": {
             "active": True,
             "params": {"dynamic_mode": "manual", "charger_type": "tesla"},
-            "cancel_timer": None,
+            "cancel_timer": lambda: cancelled.append(True),
             "session_id": None,
         }
     }
@@ -864,6 +896,7 @@ def test_clear_tracked_session_does_not_send_physical_stop():
     asyncio.run(actions.clear_tracked_ev_charging_session(hass, _Entry(), "VIN123"))
 
     assert actions._dynamic_ev_state == {}
+    assert cancelled == [True]
     assert hass.data["power_sync"]["entry-1"]["ev_ownership"] == {}
     assert hass.data["power_sync"]["entry-1"]["ev_last_command"]["VIN123"]["command"] == "release"
     assert hass.services.calls == []

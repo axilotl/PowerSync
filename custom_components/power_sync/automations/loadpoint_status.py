@@ -283,6 +283,17 @@ def _dynamic_loadpoint(
     if owner is None and state.get("active", False):
         owner = "powersync"
     session_id = (ownership or {}).get("session_id") or state.get("session_id")
+    source_mode = (ownership or {}).get("source_mode") or params.get("source_mode")
+    duration_minutes = (
+        (ownership or {}).get("duration_minutes")
+        or params.get("duration_minutes")
+        or state.get("duration_minutes")
+    )
+    expires_at = (
+        (ownership or {}).get("expires_at")
+        or params.get("expires_at")
+        or state.get("expires_at")
+    )
 
     return {
         "loadpoint_id": loadpoint_id,
@@ -306,6 +317,10 @@ def _dynamic_loadpoint(
         "session_id": session_id,
         "last_command": (ownership or {}).get("last_command"),
         "confidence": "observed" if observation is not None else "commanded",
+        "source_mode": source_mode,
+        "duration_minutes": duration_minutes,
+        "expires_at": expires_at,
+        "quick_control": bool((ownership or {}).get("quick_control") or params.get("quick_control")),
     }
 
 
@@ -364,6 +379,10 @@ def _observed_loadpoint(
             or last_command
         ),
         "confidence": "observed",
+        "source_mode": (ownership or {}).get("source_mode") or observation.get("source_mode"),
+        "duration_minutes": (ownership or {}).get("duration_minutes") or observation.get("duration_minutes"),
+        "expires_at": (ownership or {}).get("expires_at") or observation.get("expires_at"),
+        "quick_control": bool((ownership or {}).get("quick_control") or observation.get("quick_control")),
     }
 
 

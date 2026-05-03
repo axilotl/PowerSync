@@ -99,6 +99,10 @@ def test_external_observed_charger_is_kept_without_dynamic_state():
             "session_id": None,
             "last_command": None,
             "confidence": "observed",
+            "source_mode": None,
+            "duration_minutes": None,
+            "expires_at": None,
+            "quick_control": False,
         }
     ]
 
@@ -156,6 +160,33 @@ def test_loadpoint_status_includes_ownership_last_command():
     assert loadpoints[0]["owner_mode"] == "manual"
     assert loadpoints[0]["session_id"] == "sess-1"
     assert loadpoints[0]["last_command"]["command"] == "start"
+
+
+def test_loadpoint_status_includes_quick_control_metadata():
+    loadpoints = build_loadpoint_status(
+        {
+            "VIN123": {
+                "active": True,
+                "current_amps": 16,
+                "target_amps": 16,
+                "charging_started": True,
+                "params": {
+                    "dynamic_mode": "manual",
+                    "owner_mode": "manual",
+                    "source_mode": "grid_allowed",
+                    "duration_minutes": 90,
+                    "expires_at": "2026-05-01T01:30:00+00:00",
+                    "quick_control": True,
+                },
+            }
+        },
+    )
+
+    assert loadpoints[0]["owner_mode"] == "manual"
+    assert loadpoints[0]["source_mode"] == "grid_allowed"
+    assert loadpoints[0]["duration_minutes"] == 90
+    assert loadpoints[0]["expires_at"] == "2026-05-01T01:30:00+00:00"
+    assert loadpoints[0]["quick_control"] is True
 
 
 def test_observed_ocpp_loadpoint_uses_ownership_alias():

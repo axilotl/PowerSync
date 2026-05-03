@@ -193,7 +193,7 @@ class TEDAPIv1rTransport:
         payload = routable.SerializeToString()
         headers = {"Content-Type": "application/octet-stream"}
 
-        _LOGGER.info(
+        _LOGGER.debug(
             "v1r POST to %s with DIN=%s, envelope=%d bytes",
             url, din, len(payload),
         )

@@ -578,6 +578,47 @@ def _kw_from_wall_connector_power(value: Any) -> float:
     return _kw_from_ev_power(value)
 
 
+def _vehicle_identity_key(value: Any) -> str:
+    """Normalize a vehicle identifier/name for best-effort matching."""
+    if value is None:
+        return ""
+    return re.sub(r"[^a-z0-9]+", "", str(value).lower())
+
+
+def _vehicle_identity_values(vehicle: dict) -> set[str]:
+    values = {
+        _vehicle_identity_key(vehicle.get("vehicle_id")),
+        _vehicle_identity_key(vehicle.get("vin")),
+        _vehicle_identity_key(vehicle.get("id")),
+        _vehicle_identity_key(vehicle.get("vehicle_name")),
+        _vehicle_identity_key(vehicle.get("display_name")),
+        _vehicle_identity_key(vehicle.get("name")),
+    }
+    values.discard("")
+    return values
+
+
+def _vehicle_matches_identifier(vehicle: dict, identifier: Any) -> bool:
+    key = _vehicle_identity_key(identifier)
+    if not key:
+        return False
+    for value in _vehicle_identity_values(vehicle):
+        if value == key:
+            return True
+        # VINs and Wall Connector payloads can arrive as embedded strings.
+        if len(key) >= 8 and len(value) >= 8 and (key in value or value in key):
+            return True
+    return False
+
+
+def _find_vehicle_status(vehicles: list[dict], *identifiers: Any) -> dict | None:
+    for identifier in identifiers:
+        for vehicle in vehicles:
+            if _vehicle_matches_identifier(vehicle, identifier):
+                return vehicle
+    return None
+
+
 def _apply_wall_connector_observation(
     vehicles: list[dict],
     wc_power_kw: float,
@@ -602,16 +643,7 @@ def _apply_wall_connector_observation(
     wc_vin_key = str(wc_vin or "").strip().lower()
     if wc_vin_key:
         for vehicle in vehicles:
-            vehicle_id = (
-                str(vehicle.get("vehicle_id") or vehicle.get("vin") or "")
-                .strip()
-                .lower()
-            )
-            if vehicle_id and (
-                vehicle_id == wc_vin_key
-                or vehicle_id in wc_vin_key
-                or wc_vin_key in vehicle_id
-            ):
+            if _vehicle_matches_identifier(vehicle, wc_vin_key):
                 update_vehicle(vehicle)
                 return True
 
@@ -883,6 +915,7 @@ def _get_ev_vehicles_status(hass, entry) -> list:
     if not wc_observations:
         wc_power = 0.0
         wc_connected = False
+        wc_vin = None
         for state_obj in hass.states.async_all("sensor"):
             eid = state_obj.entity_id.lower()
             if "wall_connector" not in eid:
@@ -893,13 +926,14 @@ def _get_ev_vehicles_status(hass, entry) -> list:
             if "vehicle" in eid and "power" not in eid:
                 if state_obj.state.lower() not in ("disconnected", "unknown", "unavailable", ""):
                     wc_connected = True
+                    wc_vin = state_obj.state
             # Wall Connector power sensor
             if "power" in eid:
                 val = _kw_from_power_state(state_obj)
                 if val > 0:
                     wc_power = max(wc_power, val)
         if wc_connected or wc_power > 0.05:
-            wc_observations.append((wc_power, wc_connected, wc_power > 0.05, None))
+            wc_observations.append((wc_power, wc_connected, wc_power > 0.05, wc_vin))
 
     for wc_power, wc_connected, wc_charging, wc_vin in wc_observations:
         matched = _apply_wall_connector_observation(
@@ -9635,10 +9669,101 @@ class EVVehicleCommandView(HomeAssistantView):
         params["reason"] = reason
         return await _execute_single_action(self._hass, entry, action_type, params)
 
-    async def _start_charging(self, vehicle_vin: str | None = None) -> tuple[bool, str]:
+    def _manual_loadpoint_id(self, vehicle_vin: str | None) -> str:
+        """Return the runtime loadpoint id used by manual EV actions."""
+        from .automations.actions import _ev_action_loadpoint_id
+
+        return _ev_action_loadpoint_id(self._manual_action_params(vehicle_vin))
+
+    def _active_non_manual_owner_message(self, vehicle_vin: str | None) -> str | None:
+        """Return a blocking ownership message for non-manual active sessions."""
+        entry = self._get_powersync_entry()
+        if not entry:
+            return None
+
+        from .automations.ev_ownership import get_ev_ownership, owner_family
+
+        loadpoint_id = self._manual_loadpoint_id(vehicle_vin)
+        _lease_id, lease = get_ev_ownership(self._hass, entry, loadpoint_id)
+        if not lease:
+            return None
+
+        owner_mode = str(lease.get("owner_mode") or "dynamic")
+        if owner_family(owner_mode) == "manual":
+            return None
+        return f"{owner_mode} already owns this loadpoint"
+
+    def _schedule_manual_quick_stop(
+        self,
+        vehicle_vin: str | None,
+        duration_minutes: int | None,
+        source_mode: str | None,
+    ) -> str | None:
+        """Attach quick-control metadata and optional auto-stop timer."""
+        entry = self._get_powersync_entry()
+        if not entry:
+            return None
+
+        from .automations import actions as ev_actions
+
+        loadpoint_id = self._manual_loadpoint_id(vehicle_vin)
+        state = ev_actions._dynamic_ev_state.get(entry.entry_id, {}).get(loadpoint_id)
+        if not state:
+            return None
+
+        params = state.setdefault("params", {})
+        params["quick_control"] = True
+        params["source_mode"] = source_mode or "standard"
+        if duration_minutes is not None:
+            params["duration_minutes"] = duration_minutes
+
+        if cancel_timer := state.get("cancel_timer"):
+            cancel_timer()
+            state["cancel_timer"] = None
+
+        if duration_minutes is None:
+            params.pop("expires_at", None)
+            return None
+
+        stops_at = dt_util.utcnow() + timedelta(minutes=duration_minutes)
+        params["expires_at"] = stops_at.isoformat()
+
+        async def _stop_manual_quick_charge(_now) -> None:
+            entry_state = ev_actions._dynamic_ev_state.get(entry.entry_id, {}).get(loadpoint_id)
+            entry_params = (entry_state or {}).get("params") or {}
+            if not entry_state or not entry_params.get("quick_control"):
+                _LOGGER.info(
+                    "Quick EV stop skipped for %s because the session is no longer active",
+                    loadpoint_id,
+                )
+                return
+
+            await self._execute_manual_ev_action(
+                "stop_ev_charging",
+                vehicle_vin,
+                {"source_mode": entry_params.get("source_mode")},
+                "Quick EV charge duration elapsed",
+            )
+
+        state["cancel_timer"] = async_track_point_in_utc_time(
+            self._hass,
+            _stop_manual_quick_charge,
+            stops_at,
+        )
+        return params["expires_at"]
+
+    async def _start_charging(
+        self,
+        vehicle_vin: str | None = None,
+        duration_minutes: int | None = None,
+        source_mode: str | None = None,
+    ) -> tuple[bool, str]:
         """Start charging. Returns (success, message)."""
         params = self._manual_action_params(vehicle_vin)
         charger_type = params.get("charger_type", "tesla")
+        owner_message = self._active_non_manual_owner_message(vehicle_vin)
+        if owner_message:
+            return False, owner_message
 
         if charger_type == "generic":
             ready, message = self._generic_charger_ready_for_start(params)
@@ -9666,13 +9791,25 @@ class EVVehicleCommandView(HomeAssistantView):
         success = await self._execute_manual_ev_action(
             "start_ev_charging",
             vehicle_vin,
-            None,
+            {
+                "duration_minutes": duration_minutes,
+                "source_mode": source_mode or "standard",
+                "quick_control": True,
+            },
             "Manual start from mobile",
         )
         if success:
+            expires_at = self._schedule_manual_quick_stop(
+                vehicle_vin,
+                duration_minutes,
+                source_mode,
+            )
+            duration_text = f" for {duration_minutes} minutes" if duration_minutes else ""
+            if expires_at:
+                _LOGGER.info("Quick EV charge for %s expires at %s", self._manual_loadpoint_id(vehicle_vin), expires_at)
             if charger_type == "zaptec":
-                return True, "Charging started via Zaptec"
-            return True, "Charging started"
+                return True, f"Charging started via Zaptec{duration_text}"
+            return True, f"Charging started{duration_text}"
 
         return False, "Failed to start charging"
 
@@ -9771,7 +9908,33 @@ class EVVehicleCommandView(HomeAssistantView):
                 message = "Vehicle is awake" if success else "Failed to wake vehicle"
 
             elif command == "start_charging":
-                success, message = await self._start_charging(vehicle_vin)
+                duration_minutes = data.get("duration_minutes")
+                if duration_minutes is not None:
+                    try:
+                        duration_minutes = int(duration_minutes)
+                        if not (1 <= duration_minutes <= 1440):
+                            return web.json_response({
+                                "success": False,
+                                "error": "duration_minutes must be 1-1440"
+                            }, status=400)
+                    except (TypeError, ValueError):
+                        return web.json_response({
+                            "success": False,
+                            "error": "Invalid duration_minutes value"
+                        }, status=400)
+
+                source_mode = data.get("source_mode") or "standard"
+                if source_mode not in ("standard", "grid_allowed"):
+                    return web.json_response({
+                        "success": False,
+                        "error": "source_mode must be standard or grid_allowed"
+                    }, status=400)
+
+                success, message = await self._start_charging(
+                    vehicle_vin,
+                    duration_minutes,
+                    source_mode,
+                )
 
             elif command == "stop_charging":
                 success, message = await self._stop_charging(vehicle_vin)
@@ -11454,6 +11617,10 @@ class EVWidgetDataView(HomeAssistantView):
                     tesla_coordinator.data.get("ev_power", 0)
                 )
 
+            # Per-vehicle Tesla telemetry is the source of truth for assigning
+            # charge/connection state in multi-vehicle accounts.
+            tesla_vehicles = _get_ev_vehicles_status(self._hass, self._config_entry)
+
             # Get dynamic EV state
             vehicles = _dynamic_ev_state.get(entry_id, {})
 
@@ -11463,6 +11630,21 @@ class EVWidgetDataView(HomeAssistantView):
                     continue
 
                 params = state.get("params", {})
+                vehicle_name = (
+                    params.get("vehicle_name")
+                    or state.get("vehicle_name")
+                    or params.get("display_name")
+                    or (vehicle_id[:8] if len(vehicle_id) > 8 else vehicle_id)
+                )
+                matched_vehicle = _find_vehicle_status(
+                    tesla_vehicles,
+                    vehicle_id,
+                    params.get("vehicle_vin"),
+                    params.get("vehicle_id"),
+                    vehicle_name,
+                )
+                charger_type = params.get("charger_type", "tesla")
+                is_tesla_vehicle = charger_type == "tesla" or matched_vehicle is not None
 
                 # Skip the legacy "_default" placeholder when no display name
                 # is set. It is internal bookkeeping (single-vehicle/manual
@@ -11480,17 +11662,34 @@ class EVWidgetDataView(HomeAssistantView):
                 phases = params.get("phases", 1)
                 commanded_power_kw = (current_amps * voltage * phases) / 1000
 
-                # Cross-check with actual Wall Connector power (Tesla systems only)
+                observed_power_kw = None
+                observed_connected = False
+                observed_charging = False
+                if matched_vehicle is not None:
+                    try:
+                        observed_power_kw = float(matched_vehicle.get("ev_power_kw") or 0)
+                    except (TypeError, ValueError):
+                        observed_power_kw = 0.0
+                    observed_charging = (
+                        bool(matched_vehicle.get("is_charging"))
+                        or observed_power_kw > 0.05
+                    )
+                    observed_connected = (
+                        bool(matched_vehicle.get("is_connected"))
+                        or observed_charging
+                    )
+
+                # Cross-check with actual per-vehicle telemetry for Tesla systems.
                 # Commanded amps can be non-zero when car isn't plugged in
-                if actual_ev_power_kw is not None:
-                    # Tesla: use Wall Connector API as ground truth
-                    if actual_ev_power_kw > 0.05:
+                if matched_vehicle is not None:
+                    current_power_kw = observed_power_kw or 0.0
+                    actually_charging = observed_charging
+                elif is_tesla_vehicle and actual_ev_power_kw is not None:
+                    # With multiple Teslas, global Wall Connector power cannot
+                    # safely identify which active session owns the connected car.
+                    if len(tesla_vehicles) <= 1 and actual_ev_power_kw > 0.05:
                         current_power_kw = actual_ev_power_kw
                         actually_charging = True
-                    elif commanded_power_kw > 0:
-                        # Commands sent but car isn't drawing power (not plugged in)
-                        current_power_kw = 0.0
-                        actually_charging = False
                     else:
                         current_power_kw = 0.0
                         actually_charging = False
@@ -11510,11 +11709,14 @@ class EVWidgetDataView(HomeAssistantView):
                 # Get vehicle SoC from BLE/Fleet sensors
                 current_soc = 0
                 target_soc = params.get("target_soc", 80)
-                try:
-                    ev_status = _get_ev_vehicle_status(self._hass, self._config_entry)
-                    current_soc = ev_status.get("ev_soc") or 0
-                except Exception:
-                    pass
+                if matched_vehicle is not None and matched_vehicle.get("ev_soc") is not None:
+                    current_soc = matched_vehicle.get("ev_soc") or 0
+                else:
+                    try:
+                        ev_status = _get_ev_vehicle_status(self._hass, self._config_entry)
+                        current_soc = ev_status.get("ev_soc") or 0
+                    except Exception:
+                        pass
 
                 # Estimate ETA (rough calculation)
                 eta_minutes = None
@@ -11523,15 +11725,18 @@ class EVWidgetDataView(HomeAssistantView):
                     energy_needed_kwh = (target_soc - current_soc) / 100 * battery_capacity_kwh
                     eta_minutes = int(energy_needed_kwh / current_power_kw * 60)
 
-                vehicle_name = params.get("vehicle_name", vehicle_id[:8] if len(vehicle_id) > 8 else vehicle_id)
+                # Determine connected status. For Tesla, only use the matched
+                # vehicle's own sensors; global WC/charge-cable signals can
+                # belong to another car on the account.
+                if matched_vehicle is not None:
+                    is_connected = observed_connected
+                else:
+                    is_connected = actually_charging
 
-                # Determine connected status from actual charging, WC data,
-                # or charge_cable/charge_flap binary sensors
-                is_connected = actually_charging
-                if not is_connected and actual_ev_power_kw is not None:
-                    # Tesla WC: check if wall connector reports a vehicle
-                    is_connected = actual_ev_power_kw > 0.05
-                if not is_connected:
+                allow_global_connection_fallback = (
+                    not is_tesla_vehicle or len(tesla_vehicles) <= 1
+                )
+                if not is_connected and allow_global_connection_fallback:
                     # Check Tesla WC state from coordinator (state 4 = connected)
                     if tesla_coordinator and tesla_coordinator.data:
                         wc_data = tesla_coordinator.data.get("wall_connectors_raw")
@@ -11540,7 +11745,7 @@ class EVWidgetDataView(HomeAssistantView):
                                 if wc.get("wall_connector_state") in (2, 4, 6, 7, 11):
                                     is_connected = True
                                     break
-                if not is_connected:
+                if not is_connected and allow_global_connection_fallback:
                     # Check charge_cable / charge_flap binary sensors
                     for pattern in ("charge_cable", "charge_flap"):
                         for state_obj in self._hass.states.async_all("binary_sensor"):
@@ -11549,7 +11754,7 @@ class EVWidgetDataView(HomeAssistantView):
                                 break
                         if is_connected:
                             break
-                if not is_connected:
+                if not is_connected and allow_global_connection_fallback:
                     # Check HA wall_connector vehicle sensors
                     for wc_state in self._hass.states.async_all("sensor"):
                         wc_eid = wc_state.entity_id.lower()
@@ -11687,7 +11892,6 @@ class EVWidgetDataView(HomeAssistantView):
                 _LOGGER.debug(f"Error checking HACS OCPP integration for widget: {e}")
 
             # Check Tesla EV vehicles — per-vehicle data (power, SOC, connected status)
-            tesla_vehicles = _get_ev_vehicles_status(self._hass, self._config_entry)
             # Supplement connected status from BLE/Fleet presence sensors
             # (same detection as HA dashboard strategy: charge_flap, charge_cable)
             # The device-based scan may miss BLE entities if they're on a different device
