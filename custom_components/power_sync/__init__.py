@@ -18199,7 +18199,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Helper function to persist force mode state to storage
     async def persist_force_mode_state() -> None:
         """Persist current force charge/discharge state to storage."""
-        store = hass.data[DOMAIN][entry.entry_id]["store"]
         stored_data = await store.async_load() or {}
 
         # Only save what's needed to restore after restart
@@ -18280,7 +18279,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     _LOGGER.error(f"Error restoring after expired force mode: {e}", exc_info=True)
 
                 # Clear the persisted state
-                store = hass.data[DOMAIN][entry.entry_id]["store"]
                 stored_data = await store.async_load() or {}
                 stored_data["force_mode_state"] = None
                 await store.async_save(stored_data)
@@ -21449,6 +21447,29 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 _LOGGER.error(f"Error setting SAJ H2 self-consumption: {e}", exc_info=True)
                 return
 
+        # Check if this is a Solax system
+        is_solax_sc = bool(
+            entry.data.get(CONF_SOLAX_CONFIG_ENTRY_ID)
+            or entry.data.get(CONF_SOLAX_ENTITY_PREFIX)
+        )
+        if is_solax_sc:
+            try:
+                entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+                solax_coord = entry_data.get("solax_coordinator")
+                if not solax_coord:
+                    _LOGGER.error("Self-consumption: Solax coordinator not available")
+                    return
+
+                success = await solax_coord.restore_normal()
+                if success:
+                    _LOGGER.info("Solax self-consumption mode restored")
+                else:
+                    _LOGGER.error("Failed to set Solax self-consumption mode")
+                return
+            except Exception as e:
+                _LOGGER.error(f"Error setting Solax self-consumption: {e}", exc_info=True)
+                return
+
         # Tesla Powerwall
         try:
             site_configs = _get_tesla_site_configs(hass, entry)
@@ -21501,7 +21522,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         is_alphaess = bool(entry.data.get(CONF_ALPHAESS_MODBUS_HOST))
         is_esy_sunhome_auto = bool(entry.data.get(CONF_ESY_CONFIG_ENTRY_ID))
         is_saj_h2_auto = bool(entry.data.get(CONF_SAJ_CONFIG_ENTRY_ID))
-        if is_foxess or is_sungrow or is_sigenergy or is_goodwe or is_alphaess or is_esy_sunhome_auto or is_saj_h2_auto:
+        is_solax_auto = bool(
+            entry.data.get(CONF_SOLAX_CONFIG_ENTRY_ID)
+            or entry.data.get(CONF_SOLAX_ENTITY_PREFIX)
+        )
+        if (
+            is_foxess
+            or is_sungrow
+            or is_sigenergy
+            or is_goodwe
+            or is_alphaess
+            or is_esy_sunhome_auto
+            or is_saj_h2_auto
+            or is_solax_auto
+        ):
             _LOGGER.debug("Non-Tesla system — autonomous mode is implicit, skipping")
             return
 
@@ -21667,6 +21701,26 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         elif bool(entry.data.get(CONF_SAJ_CONFIG_ENTRY_ID)):
             # SAJ H2: no backup reserve register — no-op
             _LOGGER.debug("SAJ H2 does not support backup reserve (no-op)")
+        elif bool(
+            entry.data.get(CONF_SOLAX_CONFIG_ENTRY_ID)
+            or entry.data.get(CONF_SOLAX_ENTITY_PREFIX)
+        ):
+            # Solax via homeassistant-solax-modbus entities
+            try:
+                entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+                solax_coord = entry_data.get("solax_coordinator")
+                if not solax_coord:
+                    _LOGGER.error("Solax coordinator not available for set_backup_reserve")
+                    return
+
+                success = await solax_coord.set_backup_reserve(percent)
+                if success:
+                    _LOGGER.info(f"Solax backup reserve set to {percent}%")
+                else:
+                    _LOGGER.error("Failed to set Solax backup reserve")
+
+            except Exception as e:
+                _LOGGER.error(f"Error setting Solax backup reserve: {e}", exc_info=True)
         else:
             # Tesla Powerwall — local V1R first when paired, cloud Fleet API as fallback.
             try:

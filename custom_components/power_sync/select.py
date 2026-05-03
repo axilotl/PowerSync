@@ -144,6 +144,13 @@ class PowerSyncDurationSelect(SelectEntity):
         if entry is None:
             return
 
+        if entry.options.get(self._key, str(DEFAULT_DISCHARGE_DURATION)) == option:
+            self.async_write_ha_state()
+            return
+
+        entry_data = self.hass.data.setdefault(DOMAIN, {}).setdefault(self._entry_id, {})
+        entry_data["_skip_reload"] = True
+
         new_options = dict(entry.options)
         new_options[self._key] = option
         self.hass.config_entries.async_update_entry(entry, options=new_options)
