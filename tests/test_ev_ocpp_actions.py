@@ -430,6 +430,103 @@ def test_dynamic_start_claims_business_owner_mode():
     )
 
 
+def test_solar_surplus_dynamic_start_uses_home_power_max_over_idle_tesla_cap(monkeypatch):
+    async def fake_get_tesla_ev_entity(*args, **kwargs):
+        return "number.car_charging_amps"
+
+    monkeypatch.setattr(actions, "_get_tesla_ev_entity", fake_get_tesla_ev_entity)
+    hass = _Hass([
+        _State("number.car_charging_amps", "16", {"min": 5, "max": 16}),
+    ])
+    hass.data["power_sync"]["entry-1"]["automation_store"] = SimpleNamespace(
+        _data={
+            "home_power_settings": {
+                "max_charge_speed_enabled": True,
+                "max_amps_per_phase": 30,
+            }
+        }
+    )
+    actions._dynamic_ev_state.clear()
+
+    result = asyncio.run(
+        actions._action_start_ev_charging_dynamic(
+            hass,
+            _Entry(),
+            {
+                "vehicle_vin": "VIN123",
+                "dynamic_mode": "solar_surplus",
+                "charger_type": "tesla",
+            },
+            context=None,
+        )
+    )
+
+    assert result is True
+    params = actions._dynamic_ev_state["entry-1"]["VIN123"]["params"]
+    assert params["max_charge_amps"] == 30
+    assert params["max_charge_amps_source"] == "home_power"
+    assert params["allow_stale_entity_max_override"] is True
+
+
+def test_tesla_set_amps_clamps_to_entity_max_by_default(monkeypatch):
+    async def fake_get_tesla_ev_entity(*args, **kwargs):
+        return "number.car_charging_amps"
+
+    async def fake_wake(*args, **kwargs):
+        return True
+
+    monkeypatch.setattr(actions, "_get_tesla_ev_entity", fake_get_tesla_ev_entity)
+    monkeypatch.setattr(actions, "_wake_tesla_ev", fake_wake)
+    hass = _Hass([
+        _State("number.car_charging_amps", "16", {"min": 5, "max": 16}),
+    ])
+
+    result = asyncio.run(
+        actions._action_set_ev_charging_amps(
+            hass,
+            _Entry(),
+            {"vehicle_vin": "VIN123", "amps": 30},
+        )
+    )
+
+    assert result is True
+    assert hass.services.calls == [
+        ("number", "set_value", {"entity_id": "number.car_charging_amps", "value": 16})
+    ]
+
+
+def test_solar_surplus_tesla_set_amps_uses_configured_max_over_idle_entity_cap(monkeypatch):
+    async def fake_get_tesla_ev_entity(*args, **kwargs):
+        return "number.car_charging_amps"
+
+    async def fake_wake(*args, **kwargs):
+        return True
+
+    monkeypatch.setattr(actions, "_get_tesla_ev_entity", fake_get_tesla_ev_entity)
+    monkeypatch.setattr(actions, "_wake_tesla_ev", fake_wake)
+    hass = _Hass([
+        _State("number.car_charging_amps", "16", {"min": 5, "max": 16}),
+    ])
+
+    result = asyncio.run(
+        actions._action_set_ev_charging_amps(
+            hass,
+            _Entry(),
+            {
+                "vehicle_vin": "VIN123",
+                "amps": 30,
+                "max_charge_amps": 30,
+                "allow_stale_entity_max_override": True,
+            },
+        )
+    )
+
+    assert result is True
+    assert hass.services.calls == [
+        ("number", "set_value", {"entity_id": "number.car_charging_amps", "value": 30})
+    ]
+
+
 def test_dynamic_start_is_blocked_by_manual_owner():
     hass = _Hass([_State("switch.evse_1_charge_control", "off")])
     actions._dynamic_ev_state.clear()

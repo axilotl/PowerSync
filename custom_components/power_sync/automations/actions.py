@@ -120,6 +120,15 @@ def _is_api_credit_available(api_name: str = "teslemetry") -> bool:
     return False
 
 
+def _coerce_positive_int(value: Any, default: Optional[int] = None) -> Optional[int]:
+    """Return a positive integer from user/config input, or default when invalid."""
+    try:
+        result = int(float(value))
+    except (TypeError, ValueError):
+        return default
+    return result if result > 0 else default
+
+
 def _is_sigenergy(config_entry: ConfigEntry) -> bool:
     """Check if this is a Sigenergy system."""
     from ..const import CONF_SIGENERGY_STATION_ID
@@ -637,7 +646,12 @@ async def _set_ev_charge_limit_ble(
 
 
 async def _set_ev_charging_amps_ble(
-    hass: HomeAssistant, ble_prefix: str, amps: int
+    hass: HomeAssistant,
+    ble_prefix: str,
+    amps: int,
+    *,
+    allow_stale_entity_max_override: bool = False,
+    configured_max_amps: Optional[int] = None,
 ) -> bool:
     """Set EV charging amps via Tesla BLE."""
     amps_entity = TESLA_BLE_NUMBER_CHARGING_AMPS.format(prefix=ble_prefix)
@@ -647,10 +661,24 @@ async def _set_ev_charging_amps_ble(
         _LOGGER.error(f"Tesla BLE charging amps entity not found: {amps_entity}")
         return False
 
-    # Cap amps to entity's min/max range
-    entity_min = state.attributes.get("min", 0)
-    entity_max = state.attributes.get("max", amps)
-    capped_amps = max(int(entity_min), min(int(entity_max), int(amps)))
+    # Cap amps to entity's min/max range. Tesla integrations can report a stale
+    # 16A max while idle, so solar-surplus callers may opt into the configured
+    # app/home-power max instead.
+    entity_min = _coerce_positive_int(state.attributes.get("min"), 0) or 0
+    entity_max = _coerce_positive_int(state.attributes.get("max"), int(amps)) or int(amps)
+    effective_max = entity_max
+    if (
+        allow_stale_entity_max_override
+        and configured_max_amps is not None
+        and configured_max_amps > entity_max
+    ):
+        effective_max = configured_max_amps
+        _LOGGER.debug(
+            "BLE amps using configured max %dA over entity max %dA",
+            configured_max_amps,
+            entity_max,
+        )
+    capped_amps = max(entity_min, min(effective_max, int(amps)))
     if capped_amps != amps:
         _LOGGER.debug(f"BLE amps capped from {amps}A to {capped_amps}A (entity range: {entity_min}-{entity_max})")
 
@@ -744,7 +772,12 @@ async def _stop_ev_charging_teslemetry_bt(hass: HomeAssistant, tbt_prefix: str) 
 
 
 async def _set_ev_charging_amps_teslemetry_bt(
-    hass: HomeAssistant, tbt_prefix: str, amps: int
+    hass: HomeAssistant,
+    tbt_prefix: str,
+    amps: int,
+    *,
+    allow_stale_entity_max_override: bool = False,
+    configured_max_amps: Optional[int] = None,
 ) -> bool:
     """Set EV charging amps via Teslemetry Bluetooth."""
     entity_id = TESLEMETRY_BT_NUMBER_CHARGE_AMPS.format(prefix=tbt_prefix)
@@ -752,9 +785,21 @@ async def _set_ev_charging_amps_teslemetry_bt(
     if state is None:
         _LOGGER.error(f"Teslemetry BT charge amps entity not found: {entity_id}")
         return False
-    min_val = float(state.attributes.get("min", 0))
-    max_val = float(state.attributes.get("max", 32))
-    capped = max(int(min_val), min(int(max_val), int(amps)))
+    min_val = _coerce_positive_int(state.attributes.get("min"), 0) or 0
+    max_val = _coerce_positive_int(state.attributes.get("max"), 32) or 32
+    effective_max = max_val
+    if (
+        allow_stale_entity_max_override
+        and configured_max_amps is not None
+        and configured_max_amps > max_val
+    ):
+        effective_max = configured_max_amps
+        _LOGGER.debug(
+            "Teslemetry BT amps using configured max %dA over entity max %dA",
+            configured_max_amps,
+            max_val,
+        )
+    capped = max(min_val, min(effective_max, int(amps)))
     if capped != amps:
         _LOGGER.debug(f"Teslemetry BT amps capped from {amps}A to {capped}A (range: {min_val}-{max_val})")
     try:
@@ -2578,17 +2623,29 @@ async def _action_set_ev_charging_amps(
     ev_provider = ev_config["ev_provider"]
     vehicle_vin = params.get("vehicle_vin")
     ble_prefix = _resolve_ble_prefix_for_vehicle(hass, config_entry, vehicle_vin)
+    configured_max_amps = _coerce_positive_int(params.get("max_charge_amps"))
+    allow_stale_entity_max_override = bool(
+        params.get("allow_stale_entity_max_override")
+    )
 
     # Clamp to valid range (5-48A typical, but allow up to 80A for some chargers)
     # Note: Tesla vehicles refuse charging below 5A, so we enforce 5A minimum
     # Tesla BLE supports same 5-32A range as cloud API
     amps = max(5, min(80, int(amps)))
+    if configured_max_amps is not None:
+        amps = min(configured_max_amps, amps)
 
     # Try Teslemetry Bluetooth first if configured
     if ev_provider in (EV_PROVIDER_TESLEMETRY_BT, EV_PROVIDER_BOTH):
         tbt_prefix = _resolve_teslemetry_bt_prefix(hass)
         if _is_teslemetry_bt_available(hass, tbt_prefix):
-            result = await _set_ev_charging_amps_teslemetry_bt(hass, tbt_prefix, amps)
+            result = await _set_ev_charging_amps_teslemetry_bt(
+                hass,
+                tbt_prefix,
+                amps,
+                allow_stale_entity_max_override=allow_stale_entity_max_override,
+                configured_max_amps=configured_max_amps,
+            )
             if result or ev_provider == EV_PROVIDER_TESLEMETRY_BT:
                 return result
 
@@ -2596,7 +2653,13 @@ async def _action_set_ev_charging_amps(
     ble_amps = amps
     if ev_provider in (EV_PROVIDER_TESLA_BLE, EV_PROVIDER_BOTH):
         if _is_ble_available(hass, ble_prefix):
-            result = await _set_ev_charging_amps_ble(hass, ble_prefix, ble_amps)
+            result = await _set_ev_charging_amps_ble(
+                hass,
+                ble_prefix,
+                ble_amps,
+                allow_stale_entity_max_override=allow_stale_entity_max_override,
+                configured_max_amps=configured_max_amps,
+            )
             if result or ev_provider == EV_PROVIDER_TESLA_BLE:
                 return result
 
@@ -2622,10 +2685,22 @@ async def _action_set_ev_charging_amps(
             # Check entity's actual min/max limits and clamp accordingly
             entity_state = hass.states.get(charging_amps_entity)
             if entity_state:
-                entity_min = entity_state.attributes.get("min", 5)
-                entity_max = entity_state.attributes.get("max", 32)
+                entity_min = _coerce_positive_int(entity_state.attributes.get("min"), 5) or 5
+                entity_max = _coerce_positive_int(entity_state.attributes.get("max"), 32) or 32
+                effective_max = entity_max
+                if (
+                    allow_stale_entity_max_override
+                    and configured_max_amps is not None
+                    and configured_max_amps > entity_max
+                ):
+                    effective_max = configured_max_amps
+                    _LOGGER.debug(
+                        "Tesla charging amps using configured max %dA over entity max %dA",
+                        configured_max_amps,
+                        entity_max,
+                    )
                 original_amps = amps
-                amps = max(entity_min, min(entity_max, amps))
+                amps = max(entity_min, min(effective_max, amps))
                 if amps != original_amps:
                     _LOGGER.info(
                         f"Clamped charging amps from {original_amps}A to {amps}A "
@@ -3364,7 +3439,12 @@ async def _set_vehicle_amps(
             return await _action_stop_ev_charging(hass, config_entry, {"vehicle_vin": vehicle_id})
         return await _action_set_ev_charging_amps(hass, config_entry, {
             "amps": amps,
-            "vehicle_vin": vehicle_id if vehicle_id != DEFAULT_VEHICLE_ID else None
+            "vehicle_vin": vehicle_id if vehicle_id != DEFAULT_VEHICLE_ID else None,
+            "max_charge_amps": params.get("max_charge_amps"),
+            "allow_stale_entity_max_override": params.get(
+                "allow_stale_entity_max_override",
+                False,
+            ),
         })
 
     elif charger_type == "ocpp":
@@ -3725,7 +3805,21 @@ async def _dynamic_ev_update_surplus(
                 if entity_state:
                     new_max = int(entity_state.attributes.get("max", 0))
                     old_max = params.get("max_charge_amps", 32)
-                    if new_max > 0 and new_max != old_max:
+                    if (
+                        new_max > 0
+                        and new_max < old_max
+                        and params.get("allow_stale_entity_max_override")
+                    ):
+                        _LOGGER.debug(
+                            "Solar surplus EV: ignoring Tesla entity max %dA below configured %dA",
+                            new_max,
+                            old_max,
+                        )
+                    elif (
+                        new_max > 0
+                        and new_max != old_max
+                        and not params.get("allow_stale_entity_max_override")
+                    ):
                         _LOGGER.info(
                             f"⚡ Solar surplus EV: Updated max_charge_amps {old_max}A -> {new_max}A "
                             f"(entity limit after charging started)"
@@ -4068,20 +4162,58 @@ async def _dynamic_ev_update_surplus(
                     _LOGGER.debug(f"Could not end session: {e}")
 
 
-def _get_phases_from_config(hass, config_entry, params):
-    """Get charging phases: from params, or fall back to home_power_settings."""
-    if "phases" in params and params["phases"] in (1, 3):
-        return params["phases"]
+def _get_home_power_settings(hass, config_entry) -> dict:
+    """Return app-managed home power settings from automation storage."""
     try:
         from ..const import DOMAIN
         entry_data = hass.data.get(DOMAIN, {}).get(config_entry.entry_id, {})
         store = entry_data.get("automation_store")
         if store:
             stored = getattr(store, '_data', {}) or {}
-            phase_type = stored.get("home_power_settings", {}).get("phase_type", "single")
-            return 3 if phase_type == "three" else 1
+            settings = stored.get("home_power_settings", {})
+            if isinstance(settings, dict):
+                return settings
     except Exception:
         pass
+    return {}
+
+
+def _get_home_power_max_charge_amps(hass, config_entry) -> Optional[int]:
+    """Return configured per-phase max charger speed from Home Power settings."""
+    settings = _get_home_power_settings(hass, config_entry)
+    if not settings.get("max_charge_speed_enabled"):
+        return None
+    return _coerce_positive_int(settings.get("max_amps_per_phase"))
+
+
+def _resolve_dynamic_max_charge_amps(
+    hass,
+    config_entry,
+    params: dict,
+    default: int = 32,
+) -> tuple[int, str]:
+    """Resolve dynamic EV max amps, giving Home Power max-speed priority."""
+    home_max = _get_home_power_max_charge_amps(hass, config_entry)
+    if home_max is not None:
+        return home_max, "home_power"
+
+    source = params.get("max_charge_amps_source")
+    configured = _coerce_positive_int(params.get("max_charge_amps"), default)
+    if source:
+        return configured or default, str(source)
+    if "max_charge_amps" in params:
+        return configured or default, "params"
+    return default, "default"
+
+
+def _get_phases_from_config(hass, config_entry, params):
+    """Get charging phases: from params, or fall back to home_power_settings."""
+    if "phases" in params and params["phases"] in (1, 3):
+        return params["phases"]
+    settings = _get_home_power_settings(hass, config_entry)
+    if settings:
+        phase_type = settings.get("phase_type", "single")
+        return 3 if phase_type == "three" else 1
     return 1
 
 
@@ -4551,11 +4683,20 @@ async def _action_start_ev_charging_dynamic_locked(
 
     # Get common parameters with defaults
     min_charge_amps = params.get("min_charge_amps", 5)
-    max_charge_amps = params.get("max_charge_amps", 32)
+    max_charge_amps, max_charge_amps_source = _resolve_dynamic_max_charge_amps(
+        hass,
+        config_entry,
+        params,
+    )
     voltage = params.get("voltage", 240)
     stop_outside_window = params.get("stop_outside_window", False)
     charger_type = params.get("charger_type", "tesla")
     priority = params.get("priority", 1)
+    allow_stale_entity_max_override = bool(
+        params.get("allow_stale_entity_max_override")
+    )
+    if dynamic_mode == "solar_surplus" and max_charge_amps_source != "default":
+        allow_stale_entity_max_override = True
 
     # Resolve phases early for logging and start_amps capping
     resolved_phases = _get_phases_from_config(hass, config_entry, params)
@@ -4669,6 +4810,8 @@ async def _action_start_ev_charging_dynamic_locked(
         "vehicle_name": params.get("vehicle_name"),
         "min_charge_amps": min_charge_amps,
         "max_charge_amps": max_charge_amps,
+        "max_charge_amps_source": max_charge_amps_source,
+        "allow_stale_entity_max_override": allow_stale_entity_max_override,
         "voltage": voltage,
         "phases": _get_phases_from_config(hass, config_entry, params),
         "stop_outside_window": stop_outside_window,
@@ -4701,7 +4844,18 @@ async def _action_start_ev_charging_dynamic_locked(
                 entity_state = hass.states.get(entity)
                 if entity_state:
                     entity_max = int(entity_state.attributes.get("max", max_charge_amps))
-                    if entity_max < full_params.get("max_charge_amps", 32):
+                    if (
+                        entity_max < full_params.get("max_charge_amps", 32)
+                        and full_params.get("allow_stale_entity_max_override")
+                    ):
+                        _LOGGER.debug(
+                            "Skipping Tesla idle entity max cap %dA for solar surplus; "
+                            "using configured max %dA from %s",
+                            entity_max,
+                            full_params.get("max_charge_amps", 32),
+                            full_params.get("max_charge_amps_source", "params"),
+                        )
+                    elif entity_max < full_params.get("max_charge_amps", 32):
                         _LOGGER.info(
                             f"Preliminary cap: max_charge_amps to {entity_max}A "
                             f"(will re-check after charging starts)"
