@@ -405,6 +405,46 @@ def test_auto_schedule_start_allows_solar_surplus_takeover(monkeypatch, fake_act
     assert params["allow_ownership_takeover"] is True
 
 
+def test_auto_schedule_deadline_uses_vehicle_max_amps(monkeypatch, fake_actions):
+    fake_actions._action_start_ev_charging_dynamic = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        ev_planner.dt_util,
+        "now",
+        lambda: SimpleNamespace(weekday=lambda: 0),
+    )
+
+    executor = ev_planner.AutoScheduleExecutor(
+        _FakeHass(),
+        _FakeConfigEntry(),
+        planner=SimpleNamespace(),
+    )
+    settings = ev_planner.AutoScheduleSettings(
+        vehicle_id=VIN,
+        display_name="Model 3",
+        max_charge_amps=24,
+        min_charge_amps=5,
+        limit_grid_import=False,
+    )
+    state = ev_planner.AutoScheduleState(vehicle_id=VIN)
+
+    asyncio.run(
+        executor._start_charging(
+            VIN,
+            settings,
+            state,
+            "grid_deadline",
+            force_max_rate=True,
+        )
+    )
+
+    fake_actions._action_start_ev_charging_dynamic.assert_awaited_once()
+    _hass, _entry, params = fake_actions._action_start_ev_charging_dynamic.await_args.args
+    assert params["max_charge_amps"] == 24
+    assert params["start_amps"] == 24
+    assert params["fixed_charge_amps"] == 24
+    assert params["allow_stale_entity_max_override"] is True
+
+
 def test_price_level_stop_uses_vehicle_charger_config(fake_actions):
     fake_actions._action_stop_ev_charging_dynamic = AsyncMock(return_value=True)
 

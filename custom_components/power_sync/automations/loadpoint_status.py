@@ -100,6 +100,30 @@ def _status_source(
     return "solar" if solar_kw >= power_kw * 0.8 else "grid"
 
 
+def charging_state_plugged_status(value: Any) -> bool | None:
+    """Infer plug state from Tesla charging-state text when available."""
+    if value is None:
+        return None
+
+    normalized = str(value).strip().lower().replace(" ", "_")
+    if normalized in ("", "unknown", "unavailable"):
+        return None
+
+    plugged_states = {
+        "charging",
+        "connected",
+        "stopped",
+        "complete",
+        "starting",
+        "no_power",
+    }
+    if normalized in plugged_states:
+        return True
+    if normalized in ("disconnected", "none"):
+        return False
+    return None
+
+
 def _loadpoint_status(
     connected: bool,
     actually_charging: bool,

@@ -468,6 +468,87 @@ def test_solar_surplus_dynamic_start_uses_home_power_max_over_idle_tesla_cap(mon
     assert params["allow_stale_entity_max_override"] is True
 
 
+def test_dynamic_deadline_start_uses_configured_max_over_idle_tesla_cap(monkeypatch):
+    async def fake_get_tesla_ev_entity(*args, **kwargs):
+        return "number.car_charging_amps"
+
+    async def fake_start(*args, **kwargs):
+        return True
+
+    set_amps_calls: list[int] = []
+
+    async def fake_set_vehicle_amps(hass, config_entry, vehicle_id, amps, params):
+        set_amps_calls.append(amps)
+        return True
+
+    monkeypatch.setattr(actions, "_get_tesla_ev_entity", fake_get_tesla_ev_entity)
+    monkeypatch.setattr(actions, "_action_start_ev_charging", fake_start)
+    monkeypatch.setattr(actions, "_set_vehicle_amps", fake_set_vehicle_amps)
+    hass = _Hass([
+        _State("number.car_charging_amps", "5", {"min": 5, "max": 5}),
+    ])
+    actions._dynamic_ev_state.clear()
+
+    result = asyncio.run(
+        actions._action_start_ev_charging_dynamic(
+            hass,
+            _Entry(),
+            {
+                "vehicle_vin": "VIN123",
+                "dynamic_mode": "battery_target",
+                "owner_mode": "smart_schedule",
+                "charger_type": "tesla",
+                "max_charge_amps": 32,
+                "fixed_charge_amps": 32,
+                "allow_stale_entity_max_override": True,
+            },
+            context=None,
+        )
+    )
+
+    assert result is True
+    state = actions._dynamic_ev_state["entry-1"]["VIN123"]
+    assert state["current_amps"] == 32
+    assert state["target_amps"] == 32
+    assert state["params"]["max_charge_amps"] == 32
+    assert set_amps_calls == [32]
+
+
+def test_dynamic_update_holds_fixed_deadline_rate(monkeypatch):
+    set_amps_calls: list[int] = []
+
+    async def fake_set_vehicle_amps(hass, config_entry, vehicle_id, amps, params):
+        set_amps_calls.append(amps)
+        return True
+
+    monkeypatch.setattr(actions, "_set_vehicle_amps", fake_set_vehicle_amps)
+    actions._dynamic_ev_state.clear()
+    actions._dynamic_ev_state["entry-1"] = {
+        "VIN123": {
+            "active": True,
+            "current_amps": 5,
+            "target_amps": 5,
+            "params": {
+                "dynamic_mode": "battery_target",
+                "charger_type": "tesla",
+                "min_charge_amps": 5,
+                "max_charge_amps": 32,
+                "fixed_charge_amps": 32,
+                "voltage": 230,
+                "phases": 1,
+            },
+        }
+    }
+
+    hass = _Hass([])
+    asyncio.run(actions._dynamic_ev_update(hass, _Entry(), "entry-1", "VIN123"))
+
+    state = actions._dynamic_ev_state["entry-1"]["VIN123"]
+    assert state["current_amps"] == 32
+    assert state["target_amps"] == 32
+    assert set_amps_calls == [32]
+
+
 def test_tesla_set_amps_clamps_to_entity_max_by_default(monkeypatch):
     async def fake_get_tesla_ev_entity(*args, **kwargs):
         return "number.car_charging_amps"

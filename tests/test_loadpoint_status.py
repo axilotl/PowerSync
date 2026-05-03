@@ -19,7 +19,17 @@ sys.modules["power_sync.automations"] = _automations
 from power_sync.automations.loadpoint_status import (  # noqa: E402
     build_generic_charger_observation,
     build_loadpoint_status,
+    charging_state_plugged_status,
 )
+
+
+def test_charging_state_plugged_status_matches_idle_connected_tesla_states():
+    assert charging_state_plugged_status("Stopped") is True
+    assert charging_state_plugged_status("Complete") is True
+    assert charging_state_plugged_status("Connected") is True
+    assert charging_state_plugged_status("No Power") is True
+    assert charging_state_plugged_status("Disconnected") is False
+    assert charging_state_plugged_status("unknown") is None
 
 
 def test_dynamic_state_reports_commanded_no_power_when_observed_power_is_zero():

@@ -4291,6 +4291,7 @@ async def _dynamic_ev_update(
     max_amps = params.get("max_charge_amps", 32)
     voltage = params.get("voltage", 240)
     phases = params.get("phases", 1)
+    fixed_charge_amps = _coerce_positive_int(params.get("fixed_charge_amps"))
 
     # Hard inverter cap: even if reactive logic miscalculates, amps never exceed inverter capacity
     # Save original max_amps — restored later if battery depletes and grid takes over
@@ -4305,6 +4306,21 @@ async def _dynamic_ev_update(
             max_amps = inverter_max_amps
 
     current_amps = state.get("current_amps", max_amps)
+
+    if fixed_charge_amps:
+        fixed_amps = max(min_amps, min(max_amps, fixed_charge_amps))
+        state["target_amps"] = fixed_amps
+        if abs(fixed_amps - current_amps) >= 1:
+            _LOGGER.info(
+                f"⚡ Dynamic EV: Holding fixed charge rate {fixed_amps}A "
+                f"(current={current_amps}A)"
+            )
+            success = await _set_vehicle_amps(hass, config_entry, vehicle_id, fixed_amps, params)
+            if success:
+                state["current_amps"] = fixed_amps
+            else:
+                _LOGGER.warning(f"Dynamic EV: Failed to set fixed amps to {fixed_amps}A")
+        return
 
     # Get live status
     live_status = await _get_tesla_live_status(hass, config_entry)
@@ -4762,6 +4778,7 @@ async def _action_start_ev_charging_dynamic_locked(
             "no_grid_import": no_grid_import,
             "grid_import_tolerance_kw": params.get("grid_import_tolerance_kw", 0.1),
             "max_inverter_kw": params.get("max_inverter_kw", 10.0),
+            "fixed_charge_amps": params.get("fixed_charge_amps"),
         }
         start_amps = params.get("start_amps", max_charge_amps)
         if no_grid_import:
@@ -4874,7 +4891,7 @@ async def _action_start_ev_charging_dynamic_locked(
                         and full_params.get("allow_stale_entity_max_override")
                     ):
                         _LOGGER.debug(
-                            "Skipping Tesla idle entity max cap %dA for solar surplus; "
+                            "Skipping Tesla idle entity max cap %dA; "
                             "using configured max %dA from %s",
                             entity_max,
                             full_params.get("max_charge_amps", 32),

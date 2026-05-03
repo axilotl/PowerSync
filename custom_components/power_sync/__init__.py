@@ -808,6 +808,8 @@ def _get_ev_vehicles_status(hass, entry) -> list:
     Returns a list of dicts, one per vehicle found at home, each with:
       vehicle_name, ev_power_kw, ev_soc, is_connected, is_charging.
     """
+    from .automations.loadpoint_status import charging_state_plugged_status
+
     vehicles = []
     entity_registry = er.async_get(hass)
     device_registry = dr.async_get(hass)
@@ -839,10 +841,8 @@ def _get_ev_vehicles_status(hass, entry) -> list:
 
             # Check charging_state sensor for connected status
             if entity.domain == "sensor" and "charging_state" in eid:
-                # Values like "Charging", "Connected", "Stopped", "Complete" = plugged in
-                # "Disconnected", "unknown", "unavailable" = not plugged in
-                connected_states = ("charging", "connected", "stopped", "complete")
-                if state.state.lower() in connected_states:
+                plugged = charging_state_plugged_status(state.state)
+                if plugged is True:
                     is_connected = True
 
             # Check charge_cable / charge_flap binary sensors
@@ -9500,6 +9500,35 @@ class EVVehicleCommandView(HomeAssistantView):
                 is_plugged = state.state.lower() == "on"
                 _LOGGER.debug(f"Vehicle plugged in from {cable_entity}: {state.state} (plugged={is_plugged})")
                 return is_plugged
+
+        # Some Tesla integrations expose plugged-in-but-idle via charging state
+        # only. Keep this in sync with the loadpoint status card so "Stopped"
+        # / "Complete" does not show as plugged in there and then get blocked
+        # here.
+        charging_state_entity = await self._get_tesla_ev_entity(
+            r"sensor\..*(?:_charging_state|_charging)$",
+            vehicle_vin,
+        )
+        if charging_state_entity:
+            state = self._hass.states.get(charging_state_entity)
+            if state:
+                from .automations.loadpoint_status import charging_state_plugged_status
+
+                plugged = charging_state_plugged_status(state.state)
+                if plugged is True:
+                    _LOGGER.debug(
+                        "Vehicle plugged in from %s charging state: %s",
+                        charging_state_entity,
+                        state.state,
+                    )
+                    return True
+                if plugged is False:
+                    _LOGGER.debug(
+                        "Vehicle unplugged from %s charging state: %s",
+                        charging_state_entity,
+                        state.state,
+                    )
+                    return False
 
         _LOGGER.warning("Could not determine if vehicle is plugged in")
         return False

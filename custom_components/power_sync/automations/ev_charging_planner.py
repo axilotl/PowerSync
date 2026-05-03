@@ -4261,7 +4261,17 @@ class AutoScheduleExecutor:
 
         # Take action
         if should_charge and not state.is_charging:
-            await self._start_charging(vehicle_id, settings, state, source)
+            await self._start_charging(
+                vehicle_id,
+                settings,
+                state,
+                source,
+                force_max_rate=(
+                    is_time_critical
+                    and source != "solar_surplus"
+                    and not effective_limit_grid
+                ),
+            )
             state.last_decision = "started"
             state.last_decision_reason = reason
         elif not should_charge and state.is_charging:
@@ -4873,6 +4883,7 @@ class AutoScheduleExecutor:
         settings: AutoScheduleSettings,
         state: AutoScheduleState,
         source: str,
+        force_max_rate: bool = False,
     ) -> None:
         """Start dynamic charging for the vehicle."""
         from .actions import _action_start_ev_charging_dynamic
@@ -4916,6 +4927,13 @@ class AutoScheduleExecutor:
             "no_grid_import": settings.get_effective_limit_grid_import(dt_util.now().weekday()),
             **_get_optimizer_battery_params(self.hass, self.config_entry),
         }
+        if force_max_rate:
+            params.update({
+                "start_amps": settings.max_charge_amps,
+                "fixed_charge_amps": settings.max_charge_amps,
+                "target_battery_charge_kw": 0,
+                "allow_stale_entity_max_override": True,
+            })
 
         try:
             success = await _action_start_ev_charging_dynamic(
