@@ -135,3 +135,32 @@ def test_restore_ev_runtime_state_resaves_cleared_snapshot():
     runtime = store._data["ev_runtime_state"]
     assert runtime["active_ownership"] == {}
     assert runtime["last_commands"]["VIN123"]["command"] == "ha_restart_recovery"
+
+
+def test_takeover_flag_only_replaces_solar_surplus_ownership():
+    assert ev_ownership.can_take_over_ev_ownership(
+        "solar_surplus",
+        "price_level_opportunity",
+        allow_takeover=True,
+    )
+    assert ev_ownership.can_take_over_ev_ownership(
+        "smart_schedule_solar_surplus",
+        "price_level_opportunity",
+        allow_takeover=True,
+    )
+    assert ev_ownership.can_take_over_ev_ownership(
+        "solar_surplus",
+        "smart_schedule",
+        allow_takeover=True,
+    )
+
+    assert not ev_ownership.can_take_over_ev_ownership(
+        "manual",
+        "price_level_opportunity",
+        allow_takeover=True,
+    )
+    assert not ev_ownership.can_take_over_ev_ownership(
+        "smart_schedule",
+        "price_level_opportunity",
+        allow_takeover=True,
+    )

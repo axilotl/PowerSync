@@ -4892,6 +4892,7 @@ class AutoScheduleExecutor:
             "vehicle_name": settings.display_name,
             "dynamic_mode": dynamic_mode,
             "owner_mode": "smart_schedule_solar_surplus" if source == "solar_surplus" else "smart_schedule",
+            "allow_ownership_takeover": True,
             "min_charge_amps": settings.min_charge_amps,
             "max_charge_amps": settings.max_charge_amps,
             "voltage": settings.voltage,
@@ -5167,6 +5168,7 @@ def _build_dynamic_charging_params(
     vehicle_vin: Optional[str] = None,
     dynamic_mode: str = "battery_target",
     no_grid_import: bool = False,
+    allow_ownership_takeover: bool = False,
 ) -> dict:
     """Build dynamic EV start params consistently for all coordinated modes."""
     vehicle_charger_params = _get_vehicle_charger_params(
@@ -5187,6 +5189,8 @@ def _build_dynamic_charging_params(
     }
     if no_grid_import:
         params["no_grid_import"] = True
+    if allow_ownership_takeover:
+        params["allow_ownership_takeover"] = True
     params = _with_configured_charger_entities(params, opts, charger_type)
     loadpoint_id = _resolve_dynamic_loadpoint_id(
         charger_type,
@@ -5248,6 +5252,7 @@ async def _start_coordinated_charging(
     reason: str,
     vehicle_vin: Optional[str] = None,
     no_grid_import: bool = False,
+    allow_ownership_takeover: bool = False,
     cooldown_state: Optional[Any] = None,
     log_prefix: str = "EV charging",
 ) -> bool:
@@ -5261,6 +5266,7 @@ async def _start_coordinated_charging(
         owner_mode=owner_mode,
         vehicle_vin=vehicle_vin,
         no_grid_import=no_grid_import,
+        allow_ownership_takeover=allow_ownership_takeover,
     )
     charger_type = params.get("charger_type", _configured_charger_type(opts))
     if (
@@ -5761,6 +5767,7 @@ class PriceLevelChargingExecutor:
             reason=reason,
             vehicle_vin=vehicle_vin,
             no_grid_import=self._get_settings().get("no_grid_import", False),
+            allow_ownership_takeover=True,
             cooldown_state=self._get_or_create_vehicle_state("zaptec_standalone"),
             log_prefix="Price-level charging",
         )
@@ -6389,6 +6396,7 @@ class ScheduledChargingExecutor:
             self.config_entry,
             owner_mode="scheduled",
             reason=reason,
+            allow_ownership_takeover=True,
             log_prefix="Scheduled charging",
         )
         if not success:
@@ -6581,6 +6589,7 @@ class EVChargingModeCoordinator:
             self.config_entry,
             owner_mode=owner_mode,
             reason=reason,
+            allow_ownership_takeover=True,
             log_prefix="EV Coordinator",
         )
         if not success:

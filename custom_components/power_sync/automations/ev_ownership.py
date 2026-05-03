@@ -26,6 +26,34 @@ def owner_family(owner_mode: Any = None) -> str:
     return mode
 
 
+def is_solar_surplus_owner_mode(owner_mode: Any = None) -> bool:
+    """Return whether an owner mode represents a solar-surplus session."""
+    mode = str(owner_mode or "dynamic")
+    return mode.startswith("solar_surplus") or mode.endswith("_solar_surplus")
+
+
+def can_take_over_ev_ownership(
+    existing_mode: Any,
+    requested_mode: Any,
+    *,
+    allow_takeover: bool = False,
+) -> bool:
+    """Return whether one EV owner mode may replace another."""
+    requested_family = owner_family(requested_mode)
+    existing_family = owner_family(existing_mode)
+
+    if str(existing_mode) == str(requested_mode) or existing_family == requested_family:
+        return True
+
+    if requested_family == "manual":
+        return True
+
+    if existing_family == "manual":
+        return False
+
+    return bool(allow_takeover and is_solar_surplus_owner_mode(existing_mode))
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -220,13 +248,11 @@ def can_claim_ev_ownership(
         return True, None, None, None
 
     existing_mode = str(lease.get("owner_mode") or "dynamic")
-    requested_family = owner_family(owner_mode)
-    existing_family = owner_family(existing_mode)
-
-    if existing_mode == owner_mode or existing_family == requested_family:
-        return True, lease_id, lease, None
-
-    if requested_family == "manual" or allow_takeover:
+    if can_take_over_ev_ownership(
+        existing_mode,
+        owner_mode,
+        allow_takeover=allow_takeover,
+    ):
         return True, lease_id, lease, None
 
     reason = f"{existing_mode} already owns this loadpoint"

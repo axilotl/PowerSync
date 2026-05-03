@@ -542,6 +542,7 @@ def test_dynamic_start_is_blocked_by_manual_owner():
                 "vehicle_vin": "ocpp_evse_1",
                 "dynamic_mode": "battery_target",
                 "owner_mode": "price_level_recovery",
+                "allow_ownership_takeover": True,
                 "charger_type": "ocpp",
                 "ocpp_charger_id": "evse_1",
             },
@@ -641,6 +642,97 @@ def test_dynamic_start_is_blocked_by_legacy_foreign_state():
     assert "solar_surplus already owns" in last_command["reason"]
 
 
+def test_dynamic_start_takes_over_legacy_solar_surplus_when_allowed():
+    hass = _Hass([_State("switch.evse_1_charge_control", "off")])
+    cancelled = []
+    actions._dynamic_ev_state.clear()
+    actions._dynamic_ev_state["entry-1"] = {
+        "ocpp_evse_1": {
+            "active": True,
+            "params": {
+                "dynamic_mode": "solar_surplus",
+                "charger_type": "ocpp",
+                "ocpp_charger_id": "evse_1",
+            },
+            "cancel_timer": lambda: cancelled.append(True),
+            "session_id": "sess-1",
+        }
+    }
+
+    result = asyncio.run(
+        actions._action_start_ev_charging_dynamic(
+            hass,
+            _Entry(),
+            {
+                "vehicle_vin": "ocpp_evse_1",
+                "dynamic_mode": "battery_target",
+                "owner_mode": "price_level_recovery",
+                "allow_ownership_takeover": True,
+                "charger_type": "ocpp",
+                "ocpp_charger_id": "evse_1",
+                "max_charge_amps": 16,
+            },
+            context=None,
+        )
+    )
+
+    assert result is True
+    assert cancelled == [True]
+    state = actions._dynamic_ev_state["entry-1"]["ocpp_evse_1"]
+    assert state["params"]["dynamic_mode"] == "battery_target"
+    assert state["params"]["owner_mode"] == "price_level_recovery"
+    ownership = hass.data["power_sync"]["entry-1"]["ev_ownership"]["ocpp_evse_1"]
+    assert ownership["owner_mode"] == "price_level_recovery"
+
+
+def test_dynamic_start_updates_solar_surplus_owner_when_same_mode_allowed():
+    hass = _Hass([_State("switch.evse_1_charge_control", "off")])
+    actions._dynamic_ev_state.clear()
+    actions._dynamic_ev_state["entry-1"] = {
+        "ocpp_evse_1": {
+            "active": True,
+            "params": {
+                "dynamic_mode": "solar_surplus",
+                "owner_mode": "solar_surplus",
+                "charger_type": "ocpp",
+                "ocpp_charger_id": "evse_1",
+            },
+            "session_id": "sess-1",
+        }
+    }
+    hass.data["power_sync"]["entry-1"]["ev_ownership"] = {
+        "ocpp_evse_1": {
+            "owner": "powersync",
+            "owner_mode": "solar_surplus",
+            "session_id": "sess-1",
+        }
+    }
+
+    result = asyncio.run(
+        actions._action_start_ev_charging_dynamic(
+            hass,
+            _Entry(),
+            {
+                "vehicle_vin": "ocpp_evse_1",
+                "dynamic_mode": "solar_surplus",
+                "owner_mode": "smart_schedule_solar_surplus",
+                "allow_ownership_takeover": True,
+                "charger_type": "ocpp",
+                "ocpp_charger_id": "evse_1",
+            },
+            context=None,
+        )
+    )
+
+    assert result is True
+    assert hass.services.calls == []
+    state = actions._dynamic_ev_state["entry-1"]["ocpp_evse_1"]
+    assert state["params"]["owner_mode"] == "smart_schedule_solar_surplus"
+    ownership = hass.data["power_sync"]["entry-1"]["ev_ownership"]["ocpp_evse_1"]
+    assert ownership["owner_mode"] == "smart_schedule_solar_surplus"
+    assert ownership["last_command"]["command"] == "update_smart_schedule_solar_surplus"
+
+
 def test_manual_session_replaces_existing_owner_without_physical_stop():
     hass = _Hass([_State("switch.ev_charge", "on")])
     cancelled = []
@@ -699,6 +791,34 @@ def test_solar_surplus_stop_delay_holds_current_amps_on_first_low_sample(monkeyp
     state = actions._dynamic_ev_state["entry-1"][vehicle_id]
     assert state["current_amps"] == 8
     assert state["target_amps"] == 8
+    assert state["low_surplus_start"] is not None
+    assert set_amps_calls == []
+
+
+def test_solar_surplus_stop_delay_uses_tesla_hardware_minimum(monkeypatch):
+    hass = _Hass([])
+    vehicle_id = "VIN123"
+    actions._dynamic_ev_state.clear()
+    actions._dynamic_ev_state["entry-1"] = {
+        vehicle_id: _solar_surplus_state(current_amps=8),
+    }
+    set_amps_calls = _install_solar_surplus_runtime_stubs(
+        monkeypatch,
+        {
+            "battery_soc": 40,
+            "grid_power": -10,
+            "battery_power": 380,
+            "solar_power": 0,
+            "load_power": 0,
+        },
+    )
+
+    asyncio.run(
+        actions._dynamic_ev_update_surplus(hass, _Entry(), "entry-1", vehicle_id)
+    )
+
+    state = actions._dynamic_ev_state["entry-1"][vehicle_id]
+    assert state["current_amps"] == 8
     assert state["low_surplus_start"] is not None
     assert set_amps_calls == []
 

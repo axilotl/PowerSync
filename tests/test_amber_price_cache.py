@@ -99,9 +99,23 @@ coordinator = importlib.import_module("power_sync.coordinator")
 
 
 class _FakeHass:
-    def __init__(self, data=None) -> None:
+    def __init__(self, data=None, states=None) -> None:
         self.data = data or {}
         self.session = object()
+        self.states = _FakeStates(states or [])
+
+
+class _FakeStates:
+    def __init__(self, states) -> None:
+        self._states = states
+
+    def async_all(self, domain=None):
+        if domain is None:
+            return list(self._states)
+        return [
+            state for state in self._states
+            if state.entity_id.split(".", 1)[0] == domain
+        ]
 
 
 def _current_price():
@@ -236,6 +250,49 @@ def test_octopus_integration_synthesizes_export_when_integration_has_import_only
     assert next(p for p in current if p["channelType"] == "general")["perKwh"] == 24.5
     assert next(p for p in current if p["channelType"] == "feedIn")["perKwh"] == -4.1
     assert result["export_rates"][0]["channelType"] == "feedIn"
+
+
+def test_octopus_integration_reads_public_current_rate_entities_when_internal_data_missing():
+    now = datetime.now(timezone.utc)
+    start = now - timedelta(minutes=5)
+    end = now + timedelta(minutes=25)
+    states = [
+        SimpleNamespace(
+            entity_id="sensor.octopus_energy_electricity_ABC123_1234567890_current_rate",
+            state="0.245",
+            attributes={
+                "is_export": False,
+                "tariff": "E-1R-INTELLI-VAR-24-10-29-C",
+                "start": start.isoformat(),
+                "end": end.isoformat(),
+            },
+        ),
+        SimpleNamespace(
+            entity_id="sensor.octopus_energy_electricity_ABC123_1234567890_export_current_rate",
+            state="0.041",
+            attributes={
+                "is_export": True,
+                "tariff": "E-1R-OUTGOING-FIX-12M-19-05-13-C",
+                "start": start.isoformat(),
+                "end": end.isoformat(),
+            },
+        ),
+    ]
+    hass = _FakeHass(states=states)
+    octopus = coordinator.OctopusPriceCoordinator(
+        hass,
+        product_code="INTELLI-VAR-24-10-29",
+        tariff_code="E-1R-INTELLI-VAR-24-10-29-C",
+        gsp_region="C",
+    )
+
+    result = octopus._read_from_octopus_energy_integration()
+
+    assert result is not None
+    assert result["source"] == "octopus_energy_entities"
+    current = result["current"]
+    assert next(p for p in current if p["channelType"] == "general")["perKwh"] == 24.5
+    assert next(p for p in current if p["channelType"] == "feedIn")["perKwh"] == -4.1
 
 
 def test_tesla_lifetime_totals_clamp_prevents_recorder_decrease():

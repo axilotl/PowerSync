@@ -3534,6 +3534,17 @@ async def _set_vehicle_amps(
     return False
 
 
+def _effective_min_charge_amps(params: dict) -> int:
+    """Return the minimum current the selected charger can actually accept."""
+    configured_min = _coerce_positive_int(params.get("min_charge_amps"), 5) or 5
+    charger_type = params.get("charger_type", "tesla")
+    if charger_type == "tesla":
+        # Tesla charge-current entities clamp to at least 5A. Solar surplus may
+        # be configured lower, but hysteresis must use the hardware floor.
+        return max(configured_min, 5)
+    return configured_min
+
+
 async def _set_ocpp_charging_amps(hass: HomeAssistant, charger_id: int, amps: int) -> bool:
     """Set charging amps for an OCPP charger."""
     from ..const import DOMAIN
@@ -4011,7 +4022,7 @@ async def _dynamic_ev_update_surplus(
     available_amps = (my_surplus_kw * 1000) / (voltage * phases)
 
     # Apply constraints
-    min_amps = params.get("min_charge_amps", 5)
+    min_amps = _effective_min_charge_amps(params)
     max_amps = params.get("max_charge_amps", 32)
     new_amps = int(round(max(0, min(max_amps, available_amps))))
 
@@ -4551,8 +4562,8 @@ async def _action_start_ev_charging_dynamic_locked(
 
     from .ev_ownership import (
         can_claim_ev_ownership,
+        can_take_over_ev_ownership,
         claim_ev_ownership,
-        owner_family,
         record_ev_command,
     )
 
@@ -4602,10 +4613,10 @@ async def _action_start_ev_charging_dynamic_locked(
             or existing_params.get("dynamic_mode")
             or "dynamic"
         )
-        if (
-            owner_family(existing_owner_mode) != owner_family(owner_mode)
-            and owner_family(owner_mode) != "manual"
-            and not allow_takeover
+        if not can_take_over_ev_ownership(
+            existing_owner_mode,
+            owner_mode,
+            allow_takeover=allow_takeover,
         ):
             reason = f"{existing_owner_mode} already owns this loadpoint"
             _LOGGER.info(
@@ -4641,7 +4652,11 @@ async def _action_start_ev_charging_dynamic_locked(
                     or existing_params.get("dynamic_mode")
                     or dynamic_mode
                 )
-                if owner_family(existing_owner_mode) == owner_family(owner_mode):
+                if can_take_over_ev_ownership(
+                    existing_owner_mode,
+                    owner_mode,
+                    allow_takeover=allow_takeover,
+                ):
                     existing_params["owner_mode"] = owner_mode
                     v_state["ownership"] = claim_ev_ownership(
                         hass,
@@ -4663,7 +4678,11 @@ async def _action_start_ev_charging_dynamic_locked(
                     or existing_params.get("dynamic_mode")
                     or dynamic_mode
                 )
-                if owner_family(existing_owner_mode) == owner_family(owner_mode):
+                if can_take_over_ev_ownership(
+                    existing_owner_mode,
+                    owner_mode,
+                    allow_takeover=allow_takeover,
+                ):
                     existing_params["owner_mode"] = owner_mode
                     v_state["ownership"] = claim_ev_ownership(
                         hass,
@@ -4682,7 +4701,7 @@ async def _action_start_ev_charging_dynamic_locked(
                 return True
 
     # Get common parameters with defaults
-    min_charge_amps = params.get("min_charge_amps", 5)
+    min_charge_amps = _effective_min_charge_amps(params)
     max_charge_amps, max_charge_amps_source = _resolve_dynamic_max_charge_amps(
         hass,
         config_entry,

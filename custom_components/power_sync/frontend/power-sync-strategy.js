@@ -522,6 +522,40 @@ class PowerSyncStrategy {
     // Shorthand: resolve then check
     const hasE = (name) => has(e(name));
 
+    const findSensor = (nameOrNames) => {
+      const names = (Array.isArray(nameOrNames) ? nameOrNames : [nameOrNames])
+        .map((name) => String(name || '').trim())
+        .filter(Boolean);
+      if (names.length === 0) return null;
+
+      const directMatches = [];
+      for (const name of names) {
+        for (const id of [`sensor.power_sync_${name}`, `sensor.${name}`]) {
+          if (hass.states[id]) directMatches.push(id);
+        }
+      }
+
+      const tails = names.map((name) => `_${name}`);
+      const suffixMatches = Object.keys(hass.states || {}).filter((id) => {
+        if (!id.startsWith('sensor.')) return false;
+        const objectId = id.slice('sensor.'.length);
+        return names.includes(objectId) || tails.some((tail) => objectId.endsWith(tail));
+      });
+      const candidates = Array.from(new Set([...directMatches, ...suffixMatches]));
+      if (candidates.length === 0) return null;
+
+      const available = candidates.filter(has);
+      const pool = available.length > 0 ? available : candidates;
+      return pool.sort((a, b) => {
+        const score = (id) => {
+          if (id.startsWith('sensor.power_sync_')) return 0;
+          if (id.includes('goodwe') || id.includes('foxess')) return 1;
+          return 2;
+        };
+        return score(a) - score(b) || a.length - b.length || a.localeCompare(b);
+      })[0];
+    };
+
     // Domain-aware entity finder used by the Tesla Energy Site controls section.
     // The new Tesla entities use _attr_has_entity_name=True, so HA composes
     // their entity_ids from the device name (e.g. "Home" → home_backup_reserve)
@@ -620,7 +654,7 @@ class PowerSyncStrategy {
 
     // --- Center Column: Power Flow ---
     if (hasTeslaFlow && hasE('solar_power')) {
-      center.push(_teslaStyleFlow(e, hass));
+      center.push(_teslaStyleFlow(e, hass, findSensor));
     } else if (hasFlowCard && hasE('solar_power')) {
       center.push(_powerFlow(e));
     }
@@ -694,9 +728,10 @@ class PowerSyncStrategy {
       left.push(_acInverterControls(e));
     }
 
-    // --- Left Column: FoxESS Sensors ---
-    if (hasE('pv1_power')) {
-      left.push(_foxessSensors(e));
+    // --- Left Column: PV String Sensors ---
+    {
+      const pvStringCard = _pvStringSensors(e, hass, findSensor);
+      if (pvStringCard) left.push(pvStringCard);
     }
 
     // --- Left Column: Battery Health (requires button-card) ---
@@ -1472,7 +1507,7 @@ function _optimizerStatus(e, showForceChargeWindows = false) {
   };
 }
 
-function _teslaStyleFlow(e, hass) {
+function _teslaStyleFlow(e, hass, findSensor) {
   // Auto-detect weather entity — try common patterns
   let weatherEntity = null;
   for (const candidate of [
@@ -1594,16 +1629,26 @@ function _teslaStyleFlow(e, hass) {
     }
   }
 
-  // Add PV array detail if available (FoxESS, GoodWe)
-  const pv1 = e('pv1_power');
-  const pv2 = e('pv2_power');
+  // Add PV array detail if available (FoxESS, GoodWe, or upstream inverter integrations).
+  const resolveSensor = (names, fallback) =>
+    (typeof findSensor === 'function' ? findSensor(names) : null) || e(fallback);
+  const pv1 = resolveSensor(['pv1_power', 'pv_1_power', 'ppv1'], 'pv1_power');
+  const pv2 = resolveSensor(['pv2_power', 'pv_2_power', 'ppv2'], 'pv2_power');
   if (hass.states[pv1]) {
     config.entities.roof_a_power = pv1;
     config.roof_a_label = 'PV1';
+    const pv1Voltage = resolveSensor(['pv1_voltage', 'pv_1_voltage', 'vpv1'], 'pv1_voltage');
+    const pv1Current = resolveSensor(['pv1_current', 'pv_1_current', 'ipv1'], 'pv1_current');
+    if (hass.states[pv1Voltage]) config.entities.roof_a_voltage = pv1Voltage;
+    if (hass.states[pv1Current]) config.entities.roof_a_current = pv1Current;
   }
   if (hass.states[pv2]) {
     config.entities.roof_b_power = pv2;
     config.roof_b_label = 'PV2';
+    const pv2Voltage = resolveSensor(['pv2_voltage', 'pv_2_voltage', 'vpv2'], 'pv2_voltage');
+    const pv2Current = resolveSensor(['pv2_current', 'pv_2_current', 'ipv2'], 'pv2_current');
+    if (hass.states[pv2Voltage]) config.entities.roof_b_voltage = pv2Voltage;
+    if (hass.states[pv2Current]) config.entities.roof_b_current = pv2Current;
   }
 
   // Sigenergy DC/AC PV split
@@ -2015,21 +2060,35 @@ function _acInverterControls(e) {
   };
 }
 
-function _foxessSensors(e) {
-  const entities = [
-    { entity: e('pv1_power'), name: 'PV1 Power' },
-    { entity: e('pv2_power'), name: 'PV2 Power' },
-  ];
-  // Only add CT2 if it exists (not all FoxESS models have it)
-  entities.push({ entity: e('ct2_power'), name: 'CT2 Power' });
-  entities.push({ entity: e('work_mode'), name: 'Work Mode' });
-  entities.push({ entity: e('min_soc'), name: 'Min SOC' });
-  entities.push({ entity: e('daily_battery_charge_foxess'), name: 'Daily Charge' });
-  entities.push({ entity: e('daily_battery_discharge_foxess'), name: 'Daily Discharge' });
+function _pvStringSensors(e, hass, findSensor) {
+  const entities = [];
+  const resolveSensor = (names, fallback) =>
+    (typeof findSensor === 'function' ? findSensor(names) : null) || e(fallback);
+  const add = (entity, name, icon) => {
+    if (!entity || !hass?.states?.[entity]) return;
+    const row = { entity, name };
+    if (icon) row.icon = icon;
+    entities.push(row);
+  };
+
+  add(resolveSensor(['pv1_power', 'pv_1_power', 'ppv1'], 'pv1_power'), 'PV1 Power', 'mdi:solar-panel');
+  add(resolveSensor(['pv1_voltage', 'pv_1_voltage', 'vpv1'], 'pv1_voltage'), 'PV1 Voltage', 'mdi:sine-wave');
+  add(resolveSensor(['pv1_current', 'pv_1_current', 'ipv1'], 'pv1_current'), 'PV1 Current', 'mdi:current-dc');
+  add(resolveSensor(['pv2_power', 'pv_2_power', 'ppv2'], 'pv2_power'), 'PV2 Power', 'mdi:solar-panel');
+  add(resolveSensor(['pv2_voltage', 'pv_2_voltage', 'vpv2'], 'pv2_voltage'), 'PV2 Voltage', 'mdi:sine-wave');
+  add(resolveSensor(['pv2_current', 'pv_2_current', 'ipv2'], 'pv2_current'), 'PV2 Current', 'mdi:current-dc');
+
+  add(e('ct2_power'), 'CT2 Power', 'mdi:current-ac');
+  add(e('work_mode'), 'Work Mode', 'mdi:cog');
+  add(e('min_soc'), 'Min SOC', 'mdi:battery-low');
+  add(e('daily_battery_charge_foxess'), 'Daily Charge', 'mdi:battery-charging');
+  add(e('daily_battery_discharge_foxess'), 'Daily Discharge', 'mdi:battery-arrow-down');
+
+  if (entities.length === 0) return null;
 
   return {
     type: 'entities',
-    title: 'FoxESS Inverter',
+    title: 'PV String Details',
     show_header_toggle: false,
     entities,
   };

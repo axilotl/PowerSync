@@ -8,6 +8,7 @@ from typing import Any
 
 
 ACTIVE_POWER_THRESHOLD_KW = 0.05
+DEFAULT_LOADPOINT_KEYS = {"default", "genericev", "ev"}
 GENERIC_CHARGING_STATES = {"charging"}
 GENERIC_CONNECTED_STATES = {
     "connected",
@@ -61,6 +62,21 @@ def _normal_key(value: Any) -> str:
     return re.sub(r"[^a-z0-9]+", "", str(value).lower())
 
 
+def _is_default_loadpoint(vehicle_id: str, vehicle_name: str) -> bool:
+    return (
+        _normal_key(vehicle_id) in DEFAULT_LOADPOINT_KEYS
+        or _normal_key(vehicle_name) in DEFAULT_LOADPOINT_KEYS
+    )
+
+
+def _is_generic_observation(observation: Mapping[str, Any]) -> bool:
+    return (
+        observation.get("charger_type") == "generic"
+        or _normal_key(observation.get("vehicle_id")) in DEFAULT_LOADPOINT_KEYS
+        or _normal_key(observation.get("charger_id")) in DEFAULT_LOADPOINT_KEYS
+    )
+
+
 def _display_name(vehicle_id: str, state: Mapping[str, Any]) -> str:
     params = state.get("params") or {}
     return (
@@ -107,6 +123,28 @@ def _find_observation(
     observations: list[Mapping[str, Any]],
     used_indexes: set[int],
 ) -> tuple[int, Mapping[str, Any]] | tuple[None, None]:
+    if _is_default_loadpoint(vehicle_id, vehicle_name):
+        charging_matches: list[tuple[int, Mapping[str, Any]]] = []
+        connected_matches: list[tuple[int, Mapping[str, Any]]] = []
+        for index, observation in enumerate(observations):
+            if index in used_indexes or _is_generic_observation(observation):
+                continue
+            power_kw = _float_value(
+                observation.get("ev_power_kw", observation.get("current_power_kw")),
+                0.0,
+            )
+            charging = bool(observation.get("is_charging")) or power_kw > ACTIVE_POWER_THRESHOLD_KW
+            connected = bool(observation.get("is_connected")) or charging
+            if charging:
+                charging_matches.append((index, observation))
+            elif connected:
+                connected_matches.append((index, observation))
+
+        if len(charging_matches) == 1:
+            return charging_matches[0]
+        if not charging_matches and len(connected_matches) == 1:
+            return connected_matches[0]
+
     vehicle_keys = {
         _normal_key(vehicle_id),
         _normal_key(vehicle_name),
@@ -176,6 +214,24 @@ def _dynamic_loadpoint(
 ) -> dict[str, Any]:
     params = state.get("params") or {}
     vehicle_name = _display_name(vehicle_id, state)
+    loadpoint_id = vehicle_id
+    observation_vehicle_id = None
+    if observation is not None and _is_default_loadpoint(vehicle_id, vehicle_name):
+        observation_vehicle_id = (
+            observation.get("vehicle_id")
+            or observation.get("charger_id")
+            or observation.get("vin")
+        )
+        observed_name = (
+            observation.get("vehicle_name")
+            or observation.get("name")
+            or observation_vehicle_id
+        )
+        if observed_name:
+            vehicle_name = observed_name
+        if observation_vehicle_id:
+            loadpoint_id = observation_vehicle_id
+
     current_amps = _int_value(state.get("current_amps"), 0)
     target_amps = _int_value(state.get("target_amps"), current_amps)
     voltage = _float_value(params.get("voltage"), 240.0)
@@ -229,8 +285,8 @@ def _dynamic_loadpoint(
     session_id = (ownership or {}).get("session_id") or state.get("session_id")
 
     return {
-        "loadpoint_id": vehicle_id,
-        "vehicle_id": vehicle_id,
+        "loadpoint_id": loadpoint_id,
+        "vehicle_id": observation_vehicle_id or vehicle_id,
         "vehicle_name": vehicle_name,
         "charger_type": charger_type,
         "connected": connected,
@@ -377,6 +433,14 @@ def build_loadpoint_status(
         )
         if index is not None:
             used_indexes.add(index)
+            if (
+                _is_default_loadpoint(vehicle_id, vehicle_name)
+                and observation is not None
+                and not _is_generic_observation(observation)
+            ):
+                for obs_index, obs in enumerate(observations):
+                    if _is_generic_observation(obs):
+                        used_indexes.add(obs_index)
         ownership = _lookup_alias(ownerships, vehicle_id)
         loadpoints.append(
             _dynamic_loadpoint(vehicle_id, state, observation, site_surplus_kw, ownership)

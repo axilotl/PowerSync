@@ -6333,7 +6333,7 @@ class OctopusPriceCoordinator(DataUpdateCoordinator):
 
         oe_data = self.hass.data.get("octopus_energy")
         if not oe_data or not isinstance(oe_data, dict):
-            return None
+            return self._read_from_octopus_energy_entities()
 
         now = datetime.now(timezone.utc)
         import_rates_raw: list[dict] = []
@@ -6395,7 +6395,7 @@ class OctopusPriceCoordinator(DataUpdateCoordinator):
                     import_tariff = tariff_code
 
         if not import_rates_raw:
-            return None
+            return self._read_from_octopus_energy_entities()
 
         # Promote BottlecapDave's active tariff/product code so callers (e.g.
         # the LP optimizer's AGILE/FLUX dynamic-pricing gate) see the live
@@ -6531,12 +6531,221 @@ class OctopusPriceCoordinator(DataUpdateCoordinator):
             export_tariff or "none",
         )
 
+        if not current_prices:
+            entity_data = self._read_from_octopus_energy_entities()
+            if entity_data:
+                return entity_data
+
         return {
             "current": current_prices,
             "forecast": combined_forecast,
             "export_rates": export_forecast,
             "last_update": dt_util.utcnow(),
             "source": "octopus_energy_integration",
+            "product_code": self.product_code,
+            "tariff_code": import_tariff or self.tariff_code,
+            "gsp_region": self.gsp_region,
+        }
+
+    @staticmethod
+    def _parse_octopus_datetime(value: Any) -> datetime | None:
+        if isinstance(value, datetime):
+            dt_value = value
+        elif isinstance(value, str) and value:
+            try:
+                dt_value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError:
+                return None
+        else:
+            return None
+        if dt_value.tzinfo is None:
+            from datetime import timezone
+            dt_value = dt_value.replace(tzinfo=timezone.utc)
+        return dt_value
+
+    @staticmethod
+    def _octopus_rate_to_pence(value: Any) -> float | None:
+        """Normalize BottlecapDave public entity GBP rates or internal pence rates."""
+        try:
+            rate = float(value)
+        except (TypeError, ValueError):
+            return None
+        # Public current_rate entities are GBP/kWh (e.g. 0.245), while internal
+        # coordinator/API rates are p/kWh (e.g. 24.5).
+        return round(rate * 100 if abs(rate) <= 2 else rate, 6)
+
+    def _octopus_state_entries(self, domain: str) -> list[Any]:
+        states = getattr(self.hass, "states", None)
+        if states is None:
+            return []
+        if hasattr(states, "async_all"):
+            return list(states.async_all(domain))
+        if isinstance(states, dict):
+            return [
+                state for entity_id, state in states.items()
+                if str(entity_id).split(".", 1)[0] == domain
+            ]
+        return []
+
+    def _build_octopus_amber_entry(
+        self,
+        start: Any,
+        end: Any,
+        rate_value: Any,
+        channel: str,
+        now: datetime,
+    ) -> dict[str, Any] | None:
+        start_dt = self._parse_octopus_datetime(start)
+        end_dt = self._parse_octopus_datetime(end)
+        rate_pence = self._octopus_rate_to_pence(rate_value)
+        if start_dt is None or end_dt is None or rate_pence is None:
+            return None
+
+        if start_dt <= now < end_dt:
+            interval_type = "CurrentInterval"
+        elif end_dt <= now:
+            interval_type = "ActualInterval"
+        else:
+            interval_type = "ForecastInterval"
+
+        return {
+            "nemTime": end_dt.isoformat(),
+            "perKwh": -rate_pence if channel == "feedIn" else rate_pence,
+            "channelType": channel,
+            "type": interval_type,
+            "duration": max(1, int((end_dt - start_dt).total_seconds() // 60)),
+            "valid_from": start_dt.isoformat(),
+            "valid_to": end_dt.isoformat(),
+        }
+
+    def _read_from_octopus_energy_entities(self) -> dict[str, Any] | None:
+        """Read BottlecapDave's documented public entities as a compatibility fallback."""
+        from datetime import timezone
+
+        now = datetime.now(timezone.utc)
+        current_prices: list[dict[str, Any]] = []
+        import_forecast: list[dict[str, Any]] = []
+        export_forecast: list[dict[str, Any]] = []
+        import_tariff = None
+        export_tariff = None
+
+        for state in self._octopus_state_entries("sensor"):
+            entity_id = getattr(state, "entity_id", "")
+            if (
+                not entity_id.startswith("sensor.octopus_energy_electricity_")
+                or not entity_id.endswith("_current_rate")
+            ):
+                continue
+            if getattr(state, "state", None) in (None, "unknown", "unavailable", ""):
+                continue
+
+            attrs = getattr(state, "attributes", None) or {}
+            is_export = bool(attrs.get("is_export")) or "_export_" in entity_id
+            channel = "feedIn" if is_export else "general"
+            entry = self._build_octopus_amber_entry(
+                attrs.get("start"),
+                attrs.get("end"),
+                getattr(state, "state", None),
+                channel,
+                now,
+            )
+            if not entry:
+                continue
+            if entry["type"] == "CurrentInterval":
+                current_prices.append(entry)
+            if channel == "feedIn":
+                export_forecast.append(entry)
+                export_tariff = attrs.get("tariff") or export_tariff
+            else:
+                import_forecast.append(entry)
+                import_tariff = attrs.get("tariff") or import_tariff
+
+        for state in self._octopus_state_entries("event"):
+            entity_id = getattr(state, "entity_id", "")
+            if (
+                not entity_id.startswith("event.octopus_energy_electricity_")
+                or not (
+                    entity_id.endswith("_current_day_rates")
+                    or entity_id.endswith("_next_day_rates")
+                )
+            ):
+                continue
+
+            attrs = getattr(state, "attributes", None) or {}
+            rates = attrs.get("rates")
+            if not isinstance(rates, list):
+                continue
+            is_export = bool(attrs.get("is_export")) or "_export_" in entity_id
+            channel = "feedIn" if is_export else "general"
+            for rate in rates:
+                if not isinstance(rate, dict):
+                    continue
+                entry = self._build_octopus_amber_entry(
+                    rate.get("start"),
+                    rate.get("end"),
+                    rate.get("value_inc_vat"),
+                    channel,
+                    now,
+                )
+                if not entry:
+                    continue
+                if entry["type"] == "CurrentInterval":
+                    current_prices.append(entry)
+                if channel == "feedIn":
+                    export_forecast.append(entry)
+                    export_tariff = attrs.get("tariff_code") or export_tariff
+                else:
+                    import_forecast.append(entry)
+                    import_tariff = attrs.get("tariff_code") or import_tariff
+
+        if not import_forecast and not any(
+            price.get("channelType") == "general" for price in current_prices
+        ):
+            return None
+
+        if not import_forecast:
+            import_forecast = [
+                price for price in current_prices
+                if price.get("channelType") == "general"
+            ]
+        if not export_forecast:
+            for price in import_forecast:
+                entry = dict(price)
+                entry["perKwh"] = -4.1
+                entry["channelType"] = "feedIn"
+                if entry.get("type") == "CurrentInterval":
+                    current_prices.append(entry)
+                export_forecast.append(entry)
+            export_tariff = export_tariff or "synthetic_seg"
+
+        if not any(price.get("channelType") == "feedIn" for price in current_prices):
+            current_export = next(
+                (price for price in export_forecast if price.get("type") == "CurrentInterval"),
+                None,
+            )
+            if current_export:
+                current_prices.append(current_export)
+
+        combined_forecast = import_forecast + export_forecast
+        if not current_prices:
+            return None
+
+        _LOGGER.info(
+            "🐙 Using octopus_energy public entity data: periods=%d (import=%d, export=%d), "
+            "import_tariff=%s, export_tariff=%s",
+            len(combined_forecast),
+            len(import_forecast),
+            len(export_forecast),
+            import_tariff or "unknown",
+            export_tariff or "none",
+        )
+
+        return {
+            "current": current_prices,
+            "forecast": combined_forecast,
+            "export_rates": export_forecast,
+            "last_update": dt_util.utcnow(),
+            "source": "octopus_energy_entities",
             "product_code": self.product_code,
             "tariff_code": import_tariff or self.tariff_code,
             "gsp_region": self.gsp_region,

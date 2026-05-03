@@ -292,6 +292,7 @@ def test_price_level_start_uses_vehicle_charger_config(fake_actions):
     assert params["charger_status_entity"] == "sensor.garage_ev_status"
     assert params["max_charge_amps"] == 24
     assert params["phases"] == 3
+    assert params["allow_ownership_takeover"] is True
 
 
 def test_generic_price_level_start_uses_generic_loadpoint_id(monkeypatch, fake_actions):
@@ -324,6 +325,7 @@ def test_generic_price_level_start_uses_generic_loadpoint_id(monkeypatch, fake_a
     assert params["vehicle_vin"] == "generic_ev"
     assert params["charger_type"] == "generic"
     assert params["charger_switch_entity"] == "switch.garage_ev"
+    assert params["allow_ownership_takeover"] is True
 
 
 def test_scheduled_generic_start_uses_generic_loadpoint_id(fake_actions):
@@ -346,6 +348,7 @@ def test_scheduled_generic_start_uses_generic_loadpoint_id(fake_actions):
     assert params["vehicle_vin"] == "generic_ev"
     assert params["charger_type"] == "generic"
     assert params["charger_switch_entity"] == "switch.garage_ev"
+    assert params["allow_ownership_takeover"] is True
 
 
 def test_scheduled_ocpp_start_uses_ocpp_loadpoint_id(fake_actions):
@@ -367,6 +370,39 @@ def test_scheduled_ocpp_start_uses_ocpp_loadpoint_id(fake_actions):
     assert params["vehicle_vin"] == "ocpp_evse_1"
     assert params["charger_type"] == "ocpp"
     assert params["ocpp_charger_id"] == "evse_1"
+    assert params["allow_ownership_takeover"] is True
+
+
+def test_auto_schedule_start_allows_solar_surplus_takeover(monkeypatch, fake_actions):
+    fake_actions._action_start_ev_charging_dynamic = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        ev_planner.dt_util,
+        "now",
+        lambda: SimpleNamespace(weekday=lambda: 0),
+    )
+
+    executor = ev_planner.AutoScheduleExecutor(
+        _FakeHass(),
+        _FakeConfigEntry(),
+        planner=SimpleNamespace(),
+    )
+    settings = ev_planner.AutoScheduleSettings(
+        vehicle_id=VIN,
+        display_name="Model 3",
+        charger_type="generic",
+        charger_switch_entity="switch.garage_ev",
+        charger_amps_entity="number.garage_ev_current",
+        charger_status_entity="sensor.garage_ev_status",
+    )
+    state = ev_planner.AutoScheduleState(vehicle_id=VIN)
+
+    asyncio.run(executor._start_charging(VIN, settings, state, "grid_offpeak"))
+
+    fake_actions._action_start_ev_charging_dynamic.assert_awaited_once()
+    _hass, _entry, params = fake_actions._action_start_ev_charging_dynamic.await_args.args
+    assert params["owner_mode"] == "smart_schedule"
+    assert params["dynamic_mode"] == "battery_target"
+    assert params["allow_ownership_takeover"] is True
 
 
 def test_price_level_stop_uses_vehicle_charger_config(fake_actions):

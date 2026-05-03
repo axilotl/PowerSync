@@ -216,6 +216,92 @@ def test_allocated_surplus_marks_powersync_session_as_solar():
     assert loadpoints[0]["confidence"] == "commanded"
 
 
+def test_dynamic_state_uses_observed_power_for_matched_vehicle():
+    loadpoints = build_loadpoint_status(
+        {
+            "LRW3F7FS1NC484342": {
+                "active": True,
+                "vehicle_name": "N3bula",
+                "current_amps": 10,
+                "target_amps": 10,
+                "charging_started": True,
+                "params": {
+                    "dynamic_mode": "solar_surplus",
+                    "voltage": 240,
+                    "phases": 3,
+                },
+            }
+        },
+        [
+            {
+                "vehicle_id": "LRW3F7FS1NC484342",
+                "vehicle_name": "N3bula",
+                "charger_type": "tesla",
+                "ev_power_kw": 2.4,
+                "ev_soc": 78,
+                "is_connected": True,
+                "is_charging": True,
+            }
+        ],
+    )
+
+    assert loadpoints[0]["current_power_kw"] == 2.4
+    assert loadpoints[0]["commanded_power_kw"] == 7.2
+    assert loadpoints[0]["status"] == "charging"
+    assert loadpoints[0]["confidence"] == "observed"
+
+
+def test_default_session_merges_with_single_observed_charging_vehicle():
+    generic_observation = build_generic_charger_observation(
+        vehicle_name="EV",
+        switch_state="on",
+        amps_value=None,
+        status_state="connected",
+        soc_value="53",
+    )
+
+    loadpoints = build_loadpoint_status(
+        {
+            "_default": {
+                "active": True,
+                "vehicle_name": "EV",
+                "current_amps": 0,
+                "target_amps": 0,
+                "params": {"dynamic_mode": "solar_surplus"},
+            }
+        },
+        [
+            {
+                "vehicle_id": "VIN_TESS",
+                "vehicle_name": "Tess",
+                "charger_type": "tesla",
+                "ev_power_kw": 3.4,
+                "ev_soc": 55,
+                "is_connected": True,
+                "is_charging": True,
+            },
+            generic_observation,
+            {
+                "vehicle_id": "VIN_THEO",
+                "vehicle_name": "Theo",
+                "charger_type": "tesla",
+                "ev_power_kw": 0.0,
+                "ev_soc": 21,
+                "is_connected": False,
+                "is_charging": False,
+            },
+        ],
+    )
+
+    assert [loadpoint["vehicle_name"] for loadpoint in loadpoints] == ["Tess", "Theo"]
+    assert loadpoints[0]["loadpoint_id"] == "VIN_TESS"
+    assert loadpoints[0]["vehicle_id"] == "VIN_TESS"
+    assert loadpoints[0]["current_power_kw"] == 3.4
+    assert loadpoints[0]["owner"] == "powersync"
+    assert loadpoints[0]["owner_mode"] == "solar_surplus"
+    assert loadpoints[0]["confidence"] == "observed"
+
+
 def test_generic_charger_observation_reports_commanded_without_power():
     observation = build_generic_charger_observation(
         vehicle_name="Generic EV",

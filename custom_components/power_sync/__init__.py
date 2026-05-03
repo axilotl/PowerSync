@@ -526,6 +526,110 @@ def _resolve_teslemetry_bt_prefix(hass) -> str | None:
     return None
 
 
+def _wall_connector_records(raw: Any) -> list[dict]:
+    """Coerce Tesla coordinator Wall Connector payloads into dict records."""
+    if isinstance(raw, list):
+        return [item for item in raw if isinstance(item, dict)]
+    if isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            try:
+                import ast
+                parsed = ast.literal_eval(raw)
+            except Exception:
+                return []
+        if isinstance(parsed, list):
+            return [item for item in parsed if isinstance(item, dict)]
+    return []
+
+
+def _kw_from_ev_power(value: Any, unit: Any = None) -> float:
+    try:
+        power = float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+    unit_key = str(unit or "").strip().lower()
+    if unit_key in ("w", "watt", "watts"):
+        return power / 1000
+    if unit_key in ("kw", "kilowatt", "kilowatts"):
+        return power
+    return power / 1000 if abs(power) > 100 else power
+
+
+def _kw_from_power_state(state: Any) -> float:
+    if not state or state.state in ("unknown", "unavailable"):
+        return 0.0
+    return _kw_from_ev_power(
+        state.state,
+        (getattr(state, "attributes", None) or {}).get("unit_of_measurement"),
+    )
+
+
+def _kw_from_wall_connector_power(value: Any) -> float:
+    return _kw_from_ev_power(value)
+
+
+def _apply_wall_connector_observation(
+    vehicles: list[dict],
+    wc_power_kw: float,
+    wc_connected: bool,
+    wc_charging: bool,
+    wc_vin: Any = None,
+) -> bool:
+    """Attach Wall Connector telemetry only when it can be matched safely."""
+    if not (wc_connected or wc_charging or wc_power_kw > 0.05):
+        return False
+
+    def update_vehicle(vehicle: dict) -> None:
+        if wc_power_kw > (vehicle.get("ev_power_kw") or 0):
+            vehicle["ev_power_kw"] = wc_power_kw
+        vehicle["is_connected"] = True
+        vehicle["is_charging"] = (
+            bool(vehicle.get("is_charging"))
+            or wc_charging
+            or wc_power_kw > 0.05
+        )
+
+    wc_vin_key = str(wc_vin or "").strip().lower()
+    if wc_vin_key:
+        for vehicle in vehicles:
+            vehicle_id = (
+                str(vehicle.get("vehicle_id") or vehicle.get("vin") or "")
+                .strip()
+                .lower()
+            )
+            if vehicle_id and (
+                vehicle_id == wc_vin_key
+                or vehicle_id in wc_vin_key
+                or wc_vin_key in vehicle_id
+            ):
+                update_vehicle(vehicle)
+                return True
+
+    charging_vehicles = [
+        vehicle for vehicle in vehicles
+        if bool(vehicle.get("is_charging")) or (vehicle.get("ev_power_kw") or 0) > 0.05
+    ]
+    connected_vehicles = [
+        vehicle for vehicle in vehicles
+        if bool(vehicle.get("is_connected"))
+    ]
+
+    if (wc_charging or wc_power_kw > 0.05) and len(charging_vehicles) == 1:
+        update_vehicle(charging_vehicles[0])
+        return True
+    if not charging_vehicles and wc_connected and len(connected_vehicles) == 1:
+        update_vehicle(connected_vehicles[0])
+        return True
+    if len(vehicles) == 1 and not charging_vehicles and not connected_vehicles:
+        update_vehicle(vehicles[0])
+        return True
+
+    return False
+
+
 def _get_ev_vehicle_status(hass, entry) -> dict:
     """Get EV charging status from Tesla vehicle sensors (Fleet API + BLE).
 
@@ -567,12 +671,9 @@ def _get_ev_vehicle_status(hass, entry) -> dict:
         ble_power_entity = TESLA_BLE_SENSOR_CHARGE_POWER.format(prefix=prefix)
         ble_state = hass.states.get(ble_power_entity)
         if is_ble_charging and ble_state and ble_state.state not in ("unknown", "unavailable"):
-            try:
-                val = float(ble_state.state)
-                if val > 0:
-                    ev_power_kw = max(ev_power_kw, val)
-            except (ValueError, TypeError):
-                pass
+            val = _kw_from_power_state(ble_state)
+            if val > 0:
+                ev_power_kw = max(ev_power_kw, val)
 
     # Check Teslemetry Bluetooth sensors
     tbt_prefix = _resolve_teslemetry_bt_prefix(hass)
@@ -580,12 +681,9 @@ def _get_ev_vehicle_status(hass, entry) -> dict:
         tbt_power_entity = TESLEMETRY_BT_SENSOR_CHARGER_POWER.format(prefix=tbt_prefix)
         tbt_state = hass.states.get(tbt_power_entity)
         if tbt_state and tbt_state.state not in ("unknown", "unavailable"):
-            try:
-                val = float(tbt_state.state)
-                if val > 0:
-                    ev_power_kw = max(ev_power_kw, val)
-            except (ValueError, TypeError):
-                pass
+            val = _kw_from_power_state(tbt_state)
+            if val > 0:
+                ev_power_kw = max(ev_power_kw, val)
 
         tbt_soc_entity = TESLEMETRY_BT_SENSOR_BATTERY_LEVEL.format(prefix=tbt_prefix)
         tbt_soc_state = hass.states.get(tbt_soc_entity)
@@ -649,12 +747,9 @@ def _get_ev_vehicle_status(hass, entry) -> dict:
                 continue
 
             if is_fleet_charging and ("charger_power" in eid or "charging_power" in eid or "charge_power" in eid):
-                try:
-                    val = float(state.state)
-                    if val > 0:
-                        ev_power_kw = max(ev_power_kw, val)
-                except (ValueError, TypeError):
-                    pass
+                val = _kw_from_power_state(state)
+                if val > 0:
+                    ev_power_kw = max(ev_power_kw, val)
 
             # Read battery level (e.g. sensor.tessy_battery_level)
             if ev_soc is None and "battery" in eid and "range" not in eid and "heater" not in eid:
@@ -680,11 +775,13 @@ def _get_ev_vehicles_status(hass, entry) -> list:
 
     for device in device_registry.devices.values():
         is_tesla_vehicle = False
+        vehicle_id = None
         for identifier in device.identifiers:
             if identifier[0] in TESLA_INTEGRATIONS:
                 potential_vin = str(identifier[1])
                 if len(potential_vin) == 17 and not potential_vin.isdigit():
                     is_tesla_vehicle = True
+                    vehicle_id = potential_vin
                 break
         if not is_tesla_vehicle:
             continue
@@ -718,12 +815,9 @@ def _get_ev_vehicles_status(hass, entry) -> list:
                 continue
 
             if "charger_power" in eid or "charging_power" in eid or "charge_power" in eid:
-                try:
-                    val = float(state.state)
-                    if val > 0:
-                        ev_power_kw = max(ev_power_kw, val)
-                except (ValueError, TypeError):
-                    pass
+                val = _kw_from_power_state(state)
+                if val > 0:
+                    ev_power_kw = max(ev_power_kw, val)
 
             if ev_soc is None and "battery" in eid and "range" not in eid and "heater" not in eid:
                 try:
@@ -738,6 +832,7 @@ def _get_ev_vehicles_status(hass, entry) -> list:
             is_connected = True
 
         vehicles.append({
+            "vehicle_id": vehicle_id,
             "vehicle_name": device.name or "Tesla EV",
             "ev_power_kw": ev_power_kw,
             "ev_soc": ev_soc,
@@ -746,52 +841,76 @@ def _get_ev_vehicles_status(hass, entry) -> list:
         })
 
     # Supplement with Wall Connector sensors for better detection.
-    # WC sensors stay awake even when the car is asleep, providing
-    # reliable power and connected status.
-    wc_power = 0.0
-    wc_connected = False
-    for state_obj in hass.states.async_all("sensor"):
-        eid = state_obj.entity_id.lower()
-        if "wall_connector" not in eid:
-            continue
-        if state_obj.state in ("unknown", "unavailable"):
-            continue
-        # Wall Connector vehicle sensor: "disconnected", "charging", "connected", etc.
-        if "vehicle" in eid and "power" not in eid:
-            if state_obj.state.lower() not in ("disconnected", "unknown", "unavailable", ""):
-                wc_connected = True
-        # Wall Connector power sensor
-        if "power" in eid:
-            try:
-                val = float(state_obj.state)
+    # WC sensors stay awake even when the car is asleep, providing reliable
+    # power and connected status, but they are site/loadpoint telemetry. In
+    # multi-vehicle accounts we must not attach that power to an arbitrary car.
+    wc_observations = []
+    entry_data = getattr(hass, "data", {}).get(DOMAIN, {}).get(entry.entry_id, {})
+    tesla_coordinator = entry_data.get("tesla_coordinator")
+    if tesla_coordinator and tesla_coordinator.data:
+        raw_wc = (
+            tesla_coordinator.data.get("wall_connectors_raw")
+            or tesla_coordinator.data.get("wall_connectors")
+        )
+        for wc in _wall_connector_records(raw_wc):
+            wc_state = wc.get("wall_connector_state", 0)
+            wc_power_kw = _kw_from_wall_connector_power(
+                wc.get("wall_connector_power", wc.get("power"))
+            )
+            wc_connected = wc_state in (2, 4, 6, 7, 11) or wc_power_kw > 0.05
+            wc_charging = wc_power_kw > 0.05 or wc_state == 2
+            wc_observations.append((
+                wc_power_kw,
+                wc_connected,
+                wc_charging,
+                wc.get("vin") or wc.get("vehicle_vin"),
+            ))
+
+        if not wc_observations:
+            wc_power_kw = _kw_from_wall_connector_power(
+                tesla_coordinator.data.get("ev_power", 0)
+            )
+            if wc_power_kw > 0.05:
+                wc_observations.append((wc_power_kw, True, True, None))
+
+    if not wc_observations:
+        wc_power = 0.0
+        wc_connected = False
+        for state_obj in hass.states.async_all("sensor"):
+            eid = state_obj.entity_id.lower()
+            if "wall_connector" not in eid:
+                continue
+            if state_obj.state in ("unknown", "unavailable"):
+                continue
+            # Wall Connector vehicle sensor: "disconnected", "charging", "connected", etc.
+            if "vehicle" in eid and "power" not in eid:
+                if state_obj.state.lower() not in ("disconnected", "unknown", "unavailable", ""):
+                    wc_connected = True
+            # Wall Connector power sensor
+            if "power" in eid:
+                val = _kw_from_power_state(state_obj)
                 if val > 0:
                     wc_power = max(wc_power, val)
-            except (ValueError, TypeError):
-                pass
+        if wc_connected or wc_power > 0.05:
+            wc_observations.append((wc_power, wc_connected, wc_power > 0.05, None))
 
-    # Apply WC data to vehicles (improve detection when car sensors are stale)
-    if wc_connected or wc_power > 0.05:
-        if vehicles:
-            # Update first vehicle with WC data
-            v = vehicles[0]
-            if wc_power > v["ev_power_kw"]:
-                v["ev_power_kw"] = wc_power
-            v["is_connected"] = True
-            v["is_charging"] = wc_power > 0.05
-        else:
-            # No vehicle found but WC shows connected — add a WC-based entry
+    for wc_power, wc_connected, wc_charging, wc_vin in wc_observations:
+        matched = _apply_wall_connector_observation(
+            vehicles,
+            wc_power,
+            wc_connected,
+            wc_charging,
+            wc_vin,
+        )
+        if not matched:
             vehicles.append({
+                "vehicle_id": "wall_connector",
                 "vehicle_name": "Wall Connector",
                 "ev_power_kw": wc_power,
                 "ev_soc": None,
                 "is_connected": True,
-                "is_charging": wc_power > 0.05,
+                "is_charging": wc_charging or wc_power > 0.05,
             })
-    elif vehicles:
-        # WC says disconnected — override stale vehicle sensor data
-        for v in vehicles:
-            if not v["is_charging"]:
-                v["is_connected"] = False
 
     return vehicles
 
@@ -11295,7 +11414,9 @@ class EVWidgetDataView(HomeAssistantView):
             # actually charging (e.g. not plugged in, or charge command didn't take effect)
             actual_ev_power_kw = None  # None = no Tesla data available
             if tesla_coordinator and tesla_coordinator.data:
-                actual_ev_power_kw = tesla_coordinator.data.get("ev_power", 0)
+                actual_ev_power_kw = _kw_from_wall_connector_power(
+                    tesla_coordinator.data.get("ev_power", 0)
+                )
 
             # Get dynamic EV state
             vehicles = _dynamic_ev_state.get(entry_id, {})
@@ -11328,7 +11449,7 @@ class EVWidgetDataView(HomeAssistantView):
                 if actual_ev_power_kw is not None:
                     # Tesla: use Wall Connector API as ground truth
                     if actual_ev_power_kw > 0.05:
-                        current_power_kw = commanded_power_kw
+                        current_power_kw = actual_ev_power_kw
                         actually_charging = True
                     elif commanded_power_kw > 0:
                         # Commands sent but car isn't drawing power (not plugged in)
@@ -11636,46 +11757,52 @@ class EVWidgetDataView(HomeAssistantView):
             # Supplement from Wall Connector data (Tesla live_status)
             # WC state 4 = connected/ready, state 2 = charging
             if tesla_coordinator and tesla_coordinator.data:
-                wc_data = tesla_coordinator.data.get("wall_connectors")
-                wc_power = tesla_coordinator.data.get("ev_power", 0)
-                if wc_data and isinstance(wc_data, str):
-                    try:
-                        import ast
-                        wc_list = ast.literal_eval(wc_data)
-                        for wc in wc_list:
-                            wc_state = wc.get("wall_connector_state", 0)
-                            wc_pwr = wc.get("wall_connector_power", 0) / 1000 if wc.get("wall_connector_power") else 0
-                            wc_vin = wc.get("vin", "")
-                            # State 2=charging, 4=connected/ready, 6=ready, 1=disconnected
-                            wc_connected = wc_state in (2, 4, 6)
-                            wc_charging = wc_pwr > 0.05 or wc_state == 2
+                wc_data = (
+                    tesla_coordinator.data.get("wall_connectors_raw")
+                    or tesla_coordinator.data.get("wall_connectors")
+                )
+                for wc in _wall_connector_records(wc_data):
+                    wc_state = wc.get("wall_connector_state", 0)
+                    wc_pwr = _kw_from_wall_connector_power(
+                        wc.get("wall_connector_power", wc.get("power"))
+                    )
+                    wc_vin = wc.get("vin") or wc.get("vehicle_vin")
+                    # State 2=charging, 4=connected/ready, 6=ready, 1=disconnected
+                    wc_connected = wc_state in (2, 4, 6, 7, 11) or wc_pwr > 0.05
+                    wc_charging = wc_pwr > 0.05 or wc_state == 2
 
-                            if wc_connected:
-                                # Find matching vehicle by VIN or update first unconnected
-                                matched = False
-                                for tv in tesla_vehicles:
-                                    if not tv["is_connected"]:
-                                        tv["is_connected"] = True
-                                        tv["is_charging"] = tv["is_charging"] or wc_charging
-                                        if wc_pwr > tv["ev_power_kw"]:
-                                            tv["ev_power_kw"] = wc_pwr
-                                        _LOGGER.debug("EV widget: %s connected via Wall Connector (state=%d, power=%.1fkW)", tv["vehicle_name"], wc_state, wc_pwr)
-                                        matched = True
-                                        break
-                                if not matched and not any(tv["is_connected"] for tv in tesla_vehicles):
-                                    tesla_vehicles.append({
-                                        "vehicle_name": "Tesla EV",
-                                        "ev_power_kw": wc_pwr,
-                                        "ev_soc": None,
-                                        "is_connected": True,
-                                        "is_charging": wc_charging,
-                                    })
-                    except Exception as wc_err:
-                        _LOGGER.debug("Error parsing Wall Connector data: %s", wc_err)
+                    if wc_connected:
+                        matched = _apply_wall_connector_observation(
+                            tesla_vehicles,
+                            wc_pwr,
+                            wc_connected,
+                            wc_charging,
+                            wc_vin,
+                        )
+                        if matched:
+                            _LOGGER.debug(
+                                "EV widget: Wall Connector matched vehicle (state=%d, power=%.1fkW, vin=%s)",
+                                wc_state,
+                                wc_pwr,
+                                "present" if wc_vin else "unknown",
+                            )
+                        elif not tesla_vehicles:
+                            tesla_vehicles.append({
+                                "vehicle_id": "wall_connector",
+                                "vehicle_name": "Tesla EV",
+                                "ev_power_kw": wc_pwr,
+                                "ev_soc": None,
+                                "is_connected": True,
+                                "is_charging": wc_charging,
+                            })
 
                 # Legacy fallback: ev_power sensor only
+                wc_power = _kw_from_wall_connector_power(
+                    tesla_coordinator.data.get("ev_power", 0)
+                )
                 if not tesla_vehicles and wc_power > 0.05:
                     tesla_vehicles = [{
+                        "vehicle_id": "wall_connector",
                         "vehicle_name": "Tesla EV",
                         "ev_power_kw": wc_power,
                         "ev_soc": None,
