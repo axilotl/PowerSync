@@ -67,7 +67,7 @@ class FoxESSRegisterMap:
     battery_power: int          # Scaled by battery_pv_gain, signed (neg=charge, pos=discharge)
     battery_power_is_32bit: bool = False  # H3-Pro uses 32-bit battery power
     battery_voltage: int = 0
-    battery_voltage_gain: int = GAIN_VOLTAGE   # default scale 0.1 V; H3-Smart uses 100 (scale 0.01 V)
+    battery_voltage_gain: int = GAIN_VOLTAGE   # scale 0.1 V
     battery_current: int = 0
     battery_temperature: int = 0
 
@@ -270,8 +270,7 @@ REGISTER_MAPS: dict[FoxESSModelFamily, FoxESSRegisterMap] = {
         battery_soc=37612,
         battery_power=39238,      # 32-bit: scale 0.001
         battery_power_is_32bit=True,
-        battery_voltage=39227,    # pack voltage, scale 0.01 (gain 100)
-        battery_voltage_gain=100,
+        battery_voltage=39227,    # pack voltage, scale 0.1
         battery_current=37610,    # BMS1 Current
         battery_temperature=37611,  # BMS1 Ambient Temperature
         nominal_power_w=39053,    # 32-bit: 39053 (high) + 39054 (low), scale 1.0
