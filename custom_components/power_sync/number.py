@@ -57,10 +57,11 @@ async def async_setup_entry(
         if caps.get("off_grid_vehicle_charging_reserve"):
             async_add_entities([OffGridEvReserveNumber(hass, entry)])
 
-    hass.async_create_task(
-        _add_capability_gated_numbers(),
-        name=f"{DOMAIN}_capability_gated_numbers",
-    )
+    if tesla_site_id:
+        hass.async_create_task(
+            _add_capability_gated_numbers(),
+            name=f"{DOMAIN}_capability_gated_numbers",
+        )
 
     # Force power slider — for non-Tesla battery systems that accept a power_w
     # parameter on force charge/discharge (FoxESS, GoodWe, Sigenergy, Sungrow,
