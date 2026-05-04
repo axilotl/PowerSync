@@ -4183,7 +4183,8 @@ class BatteryHealthView(HomeAssistantView):
                 "nominalFullPackEnergyWh": pack_full_wh,
                 "nominalEnergyRemainingWh": pack_rem_wh,
                 "serialNumber": pack.get("serialNumber") or None,
-                "isExpansion": len(individual) > 0 and not is_follower,
+                "role": "unknown",
+                "isExpansion": False,
                 "isFollower": is_follower,
             })
 
@@ -4216,6 +4217,7 @@ class BatteryHealthView(HomeAssistantView):
                     "nominalFullPackEnergyWh": inferred_full_wh,
                     "nominalEnergyRemainingWh": inferred_rem_wh,
                     "serialNumber": serial,
+                    "role": "follower",
                     "isExpansion": False,
                     "isFollower": True,
                 }
@@ -4223,6 +4225,23 @@ class BatteryHealthView(HomeAssistantView):
                 "fleet_api_bms: inferred follower data: %d unit(s), %.0f Wh each",
                 n_followers, inferred_full_wh,
             )
+
+        # Role labelling: batteryBlocks counts actual PW3 inverter/base units,
+        # while components.msa includes every BMS module. For a stack with one
+        # leader PW3, one follower PW3, and two expansion packs, bb_count=2 and
+        # the first two BMS modules should be labelled leader/follower; only
+        # later BMS modules are expansions.
+        base_unit_count = max(1, bb_count)
+        for idx, pack in enumerate(individual):
+            if idx == 0:
+                role = "leader"
+            elif pack.get("isFollower") or idx < base_unit_count:
+                role = "follower"
+            else:
+                role = "expansion"
+            pack["role"] = role
+            pack["isFollower"] = role == "follower"
+            pack["isExpansion"] = role == "expansion"
 
         # Ghost expansion pack filter. Phantom packs (registered slots not physically
         # installed) report:
@@ -13632,6 +13651,19 @@ def _preload_powerwall_local_modules() -> None:
     chain needs them, so subsequent imports in the event loop are no-ops.
     """
     from .powerwall_local import transport  # noqa: F401
+
+
+async def async_remove_config_entry_device(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+    device_entry,
+) -> bool:
+    """Allow removal of legacy standalone Powerwall pack devices."""
+    legacy_prefix = f"{config_entry.entry_id}_pw_"
+    return any(
+        domain == DOMAIN and str(identifier).startswith(legacy_prefix)
+        for domain, identifier in (getattr(device_entry, "identifiers", set()) or set())
+    )
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

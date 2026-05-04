@@ -323,3 +323,20 @@ def test_powerwall_pack_builder_skips_missing_optional_metrics():
         "capacity",
         "soh",
     ]
+
+
+def test_powerwall_pack_labels_leader_follower_and_expansions():
+    sensor = _sensor_module()
+    packs = [
+        {"role": "leader", "isExpansion": False, "isFollower": False},
+        {"role": "follower", "isExpansion": False, "isFollower": True},
+        {"role": "expansion", "isExpansion": True, "isFollower": False},
+        {"role": "expansion", "isExpansion": True, "isFollower": False},
+    ]
+
+    assert [sensor._pack_label(packs, index) for index in range(len(packs))] == [
+        "Leader PW3",
+        "Follower PW3",
+        "Expansion Pack 1",
+        "Expansion Pack 2",
+    ]

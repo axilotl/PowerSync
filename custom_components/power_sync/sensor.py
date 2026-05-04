@@ -1811,12 +1811,22 @@ def _pack_has_value(pack: dict[str, Any], *keys: str) -> bool:
 def _pack_label(packs: list[dict[str, Any]], index: int) -> str:
     """Human label for a BMS pack: base Powerwalls first, expansions separately."""
     pack = packs[index]
+    role = pack.get("role")
+    if role == "leader":
+        return "Leader PW3"
+    if role == "follower" or pack.get("isFollower"):
+        follower_number = sum(
+            1
+            for prior in packs[: index + 1]
+            if prior.get("role") == "follower" or prior.get("isFollower")
+        )
+        return "Follower PW3" if follower_number == 1 else f"Follower PW3 {follower_number}"
     if pack.get("isExpansion"):
         expansion_number = sum(1 for prior in packs[: index + 1] if prior.get("isExpansion"))
         return f"Expansion Pack {expansion_number}"
 
     base_number = sum(1 for prior in packs[: index + 1] if not prior.get("isExpansion"))
-    return f"Powerwall {base_number}"
+    return "Leader PW3" if base_number == 1 else f"Follower PW3 {base_number - 1}"
 
 
 def _pack_metric_available(packs: list[dict[str, Any]], metric: str) -> bool:
@@ -1917,6 +1927,49 @@ def _setup_powerwall_pack_sensor_additions(
         f"{DOMAIN}_battery_health_update_{entry.entry_id}",
         _handle_battery_health_update,
     )
+
+    _cleanup_legacy_powerwall_pack_registry(hass, entry)
+
+
+def _cleanup_legacy_powerwall_pack_registry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Remove stale standalone Powerwall N registry entries from older releases."""
+    try:
+        from homeassistant.helpers import device_registry as dr
+        from homeassistant.helpers import entity_registry as er
+
+        entity_registry = er.async_get(hass)
+        device_registry = dr.async_get(hass)
+    except Exception as err:
+        _LOGGER.debug("Unable to access HA registries for Powerwall pack cleanup: %s", err)
+        return
+
+    legacy_device_ids: set[str] = set()
+    legacy_identifier_prefix = f"{entry.entry_id}_pw_"
+    for device in list(device_registry.devices.values()):
+        identifiers = getattr(device, "identifiers", set()) or set()
+        if any(
+            domain == DOMAIN and str(identifier).startswith(legacy_identifier_prefix)
+            for domain, identifier in identifiers
+        ):
+            legacy_device_ids.add(device.id)
+
+    for entity in list(entity_registry.entities.values()):
+        if (
+            entity.platform == DOMAIN
+            and entity.device_id in legacy_device_ids
+            and str(entity.unique_id).startswith(f"{entry.entry_id}_pw")
+            and str(entity.unique_id).endswith(("_temperature", "_voltage"))
+        ):
+            entity_registry.async_remove(entity.entity_id)
+
+    for device_id in legacy_device_ids:
+        try:
+            device_registry.async_update_device(
+                device_id=device_id,
+                remove_config_entry_id=entry.entry_id,
+            )
+        except Exception as err:
+            _LOGGER.debug("Unable to remove legacy Powerwall pack device %s: %s", device_id, err)
 
 
 class AmberPriceSensor(PowerSyncCurrencyMixin, CoordinatorEntity, SensorEntity):
@@ -2292,10 +2345,13 @@ class _PowerwallBlockSensorBase(SensorEntity):
 
         is_expansion = bool(pack.get("isExpansion"))
         is_follower = bool(pack.get("isFollower"))
+        role = pack.get("role") or (
+            "expansion" if is_expansion else "follower" if is_follower else "leader"
+        )
         attrs: dict[str, Any] = {
             "pack_index": self._index + 1,
             "pack_label": self._label,
-            "pack_role": "expansion" if is_expansion else "follower" if is_follower else "leader",
+            "pack_role": role,
             "is_expansion": is_expansion,
             "is_follower": is_follower,
         }
@@ -4334,6 +4390,8 @@ class BatteryHealthSensor(SensorEntity):
                         attributes[f"{prefix}_is_expansion"] = battery.get("isExpansion")
                     if battery.get("isFollower") is not None:
                         attributes[f"{prefix}_is_follower"] = battery.get("isFollower")
+                    if battery.get("role") is not None:
+                        attributes[f"{prefix}_role"] = battery.get("role")
 
         # Source attribution
         if self._original_capacity_wh is not None:
