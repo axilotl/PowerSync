@@ -890,10 +890,10 @@ SIGENERGY_SENSORS: tuple[PowerSyncSensorEntityDescription, ...] = (
     ),
 )
 
-# AlphaESS-specific sensors exposing the BMS-reported power ceilings (registers
-# 0x012C / 0x012D). Shared sensors for brands that also report these limits can
-# reuse this list by keying on the same coordinator data fields.
-ALPHAESS_SENSORS: tuple[PowerSyncSensorEntityDescription, ...] = (
+# Shared sensors exposing BMS/inverter-reported power ceilings. Coordinators
+# populate the same battery_max_* fields even when the brand-specific source
+# differs (for example AlphaESS BMS registers vs FoxESS nominal inverter power).
+BMS_POWER_LIMIT_SENSORS: tuple[PowerSyncSensorEntityDescription, ...] = (
     PowerSyncSensorEntityDescription(
         key=SENSOR_TYPE_BATTERY_MAX_CHARGE_POWER,
         name="Battery Max Charge Power",
@@ -1438,9 +1438,9 @@ async def async_setup_entry(
             )
         _LOGGER.info("Sigenergy PV sensors added (DC and AC-coupled)")
 
-    # Add AlphaESS-specific sensors (BMS-reported charge/discharge power limits)
-    if is_alphaess and energy_coordinator:
-        for description in ALPHAESS_SENSORS:
+    # Add power ceiling sensors for brands that publish battery_max_* fields.
+    if (is_alphaess or is_foxess) and energy_coordinator:
+        for description in BMS_POWER_LIMIT_SENSORS:
             entities.append(
                 TeslaEnergySensor(
                     coordinator=energy_coordinator,
@@ -1448,7 +1448,7 @@ async def async_setup_entry(
                     entry=entry,
                 )
             )
-        _LOGGER.info("AlphaESS BMS-limit sensors added")
+        _LOGGER.info("Battery power ceiling sensors added")
 
     # Add ESY Sunhome-specific sensors (inverter temp, battery status, SOH)
     if is_esy_sunhome and energy_coordinator:
