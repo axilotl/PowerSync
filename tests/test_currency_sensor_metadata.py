@@ -51,6 +51,7 @@ def _install_sensor_stubs() -> None:
     ha_sensor.SensorEntity = SensorEntity
     ha_sensor.SensorDeviceClass = SimpleNamespace(
         BATTERY="battery",
+        CURRENT="current",
         DURATION="duration",
         ENERGY="energy",
         ENERGY_STORAGE="energy_storage",
@@ -242,3 +243,83 @@ def test_tariff_price_sensor_unit_prefers_tariff_currency_metadata():
     assert entity.native_value == 0.25
     assert entity.native_unit_of_measurement == "NZD/kWh"
     assert entity.extra_state_attributes["currency"] == "NZD"
+
+
+def test_powerwall_pack_sensors_use_bms_health_and_parent_device():
+    sensor = _sensor_module()
+    entry = SimpleNamespace(entry_id="entry-1", data={}, options={})
+    health = {
+        "source": "ha_local_tedapi",
+        "individual_batteries": [
+            {
+                "nominalFullPackEnergyWh": 14380.0,
+                "nominalEnergyRemainingWh": 5440.0,
+                "serialNumber": "LEADER",
+                "isExpansion": False,
+                "isFollower": False,
+            },
+            {
+                "nominalFullPackEnergyWh": 14290.0,
+                "nominalEnergyRemainingWh": 6820.0,
+                "serialNumber": "EXPANSION",
+                "isExpansion": True,
+                "isFollower": False,
+            },
+        ],
+    }
+    hass = SimpleNamespace(data={"power_sync": {"entry-1": {"battery_health": health}}})
+
+    soc = sensor.PowerwallBlockSocSensor(hass, entry, 1)
+    capacity = sensor.PowerwallBlockCapacitySensor(hass, entry, 1)
+    soh = sensor.PowerwallBlockSohSensor(hass, entry, 1)
+
+    assert soc.device_info == sensor.powerwall_device_info("entry-1")
+    assert soc._attr_name == "Expansion Pack 1 SOC"
+    assert soc.native_value == 47.7
+    assert capacity.native_value == 14.29
+    assert soh.native_value == 105.9
+    assert soc.extra_state_attributes["serial_number"] == "EXPANSION"
+    assert soc.extra_state_attributes["pack_role"] == "expansion"
+    assert soc.extra_state_attributes["is_expansion"] is True
+    assert soc.extra_state_attributes["source"] == "ha_local_tedapi"
+
+
+def test_powerwall_pack_builder_skips_missing_optional_metrics():
+    sensor = _sensor_module()
+    entry = SimpleNamespace(entry_id="entry-1", data={}, options={})
+    packs = [
+        {
+            "nominalFullPackEnergyWh": 14380.0,
+            "nominalEnergyRemainingWh": 5440.0,
+            "isExpansion": False,
+            "isFollower": False,
+        },
+        {
+            "nominalFullPackEnergyWh": 14290.0,
+            "nominalEnergyRemainingWh": 6820.0,
+            "isExpansion": True,
+            "isFollower": False,
+        },
+    ]
+    hass = SimpleNamespace(
+        data={
+            "power_sync": {
+                "entry-1": {
+                    "battery_health": {
+                        "individual_batteries": packs,
+                    },
+                },
+            },
+        },
+    )
+
+    entities = sensor._build_powerwall_pack_sensors(hass, entry, packs, set())
+
+    assert [entity.metric_key for entity in entities] == [
+        "soc",
+        "capacity",
+        "soh",
+        "soc",
+        "capacity",
+        "soh",
+    ]

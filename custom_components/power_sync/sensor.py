@@ -172,7 +172,6 @@ from .const import (
     ATTR_SPIKE_START_TIME,
     family_device_info,
     powerwall_device_info,
-    powerwall_block_device_info,
     SENSOR_KEY_TO_FAMILY,
     SENSOR_FAMILY_LP_OPTIMIZER,
     SENSOR_FAMILY_BATTERY,
@@ -1758,8 +1757,7 @@ async def async_setup_entry(
     _LOGGER.info("Battery mode sensor added")
 
     # Powerwall local TEDAPI sensors — gated on completed pairing.
-    # System-level sensors are added immediately; per-block entities are
-    # deferred until the first snapshot reveals how many Powerwalls exist.
+    # System-level sensors come from the live local snapshot.
     if entry.data.get(CONF_POWERWALL_LOCAL_PAIRED):
         local_coord = (
             domain_data.get("powerwall_local", {}).get("coordinator")
@@ -1770,60 +1768,155 @@ async def async_setup_entry(
                 PowerwallCountSensor(local_coord, entry),
                 PowerwallActiveAlertsSensor(local_coord, entry),
             ])
-            hass.async_create_task(
-                _async_add_powerwall_block_sensors(
-                    hass, entry, local_coord, async_add_entities,
-                ),
-                name=f"{DOMAIN}_powerwall_block_sensors",
-            )
+    # Pack-level sensors come from the richer BMS health scan because
+    # batteryBlocks only contains shallow block identity/count data on PW3 sites.
+    if battery_system == "tesla":
+        _setup_powerwall_pack_sensor_additions(hass, entry, async_add_entities)
 
     async_add_entities(entities)
 
 
-async def _async_add_powerwall_block_sensors(
+def _powerwall_pack_data(health_data: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Return BMS-scanned packs, including expansion packs, in scan order."""
+    if not isinstance(health_data, dict):
+        return []
+    packs = health_data.get("individual_batteries") or []
+    if not isinstance(packs, list):
+        return []
+    return [pack for pack in packs if isinstance(pack, dict)]
+
+
+def _pack_value(pack: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        value = pack.get(key)
+        if value is not None:
+            return value
+    return None
+
+
+def _pack_float(pack: dict[str, Any], *keys: str) -> float | None:
+    value = _pack_value(pack, *keys)
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _pack_has_value(pack: dict[str, Any], *keys: str) -> bool:
+    return _pack_value(pack, *keys) is not None
+
+
+def _pack_label(packs: list[dict[str, Any]], index: int) -> str:
+    """Human label for a BMS pack: base Powerwalls first, expansions separately."""
+    pack = packs[index]
+    if pack.get("isExpansion"):
+        expansion_number = sum(1 for prior in packs[: index + 1] if prior.get("isExpansion"))
+        return f"Expansion Pack {expansion_number}"
+
+    base_number = sum(1 for prior in packs[: index + 1] if not prior.get("isExpansion"))
+    return f"Powerwall {base_number}"
+
+
+def _pack_metric_available(packs: list[dict[str, Any]], metric: str) -> bool:
+    if metric in ("soc", "capacity", "soh"):
+        return any(_pack_float(pack, "nominalFullPackEnergyWh", "nominal_full_pack_energy_wh") for pack in packs)
+    if metric == "voltage":
+        return any(
+            _pack_has_value(
+                pack,
+                "voltage_v",
+                "voltage",
+                "battery_voltage",
+                "BMS_packVoltage",
+            )
+            for pack in packs
+        )
+    if metric == "temperature":
+        return any(
+            _pack_has_value(
+                pack,
+                "temperature_c",
+                "temperature",
+                "battery_temp",
+                "BMS_maxCellTemp",
+                "BMS_minCellTemp",
+            )
+            for pack in packs
+        )
+    return False
+
+
+def _pack_sensor_classes_for(packs: list[dict[str, Any]]) -> tuple[type[SensorEntity], ...]:
+    classes: list[type[SensorEntity]] = [
+        PowerwallBlockSocSensor,
+        PowerwallBlockCapacitySensor,
+        PowerwallBlockSohSensor,
+    ]
+    if _pack_metric_available(packs, "voltage"):
+        classes.append(PowerwallBlockVoltageSensor)
+    if _pack_metric_available(packs, "temperature"):
+        classes.append(PowerwallBlockTemperatureSensor)
+    return tuple(classes)
+
+
+def _build_powerwall_pack_sensors(
     hass: HomeAssistant,
     entry: ConfigEntry,
-    coordinator,
+    packs: list[dict[str, Any]],
+    added_keys: set[tuple[int, str]],
+) -> list[SensorEntity]:
+    """Build pack-level entities for BMS metrics that are present."""
+    entities: list[SensorEntity] = []
+    for index, _pack in enumerate(packs):
+        for sensor_cls in _pack_sensor_classes_for(packs):
+            if not _pack_metric_available([_pack], sensor_cls.metric_key):
+                continue
+            key = (index, sensor_cls.metric_key)
+            if key in added_keys:
+                continue
+            added_keys.add(key)
+            entities.append(sensor_cls(hass, entry, index))
+    return entities
+
+
+def _setup_powerwall_pack_sensor_additions(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Create per-Powerwall sensors after the first snapshot lands.
+    """Create pack sensors from BMS health data now and after future scans."""
+    domain_data = hass.data[DOMAIN][entry.entry_id]
+    added_keys: set[tuple[int, str]] = domain_data.setdefault("powerwall_pack_sensor_keys", set())
 
-    Waits up to 60s for ``coordinator.data.battery_blocks`` to be populated,
-    then registers one set of sensors per discovered block. PW3 sites typically
-    return None for ``battery_blocks`` (the legacy REST endpoint is gone), so
-    this task simply exits without creating per-block entities — the cloud
-    capacity / energy-left sensors from PR1 still cover the basics.
-    """
-    import asyncio as _asyncio
-    waited = 0.0
-    while waited < 60.0:
-        snap = coordinator.data
-        if snap is not None and snap.battery_blocks:
-            break
-        await _asyncio.sleep(2.0)
-        waited += 2.0
-    snap = coordinator.data
-    if snap is None or not snap.battery_blocks:
-        _LOGGER.info(
-            "Powerwall local snapshot has no battery_blocks (likely PW3 / unsupported endpoint) — skipping per-block sensors",
-        )
+    def _add_from_health(health_data: dict[str, Any] | None) -> None:
+        packs = _powerwall_pack_data(health_data)
+        if not packs:
+            return
+        new_entities = _build_powerwall_pack_sensors(hass, entry, packs, added_keys)
+        if new_entities:
+            async_add_entities(new_entities)
+            _LOGGER.info(
+                "Added %d Powerwall pack sensors across %d BMS pack(s)",
+                len(new_entities),
+                len(packs),
+            )
+
+    _add_from_health(domain_data.get("battery_health"))
+
+    if domain_data.get("powerwall_pack_sensor_unsub") is not None:
         return
 
-    block_entities: list[SensorEntity] = []
-    for index, _block in enumerate(snap.battery_blocks):
-        block_entities.extend([
-            PowerwallBlockSocSensor(coordinator, entry, index),
-            PowerwallBlockCapacitySensor(coordinator, entry, index),
-            PowerwallBlockVoltageSensor(coordinator, entry, index),
-            PowerwallBlockTemperatureSensor(coordinator, entry, index),
-            PowerwallBlockSohSensor(coordinator, entry, index),
-        ])
-    if block_entities:
-        async_add_entities(block_entities)
-        _LOGGER.info(
-            "Added %d per-Powerwall sensors across %d battery blocks",
-            len(block_entities), len(snap.battery_blocks),
-        )
+    @callback
+    def _handle_battery_health_update(data: dict[str, Any]) -> None:
+        _add_from_health(data)
+
+    domain_data["powerwall_pack_sensor_unsub"] = async_dispatcher_connect(
+        hass,
+        f"{DOMAIN}_battery_health_update_{entry.entry_id}",
+        _handle_battery_health_update,
+    )
 
 
 class AmberPriceSensor(PowerSyncCurrencyMixin, CoordinatorEntity, SensorEntity):
@@ -2122,120 +2215,200 @@ class PowerwallActiveAlertsSensor(_PowerwallLocalSensorBase):
         return {"alerts": names, "severities": severities}
 
 
-class _PowerwallBlockSensorBase(CoordinatorEntity, SensorEntity):
-    """Base class for per-Powerwall block sensors. ``index`` is the position
-    in the snapshot's ``battery_blocks`` list (stable across polls)."""
+class _PowerwallBlockSensorBase(SensorEntity):
+    """Base class for BMS-scanned pack sensors.
 
-    _attr_has_entity_name = True
+    The class name is retained so existing entity unique IDs keep migrating
+    cleanly, but the data now comes from battery_health.individual_batteries
+    rather than local batteryBlocks.
+    """
 
-    def __init__(self, coordinator, entry: ConfigEntry, index: int, key: str, name: str) -> None:
-        super().__init__(coordinator)
+    _attr_has_entity_name = False
+    metric_key = ""
+
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry, index: int, key: str, name: str) -> None:
+        self._hass = hass
         self._entry = entry
         self._index = index
+        self._metric_name = name
         self._attr_unique_id = f"{entry.entry_id}_pw{index + 1}_{key}"
-        self._attr_suggested_object_id = f"power_sync_pw{index + 1}_{key}"
-        # Sub-device already carries "Powerwall N" — entity name is just the metric.
-        self._attr_name = name
+        self._attr_suggested_object_id = f"powerwall_{index + 1}_{key}"
+        self._attr_name = f"{self._label} {name}"
 
     @property
     def device_info(self):
-        return powerwall_block_device_info(self._entry.entry_id, self._index)
+        return powerwall_device_info(self._entry.entry_id)
 
     @property
-    def _block(self) -> dict | None:
-        snap = self.coordinator.data
-        if snap is None or not snap.battery_blocks:
+    def _health_data(self) -> dict[str, Any] | None:
+        return (
+            self._hass.data.get(DOMAIN, {})
+            .get(self._entry.entry_id, {})
+            .get("battery_health")
+        )
+
+    @property
+    def _packs(self) -> list[dict[str, Any]]:
+        return _powerwall_pack_data(self._health_data)
+
+    @property
+    def _label(self) -> str:
+        packs = self._packs
+        if self._index >= len(packs):
+            return f"Powerwall {self._index + 1}"
+        return _pack_label(packs, self._index)
+
+    @property
+    def _block(self) -> dict[str, Any] | None:
+        packs = self._packs
+        if self._index >= len(packs):
             return None
-        if self._index >= len(snap.battery_blocks):
-            return None
-        return snap.battery_blocks[self._index]
+        return packs[self._index]
+
+    @property
+    def available(self) -> bool:
+        return self._block is not None
+
+    async def async_added_to_hass(self) -> None:
+        """Refresh state when a new BMS health scan lands."""
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                f"{DOMAIN}_battery_health_update_{self._entry.entry_id}",
+                self._handle_battery_health_update,
+            )
+        )
+
+    @callback
+    def _handle_battery_health_update(self, data: dict[str, Any]) -> None:
+        self._attr_name = f"{self._label} {self._metric_name}"
+        self.async_write_ha_state()
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        pack = self._block
+        if not pack:
+            return {}
+
+        is_expansion = bool(pack.get("isExpansion"))
+        is_follower = bool(pack.get("isFollower"))
+        attrs: dict[str, Any] = {
+            "pack_index": self._index + 1,
+            "pack_label": self._label,
+            "pack_role": "expansion" if is_expansion else "follower" if is_follower else "leader",
+            "is_expansion": is_expansion,
+            "is_follower": is_follower,
+        }
+        serial = pack.get("serialNumber") or pack.get("serial_number")
+        if serial:
+            attrs["serial_number"] = serial
+
+        full = _pack_float(pack, "nominalFullPackEnergyWh", "nominal_full_pack_energy_wh")
+        remaining = _pack_float(pack, "nominalEnergyRemainingWh", "nominal_energy_remaining_wh")
+        if full is not None:
+            attrs["capacity_kwh"] = round(full / 1000.0, 2)
+        if remaining is not None:
+            attrs["energy_remaining_kwh"] = round(remaining / 1000.0, 2)
+        if full and full > 0 and remaining is not None:
+            attrs["soc_percent"] = round(remaining / full * 100.0, 1)
+
+        health_data = self._health_data or {}
+        if health_data.get("source"):
+            attrs["source"] = health_data["source"]
+        return attrs
 
 
 class PowerwallBlockSocSensor(_PowerwallBlockSensorBase):
+    metric_key = "soc"
     _attr_native_unit_of_measurement = PERCENTAGE
     _attr_device_class = SensorDeviceClass.BATTERY
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_suggested_display_precision = 1
 
-    def __init__(self, coordinator, entry: ConfigEntry, index: int) -> None:
-        super().__init__(coordinator, entry, index, "soc", "SOC")
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry, index: int) -> None:
+        super().__init__(hass, entry, index, "soc", "SOC")
 
     @property
     def native_value(self) -> Any:
         block = self._block
         if not block:
             return None
-        full = block.get("nominal_full_pack_energy")
-        rem = block.get("nominal_energy_remaining")
+        full = _pack_float(block, "nominalFullPackEnergyWh", "nominal_full_pack_energy_wh")
+        rem = _pack_float(block, "nominalEnergyRemainingWh", "nominal_energy_remaining_wh")
         if full and rem is not None and full > 0:
             return round(rem / full * 100.0, 1)
         return None
 
 
 class PowerwallBlockCapacitySensor(_PowerwallBlockSensorBase):
+    metric_key = "capacity"
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
     _attr_device_class = SensorDeviceClass.ENERGY_STORAGE
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_suggested_display_precision = 2
     _attr_icon = "mdi:battery-high"
 
-    def __init__(self, coordinator, entry: ConfigEntry, index: int) -> None:
-        super().__init__(coordinator, entry, index, "capacity", "Capacity")
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry, index: int) -> None:
+        super().__init__(hass, entry, index, "capacity", "Capacity")
 
     @property
     def native_value(self) -> Any:
         block = self._block
         if not block:
             return None
-        full = block.get("nominal_full_pack_energy")
+        full = _pack_float(block, "nominalFullPackEnergyWh", "nominal_full_pack_energy_wh")
         return round(full / 1000.0, 2) if full else None
 
 
 class PowerwallBlockVoltageSensor(_PowerwallBlockSensorBase):
+    metric_key = "voltage"
     _attr_native_unit_of_measurement = "V"
     _attr_device_class = SensorDeviceClass.VOLTAGE
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_suggested_display_precision = 1
 
-    def __init__(self, coordinator, entry: ConfigEntry, index: int) -> None:
-        super().__init__(coordinator, entry, index, "voltage", "Voltage")
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry, index: int) -> None:
+        super().__init__(hass, entry, index, "voltage", "Voltage")
 
     @property
     def native_value(self) -> Any:
         block = self._block
         if not block:
             return None
-        v = block.get("v_out") or block.get("voltage")
+        v = _pack_float(block, "voltage_v", "voltage", "battery_voltage", "BMS_packVoltage")
         return round(float(v), 1) if v is not None else None
 
 
 class PowerwallBlockTemperatureSensor(_PowerwallBlockSensorBase):
+    metric_key = "temperature"
     _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
     _attr_device_class = SensorDeviceClass.TEMPERATURE
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_suggested_display_precision = 1
 
-    def __init__(self, coordinator, entry: ConfigEntry, index: int) -> None:
-        super().__init__(coordinator, entry, index, "temperature", "Temperature")
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry, index: int) -> None:
+        super().__init__(hass, entry, index, "temperature", "Temperature")
 
     @property
     def native_value(self) -> Any:
         block = self._block
         if not block:
             return None
-        for key in ("pinv_temperature", "temperature_celsius", "battery_temp"):
-            v = block.get(key)
-            if v is not None:
-                try:
-                    return round(float(v), 1)
-                except (TypeError, ValueError):
-                    continue
-        return None
+        value = _pack_float(
+            block,
+            "temperature_c",
+            "temperature",
+            "battery_temp",
+            "BMS_maxCellTemp",
+            "BMS_minCellTemp",
+        )
+        return round(value, 1) if value is not None else None
 
 
 class PowerwallBlockSohSensor(_PowerwallBlockSensorBase):
     """State of Health: pack capacity vs nameplate. PW2 nameplate = 13.5 kWh."""
 
+    metric_key = "soh"
     _attr_native_unit_of_measurement = PERCENTAGE
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_suggested_display_precision = 1
@@ -2243,15 +2416,15 @@ class PowerwallBlockSohSensor(_PowerwallBlockSensorBase):
 
     _NAMEPLATE_WH = 13500.0  # PW2 baseline; PW3 reports its own nominal
 
-    def __init__(self, coordinator, entry: ConfigEntry, index: int) -> None:
-        super().__init__(coordinator, entry, index, "soh", "State of Health")
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry, index: int) -> None:
+        super().__init__(hass, entry, index, "soh", "State of Health")
 
     @property
     def native_value(self) -> Any:
         block = self._block
         if not block:
             return None
-        full = block.get("nominal_full_pack_energy")
+        full = _pack_float(block, "nominalFullPackEnergyWh", "nominal_full_pack_energy_wh")
         if not full:
             return None
         return round(float(full) / self._NAMEPLATE_WH * 100.0, 1)

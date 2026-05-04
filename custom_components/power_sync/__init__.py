@@ -25550,6 +25550,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         unsub_ocpp()
         _LOGGER.debug("Cancelled OCPP session polling")
 
+    if pack_sensor_unsub := entry_data.get("powerwall_pack_sensor_unsub"):
+        pack_sensor_unsub()
+        entry_data["powerwall_pack_sensor_unsub"] = None
+        _LOGGER.debug("Unsubscribed Powerwall pack sensor listener")
+
     # Cancel the AEMO spike timer if it exists
     if aemo_spike_cancel := entry_data.get("aemo_spike_cancel"):
         aemo_spike_cancel()
