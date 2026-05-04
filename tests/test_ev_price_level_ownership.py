@@ -93,12 +93,14 @@ class _FakeHass:
                 }
             }
         }
+        self.entity_registry = SimpleNamespace(entities={})
+        self.device_registry = SimpleNamespace(devices={})
 
 
 class _FakeStates:
     def __init__(self, states: dict[str, str] | None = None) -> None:
         self._states = {
-            entity_id: SimpleNamespace(entity_id=entity_id, state=state)
+            entity_id: SimpleNamespace(entity_id=entity_id, state=state, attributes={})
             for entity_id, state in (states or {}).items()
         }
 
@@ -643,6 +645,53 @@ def test_generic_plug_detection_blocks_available_without_connector():
     )
 
     assert asyncio.run(ev_planner.is_ev_plugged_in(hass, entry)) is False
+
+
+def test_tesla_ble_plug_detection_ignores_off_charger_switch():
+    hass = _FakeHass()
+    hass.states = _FakeStates({
+        "binary_sensor.ble_slater_status": "off",
+        "switch.ble_slater_charger": "off",
+    })
+    entry = SimpleNamespace(
+        entry_id="entry-1",
+        data={},
+        options={
+            "ev_provider": "tesla_ble",
+            "tesla_ble_entity_prefix": "ble_slater",
+        },
+    )
+
+    assert asyncio.run(
+        ev_planner.is_ev_plugged_in(hass, entry, vehicle_vin="ble_ble_slater")
+    ) is False
+    assert asyncio.run(
+        ev_planner.get_ev_location(hass, entry, vehicle_vin="ble_ble_slater")
+    ) == "unknown"
+
+
+def test_tesla_ble_plug_detection_uses_charge_flap():
+    hass = _FakeHass()
+    hass.states = _FakeStates({
+        "binary_sensor.ble_phoenix_status": "off",
+        "switch.ble_phoenix_charger": "off",
+        "binary_sensor.ble_phoenix_charge_flap": "on",
+    })
+    entry = SimpleNamespace(
+        entry_id="entry-1",
+        data={},
+        options={
+            "ev_provider": "tesla_ble",
+            "tesla_ble_entity_prefix": "ble_phoenix",
+        },
+    )
+
+    assert asyncio.run(
+        ev_planner.is_ev_plugged_in(hass, entry, vehicle_vin="ble_ble_phoenix")
+    ) is True
+    assert asyncio.run(
+        ev_planner.get_ev_location(hass, entry, vehicle_vin="ble_ble_phoenix")
+    ) == "home"
 
 
 def test_enabled_price_level_still_stops_external_high_price_charging(

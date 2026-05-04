@@ -880,6 +880,58 @@ def _get_ev_vehicles_status(hass, entry) -> list:
             "is_charging": ev_power_kw > 0.05,
         })
 
+    # Supplement BLE-only vehicles. The BLE switch entity exists even when a
+    # vehicle is away/asleep, so derive connection from charge_flap, charging
+    # state, or measured charge power instead of switch existence.
+    config = {**entry.data, **entry.options}
+    for prefix in _resolve_ble_prefixes(hass, config):
+        ble_vehicle_id = f"ble_{prefix}"
+        if any(_vehicle_matches_identifier(vehicle, ble_vehicle_id) for vehicle in vehicles):
+            continue
+
+        status_entity = TESLA_BLE_BINARY_STATUS.format(prefix=prefix)
+        if hass.states.get(status_entity) is None:
+            continue
+
+        ev_power_kw = 0.0
+        ev_soc = None
+        is_connected = False
+
+        charge_state = hass.states.get(TESLA_BLE_SENSOR_CHARGING_STATE.format(prefix=prefix))
+        if charge_state and charge_state.state not in ("unknown", "unavailable"):
+            plugged = charging_state_plugged_status(charge_state.state)
+            if plugged is not None:
+                is_connected = plugged
+
+        charge_flap = hass.states.get(TESLA_BLE_BINARY_CHARGE_FLAP.format(prefix=prefix))
+        if charge_flap:
+            if charge_flap.state == "on":
+                is_connected = True
+            elif charge_flap.state == "off":
+                is_connected = False
+
+        power_state = hass.states.get(TESLA_BLE_SENSOR_CHARGE_POWER.format(prefix=prefix))
+        power_kw = _kw_from_power_state(power_state)
+        if power_kw > 0:
+            ev_power_kw = power_kw
+            is_connected = True
+
+        soc_state = hass.states.get(TESLA_BLE_SENSOR_CHARGE_LEVEL.format(prefix=prefix))
+        if soc_state and soc_state.state not in ("unknown", "unavailable"):
+            try:
+                ev_soc = int(float(soc_state.state))
+            except (ValueError, TypeError):
+                pass
+
+        vehicles.append({
+            "vehicle_id": ble_vehicle_id,
+            "vehicle_name": f"Tesla BLE ({prefix})",
+            "ev_power_kw": ev_power_kw,
+            "ev_soc": ev_soc,
+            "is_connected": is_connected,
+            "is_charging": ev_power_kw > 0.05,
+        })
+
     # Supplement with Wall Connector sensors for better detection.
     # WC sensors stay awake even when the car is asleep, providing reliable
     # power and connected status, but they are site/loadpoint telemetry. In

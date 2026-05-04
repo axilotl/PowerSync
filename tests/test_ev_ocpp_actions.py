@@ -549,6 +549,88 @@ def test_dynamic_update_holds_fixed_deadline_rate(monkeypatch):
     assert set_amps_calls == [32]
 
 
+def test_dynamic_update_clears_unplugged_ble_session(monkeypatch):
+    ev_planner = types.ModuleType("power_sync.automations.ev_charging_planner")
+    plug_checks: list[str | None] = []
+
+    async def is_ev_plugged_in(*args, vehicle_vin=None, **kwargs):
+        plug_checks.append(vehicle_vin)
+        return False
+
+    ev_planner.is_ev_plugged_in = is_ev_plugged_in
+    monkeypatch.setitem(sys.modules, "power_sync.automations.ev_charging_planner", ev_planner)
+
+    cancelled = []
+    actions._dynamic_ev_state.clear()
+    actions._dynamic_ev_state["entry-1"] = {
+        "ble_ble_slater": {
+            "active": True,
+            "current_amps": 10,
+            "target_amps": 10,
+            "cancel_timer": lambda: cancelled.append(True),
+            "session_id": None,
+            "params": {
+                "dynamic_mode": "battery_target",
+                "charger_type": "tesla",
+                "vehicle_vin": "ble_ble_slater",
+                "vehicle_name": "Slater",
+            },
+        }
+    }
+
+    hass = _Hass([])
+    asyncio.run(actions._dynamic_ev_update(hass, _Entry(), "entry-1", "ble_ble_slater"))
+
+    assert actions._dynamic_ev_state == {}
+    assert cancelled == [True]
+    assert plug_checks == ["ble_ble_slater"]
+    assert hass.services.calls == []
+    assert (
+        hass.data["power_sync"]["entry-1"]["ev_last_command"]["ble_ble_slater"]["command"]
+        == "release"
+    )
+    assert (
+        hass.data["power_sync"]["entry-1"]["ev_last_command"]["ble_ble_slater"]["reason"]
+        == "vehicle unplugged"
+    )
+
+
+def test_dynamic_update_keeps_plugged_ble_session(monkeypatch):
+    ev_planner = types.ModuleType("power_sync.automations.ev_charging_planner")
+
+    async def is_ev_plugged_in(*args, **kwargs):
+        return True
+
+    ev_planner.is_ev_plugged_in = is_ev_plugged_in
+    monkeypatch.setitem(sys.modules, "power_sync.automations.ev_charging_planner", ev_planner)
+
+    actions._dynamic_ev_state.clear()
+    actions._dynamic_ev_state["entry-1"] = {
+        "ble_ble_phoenix": {
+            "active": True,
+            "current_amps": 10,
+            "target_amps": 10,
+            "params": {
+                "dynamic_mode": "battery_target",
+                "charger_type": "tesla",
+                "vehicle_vin": "ble_ble_phoenix",
+                "min_charge_amps": 5,
+                "max_charge_amps": 32,
+                "fixed_charge_amps": 10,
+                "voltage": 240,
+                "phases": 1,
+            },
+        }
+    }
+
+    hass = _Hass([])
+    asyncio.run(actions._dynamic_ev_update(hass, _Entry(), "entry-1", "ble_ble_phoenix"))
+
+    assert "ble_ble_phoenix" in actions._dynamic_ev_state["entry-1"]
+    assert actions._dynamic_ev_state["entry-1"]["ble_ble_phoenix"]["current_amps"] == 10
+    assert hass.services.calls == []
+
+
 def test_tesla_set_amps_clamps_to_entity_max_by_default(monkeypatch):
     async def fake_get_tesla_ev_entity(*args, **kwargs):
         return "number.car_charging_amps"

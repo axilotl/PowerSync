@@ -3337,6 +3337,53 @@ def _distribute_surplus(entry_id: str, vehicle_id: str, total_surplus_kw: float,
     return allocated
 
 
+def _dynamic_ev_vehicle_vin(vehicle_id: str, params: Dict[str, Any]) -> Optional[str]:
+    """Return the specific vehicle identifier used by plug-status checks."""
+    return (
+        params.get("vehicle_vin")
+        or params.get("vehicle_id")
+        or (vehicle_id if vehicle_id != DEFAULT_VEHICLE_ID else None)
+    )
+
+
+async def _clear_ble_dynamic_session_if_unplugged(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+    vehicle_id: str,
+    params: Dict[str, Any],
+) -> bool:
+    """Clear stale BLE dynamic sessions when the vehicle is definitively unplugged."""
+    vehicle_vin = _dynamic_ev_vehicle_vin(vehicle_id, params)
+    if not (vehicle_vin and str(vehicle_vin).startswith("ble_")):
+        return False
+
+    try:
+        from .ev_charging_planner import is_ev_plugged_in
+
+        plugged_in = await is_ev_plugged_in(hass, config_entry, vehicle_vin=vehicle_vin)
+    except Exception as err:
+        _LOGGER.debug("Dynamic EV: could not verify BLE plug state for %s: %s", vehicle_id, err)
+        return False
+
+    if plugged_in:
+        return False
+
+    _LOGGER.info(
+        "⚡ Dynamic EV: clearing stale BLE session for %s because vehicle is not plugged in",
+        vehicle_id,
+    )
+    await _action_stop_ev_charging_dynamic(
+        hass,
+        config_entry,
+        {
+            "vehicle_id": vehicle_id,
+            "stop_charging": False,
+            "stop_reason": "vehicle unplugged",
+        },
+    )
+    return True
+
+
 async def _solar_surplus_switch_to_next_vehicle(
     hass: HomeAssistant,
     config_entry: ConfigEntry,
@@ -3781,6 +3828,11 @@ async def _dynamic_ev_update_surplus(
         return
 
     params = state.get("params", {})
+
+    if await _clear_ble_dynamic_session_if_unplugged(
+        hass, config_entry, vehicle_id, params
+    ):
+        return
 
     # Don't charge when vehicle is away from home
     try:
@@ -4260,6 +4312,11 @@ async def _dynamic_ev_update(
     mode = params.get("dynamic_mode", "battery_target")
     if mode == "solar_surplus":
         await _dynamic_ev_update_surplus(hass, config_entry, entry_id, vehicle_id)
+        return
+
+    if await _clear_ble_dynamic_session_if_unplugged(
+        hass, config_entry, vehicle_id, params
+    ):
         return
 
     # Check time window if stop_outside_window is enabled

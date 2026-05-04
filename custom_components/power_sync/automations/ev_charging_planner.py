@@ -22,7 +22,7 @@ import re
 
 from homeassistant.util import dt as dt_util
 
-from ..const import TESLA_INTEGRATIONS
+from ..const import DOMAIN, TESLA_INTEGRATIONS
 from ..solar_surplus_config import (
     DEFAULT_SOLAR_SURPLUS_MIN_BATTERY_SOC,
     get_solar_surplus_min_battery_soc,
@@ -75,6 +75,119 @@ _LOGGER.addFilter(SensitiveDataFilter())
 # Default 1.4 kW ≈ 6A @ 230V single-phase. Override per-vehicle
 # via charger settings if your charger has a different minimum.
 MIN_CHARGING_POWER_KW = 1.4
+
+
+def _configured_ble_prefixes(
+    config_entry: Optional["ConfigEntry"],
+    vehicle_vin: Optional[str] = None,
+) -> List[str]:
+    """Return Tesla BLE prefixes relevant to an optional BLE vehicle id."""
+    from ..const import (
+        CONF_TESLA_BLE_ENTITY_PREFIX,
+        DEFAULT_TESLA_BLE_ENTITY_PREFIX,
+    )
+
+    if vehicle_vin and vehicle_vin.startswith("ble_"):
+        return [vehicle_vin[4:]]
+
+    opts = {**config_entry.data, **config_entry.options} if config_entry else {}
+    raw_prefix = opts.get(CONF_TESLA_BLE_ENTITY_PREFIX, DEFAULT_TESLA_BLE_ENTITY_PREFIX)
+    prefixes = [p.strip() for p in raw_prefix.split(",") if p.strip()]
+    return prefixes or [DEFAULT_TESLA_BLE_ENTITY_PREFIX]
+
+
+def _valid_state(state: Any) -> bool:
+    return bool(state and state.state not in ("unavailable", "unknown", "None", None))
+
+
+def _cached_ble_plug_state(hass: "HomeAssistant", prefix: str) -> bool | None:
+    """Return a recent cached BLE charge-flap reading when one exists."""
+    domain_data = hass.data.get(DOMAIN) if isinstance(getattr(hass, "data", None), dict) else None
+    cached = (
+        domain_data
+        and domain_data.get("_ev_cache", {}).get(f"ev_ble_plug_cache_{prefix}")
+    )
+    if not cached or "is_plugged_in" not in cached:
+        return None
+
+    cached_at = cached.get("cached_at")
+    try:
+        now = dt_util.utcnow()
+        if now is not None and cached_at is not None:
+            if (now - cached_at).total_seconds() >= 7200:
+                return None
+    except Exception:
+        return None
+
+    return bool(cached.get("is_plugged_in"))
+
+
+def _tesla_ble_charge_power_kw(hass: "HomeAssistant", prefix: str) -> float:
+    from ..const import TESLA_BLE_SENSOR_CHARGE_POWER
+
+    power_state = hass.states.get(TESLA_BLE_SENSOR_CHARGE_POWER.format(prefix=prefix))
+    power_w = _state_power_w(power_state)
+    return (power_w or 0.0) / 1000
+
+
+def _tesla_ble_plugged_in_status(
+    hass: "HomeAssistant",
+    prefix: str,
+) -> bool | None:
+    """Return definitive BLE plug state, avoiding stale charger-switch existence."""
+    from ..const import (
+        TESLA_BLE_BINARY_CHARGE_FLAP,
+        TESLA_BLE_SENSOR_CHARGING_STATE,
+        TESLA_BLE_SWITCH_CHARGER,
+    )
+    from .loadpoint_status import charging_state_plugged_status
+
+    charge_flap = hass.states.get(TESLA_BLE_BINARY_CHARGE_FLAP.format(prefix=prefix))
+    if charge_flap:
+        if charge_flap.state == "on":
+            _LOGGER.debug("Tesla BLE %s: charge flap open -> plugged in", prefix)
+            return True
+        if charge_flap.state == "off":
+            _LOGGER.debug("Tesla BLE %s: charge flap closed -> not plugged in", prefix)
+            return False
+
+    charging_state = hass.states.get(TESLA_BLE_SENSOR_CHARGING_STATE.format(prefix=prefix))
+    if _valid_state(charging_state):
+        plugged = charging_state_plugged_status(charging_state.state)
+        if plugged is not None:
+            _LOGGER.debug(
+                "Tesla BLE %s: charging_state=%s -> plugged=%s",
+                prefix,
+                charging_state.state,
+                plugged,
+            )
+            return plugged
+
+    if _tesla_ble_charge_power_kw(hass, prefix) > 0.05:
+        _LOGGER.debug("Tesla BLE %s: charge power present -> plugged in", prefix)
+        return True
+
+    charger = hass.states.get(TESLA_BLE_SWITCH_CHARGER.format(prefix=prefix))
+    if charger and charger.state == "on":
+        _LOGGER.debug("Tesla BLE %s: charger switch is on -> plugged in", prefix)
+        return True
+
+    cached = _cached_ble_plug_state(hass, prefix)
+    if cached is not None:
+        _LOGGER.debug("Tesla BLE %s: cached plug state -> %s", prefix, cached)
+        return cached
+
+    return None
+
+
+def _tesla_ble_presence_says_home(hass: "HomeAssistant", prefix: str) -> bool:
+    """Return True only for current BLE signals that imply the vehicle is nearby."""
+    from ..const import TESLA_BLE_BINARY_STATUS
+
+    status_state = hass.states.get(TESLA_BLE_BINARY_STATUS.format(prefix=prefix))
+    if status_state and status_state.state == "on":
+        return True
+    return _tesla_ble_plugged_in_status(hass, prefix) is True
 
 
 def _iter_tesla_vehicle_devices(device_registry) -> Iterator[Tuple[Any, str]]:
@@ -303,30 +416,14 @@ async def get_ev_location(
                     _LOGGER.debug(f"Found EV at home from {entity_id} (VIN: {device_vin})")
                     break
 
-    # Method 2 (fallback): Tesla BLE - if available, vehicle is nearby (assume "home")
-    # Only used if no authoritative location found above (e.g. BLE-only users without Teslemetry)
+    # Method 2 (fallback): Tesla BLE - only current presence/plug signals imply home.
+    # Do not treat the charger switch entity merely existing as presence; HA keeps
+    # entities around even when the BLE bridge cannot currently see the car.
     if location == "unknown":
-        config = dict(config_entry.options) if config_entry else {}
-
-        if vehicle_vin and vehicle_vin.startswith("ble_"):
-            # Vehicle-specific BLE — check that vehicle's charger entity
-            ble_prefixes = [vehicle_vin[4:]]
-        else:
-            # No specific vehicle — scan ALL configured BLE prefixes rather
-            # than silently using only the first one. In a dual-car BLE setup
-            # (ble_car1,ble_car2) the old code ignored car2 entirely.
-            raw_prefix = config.get(CONF_TESLA_BLE_ENTITY_PREFIX, DEFAULT_TESLA_BLE_ENTITY_PREFIX)
-            ble_prefixes = [p.strip() for p in raw_prefix.split(",") if p.strip()]
-
-        for prefix in ble_prefixes:
-            ble_charger_entity = f"switch.{prefix}_charger"
-            ble_state = hass.states.get(ble_charger_entity)
-            if ble_state:
-                # Entity exists — car was previously detected via BLE at this
-                # location. Even if unavailable (car asleep), it's still in
-                # the garage. Any one prefix being present means "home".
+        for prefix in _configured_ble_prefixes(config_entry, vehicle_vin):
+            if _tesla_ble_presence_says_home(hass, prefix):
                 location = "home"
-                _LOGGER.debug(f"Tesla BLE entity {ble_charger_entity} exists (state={ble_state.state}), assuming location=home")
+                _LOGGER.debug("Tesla BLE %s has current presence/plug signal, assuming location=home", prefix)
                 break
 
     # Location caching: remember last known location per vehicle.
@@ -664,28 +761,12 @@ async def is_ev_plugged_in(
                         return True
 
     # Method 2 (fallback): Tesla BLE
-    config = dict(config_entry.options) if config_entry else {}
-
     if vehicle_vin and vehicle_vin.startswith("ble_"):
-        # Vehicle-specific BLE check — extract prefix from BLE identifier
-        ble_prefix = vehicle_vin[4:]  # "ble_joanna_model_3_local" → "joanna_model_3_local"
-        charge_flap_entity = f"binary_sensor.{ble_prefix}_charge_flap"
-        charge_flap_state = hass.states.get(charge_flap_entity)
-        if charge_flap_state:
-            if charge_flap_state.state == "on":
-                _LOGGER.debug(f"Tesla BLE {ble_prefix}: charge flap open → plugged in")
-                return True
-            elif charge_flap_state.state == "off":
-                _LOGGER.debug(f"Tesla BLE {ble_prefix}: charge flap closed → not plugged in")
-                return False
-        # Also check charger switch state as fallback
-        # Entity existing (even if unavailable when car asleep) means car was detected here
-        ble_charger_entity = f"switch.{ble_prefix}_charger"
-        ble_state = hass.states.get(ble_charger_entity)
-        if ble_state:
-            _LOGGER.debug(f"Tesla BLE {ble_prefix}: charger entity exists (state={ble_state.state}) → assuming plugged in")
-            return True
-        _LOGGER.debug(f"Tesla BLE {ble_prefix}: could not determine plug status")
+        ble_prefix = vehicle_vin[4:]
+        plugged = _tesla_ble_plugged_in_status(hass, ble_prefix)
+        if plugged is not None:
+            return plugged
+        _LOGGER.debug("Tesla BLE %s: could not determine plug status", ble_prefix)
         return False
 
     if vehicle_vin is None:
@@ -694,12 +775,8 @@ async def is_ev_plugged_in(
         # only the first prefix, so if car1 was away and car2 plugged in at
         # home, this returned False incorrectly. Treat any-prefix-plugged-in
         # as "some vehicle is plugged in" for the no-VIN backward-compat path.
-        raw_prefix = config.get(CONF_TESLA_BLE_ENTITY_PREFIX, DEFAULT_TESLA_BLE_ENTITY_PREFIX)
-        for prefix in (p.strip() for p in raw_prefix.split(",") if p.strip()):
-            ble_charger_entity = f"switch.{prefix}_charger"
-            ble_state = hass.states.get(ble_charger_entity)
-            if ble_state:
-                _LOGGER.debug(f"Tesla BLE {prefix} entity exists (state={ble_state.state}), assuming plugged in")
+        for prefix in _configured_ble_prefixes(config_entry, None):
+            if _tesla_ble_plugged_in_status(hass, prefix) is True:
                 return True
 
     return False
@@ -3772,24 +3849,29 @@ class AutoScheduleExecutor:
                         _LOGGER.debug(f"Found vehicle at work from {entity_id}")
                         break
 
-        # Method 2 (fallback): Tesla BLE - if configured, vehicle is nearby (assume "home")
-        # BLE entities may be "unavailable" when car is asleep, but the car is still in the garage.
-        # If BLE prefix is configured and the entity exists, assume home (matches main automation behavior).
+        # Method 2 (fallback): Tesla BLE - require a current presence/plug signal.
+        # The charger switch entity can exist while the car is away, so existence
+        # alone must not mark the vehicle as home.
         if location == "unknown":
             config = {}
             entries = self.hass.config_entries.async_entries(DOMAIN)
             if entries:
-                config = dict(entries[0].options)
+                config = {**entries[0].data, **entries[0].options}
 
-            ble_prefix = config.get(CONF_TESLA_BLE_ENTITY_PREFIX, DEFAULT_TESLA_BLE_ENTITY_PREFIX)
-            ble_charger_entity = f"switch.{ble_prefix}_charger"
-            ble_state = self.hass.states.get(ble_charger_entity)
-
-            if ble_state:
-                # Entity exists — car was previously detected via BLE at this location.
-                # Even if unavailable (car asleep), it's still in the garage.
+            if vehicle_vin and vehicle_vin.startswith("ble_"):
+                ble_prefixes = [vehicle_vin[4:]]
+            else:
+                raw_prefix = config.get(CONF_TESLA_BLE_ENTITY_PREFIX, DEFAULT_TESLA_BLE_ENTITY_PREFIX)
+                ble_prefixes = [p.strip() for p in raw_prefix.split(",") if p.strip()]
+            for ble_prefix in ble_prefixes:
+                if not _tesla_ble_presence_says_home(self.hass, ble_prefix):
+                    continue
                 location = "home"
-                _LOGGER.debug(f"Tesla BLE entity {ble_charger_entity} exists (state={ble_state.state}), assuming location=home")
+                _LOGGER.debug(
+                    "Tesla BLE %s has current presence/plug signal, assuming location=home",
+                    ble_prefix,
+                )
+                break
 
         # Method 3 (fallback): Use last known location from cache
         # If car is asleep and all sensors are unavailable, use where it was last seen.
@@ -3871,23 +3953,23 @@ class AutoScheduleExecutor:
                             _LOGGER.debug(f"Vehicle plugged in (charging state: {state.state})")
                             return True
 
-        # Method 2 (fallback): Tesla BLE — only if no authoritative sensor found above
-        # BLE entities may be "unavailable" when car is asleep, but the car is still plugged in.
-        # If the entity exists at all, the car was previously detected — assume still plugged in.
+        # Method 2 (fallback): Tesla BLE — only if no authoritative sensor found above.
+        # Require charge-flap/charging/power evidence; charger-switch existence is stale.
         config = {}
         entries = self.hass.config_entries.async_entries(DOMAIN)
         if entries:
-            config = dict(entries[0].options)
+            config = {**entries[0].data, **entries[0].options}
 
-        ble_prefix = config.get(CONF_TESLA_BLE_ENTITY_PREFIX, DEFAULT_TESLA_BLE_ENTITY_PREFIX)
-        ble_charger_entity = f"switch.{ble_prefix}_charger"
-        ble_state = self.hass.states.get(ble_charger_entity)
+        vehicle_vin = self._resolve_vehicle_vin(vehicle_id)
+        if vehicle_vin and vehicle_vin.startswith("ble_"):
+            ble_prefixes = [vehicle_vin[4:]]
+        else:
+            raw_prefix = config.get(CONF_TESLA_BLE_ENTITY_PREFIX, DEFAULT_TESLA_BLE_ENTITY_PREFIX)
+            ble_prefixes = [p.strip() for p in raw_prefix.split(",") if p.strip()]
 
-        if ble_state:
-            # Entity exists — car was previously detected via BLE.
-            # Even if unavailable (car asleep), it's still plugged in at home.
-            _LOGGER.debug(f"Tesla BLE entity {ble_charger_entity} exists (state={ble_state.state}), assuming plugged in")
-            return True
+        for ble_prefix in ble_prefixes:
+            if _tesla_ble_plugged_in_status(self.hass, ble_prefix) is True:
+                return True
 
         return False
 
