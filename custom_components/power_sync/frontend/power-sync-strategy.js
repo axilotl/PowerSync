@@ -496,28 +496,79 @@ class PowerSyncStrategy {
     }
 
     const missing = requiredCards.filter(c => !loaded[c.element] && !c.optional);
-    // Use detected state for optional cards; always generate required cards
-    const hasApex = loaded['apexcharts-card'] || false;
+    // Always generate optional card configs too. Resource detection can fail for
+    // non-admin dashboards even when the browser can load the card module.
+    const hasApex = true;
     const hasButton = true;
     const hasFlowCard = true;
     // Built-in energy flow card is always available (power-sync-energy-flow.js)
     const hasTeslaFlow = true;
 
+    const stateMap = hass.states || {};
+    const entityMetaMap = hass.entities || {};
+    const entityIds = () => Array.from(new Set([
+      ...Object.keys(stateMap),
+      ...Object.keys(entityMetaMap),
+    ]));
+    const entityExists = (id) => !!(stateMap[id] || entityMetaMap[id]);
+    const isAvailable = (id) => {
+      const s = stateMap[id];
+      return !!(s && s.state !== 'unavailable' && s.state !== 'unknown');
+    };
+    const entitySearchText = (id) => {
+      const attrs = stateMap[id]?.attributes || {};
+      const meta = entityMetaMap[id] || {};
+      return [
+        id,
+        attrs.friendly_name,
+        meta.name,
+        meta.original_name,
+        meta.translation_key,
+        meta.platform,
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+    };
+    const isPowerSyncEntity = (id) => {
+      const meta = entityMetaMap[id] || {};
+      const text = entitySearchText(id);
+      return (
+        meta.platform === 'power_sync' ||
+        id.includes('.power_sync_') ||
+        text.includes('power sync') ||
+        text.includes('powersync')
+      );
+    };
+    const isTeslaLikeEntity = (id) => {
+      const text = entitySearchText(id);
+      return (
+        text.includes('tesla') ||
+        text.includes('powerwall') ||
+        text.includes('energy_site') ||
+        text.includes('energy site') ||
+        text.includes('teslemetry') ||
+        text.includes('vpp')
+      );
+    };
+
     // Entity resolver — tries power_sync_ prefixed first, then bare name.
     // Handles mixed installs where some entities have the prefix and others don't.
     const e = (name) => {
       const prefixed = `sensor.power_sync_${name}`;
-      if (hass.states[prefixed]) return prefixed;
+      if (entityExists(prefixed)) return prefixed;
       const bare = `sensor.${name}`;
-      if (hass.states[bare]) return bare;
+      if (entityExists(bare)) return bare;
       // Default to prefixed (modern convention)
       return prefixed;
     };
 
-    // Entity existence + availability helper
+    // Entity existence helper. Do not require an available state here: Lovelace
+    // strategies generate the card config once, often while integrations are
+    // still restoring state. If we hide unavailable/unknown entities during
+    // that first render, whole dashboard sections disappear until a hard refresh.
     const has = (id) => {
-      const s = hass.states[id];
-      return s && s.state !== 'unavailable' && s.state !== 'unknown';
+      return entityExists(id);
     };
 
     // Shorthand: resolve then check
@@ -532,12 +583,12 @@ class PowerSyncStrategy {
       const directMatches = [];
       for (const name of names) {
         for (const id of [`sensor.power_sync_${name}`, `sensor.${name}`]) {
-          if (hass.states[id]) directMatches.push(id);
+          if (entityExists(id)) directMatches.push(id);
         }
       }
 
       const tails = names.map((name) => `_${name}`);
-      const suffixMatches = Object.keys(hass.states || {}).filter((id) => {
+      const suffixMatches = entityIds().filter((id) => {
         if (!id.startsWith('sensor.')) return false;
         const objectId = id.slice('sensor.'.length);
         return names.includes(objectId) || tails.some((tail) => objectId.endsWith(tail));
@@ -545,7 +596,7 @@ class PowerSyncStrategy {
       const candidates = Array.from(new Set([...directMatches, ...suffixMatches]));
       if (candidates.length === 0) return null;
 
-      const available = candidates.filter(has);
+      const available = candidates.filter(isAvailable);
       const pool = available.length > 0 ? available : candidates;
       return pool.sort((a, b) => {
         const score = (id) => {
@@ -560,41 +611,41 @@ class PowerSyncStrategy {
     // Domain-aware entity finder used by the Tesla Energy Site controls section.
     // The new Tesla entities use _attr_has_entity_name=True, so HA composes
     // their entity_ids from the device name (e.g. "Home" → home_backup_reserve)
-    // rather than the suggested object_id. This helper scans hass.states for
-    // an AVAILABLE match first, to avoid surfacing orphaned entities that
-    // HA left in the registry from a prior capability-probe result but which
-    // are now unavailable because the feature is no longer supported.
-    const isAvailable = (id) => {
-      const s = (hass.states || {})[id];
-      return s && s.state !== 'unavailable' && s.state !== 'unknown';
-    };
+    // rather than the suggested object_id. This helper scans states plus the
+    // frontend entity registry, prefers available matches, and falls back to
+    // unavailable PowerSync/Tesla-looking entities during coordinator startup.
     const findEntity = (domain, suffix) => {
-      const direct = `${domain}.power_sync_${suffix}`;
-      if (isAvailable(direct)) return direct;
       const prefix = `${domain}.`;
+      const directIds = [
+        `${domain}.power_sync_tesla_${suffix}`,
+        `${domain}.power_sync_${suffix}`,
+        `${domain}.${suffix}`,
+      ];
+      const directMatches = directIds.filter(entityExists);
       const tail = `_${suffix}`;
-      // Fallback only matches entities that look Tesla/Powerwall/energy-site related
-      // to avoid grabbing unrelated entities from GoodWe, Sigenergy, etc.
-      const isTeslaLike = (key) =>
-        key.startsWith(`${domain}.power_sync_`) ||
-        key.includes('powerwall') ||
-        key.includes('tesla') ||
-        key.includes('energy_site') ||
-        key.includes('teslemetry');
-      // First pass: prefer available Tesla-like states
-      for (const key of Object.keys(hass.states || {})) {
-        if (!key.startsWith(prefix)) continue;
-        if (!key.endsWith(tail)) continue;
-        if (!isTeslaLike(key)) continue;
-        if (isAvailable(key)) return key;
-      }
-      // Second pass: fall back to temporarily unavailable Tesla-like states
-      // (coordinator startup), but never match unrelated integrations.
-      for (const key of Object.keys(hass.states || {})) {
-        if (!key.startsWith(prefix)) continue;
-        if (key.endsWith(tail) && isTeslaLike(key)) return key;
-      }
-      return null;
+      const suffixMatches = entityIds().filter((key) => {
+        if (!key.startsWith(prefix)) return false;
+        const objectId = key.slice(prefix.length);
+        return objectId === suffix || objectId.endsWith(tail);
+      });
+      const candidates = Array.from(new Set([...directMatches, ...suffixMatches]))
+        .filter((key) => isPowerSyncEntity(key) || isTeslaLikeEntity(key));
+      if (candidates.length === 0) return null;
+
+      const available = candidates.filter(isAvailable);
+      const pool = available.length > 0 ? available : candidates;
+      return pool.sort((a, b) => {
+        const score = (id) => {
+          const objectId = id.slice(prefix.length);
+          if (objectId === `power_sync_tesla_${suffix}`) return 0;
+          if (objectId === `power_sync_${suffix}`) return 1;
+          if (objectId.endsWith(`tesla_${suffix}`)) return 2;
+          if (id.startsWith(`${domain}.power_sync_`)) return 3;
+          if (isPowerSyncEntity(id)) return 4;
+          return 5;
+        };
+        return score(a) - score(b) || a.length - b.length || a.localeCompare(b);
+      })[0];
     };
 
     // Find every VPP program switch (one switch per Tesla program enrollment),
@@ -630,15 +681,15 @@ class PowerSyncStrategy {
     // section gracefully scales from a basic Powerwall (4 rows) to a US site
     // with VPP enrollment (8+ rows).
     //
-    // Gated on power_sync_backup_reserve or power_sync_operation_mode — these
-    // are only created for Tesla setups. Without this guard, findEntity's broad
-    // suffix-match fallback picks up unrelated entities from GoodWe, Sigenergy,
-    // etc. and incorrectly renders the Tesla section for non-Tesla users.
+    // Gated on Tesla/Powerwall controls discovered through findEntity. Newer
+    // HA versions may preserve the suggested power_sync_tesla_* ids or compose
+    // ids from the device name, so direct power_sync_* checks are not enough.
     {
-      const _s = hass.states || {};
       const _hasTesla = !!(
-        _s['number.power_sync_backup_reserve'] ||
-        _s['select.power_sync_operation_mode']
+        findEntity('number', 'backup_reserve') ||
+        findEntity('select', 'operation_mode') ||
+        findEntity('switch', 'grid_charging') ||
+        findEntity('binary_sensor', 'powerwall_local_paired')
       );
       if (_hasTesla) {
         const teslaSection = _teslaEnergySiteControls(findEntity, findVppSwitches);
@@ -692,9 +743,10 @@ class PowerSyncStrategy {
           icon: 'mdi:home-clock-outline',
         });
       }
-      if (hasE('away_mode')) {
+      const awayModeEntity = findEntity('switch', 'away_mode');
+      if (awayModeEntity) {
         loadForecastEntities.push({
-          entity: e('away_mode'),
+          entity: awayModeEntity,
           name: 'Away Mode',
           icon: 'mdi:home-export-outline',
         });
@@ -800,8 +852,9 @@ class PowerSyncStrategy {
     // --- Left Column: Powerwall Local Control (only when paired) ---
     // Gated on the binary_sensor.powerwall_local_paired entity so the card
     // stays hidden until the user completes the pairing flow in the app.
-    if (hasE('powerwall_local_paired')) {
-      left.push(_powerwallLocalControl(e, hasE));
+    const powerwallLocalPaired = findEntity('binary_sensor', 'powerwall_local_paired');
+    if (powerwallLocalPaired) {
+      left.push(_powerwallLocalControl(e, hasE, findEntity, powerwallLocalPaired));
       const health = _powerwallHealth(hass);
       if (health) left.push(health);
     }
@@ -1565,7 +1618,9 @@ function _teslaStyleFlow(e, hass, findSensor) {
   const config = {
     type: 'custom:power-sync-energy-flow',
     show_header: false,
+    background: '/power_sync/frontend/backgrounds/scene_day_clear_idle.png',
     dynamic_background: true,
+    background_asset_base: '/power_sync/frontend/backgrounds',
     language: 'en',
     grid_invert: false,
     battery_invert: true,
@@ -2326,15 +2381,23 @@ function _demandCharge(e) {
   };
 }
 
-function _powerwallLocalControl(e, hasE) {
+function _powerwallLocalControl(e, hasE, findEntity, pairedEntity) {
+  const resolveEntity = (domain, suffix) =>
+    (typeof findEntity === 'function' ? findEntity(domain, suffix) : null) ||
+    `${domain}.power_sync_${suffix}`;
+  const paired = pairedEntity || resolveEntity('binary_sensor', 'powerwall_local_paired');
+  const islanded = resolveEntity('binary_sensor', 'powerwall_local_islanded');
+  const criticalAlert = typeof findEntity === 'function'
+    ? findEntity('binary_sensor', 'pw_critical_alert')
+    : null;
   const statusEntities = [
     {
-      entity: e('powerwall_local_paired'),
+      entity: paired,
       name: 'Paired',
       icon: 'mdi:key-variant',
     },
     {
-      entity: e('powerwall_local_islanded'),
+      entity: islanded,
       name: 'Off-Grid',
       icon: 'mdi:transmission-tower-off',
     },
@@ -2360,9 +2423,9 @@ function _powerwallLocalControl(e, hasE) {
       icon: 'mdi:alert-circle',
     });
   }
-  if (hasE && hasE('pw_critical_alert')) {
+  if (criticalAlert) {
     statusEntities.push({
-      entity: e('pw_critical_alert'),
+      entity: criticalAlert,
       name: 'Alert Active',
       icon: 'mdi:alert-octagon',
     });
@@ -2380,13 +2443,13 @@ function _powerwallLocalControl(e, hasE) {
       {
         type: 'conditional',
         conditions: [
-          { entity: e('powerwall_local_paired'), state: 'on' },
+          { entity: paired, state: 'on' },
         ],
         card: {
           type: 'entities',
           entities: [
             {
-              entity: findEntity('switch', 'off_grid') || e('off_grid'),
+              entity: resolveEntity('switch', 'off_grid'),
               name: 'Off-Grid Mode',
               icon: 'mdi:transmission-tower-off',
             },
