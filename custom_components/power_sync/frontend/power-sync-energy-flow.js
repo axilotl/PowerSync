@@ -1543,19 +1543,9 @@ import {
 
     _setBackground(url) {
       const img = this.shadowRoot.querySelector('#flow-scene-image');
-      const svg = this.shadowRoot.querySelector('#flow-scene-svg');
-      if (!url) return;
-      if (svg) {
-        const cssUrl = String(url).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-        svg.style.backgroundImage = `url("${cssUrl}")`;
-      }
-      if (!img) return;
+      if (!img || !url) return;
       if (img.getAttribute('href') !== url) {
         img.setAttribute('href', url);
-        img.setAttribute('xlink:href', url);
-        if (typeof img.setAttributeNS === 'function') {
-          img.setAttributeNS('http://www.w3.org/1999/xlink', 'href', url);
-        }
       }
     }
 
@@ -1672,9 +1662,6 @@ import {
             border-radius: 12px;
             border: 1px solid rgba(255,255,255,0.08);
             background: #020617;
-            background-position: center;
-            background-size: cover;
-            background-repeat: no-repeat;
           }
           .flow-scene-dim {
             fill: #020617;
@@ -1866,8 +1853,8 @@ import {
           <div class="wrap ${showLabelsClass}">
             ${titleHtml}
             <div class="scene">
-              <svg id="flow-scene-svg" viewBox="0 0 600 460" xmlns:xlink="http://www.w3.org/1999/xlink" style="transform: scale(${sceneScale}); transform-origin: center;">
-                <image id="flow-scene-image" href="${cfg.background}" xlink:href="${cfg.background}" x="0" y="0" width="600" height="460" preserveAspectRatio="xMidYMid slice"></image>
+              <svg viewBox="0 0 600 460" style="transform: scale(${sceneScale}); transform-origin: center;">
+                <image id="flow-scene-image" href="${cfg.background}" x="0" y="0" width="600" height="460" preserveAspectRatio="xMidYMid slice"></image>
                 <rect class="flow-scene-dim" x="0" y="0" width="600" height="460"></rect>
 
                 <path id="line-solar-load" class="flow-line" d="${pathD('line-solar-load', 'line_solar_load')}"></path>
