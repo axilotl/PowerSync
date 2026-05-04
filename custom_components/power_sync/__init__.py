@@ -140,6 +140,7 @@ from .const import (
     CONF_MONTHLY_SUPPLY_CHARGE,
     CONF_BATTERY_CURTAILMENT_ENABLED,
     CONF_SIGENERGY_DC_CURTAILMENT_ENABLED,
+    CONF_POWERWALL_LOCAL_PAIRED,
     CONF_POWERWALL_OFFGRID_AS_CURTAILMENT,
     CONF_TESLA_API_PROVIDER,
     CONF_FLEET_API_ACCESS_TOKEN,
@@ -14899,6 +14900,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "_mode_stick_failures": [],  # list of timestamps for calibration detection
         "_calibration_check_unsub": None,
     }
+
+    # Build the local Powerwall coordinator before entities are created. Tesla
+    # energy sensors attach a second listener to this coordinator so paired
+    # installs update from LAN telemetry instead of waiting for cloud samples.
+    if entry.data.get(CONF_POWERWALL_LOCAL_PAIRED):
+        try:
+            await hass.async_add_executor_job(_preload_powerwall_local_modules)
+            from .powerwall_local.views import (
+                ensure_coordinator as _ensure_pwlocal_coordinator,
+            )
+
+            await _ensure_pwlocal_coordinator(hass, entry)
+        except Exception as _err:
+            _LOGGER.debug(
+                "Powerwall local coordinator early warmup skipped: %s",
+                _err,
+            )
 
     from .auto_update import async_setup_auto_update
     hass.data[DOMAIN][entry.entry_id]["auto_update_cancel"] = await async_setup_auto_update(
