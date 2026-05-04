@@ -41,17 +41,38 @@ def _all_create_task_calls(tree: ast.AST) -> list[ast.Call]:
     return calls
 
 
-def _tesla_site_id_check_linenos(setup_fn: ast.AsyncFunctionDef) -> set[int]:
-    """Return line numbers of If-nodes in setup_fn that test tesla_site_id."""
-    linenos: set[int] = set()
-    for node in ast.walk(setup_fn):
-        if not isinstance(node, ast.If):
-            continue
-        test = node.test
-        # Matches bare `if tesla_site_id:` (Name node)
-        if isinstance(test, ast.Name) and test.id == "tesla_site_id":
-            linenos.add(node.lineno)
-    return linenos
+def _is_capability_gated_task_call(call: ast.Call) -> bool:
+    """Return True for hass.async_create_task(_add_capability_gated_numbers())."""
+    if not call.args:
+        return False
+    task = call.args[0]
+    return (
+        isinstance(task, ast.Call)
+        and isinstance(task.func, ast.Name)
+        and task.func.id == "_add_capability_gated_numbers"
+    )
+
+
+def _is_enclosed_by_tesla_site_id_guard(
+    setup_fn: ast.AsyncFunctionDef,
+    child: ast.AST,
+) -> bool:
+    """Return True if child has `if tesla_site_id:` as an AST ancestor."""
+    parents: dict[ast.AST, ast.AST] = {}
+    for parent in ast.walk(setup_fn):
+        for node in ast.iter_child_nodes(parent):
+            parents[node] = parent
+
+    node = child
+    while node in parents:
+        node = parents[node]
+        if (
+            isinstance(node, ast.If)
+            and isinstance(node.test, ast.Name)
+            and node.test.id == "tesla_site_id"
+        ):
+            return True
+    return False
 
 
 def test_capability_gated_task_guarded_by_tesla_site_id():
@@ -61,23 +82,21 @@ def test_capability_gated_task_guarded_by_tesla_site_id():
     tree = ast.parse(source)
 
     setup_fn = _find_function(tree, "async_setup_entry")
-    create_task_calls = _all_create_task_calls(setup_fn)
+    create_task_calls = [
+        call
+        for call in _all_create_task_calls(setup_fn)
+        if _is_capability_gated_task_call(call)
+    ]
 
-    assert create_task_calls, "Expected at least one hass.async_create_task() call"
-
-    guard_linenos = _tesla_site_id_check_linenos(setup_fn)
-    assert guard_linenos, (
-        "No `if tesla_site_id:` guard found in async_setup_entry — "
-        "the capability-gated task would run for all users"
+    assert create_task_calls, (
+        "Expected hass.async_create_task(_add_capability_gated_numbers()) call"
     )
 
     lines = source.splitlines()
 
     for call in create_task_calls:
         call_line = call.lineno
-        # Find the innermost If-guard that contains this call line.
-        enclosing_guards = [ln for ln in guard_linenos if ln < call_line]
-        assert enclosing_guards, (
+        assert _is_enclosed_by_tesla_site_id_guard(setup_fn, call), (
             f"hass.async_create_task() at line {call_line} is NOT inside any "
             f"`if tesla_site_id:` block — non-Tesla users will wait 120 s at startup.\n"
             f"  Call site: {lines[call_line - 1].strip()}"
