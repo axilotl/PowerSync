@@ -2175,12 +2175,14 @@ function _batteryHealth(e, hass) {
     },
   });
 
-  // Build individual battery gauge cards. Each slot is labelled by its role:
-  // followers get capacity inferred from the aggregate, expansions hang off a
-  // leader, and the leader is the gateway-attached primary unit.
+  // Build individual battery gauge cards using the same reconciled pack labels
+  // as the backend sensors. Legacy follower/expansion attributes are fallback
+  // only for already-restored data that has not been rescanned yet.
   const individualGauges = [];
   for (let n = 1; n <= numSlots; n++) {
     const attrPath = `states['${healthEntity}']?.attributes?.battery_${n}_health_percent`;
+    const labelPath = `states['${healthEntity}']?.attributes?.battery_${n}_label`;
+    const rolePath = `states['${healthEntity}']?.attributes?.battery_${n}_role`;
     const followerPath = `states['${healthEntity}']?.attributes?.battery_${n}_is_follower`;
     const expansionPath = `states['${healthEntity}']?.attributes?.battery_${n}_is_expansion`;
     individualGauges.push({
@@ -2190,11 +2192,16 @@ function _batteryHealth(e, hass) {
       show_name: true,
       show_state: true,
       name: `[[[
+        const label = ${labelPath};
+        if (label) return label;
+        const role = String(${rolePath} || '').toLowerCase();
         const isFollower = ${followerPath};
         const isExpansion = ${expansionPath};
-        if (isFollower) return 'Follower ${n}';
-        if (isExpansion) return 'Expansion ${n}';
-        return 'Leader ${n}';
+        if (role === 'powerwall') return 'Powerwall ${n}';
+        if (role === 'leader') return 'Leader PW3';
+        if (role === 'follower' || isFollower) return 'Follower PW3';
+        if (role === 'expansion' || isExpansion) return 'Expansion Pack ${n}';
+        return 'Powerwall ${n}';
       ]]]`,
       state_display: `[[[
         const v = ${attrPath};
@@ -2272,11 +2279,17 @@ function _batteryHealth(e, hass) {
 {% set current = state_attr('${healthEntity}', 'current_capacity_kwh') %}
 {% set scan = state_attr('${healthEntity}', 'last_scan') %}
 {% set soh = state_attr('${healthEntity}', 'state_of_health_percent') %}
-{% set has_follower = state_attr('${healthEntity}', 'battery_1_is_follower') or state_attr('${healthEntity}', 'battery_2_is_follower') or state_attr('${healthEntity}', 'battery_3_is_follower') or state_attr('${healthEntity}', 'battery_4_is_follower') %}
+{% set ns = namespace(has_follower=false) %}
+{%- for n in range(1, 9) %}
+{%- set role = state_attr('${healthEntity}', 'battery_' ~ n ~ '_role') %}
+{%- if role == 'follower' or state_attr('${healthEntity}', 'battery_' ~ n ~ '_is_follower') %}
+{%- set ns.has_follower = true %}
+{%- endif %}
+{%- endfor %}
 {% set source_label = 'local gateway' if source == 'ha_local_tedapi' else 'Fleet API relay' if source == 'ha_fleet_api_relay' else 'mobile local scan' if source == 'mobile_app_tedapi' else 'mobile cloud RSA' if source == 'mobile_app_cloud_rsa' else source %}
 {%- if source in ('mobile_app_tedapi', 'mobile_app', 'fleet_api', 'ha_local_tedapi', 'ha_fleet_api_relay', 'mobile_app_cloud_rsa') %}
 **Capacity:** {{ current }} / {{ original }} kWh | **Last scan:** {{ scan[:10] if scan else 'N/A' }} | **Source:** {{ source_label }}
-{%- if has_follower %} *(follower capacity inferred from aggregate)*{%- endif %}
+{%- if ns.has_follower %} *(follower capacity inferred from aggregate)*{%- endif %}
 {%- elif source == 'inverter_modbus' %}
 **State of Health:** {{ soh }}% (from inverter)
 {%- elif states('${healthEntity}') not in ['unavailable', 'unknown'] %}
@@ -2414,6 +2427,7 @@ function _powerwallHealth(hass) {
   const sortedIndices = Array.from(blockIndices).sort((a, b) => a - b);
   for (const i of sortedIndices) {
     const entities = [];
+    let title = `Powerwall ${i}`;
     for (const [suffix, label, icon] of [
       ['soc', 'SOC', 'mdi:battery'],
       ['soh', 'State of Health', 'mdi:battery-heart'],
@@ -2423,13 +2437,14 @@ function _powerwallHealth(hass) {
     ]) {
       const id = `sensor.power_sync_pw${i}_${suffix}`;
       if (states[id] && states[id].state !== 'unavailable') {
+        title = states[id].attributes?.pack_label || title;
         entities.push({ entity: id, name: label, icon });
       }
     }
     if (entities.length > 0) {
       cards.push({
         type: 'entities',
-        title: `Powerwall ${i}`,
+        title,
         show_header_toggle: false,
         entities,
       });

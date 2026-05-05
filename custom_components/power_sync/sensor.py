@@ -4386,6 +4386,7 @@ class BatteryHealthSensor(SensorEntity):
             for i, battery in enumerate(self._individual_batteries):
                 prefix = f"battery_{i + 1}"
                 if isinstance(battery, dict):
+                    attributes[f"{prefix}_label"] = _pack_label(self._individual_batteries, i)
                     din = battery.get("physicalDin") or battery.get("physical_din") or battery.get("din")
                     if din:
                         attributes[f"{prefix}_din"] = din

@@ -290,6 +290,7 @@ def test_powerwall_pack_sensors_use_bms_health_and_parent_device():
     assert soc.native_value == 47.7
     assert capacity.native_value == 14.29
     assert soh.native_value == 105.9
+    assert soc.extra_state_attributes["pack_label"] == "Expansion Pack 1"
     assert soc.extra_state_attributes["serial_number"] == "EXPANSION"
     assert soc.extra_state_attributes["pack_role"] == "expansion"
     assert soc.extra_state_attributes["is_expansion"] is True
@@ -369,6 +370,32 @@ def test_powerwall_pack_labels_pw2_units_as_powerwalls():
         "Powerwall 3",
         "Powerwall 4",
     ]
+
+
+def test_battery_health_attributes_publish_pack_labels():
+    sensor = _sensor_module()
+    entry = SimpleNamespace(entry_id="entry-1", data={}, options={})
+    entity = sensor.BatteryHealthSensor(entry)
+    entity._original_capacity_wh = 54000.0
+    entity._current_capacity_wh = 22950.0
+    entity._battery_count = 4
+    entity._source = "ha_local_tedapi"
+    entity._individual_batteries = [
+        {"role": "powerwall", "nominalFullPackEnergyWh": 14290.0, "isExpansion": False, "isFollower": False},
+        {"role": "powerwall", "nominalFullPackEnergyWh": 14290.0, "isExpansion": False, "isFollower": False},
+        {"role": "powerwall", "nominalFullPackEnergyWh": 14420.0, "isExpansion": False, "isFollower": False},
+        {"role": "powerwall", "nominalFullPackEnergyWh": 14470.0, "isExpansion": False, "isFollower": False},
+    ]
+
+    attrs = entity.extra_state_attributes
+
+    assert [attrs[f"battery_{index}_label"] for index in range(1, 5)] == [
+        "Powerwall 1",
+        "Powerwall 2",
+        "Powerwall 3",
+        "Powerwall 4",
+    ]
+    assert attrs["battery_1_role"] == "powerwall"
 
 
 def test_powerwall_pack_registry_cleanup_tolerates_legacy_identifier_shape(monkeypatch):
