@@ -197,3 +197,98 @@ def test_battery_export_mask_allows_only_explicit_slots(battery_optimizer_module
     assert max(result.grid_export_w[6:]) > 100.0
     assert all(action.action != "export" for action in result.schedule.actions[:6])
     assert any(action.action == "export" for action in result.schedule.actions[6:])
+
+
+def test_charge_block_mask_prevents_charging_during_export_window(
+    battery_optimizer_module,
+):
+    optimizer = _optimizer(battery_optimizer_module)
+
+    unblocked = optimizer.optimize(
+        import_prices=[0.05] * 12,
+        export_prices=[0.04] * 12,
+        solar_forecast=[0.0] * 12,
+        load_forecast=[0.1] * 12,
+        current_soc=0.20,
+        acquisition_cost_kwh=0.0,
+        allow_battery_export=[True] * 12,
+        block_battery_charge=[False] * 12,
+    )
+    blocked = optimizer.optimize(
+        import_prices=[0.05] * 12,
+        export_prices=[0.50] * 12,
+        solar_forecast=[0.0] * 12,
+        load_forecast=[0.1] * 12,
+        current_soc=0.20,
+        acquisition_cost_kwh=0.0,
+        allow_battery_export=[True] * 12,
+        block_battery_charge=[True] * 12,
+    )
+
+    assert max(action.battery_charge_w for action in unblocked.schedule.actions) > 100
+    assert max(action.battery_charge_w for action in blocked.schedule.actions) <= 1e-6
+    assert all(action.action != "charge" for action in blocked.schedule.actions)
+
+
+def test_charge_block_mask_prevents_greedy_fallback_charging(
+    battery_optimizer_module,
+    monkeypatch,
+):
+    monkeypatch.setattr(battery_optimizer_module, "SCIPY_AVAILABLE", False)
+    optimizer = _optimizer(battery_optimizer_module)
+
+    unblocked = optimizer.optimize(
+        import_prices=[0.05] * 12,
+        export_prices=[0.04] * 12,
+        solar_forecast=[0.0] * 12,
+        load_forecast=[0.1] * 12,
+        current_soc=0.20,
+        acquisition_cost_kwh=0.0,
+        allow_battery_export=[True] * 12,
+        block_battery_charge=[False] * 12,
+    )
+    blocked = optimizer.optimize(
+        import_prices=[0.05] * 12,
+        export_prices=[0.04] * 12,
+        solar_forecast=[0.0] * 12,
+        load_forecast=[0.1] * 12,
+        current_soc=0.20,
+        acquisition_cost_kwh=0.0,
+        allow_battery_export=[True] * 12,
+        block_battery_charge=[True] * 12,
+    )
+
+    assert max(action.battery_charge_w for action in unblocked.schedule.actions) > 100
+    assert max(action.battery_charge_w for action in blocked.schedule.actions) <= 1e-6
+    assert all(action.action != "charge" for action in blocked.schedule.actions)
+
+
+def test_charge_block_mask_overrides_free_import_force_charge(
+    battery_optimizer_module,
+):
+    optimizer = _optimizer(battery_optimizer_module)
+
+    unblocked = optimizer.optimize(
+        import_prices=[0.0] * 12,
+        export_prices=[0.0] * 12,
+        solar_forecast=[0.0] * 12,
+        load_forecast=[0.1] * 12,
+        current_soc=0.20,
+        acquisition_cost_kwh=0.0,
+        allow_battery_export=[True] * 12,
+        block_battery_charge=[False] * 12,
+    )
+    blocked = optimizer.optimize(
+        import_prices=[0.0] * 12,
+        export_prices=[0.0] * 12,
+        solar_forecast=[0.0] * 12,
+        load_forecast=[0.1] * 12,
+        current_soc=0.20,
+        acquisition_cost_kwh=0.0,
+        allow_battery_export=[True] * 12,
+        block_battery_charge=[True] * 12,
+    )
+
+    assert any(action.action == "charge" for action in unblocked.schedule.actions)
+    assert max(action.battery_charge_w for action in blocked.schedule.actions) <= 1e-6
+    assert all(action.action != "charge" for action in blocked.schedule.actions)

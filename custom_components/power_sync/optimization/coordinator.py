@@ -1258,6 +1258,9 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 len(import_prices),
                 export_prices,
             )
+            battery_charge_blocked = self._battery_charge_blocked_slots(
+                len(import_prices),
+            )
 
             # Run LP in executor thread to avoid blocking event loop
             result: OptimizerResult = await self.hass.async_add_executor_job(
@@ -1270,6 +1273,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._cost_function.value,
                 acq_cost,
                 battery_export_allowed,
+                battery_charge_blocked,
             )
 
             self._last_optimizer_result = result
@@ -2213,6 +2217,21 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
         return allowed
 
+    def _battery_charge_blocked_slots(self, n: int) -> list[bool]:
+        """Return per-slot blocks where the LP must not charge the battery."""
+        if n <= 0:
+            return []
+
+        blocked = self._flow_power_export_window_slots(n)
+        blocked_count = sum(blocked)
+        if blocked_count:
+            _LOGGER.debug(
+                "Battery charge blocked in %d/%d optimizer intervals",
+                blocked_count,
+                n,
+            )
+        return blocked
+
     def _time_window_slots(
         self,
         n: int,
@@ -2255,6 +2274,12 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _flow_power_profit_export_slots(self, n: int) -> list[bool]:
         """Allow Flow Power profit exports only during Happy Hour."""
         if not self._config.profit_max_enabled or self._provider_key() != "flow_power":
+            return [False] * n
+        return self._flow_power_export_window_slots(n)
+
+    def _flow_power_export_window_slots(self, n: int) -> list[bool]:
+        """Return Flow Power's fixed daily export window slots."""
+        if self._provider_key() != "flow_power":
             return [False] * n
         if not self._entry:
             return [False] * n

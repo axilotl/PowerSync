@@ -15,6 +15,114 @@ def _as_float(value: Any) -> float | None:
         return None
 
 
+def serial_from_din(din: Any) -> str | None:
+    """Return the trailing serial from a Tesla DIN/VIN string."""
+    if not din or not isinstance(din, str):
+        return None
+    if "--" not in din:
+        return din
+    return din.rsplit("--", 1)[-1] or None
+
+
+def _block_din(block: dict[str, Any]) -> str | None:
+    din = block.get("din") or block.get("vin")
+    return din if isinstance(din, str) and din else None
+
+
+def _is_pw3_din(din: Any) -> bool:
+    return isinstance(din, str) and din.startswith("1707000-30-")
+
+
+def has_pw3_stack(
+    battery_blocks: list[dict[str, Any]],
+    components: list[dict[str, Any]],
+    leader_din: Any = None,
+) -> bool:
+    """Identify PW3 stacks before applying leader/follower/expansion semantics."""
+    if _is_pw3_din(leader_din):
+        return True
+    if any(_is_pw3_din(_block_din(block)) for block in battery_blocks):
+        return True
+    return any(
+        isinstance(component.get("partNumber"), str)
+        and component["partNumber"].startswith("1707000-30-")
+        for component in components
+    )
+
+
+def assign_pack_roles_from_battery_blocks(
+    packs: list[dict[str, Any]],
+    battery_blocks: list[dict[str, Any]],
+    leader_din: Any = None,
+    components: list[dict[str, Any]] | None = None,
+) -> bool:
+    """Normalise per-pack roles and physical serials from Tesla batteryBlocks.
+
+    PW3 stacks expose base inverter units in ``batteryBlocks`` and BMS modules in
+    ``components.msa``; expansions may appear between the leader and follower BMS
+    rows. PW2 sites expose separate Powerwalls and must not be labelled as PW3
+    followers or expansion packs.
+
+    Returns True when PW3 semantics were applied.
+    """
+    components = components or []
+    base_dins = [_block_din(block) for block in battery_blocks]
+    base_dins = [din for din in base_dins if din]
+    is_pw3_stack = has_pw3_stack(battery_blocks, components, leader_din)
+
+    if not is_pw3_stack:
+        for idx, pack in enumerate(packs):
+            physical_din = base_dins[idx] if idx < len(base_dins) else None
+            pack["role"] = "powerwall"
+            pack["isFollower"] = False
+            pack["isExpansion"] = False
+            if physical_din:
+                pack["physicalDin"] = physical_din
+            if not pack.get("serialNumber"):
+                serial = serial_from_din(physical_din)
+                if serial:
+                    pack["serialNumber"] = serial
+        return False
+
+    leader_physical_din = leader_din if isinstance(leader_din, str) and leader_din else None
+    leader_physical_din = leader_physical_din or (base_dins[0] if base_dins else None)
+    follower_dins = [din for din in base_dins if din != leader_physical_din]
+    explicit_follower_count = sum(1 for pack in packs if pack.get("isFollower"))
+    follower_slots_to_assign = max(0, len(follower_dins) - explicit_follower_count)
+    tail_follower_indices: set[int] = set()
+    if follower_slots_to_assign:
+        candidates = [
+            idx for idx, pack in enumerate(packs)
+            if idx > 0 and not pack.get("isFollower")
+        ]
+        tail_follower_indices = set(candidates[-follower_slots_to_assign:])
+
+    follower_seq = 0
+    for idx, pack in enumerate(packs):
+        if idx == 0:
+            role = "leader"
+        elif pack.get("isFollower") or idx in tail_follower_indices:
+            role = "follower"
+        else:
+            role = "expansion"
+
+        pack["role"] = role
+        pack["isFollower"] = role == "follower"
+        pack["isExpansion"] = role == "expansion"
+        if role == "leader":
+            pack["physicalDin"] = leader_physical_din
+            pack["serialNumber"] = serial_from_din(leader_physical_din) or pack.get("serialNumber")
+        elif role == "follower":
+            physical_din = follower_dins[follower_seq] if follower_seq < len(follower_dins) else None
+            follower_seq += 1
+            pack["physicalDin"] = physical_din
+            pack["serialNumber"] = serial_from_din(physical_din) or pack.get("serialNumber")
+        else:
+            pack["physicalDin"] = None
+
+    return True
+
+
 def reconcile_pack_remaining_with_aggregate(
     packs: list[dict[str, Any]],
     aggregate_remaining_wh: Any,
@@ -57,9 +165,15 @@ def reconcile_pack_remaining_with_aggregate(
     candidates: list[tuple[dict[str, Any], float, float]] = []
     for pack, full, remaining in prepared:
         is_expansion = bool(pack.get("isExpansion") or pack.get("role") == "expansion")
-        has_serial = bool(pack.get("serialNumber") or pack.get("serial_number"))
+        is_follower = bool(pack.get("isFollower") or pack.get("role") == "follower")
+        has_bms_serial = bool(
+            pack.get("bmsSerialNumber")
+            or pack.get("bms_serial_number")
+            or (pack.get("serialNumber") if is_expansion else None)
+            or (pack.get("serial_number") if is_expansion else None)
+        )
         near_empty = remaining < 500.0 or remaining / full < 0.05
-        if is_expansion and not has_serial and near_empty:
+        if (is_expansion or is_follower) and not has_bms_serial and near_empty:
             candidates.append((pack, full, remaining))
 
     if not candidates:

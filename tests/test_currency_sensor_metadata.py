@@ -354,6 +354,23 @@ def test_powerwall_pack_labels_leader_follower_and_expansions():
     ]
 
 
+def test_powerwall_pack_labels_pw2_units_as_powerwalls():
+    sensor = _sensor_module()
+    packs = [
+        {"role": "powerwall", "isExpansion": False, "isFollower": False},
+        {"role": "powerwall", "isExpansion": False, "isFollower": False},
+        {"role": "powerwall", "isExpansion": False, "isFollower": False},
+        {"role": "powerwall", "isExpansion": False, "isFollower": False},
+    ]
+
+    assert [sensor._pack_label(packs, index) for index in range(len(packs))] == [
+        "Powerwall 1",
+        "Powerwall 2",
+        "Powerwall 3",
+        "Powerwall 4",
+    ]
+
+
 def test_powerwall_pack_registry_cleanup_tolerates_legacy_identifier_shape(monkeypatch):
     sensor = _sensor_module()
     entry = SimpleNamespace(entry_id="entry-1")

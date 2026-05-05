@@ -4178,7 +4178,12 @@ class BatteryHealthView(HomeAssistantView):
             build_signed_routable_message,
             parse_device_controller_response,
         )
-        from .powerwall_local.bms_health import reconcile_pack_remaining_with_aggregate
+        from .powerwall_local.bms_health import (
+            assign_pack_roles_from_battery_blocks,
+            has_pw3_stack,
+            reconcile_pack_remaining_with_aggregate,
+            serial_from_din,
+        )
 
         private_key_pem = entry.data.get(CONF_POWERWALL_LOCAL_PRIVATE_KEY)
         din = entry.data.get(CONF_POWERWALL_LOCAL_DIN)
@@ -4315,6 +4320,7 @@ class BatteryHealthView(HomeAssistantView):
         # Per-pack BMS breakdown from components.msa.
         # Only PW3BMS components carry BMS_nominalFullPackEnergy; PVS/PVAC/TESYNC etc. have 0.
         all_comps = (data.get("components") or {}).get("msa") or []
+        is_pw3_stack = has_pw3_stack(battery_blocks, all_comps, din)
         _LOGGER.debug(
             "fleet_api_bms: batteryBlocks=%d, msa_total=%d entries: %s",
             bb_count, len(all_comps),
@@ -4334,13 +4340,18 @@ class BatteryHealthView(HomeAssistantView):
             pack_full_wh = (sigs.get("BMS_nominalFullPackEnergy") or 0) * 1000
             pack_rem_wh = (sigs.get("BMS_nominalEnergyRemaining") or 0) * 1000
             # Follower PW3 base modules report the BMS signal key but with None values.
-            is_follower = pack_full_wh == 0 and sigs.get("BMS_nominalFullPackEnergy") is None
+            is_follower = (
+                is_pw3_stack
+                and pack_full_wh == 0
+                and sigs.get("BMS_nominalFullPackEnergy") is None
+            )
             individual.append({
                 "nominalFullPackEnergyWh": pack_full_wh,
                 "nominalEnergyRemainingWh": pack_rem_wh,
+                "bmsSerialNumber": pack.get("serialNumber") or None,
                 "serialNumber": pack.get("serialNumber") or None,
                 "role": "unknown",
-                "isExpansion": False,
+                "isExpansion": bool(is_pw3_stack and individual and not is_follower),
                 "isFollower": is_follower,
             })
 
@@ -4352,7 +4363,7 @@ class BatteryHealthView(HomeAssistantView):
             i for i, p in enumerate(individual)
             if p.get("isFollower") and p.get("nominalFullPackEnergyWh") == 0
         ]
-        if follower_indices and current_wh:
+        if is_pw3_stack and follower_indices and current_wh:
             leader_full_wh = sum(
                 p["nominalFullPackEnergyWh"] for p in individual if not p.get("isFollower")
             )
@@ -4368,10 +4379,12 @@ class BatteryHealthView(HomeAssistantView):
             ]
             for seq, idx in enumerate(follower_indices):
                 f_din = follower_dins[seq] if seq < len(follower_dins) else None
-                serial = f_din.split("--")[1] if f_din and "--" in f_din else None
+                serial = serial_from_din(f_din)
                 individual[idx] = {
                     "nominalFullPackEnergyWh": inferred_full_wh,
                     "nominalEnergyRemainingWh": inferred_rem_wh,
+                    "bmsSerialNumber": None,
+                    "physicalDin": f_din,
                     "serialNumber": serial,
                     "role": "follower",
                     "isExpansion": False,
@@ -4382,22 +4395,15 @@ class BatteryHealthView(HomeAssistantView):
                 n_followers, inferred_full_wh,
             )
 
-        # Role labelling: batteryBlocks counts actual PW3 inverter/base units,
-        # while components.msa includes every BMS module. For a stack with one
-        # leader PW3, one follower PW3, and two expansion packs, bb_count=2 and
-        # the first two BMS modules should be labelled leader/follower; only
-        # later BMS modules are expansions.
-        base_unit_count = max(1, bb_count)
-        for idx, pack in enumerate(individual):
-            if idx == 0:
-                role = "leader"
-            elif pack.get("isFollower") or idx < base_unit_count:
-                role = "follower"
-            else:
-                role = "expansion"
-            pack["role"] = role
-            pack["isFollower"] = role == "follower"
-            pack["isExpansion"] = role == "expansion"
+        # Role labelling: PW3 has leader/follower base units plus expansion
+        # BMS modules; PW2 has separate Powerwalls and should stay as plain
+        # powerwall packs.
+        assign_pack_roles_from_battery_blocks(
+            individual,
+            battery_blocks,
+            din,
+            all_comps,
+        )
 
         # Ghost expansion pack filter. Phantom packs (registered slots not physically
         # installed) report:

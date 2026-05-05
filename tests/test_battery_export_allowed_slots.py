@@ -334,6 +334,19 @@ def test_flow_power_profit_max_allows_only_happy_hour(opt_module):
     assert coordinator._profit_max_terminal_weight() == 0.3
 
 
+def test_flow_power_blocks_battery_charge_during_happy_hour(opt_module):
+    coordinator = _coordinator(
+        opt_module,
+        "flow_power",
+        profit_max=False,
+        flow_power_state="NSW1",
+    )
+
+    slots = coordinator._battery_charge_blocked_slots(288)
+
+    assert _true_indexes(slots) == list(range(108, 132))
+
+
 def test_export_boost_allows_only_configured_window_above_threshold(opt_module):
     coordinator = _coordinator(
         opt_module,

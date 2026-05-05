@@ -1818,6 +1818,9 @@ def _pack_label(packs: list[dict[str, Any]], index: int) -> str:
     """Human label for a BMS pack: base Powerwalls first, expansions separately."""
     pack = packs[index]
     role = pack.get("role")
+    if role == "powerwall":
+        powerwall_number = sum(1 for prior in packs[: index + 1] if prior.get("role") == "powerwall")
+        return f"Powerwall {powerwall_number}"
     if role == "leader":
         return "Leader PW3"
     if role == "follower" or pack.get("isFollower"):
@@ -2369,6 +2372,12 @@ class _PowerwallBlockSensorBase(SensorEntity):
         serial = pack.get("serialNumber") or pack.get("serial_number")
         if serial:
             attrs["serial_number"] = serial
+        physical_din = pack.get("physicalDin") or pack.get("physical_din") or pack.get("din")
+        if physical_din:
+            attrs["physical_din"] = physical_din
+        bms_serial = pack.get("bmsSerialNumber") or pack.get("bms_serial_number")
+        if bms_serial and bms_serial != serial:
+            attrs["bms_serial_number"] = bms_serial
 
         full = _pack_float(pack, "nominalFullPackEnergyWh", "nominal_full_pack_energy_wh")
         remaining = _pack_float(pack, "nominalEnergyRemainingWh", "nominal_energy_remaining_wh")
@@ -4377,10 +4386,14 @@ class BatteryHealthSensor(SensorEntity):
             for i, battery in enumerate(self._individual_batteries):
                 prefix = f"battery_{i + 1}"
                 if isinstance(battery, dict):
-                    if battery.get("din"):
-                        attributes[f"{prefix}_din"] = battery.get("din")
+                    din = battery.get("physicalDin") or battery.get("physical_din") or battery.get("din")
+                    if din:
+                        attributes[f"{prefix}_din"] = din
                     if battery.get("serialNumber"):
                         attributes[f"{prefix}_serial"] = battery.get("serialNumber")
+                    bms_serial = battery.get("bmsSerialNumber") or battery.get("bms_serial_number")
+                    if bms_serial:
+                        attributes[f"{prefix}_bms_serial"] = bms_serial
                     if battery.get("nominalFullPackEnergyWh") is not None:
                         orig_wh = battery.get("nominalFullPackEnergyWh")
                         # Actual measured usable capacity of the battery
