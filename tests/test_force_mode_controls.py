@@ -121,3 +121,24 @@ def test_tesla_tariff_fetch_rejects_force_tariffs():
     assert function_source is not None
     assert "if _is_powersync_force_tariff(tariff):" in function_source
     assert '"last_restorable_tesla_tariff"' in function_source
+
+
+def test_optimizer_force_modes_are_not_reissued_after_restart():
+    source = INIT_PATH.read_text()
+    tree = ast.parse(source)
+    function = _find_function(tree, "restore_force_mode_from_persistence")
+    function_source = ast.get_source_segment(source, function)
+
+    assert function_source is not None
+    assert 'persisted_source = persisted_force_state.get("source", "user")' in function_source
+    assert 'if persisted_source == "optimizer":' in function_source
+
+    optimizer_branch = function_source.split(
+        'if persisted_source == "optimizer":',
+        1,
+    )[1].split("if now >= expires_at:", 1)[0]
+    assert "SERVICE_RESTORE_NORMAL" in optimizer_branch
+    assert '"set_self_consumption"' in optimizer_branch
+    assert 'stored_data["force_mode_state"] = None' in optimizer_branch
+    assert "SERVICE_FORCE_DISCHARGE" not in optimizer_branch
+    assert "SERVICE_FORCE_CHARGE" not in optimizer_branch

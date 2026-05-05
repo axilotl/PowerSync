@@ -189,6 +189,25 @@ def _tariff_schedule() -> dict:
     }
 
 
+def _fresh_tariff_schedule() -> dict:
+    return {
+        "plan_name": "FOUR4FREE",
+        "last_sync": "2026-05-03 08:31:00",
+        "tou_periods": {
+            "ON_PEAK": [
+                {
+                    "fromDayOfWeek": 0,
+                    "toDayOfWeek": 6,
+                    "fromHour": 0,
+                    "toHour": 24,
+                }
+            ]
+        },
+        "buy_rates": {"ON_PEAK": 0.51},
+        "sell_rates": {"ON_PEAK": 0.10},
+    }
+
+
 def _coordinator_with_static_tou_provider(opt_coordinator):
     coordinator = object.__new__(opt_coordinator.OptimizationCoordinator)
     coordinator.hass = SimpleNamespace(data={"power_sync": {"entry-1": {}}})
@@ -218,6 +237,25 @@ def test_static_tou_provider_uses_tariff_even_when_aemo_data_exists(opt_module):
     assert export_prices == [0.0] * 12
     assert coordinator._last_display_import_prices == [0.33] * 12
     assert coordinator._last_display_export_prices == [0.0] * 12
+
+
+def test_static_tou_provider_refreshes_stale_constructor_tariff(opt_module):
+    """The tariff API can refresh hass.data after coordinator construction.
+
+    The optimizer must use that shared schedule instead of a stale constructor
+    copy, otherwise the LP can keep seeing a flat fallback tariff indefinitely.
+    """
+    coordinator = _coordinator_with_static_tou_provider(opt_module)
+    fresh_tariff = _fresh_tariff_schedule()
+    coordinator.hass.data["power_sync"]["entry-1"]["tariff_schedule"] = fresh_tariff
+
+    import_prices, export_prices = asyncio.run(coordinator._get_price_forecast())
+
+    assert import_prices == [0.51] * 12
+    assert export_prices == [0.10] * 12
+    assert coordinator._last_display_import_prices == [0.51] * 12
+    assert coordinator._last_display_export_prices == [0.10] * 12
+    assert coordinator._tariff_schedule is fresh_tariff
 
 
 def test_static_tou_provider_returns_none_when_tariff_missing(opt_module):

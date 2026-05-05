@@ -751,22 +751,43 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
 
     def _get_tou_tariff_schedule(self) -> dict | None:
-        """Get the cached TOU tariff schedule, falling back to hass.data."""
-        tariff = self._tariff_schedule
-        if tariff:
-            return tariff
+        """Get the current TOU tariff schedule.
 
+        The HTTP tariff endpoint and sensors refresh hass.data after the
+        coordinator is constructed. If we keep returning the constructor copy,
+        the LP can continue planning from a stale tariff until HA reloads.
+        Prefer the shared schedule whenever it has full TOU periods.
+        """
         from ..const import DOMAIN
 
-        tariff = (
+        live_tariff = (
             self.hass.data.get(DOMAIN, {})
             .get(self.entry_id, {})
             .get("tariff_schedule")
         )
-        if tariff:
+        if live_tariff and live_tariff.get("tou_periods"):
+            if live_tariff is not self._tariff_schedule:
+                cached_name = (
+                    self._tariff_schedule or {}
+                ).get("plan_name", "none")
+                _LOGGER.info(
+                    "Refreshing optimizer tariff_schedule from hass.data: "
+                    "%s -> %s (%d TOU periods, last_sync=%s)",
+                    cached_name,
+                    live_tariff.get("plan_name", "unknown"),
+                    len(live_tariff.get("tou_periods", {})),
+                    live_tariff.get("last_sync"),
+                )
+            self._tariff_schedule = live_tariff
+            return live_tariff
+
+        if self._tariff_schedule:
+            return self._tariff_schedule
+
+        if live_tariff:
             _LOGGER.info("Using tariff_schedule from hass.data (not constructor)")
-            self._tariff_schedule = tariff
-        return tariff
+            self._tariff_schedule = live_tariff
+        return live_tariff
 
     def _get_tou_price_forecast_if_available(
         self,

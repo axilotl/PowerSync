@@ -18921,6 +18921,60 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 expires_at = expires_at.replace(tzinfo=dt_util.UTC)
 
             now = dt_util.utcnow()
+            persisted_source = persisted_force_state.get("source", "user")
+
+            if persisted_source == "optimizer":
+                # Optimizer-owned force modes are schedule decisions, not user
+                # commands. After a restart/update the LP must recalculate from
+                # current prices/SOC instead of replaying a stale force tariff.
+                _LOGGER.info(
+                    "Ignoring persisted optimizer force %s after restart; "
+                    "restoring normal tariff and letting the LP recalculate",
+                    mode,
+                )
+                saved_tariff = _select_restorable_tesla_tariff(
+                    persisted_force_state.get("saved_tariff"),
+                    _cached_restorable_tesla_tariff(),
+                    _configured_restorable_tesla_tariff(),
+                )
+                state = force_charge_state if mode == "charge" else force_discharge_state
+                state["active"] = True
+                state["expires_at"] = expires_at
+                state["source"] = persisted_source
+                state["saved_tariff"] = saved_tariff
+                state["saved_operation_mode"] = persisted_force_state.get("saved_operation_mode")
+                state["saved_backup_reserve"] = persisted_force_state.get("saved_backup_reserve")
+                state["saved_export_rule"] = persisted_force_state.get("saved_export_rule")
+
+                try:
+                    await hass.services.async_call(
+                        DOMAIN,
+                        SERVICE_RESTORE_NORMAL,
+                        {"source": "optimizer"},
+                        blocking=True,
+                    )
+                    await hass.services.async_call(
+                        DOMAIN,
+                        "set_self_consumption",
+                        {"source": "optimizer"},
+                        blocking=True,
+                    )
+                    _LOGGER.info(
+                        "Cleared stale optimizer force %s after restart",
+                        mode,
+                    )
+                except Exception as e:
+                    _LOGGER.error(
+                        "Error clearing optimizer force %s after restart: %s",
+                        mode,
+                        e,
+                        exc_info=True,
+                    )
+
+                stored_data = await store.async_load() or {}
+                stored_data["force_mode_state"] = None
+                await store.async_save(stored_data)
+                return
 
             if now >= expires_at:
                 # Force mode has expired during restart - need to restore Tesla to normal
