@@ -2103,20 +2103,26 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 # needed since the overlay already pre-validated run length.
 
                 if effective_action != "off_grid":
-                    if self._last_executed_action == "self_consumption":
-                        _LOGGER.debug("Optimizer: Already in self-consumption mode — skipping redundant API call")
-                        # Verify the hardware mode hasn't drifted (e.g. Tesla firmware
-                        # or a competing integration switched it away from self_consumption).
+                    apply_self_consumption = self._last_executed_action != "self_consumption"
+                    if not apply_self_consumption:
+                        # Verify the hardware mode has not drifted. On HA restart
+                        # Tesla can remain in autonomous while the optimizer's
+                        # last action marker is already self_consumption.
                         if hasattr(battery, "get_tesla_operation_mode"):
                             hw_mode = await battery.get_tesla_operation_mode()
                             if hw_mode is not None and hw_mode != "self_consumption":
-                                _LOGGER.debug(
+                                _LOGGER.info(
                                     "Optimizer: Tesla mode is '%s' while LP action is "
-                                    "self_consumption; respecting external/manual mode "
-                                    "until the optimizer needs charge/export",
+                                    "self_consumption — reapplying self-consumption mode",
                                     hw_mode,
                                 )
-                    else:
+                                apply_self_consumption = True
+                        if not apply_self_consumption:
+                            _LOGGER.debug(
+                                "Optimizer: Already in self-consumption mode — "
+                                "skipping redundant API call"
+                            )
+                    if apply_self_consumption:
                         if hasattr(battery, "set_self_consumption_mode"):
                             await battery.set_self_consumption_mode()
                         elif hasattr(battery, "restore_normal"):

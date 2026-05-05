@@ -410,8 +410,23 @@ def _execution_coordinator(opt_module, battery: _FakeBattery, soc: float):
     return coordinator
 
 
-def test_self_consumption_respects_manual_tesla_tou_override(opt_module):
+def test_self_consumption_reapplies_when_tesla_mode_drifted_to_tou(opt_module):
     battery = _FakeBattery(hardware_mode="autonomous")
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.50)
+
+    asyncio.run(
+        coordinator._execute_optimizer_action(
+            SimpleNamespace(action="self_consumption", power_w=0)
+        )
+    )
+
+    assert battery.self_consumption_calls == 1
+    assert battery.backup_reserve_calls == [20]
+    assert coordinator._last_executed_action == "self_consumption"
+
+
+def test_self_consumption_skips_redundant_call_when_tesla_mode_matches(opt_module):
+    battery = _FakeBattery(hardware_mode="self_consumption")
     coordinator = _execution_coordinator(opt_module, battery, soc=0.50)
 
     asyncio.run(
