@@ -292,6 +292,110 @@ def test_dynamic_state_uses_observed_power_for_matched_vehicle():
     assert loadpoints[0]["confidence"] == "observed"
 
 
+def test_tesla_ble_bridge_merges_with_single_named_tesla_vehicle():
+    loadpoints = build_loadpoint_status(
+        {},
+        [
+            {
+                "vehicle_id": "VIN_TESS",
+                "vehicle_name": "TESSY",
+                "charger_type": "tesla",
+                "ev_power_kw": 0.0,
+                "ev_soc": None,
+                "is_connected": False,
+                "is_charging": False,
+            },
+            {
+                "vehicle_id": "ble_teslable",
+                "vehicle_name": "Tesla BLE (teslable)",
+                "charger_type": "tesla",
+                "ev_power_kw": 0.0,
+                "ev_soc": 78,
+                "is_connected": True,
+                "is_charging": False,
+            },
+        ],
+    )
+
+    assert len(loadpoints) == 1
+    assert loadpoints[0]["loadpoint_id"] == "VIN_TESS"
+    assert loadpoints[0]["vehicle_id"] == "VIN_TESS"
+    assert loadpoints[0]["vehicle_name"] == "TESSY"
+    assert loadpoints[0]["soc"] == 78
+    assert loadpoints[0]["connected"] is True
+
+
+def test_tesla_ble_bridge_stays_separate_when_vehicle_match_is_ambiguous():
+    loadpoints = build_loadpoint_status(
+        {},
+        [
+            {
+                "vehicle_id": "VIN_TESS",
+                "vehicle_name": "TESSY",
+                "charger_type": "tesla",
+                "ev_power_kw": 0.0,
+                "ev_soc": 78,
+                "is_connected": True,
+                "is_charging": False,
+            },
+            {
+                "vehicle_id": "VIN_THEO",
+                "vehicle_name": "THEO",
+                "charger_type": "tesla",
+                "ev_power_kw": 0.0,
+                "ev_soc": 44,
+                "is_connected": False,
+                "is_charging": False,
+            },
+            {
+                "vehicle_id": "ble_teslable",
+                "vehicle_name": "Tesla BLE (teslable)",
+                "charger_type": "tesla",
+                "ev_power_kw": 0.0,
+                "ev_soc": 78,
+                "is_connected": True,
+                "is_charging": False,
+            },
+        ],
+    )
+
+    assert [loadpoint["vehicle_name"] for loadpoint in loadpoints] == [
+        "TESSY",
+        "THEO",
+        "Tesla BLE (teslable)",
+    ]
+
+
+def test_tesla_ble_bridge_does_not_merge_with_non_tesla_charger():
+    loadpoints = build_loadpoint_status(
+        {},
+        [
+            {
+                "charger_id": "ocpp_evse_1",
+                "vehicle_name": "Garage OCPP",
+                "charger_type": "ocpp",
+                "ev_power_kw": 0.0,
+                "is_connected": True,
+                "is_charging": False,
+            },
+            {
+                "vehicle_id": "ble_teslable",
+                "vehicle_name": "Tesla BLE (teslable)",
+                "charger_type": "tesla",
+                "ev_power_kw": 0.0,
+                "ev_soc": 78,
+                "is_connected": True,
+                "is_charging": False,
+            },
+        ],
+    )
+
+    assert [loadpoint["vehicle_name"] for loadpoint in loadpoints] == [
+        "Garage OCPP",
+        "Tesla BLE (teslable)",
+    ]
+
+
 def test_default_session_merges_with_single_observed_charging_vehicle():
     generic_observation = build_generic_charger_observation(
         vehicle_name="EV",

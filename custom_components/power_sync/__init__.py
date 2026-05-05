@@ -809,7 +809,10 @@ def _get_ev_vehicles_status(hass, entry) -> list:
     Returns a list of dicts, one per vehicle found at home, each with:
       vehicle_name, ev_power_kw, ev_soc, is_connected, is_charging.
     """
-    from .automations.loadpoint_status import charging_state_plugged_status
+    from .automations.loadpoint_status import (
+        charging_state_plugged_status,
+        coalesce_vehicle_observations,
+    )
 
     vehicles = []
     entity_registry = er.async_get(hass)
@@ -1006,7 +1009,7 @@ def _get_ev_vehicles_status(hass, entry) -> list:
                 "is_charging": wc_charging or wc_power > 0.05,
             })
 
-    return vehicles
+    return list(coalesce_vehicle_observations(vehicles))
 
 
 class SensitiveDataFilter(logging.Filter):
@@ -8610,11 +8613,13 @@ def _get_available_ev_vehicles(hass: HomeAssistant) -> list[dict]:
     # 2. Tesla BLE — resolve prefixes, check status entity exists
     if ev_provider in (EV_PROVIDER_TESLA_BLE, EV_PROVIDER_BOTH):
         ble_prefixes = _resolve_ble_prefixes(hass, config)
-        for prefix in ble_prefixes:
+        for index, prefix in enumerate(ble_prefixes):
             status_entity = TESLA_BLE_BINARY_STATUS.format(prefix=prefix)
             if hass.states.get(status_entity) is not None:
                 ble_id = f"ble_{prefix}"
-                # Skip if already covered by Fleet API (BOTH mode)
+                if ev_provider == EV_PROVIDER_BOTH and index < len(vehicles):
+                    continue
+                # Keep only standalone BLE vehicles not covered positionally above.
                 if not any(v["id"] == ble_id for v in vehicles):
                     friendly = prefix.replace("_", " ").title()
                     vehicles.append({

@@ -9,6 +9,7 @@ from typing import Any
 
 ACTIVE_POWER_THRESHOLD_KW = 0.05
 DEFAULT_LOADPOINT_KEYS = {"default", "genericev", "ev"}
+BRIDGE_LOADPOINT_KEYS = {"wallconnector", "teslaev"}
 GENERIC_CHARGING_STATES = {"charging"}
 GENERIC_CONNECTED_STATES = {
     "connected",
@@ -75,6 +76,100 @@ def _is_generic_observation(observation: Mapping[str, Any]) -> bool:
         or _normal_key(observation.get("vehicle_id")) in DEFAULT_LOADPOINT_KEYS
         or _normal_key(observation.get("charger_id")) in DEFAULT_LOADPOINT_KEYS
     )
+
+
+def _is_bridge_loadpoint(observation: Mapping[str, Any]) -> bool:
+    return (
+        _normal_key(observation.get("vehicle_id")) in BRIDGE_LOADPOINT_KEYS
+        or _normal_key(observation.get("charger_id")) in BRIDGE_LOADPOINT_KEYS
+        or _normal_key(observation.get("vehicle_name")) in BRIDGE_LOADPOINT_KEYS
+    )
+
+
+def _is_tesla_ble_observation(observation: Mapping[str, Any]) -> bool:
+    vehicle_id = str(observation.get("vehicle_id") or "")
+    charger_id = str(observation.get("charger_id") or "")
+    name = str(observation.get("vehicle_name") or observation.get("name") or "")
+    return (
+        vehicle_id.startswith("ble_")
+        or charger_id.startswith("ble_")
+        or _normal_key(name).startswith("teslable")
+    )
+
+
+def _looks_like_tesla_vin(value: Any) -> bool:
+    text = str(value or "").strip()
+    return len(text) == 17 and text.isalnum() and not text.isdigit()
+
+
+def _is_physical_tesla_observation(observation: Mapping[str, Any]) -> bool:
+    if _is_tesla_ble_observation(observation):
+        return False
+    return (
+        observation.get("charger_type") == "tesla"
+        or _looks_like_tesla_vin(observation.get("vehicle_id"))
+        or _looks_like_tesla_vin(observation.get("vin"))
+    )
+
+
+def _merge_observation_status(target: dict[str, Any], source: Mapping[str, Any]) -> None:
+    source_power = _float_value(
+        source.get("ev_power_kw", source.get("current_power_kw")),
+        0.0,
+    )
+    target_power = _float_value(
+        target.get("ev_power_kw", target.get("current_power_kw")),
+        0.0,
+    )
+    if source_power > target_power:
+        target["ev_power_kw"] = source_power
+        target["current_power_kw"] = source_power
+
+    source_soc = source.get("ev_soc", source.get("current_soc"))
+    if source_soc is not None:
+        target["ev_soc"] = source_soc
+        target["current_soc"] = source_soc
+
+    target["is_connected"] = bool(target.get("is_connected")) or bool(source.get("is_connected"))
+    target["is_charging"] = bool(target.get("is_charging")) or bool(source.get("is_charging"))
+
+
+def coalesce_vehicle_observations(
+    observed_vehicles: Iterable[Mapping[str, Any]] | None,
+) -> list[Mapping[str, Any]]:
+    """Merge bridge telemetry, such as Tesla BLE, into a single physical EV.
+
+    Tesla BLE exposes local car telemetry through an ESPHome bridge. When the
+    same account also has a named Tesla vehicle from Fleet/Teslemetry, the BLE
+    prefix is a source for that vehicle rather than a second loadpoint.
+    """
+    observations = list(observed_vehicles or [])
+    ble_indexes = [
+        index for index, observation in enumerate(observations)
+        if _is_tesla_ble_observation(observation)
+    ]
+    candidates = [
+        index for index, observation in enumerate(observations)
+        if (
+            index not in ble_indexes
+            and not _is_generic_observation(observation)
+            and not _is_bridge_loadpoint(observation)
+            and _is_physical_tesla_observation(observation)
+        )
+    ]
+
+    if len(ble_indexes) == 1 and len(candidates) == 1:
+        merged = [
+            dict(observation) if index == candidates[0] else observation
+            for index, observation in enumerate(observations)
+        ]
+        _merge_observation_status(merged[candidates[0]], observations[ble_indexes[0]])
+        return [
+            observation for index, observation in enumerate(merged)
+            if index != ble_indexes[0]
+        ]
+
+    return observations
 
 
 def _display_name(vehicle_id: str, state: Mapping[str, Any]) -> str:
@@ -459,7 +554,7 @@ def build_loadpoint_status(
     last_commands: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Merge PowerSync-owned EV state with observed charger/vehicle telemetry."""
-    observations = list(observed_vehicles or [])
+    observations = coalesce_vehicle_observations(observed_vehicles)
     used_indexes: set[int] = set()
     site_surplus_kw = _float_value((site or {}).get("surplus_kw"), 0.0)
     loadpoints: list[dict[str, Any]] = []
