@@ -134,6 +134,46 @@ def _merge_observation_status(target: dict[str, Any], source: Mapping[str, Any])
     target["is_charging"] = bool(target.get("is_charging")) or bool(source.get("is_charging"))
 
 
+def _physical_tesla_observation_key(observation: Mapping[str, Any]) -> str:
+    """Return a stable key for duplicate Fleet/Tesla observations."""
+    if not _is_physical_tesla_observation(observation):
+        return ""
+
+    for field in ("vehicle_id", "vin"):
+        value = observation.get(field)
+        if _looks_like_tesla_vin(value):
+            return f"vin:{str(value).strip().lower()}"
+
+    name = _normal_key(observation.get("vehicle_name") or observation.get("name"))
+    return f"name:{name}" if name else ""
+
+
+def _merge_duplicate_physical_tesla_observations(
+    observations: list[Mapping[str, Any]],
+) -> list[Mapping[str, Any]]:
+    """Collapse duplicate Tesla devices for the same physical car."""
+    merged: list[Mapping[str, Any]] = []
+    by_key: dict[str, int] = {}
+
+    for observation in observations:
+        key = _physical_tesla_observation_key(observation)
+        if key and key in by_key:
+            existing_index = by_key[key]
+            target = dict(merged[existing_index])
+            _merge_observation_status(target, observation)
+            for field in ("vehicle_id", "vin", "vehicle_name", "name", "charger_type"):
+                if not target.get(field) and observation.get(field):
+                    target[field] = observation[field]
+            merged[existing_index] = target
+            continue
+
+        if key:
+            by_key[key] = len(merged)
+        merged.append(observation)
+
+    return merged
+
+
 def coalesce_vehicle_observations(
     observed_vehicles: Iterable[Mapping[str, Any]] | None,
 ) -> list[Mapping[str, Any]]:
@@ -143,7 +183,9 @@ def coalesce_vehicle_observations(
     same account also has a named Tesla vehicle from Fleet/Teslemetry, the BLE
     prefix is a source for that vehicle rather than a second loadpoint.
     """
-    observations = list(observed_vehicles or [])
+    observations = _merge_duplicate_physical_tesla_observations(
+        list(observed_vehicles or [])
+    )
     ble_indexes = [
         index for index, observation in enumerate(observations)
         if _is_tesla_ble_observation(observation)

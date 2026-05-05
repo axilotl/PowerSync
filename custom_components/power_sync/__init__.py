@@ -8530,12 +8530,19 @@ class EVStatusView(HomeAssistantView):
             # Count from Fleet API
             if active_integration and tesla_entries:
                 device_registry = dr.async_get(self._hass)
+                seen_vins: set[str] = set()
 
                 for device in device_registry.devices.values():
                     for identifier in device.identifiers:
                         if identifier[0] in TESLA_INTEGRATIONS:
                             potential_vin = identifier[1]
-                            if len(str(potential_vin)) == 17 and not str(potential_vin).isdigit():
+                            vin_key = str(potential_vin).strip().lower()
+                            if (
+                                len(str(potential_vin)) == 17
+                                and not str(potential_vin).isdigit()
+                                and vin_key not in seen_vins
+                            ):
+                                seen_vins.add(vin_key)
                                 vehicle_count += 1
                             break
 
@@ -8614,11 +8621,14 @@ def _get_available_ev_vehicles(hass: HomeAssistant) -> list[dict]:
     # 1. Tesla Fleet API / Teslemetry — scan device registry for 17-char VIN identifiers
     if ev_provider in (EV_PROVIDER_FLEET_API, EV_PROVIDER_BOTH):
         device_registry = dr.async_get(hass)
+        seen_vins: set[str] = set()
         for device in device_registry.devices.values():
             for identifier in device.identifiers:
                 if identifier[0] in TESLA_INTEGRATIONS:
                     vin = str(identifier[1])
-                    if len(vin) == 17 and not vin.isdigit():
+                    vin_key = vin.strip().lower()
+                    if len(vin) == 17 and not vin.isdigit() and vin_key not in seen_vins:
+                        seen_vins.add(vin_key)
                         vehicles.append({
                             "id": vin,
                             "display_name": device.name or f"Tesla ({vin[-4:]})",
@@ -8962,9 +8972,16 @@ class EVVehiclesView(HomeAssistantView):
                     # We only want Fleet API (device registry) results here —
                     # BLE vehicles are handled by the BLE section below so
                     # they receive full state via _get_tesla_ble_vehicle().
-                    discovered_fleet = [
-                        v for v in discovered if v.get("source") == "fleet_api"
-                    ]
+                    seen_vins: set[str] = set()
+                    for vehicle in discovered:
+                        if vehicle.get("source") != "fleet_api":
+                            continue
+                        vin_key = str(vehicle.get("vin") or "").strip().lower()
+                        if vin_key and vin_key in seen_vins:
+                            continue
+                        if vin_key:
+                            seen_vins.add(vin_key)
+                        discovered_fleet.append(vehicle)
                 except Exception as err:
                     _LOGGER.debug(
                         "EV discovery delegation failed, falling back to empty list: %s",

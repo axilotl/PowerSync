@@ -325,6 +325,48 @@ def test_tesla_ble_bridge_merges_with_single_named_tesla_vehicle():
     assert loadpoints[0]["connected"] is True
 
 
+def test_tesla_ble_bridge_merges_after_duplicate_fleet_devices_are_deduped():
+    vin = "LRWYHCEK3PC907290"
+    loadpoints = build_loadpoint_status(
+        {},
+        [
+            {
+                "vehicle_id": vin,
+                "vehicle_name": "TESSY",
+                "charger_type": "tesla",
+                "ev_power_kw": 0.0,
+                "ev_soc": None,
+                "is_connected": True,
+                "is_charging": False,
+            },
+            {
+                "vehicle_id": vin,
+                "vehicle_name": "TESSY",
+                "charger_type": "tesla",
+                "ev_power_kw": 0.0,
+                "ev_soc": None,
+                "is_connected": False,
+                "is_charging": False,
+            },
+            {
+                "vehicle_id": "ble_teslable",
+                "vehicle_name": "Tesla BLE (teslable)",
+                "charger_type": "tesla",
+                "ev_power_kw": 0.0,
+                "ev_soc": 78,
+                "is_connected": True,
+                "is_charging": False,
+            },
+        ],
+    )
+
+    assert len(loadpoints) == 1
+    assert loadpoints[0]["loadpoint_id"] == vin
+    assert loadpoints[0]["vehicle_name"] == "TESSY"
+    assert loadpoints[0]["soc"] == 78
+    assert loadpoints[0]["connected"] is True
+
+
 def test_tesla_ble_bridge_stays_separate_when_vehicle_match_is_ambiguous():
     loadpoints = build_loadpoint_status(
         {},
