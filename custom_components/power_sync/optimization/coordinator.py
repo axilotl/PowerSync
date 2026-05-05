@@ -2413,9 +2413,22 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if not sessions:
             return import_prices, export_prices
 
-        octopoints_per_penny = self._saving_session_coordinator._octopoints_per_penny
+        try:
+            octopoints_per_penny = float(
+                getattr(self._saving_session_coordinator, "_octopoints_per_penny", 8)
+                or 8
+            )
+        except (TypeError, ValueError):
+            octopoints_per_penny = 8.0
+        if octopoints_per_penny <= 0:
+            octopoints_per_penny = 8.0
+
         interval = self._config.interval_minutes
         now = dt_util.now()
+        if getattr(now, "tzinfo", None) is None:
+            now = now.replace(tzinfo=dt_util.UTC)
+        else:
+            now = now.astimezone(dt_util.UTC)
         import_result = list(import_prices)
         export_result = list(export_prices)
         boosted = 0
@@ -2423,19 +2436,36 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         for session in sessions:
             if not session.joined:
                 continue
+            start = getattr(session, "start", None)
+            end = getattr(session, "end", None)
+            if start is None or end is None:
+                continue
+            if getattr(start, "tzinfo", None) is None:
+                start = start.replace(tzinfo=dt_util.UTC)
+            else:
+                start = start.astimezone(dt_util.UTC)
+            if getattr(end, "tzinfo", None) is None:
+                end = end.replace(tzinfo=dt_util.UTC)
+            else:
+                end = end.astimezone(dt_util.UTC)
+
             # Convert octopoints to GBP/kWh:
             # octopoints_per_kwh / octopoints_per_penny = pence/kWh
             # pence/kWh / 100 = GBP/kWh (same unit as our price arrays)
-            if session.octopoints_per_kwh > 0:
-                session_rate = (session.octopoints_per_kwh / octopoints_per_penny) / 100
+            try:
+                octopoints_per_kwh = float(
+                    getattr(session, "octopoints_per_kwh", 0) or 0
+                )
+            except (TypeError, ValueError):
+                octopoints_per_kwh = 0.0
+            if octopoints_per_kwh > 0:
+                session_rate = (octopoints_per_kwh / octopoints_per_penny) / 100
             else:
                 session_rate = 0.0
 
             for t in range(len(export_result)):
                 ts = now + timedelta(minutes=t * interval)
-                # Compare in UTC to handle timezone-aware session times
-                ts_utc = ts.astimezone(dt_util.UTC)
-                if session.start <= ts_utc < session.end:
+                if start <= ts < end:
                     if session.session_type == "saving":
                         # Add session rate ON TOP of existing export price
                         export_result[t] += session_rate

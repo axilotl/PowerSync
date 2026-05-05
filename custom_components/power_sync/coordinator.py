@@ -7019,8 +7019,10 @@ class OctopusSavingSessionCoordinator(DataUpdateCoordinator):
 
     async def _async_update_data(self) -> dict:
         """Fetch sessions from direct API or Bottlecap Dave entity."""
-        from homeassistant.util import dt as dt_util
-        from .octopus_sessions import SavingSession
+        from .octopus_sessions import (
+            SavingSession,
+            saving_session_from_octopus_energy_event,
+        )
 
         sessions: list[SavingSession] = []
 
@@ -7046,6 +7048,13 @@ class OctopusSavingSessionCoordinator(DataUpdateCoordinator):
             # Bottlecap Dave entity mode — reads from octopus_energy event entity
             state = self.hass.states.get(self._entity_id)
             if state:
+                sessions_by_key: dict[tuple[datetime, datetime], SavingSession] = {}
+
+                def add_session(session: SavingSession | None) -> None:
+                    if session is None:
+                        return
+                    sessions_by_key[(session.start, session.end)] = session
+
                 # Auto-join available sessions via Dave's service
                 if self._auto_join:
                     available = state.attributes.get("available_events", [])
@@ -7069,6 +7078,15 @@ class OctopusSavingSessionCoordinator(DataUpdateCoordinator):
                             _LOGGER.info(
                                 "✅ Joined saving session %s via octopus_energy", code,
                             )
+                            # Dave's integration schedules a refresh after joining, so
+                            # expose the successfully joined event immediately for the
+                            # next optimiser run instead of waiting for a later poll.
+                            add_session(
+                                saving_session_from_octopus_energy_event(
+                                    ev,
+                                    joined=True,
+                                )
+                            )
                         except Exception as err:
                             _LOGGER.error(
                                 "Failed to auto-join saving session %s: %s", code, err,
@@ -7076,29 +7094,27 @@ class OctopusSavingSessionCoordinator(DataUpdateCoordinator):
 
                 # Parse joined_events from entity attributes
                 for ev in state.attributes.get("joined_events", []):
-                    try:
-                        start_str = ev.get("start", "")
-                        end_str = ev.get("end", "")
-                        if not start_str or not end_str:
-                            continue
-                        start = datetime.fromisoformat(str(start_str))
-                        end = datetime.fromisoformat(str(end_str))
-                        sessions.append(SavingSession(
-                            code=str(ev.get("id", "")),
-                            start=start,
-                            end=end,
-                            octopoints_per_kwh=ev.get("octopoints_per_kwh", 800),
-                            joined=True,
-                            session_type="saving",
-                        ))
-                    except (ValueError, KeyError, TypeError) as err:
-                        _LOGGER.debug("Skipping malformed entity event: %s", err)
+                    session = saving_session_from_octopus_energy_event(
+                        ev,
+                        joined=True,
+                    )
+                    if session is None:
+                        _LOGGER.debug("Skipping malformed entity event: %s", ev)
+                        continue
+                    add_session(session)
+
+                sessions = sorted(sessions_by_key.values(), key=lambda s: s.start)
             else:
                 _LOGGER.debug(
                     "Saving sessions entity %s not available", self._entity_id
                 )
 
+        sessions = sorted(sessions, key=lambda s: s.start)
         now = dt_util.utcnow()
+        if getattr(now, "tzinfo", None) is None:
+            now = now.replace(tzinfo=dt_util.UTC)
+        else:
+            now = now.astimezone(dt_util.UTC)
         return {
             "sessions": sessions,
             "active_session": next(

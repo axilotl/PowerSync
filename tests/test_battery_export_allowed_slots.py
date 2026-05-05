@@ -226,6 +226,60 @@ def test_octopus_free_electricity_does_not_allow_battery_export(opt_module):
     assert coordinator._battery_export_allowed_slots(12, [0.12] * 12) == [False] * 12
 
 
+def test_saving_session_price_overlay_ignores_null_octopoints(opt_module):
+    coordinator = _coordinator(opt_module, "octopus", profit_max=True)
+    coordinator._saving_session_coordinator = SimpleNamespace(
+        data={
+            "sessions": [
+                SimpleNamespace(
+                    joined=True,
+                    session_type="saving",
+                    start=datetime(2026, 5, 3, 9, 0, tzinfo=timezone.utc),
+                    end=datetime(2026, 5, 3, 9, 30, tzinfo=timezone.utc),
+                    octopoints_per_kwh=None,
+                )
+            ]
+        },
+        _octopoints_per_penny=8,
+    )
+
+    import_prices, export_prices = coordinator._apply_saving_session_prices(
+        [0.20] * 12,
+        [0.05] * 12,
+    )
+
+    assert import_prices == [0.20] * 12
+    assert export_prices == [0.05] * 12
+
+
+def test_saving_session_price_overlay_normalizes_naive_session_datetimes(opt_module):
+    coordinator = _coordinator(opt_module, "octopus", profit_max=True)
+    coordinator._saving_session_coordinator = SimpleNamespace(
+        data={
+            "sessions": [
+                SimpleNamespace(
+                    joined=True,
+                    session_type="saving",
+                    start=datetime(2026, 5, 3, 9, 0),
+                    end=datetime(2026, 5, 3, 9, 30),
+                    octopoints_per_kwh=800,
+                )
+            ]
+        },
+        _octopoints_per_penny=8,
+    )
+
+    import_prices, export_prices = coordinator._apply_saving_session_prices(
+        [0.20] * 12,
+        [0.05] * 12,
+    )
+
+    assert import_prices[:6] == [0.20] * 6
+    assert export_prices[:6] == [0.05] * 6
+    assert import_prices[6:] == [2.0] * 6
+    assert export_prices[6:] == [1.05] * 6
+
+
 def test_flow_power_profit_max_allows_only_happy_hour(opt_module):
     coordinator = _coordinator(
         opt_module,

@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 import aiohttp
 
@@ -28,6 +29,42 @@ TOKEN_REFRESH_BUFFER = timedelta(minutes=5)
 SUPPLY_POINTS_PAGE_SIZE = 20
 CAMPAIGN_EVENTS_PAGE_SIZE = 50
 FREE_ELECTRICITY_CAMPAIGN_SLUG = "free_electricity"
+DEFAULT_SAVING_SESSION_OCTOPOINTS_PER_KWH = 800
+
+
+def _parse_octopus_datetime(value: Any) -> datetime | None:
+    """Parse Octopus/Dave entity datetimes into aware UTC datetimes."""
+    if isinstance(value, datetime):
+        result = value
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        if text.endswith("Z"):
+            text = f"{text[:-1]}+00:00"
+        try:
+            result = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+    else:
+        return None
+
+    if result.tzinfo is None:
+        return result.replace(tzinfo=timezone.utc)
+    return result.astimezone(timezone.utc)
+
+
+def _coerce_octopoints_per_kwh(
+    value: Any,
+    default: int = DEFAULT_SAVING_SESSION_OCTOPOINTS_PER_KWH,
+) -> int:
+    """Coerce Dave's optional reward field into a non-negative integer."""
+    if value is None:
+        return default
+    try:
+        return max(0, int(float(value)))
+    except (TypeError, ValueError):
+        return default
 
 
 @dataclass
@@ -58,7 +95,39 @@ class SavingSession:
     @property
     def rate_pence_per_kwh(self) -> float:
         """Return the effective rate in pence/kWh (octopoints / 8)."""
-        return self.octopoints_per_kwh / 8.0
+        try:
+            return float(self.octopoints_per_kwh or 0) / 8.0
+        except (TypeError, ValueError):
+            return 0.0
+
+
+def saving_session_from_octopus_energy_event(
+    event: dict[str, Any],
+    *,
+    joined: bool,
+    default_octopoints_per_kwh: int = DEFAULT_SAVING_SESSION_OCTOPOINTS_PER_KWH,
+) -> SavingSession | None:
+    """Build a PowerSync SavingSession from Bottlecap Dave entity attributes."""
+    start = _parse_octopus_datetime(event.get("start"))
+    end = _parse_octopus_datetime(event.get("end"))
+    if start is None or end is None or end <= start:
+        return None
+
+    code = str(event.get("code") or event.get("id") or "")
+    if not code:
+        code = f"{start.isoformat()}_{end.isoformat()}"
+
+    return SavingSession(
+        code=code,
+        start=start,
+        end=end,
+        octopoints_per_kwh=_coerce_octopoints_per_kwh(
+            event.get("octopoints_per_kwh", default_octopoints_per_kwh),
+            default_octopoints_per_kwh,
+        ),
+        joined=joined,
+        session_type="saving",
+    )
 
 
 class OctopusSavingSessionsClient:
