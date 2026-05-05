@@ -6,7 +6,7 @@ import asyncio
 import importlib
 import sys
 import types
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -111,6 +111,7 @@ def _install_power_sync_stubs() -> None:
     const_module.DEFAULT_EXPORT_BOOST_START = "17:00"
     const_module.DEFAULT_EXPORT_BOOST_END = "21:00"
     const_module.DEFAULT_EXPORT_BOOST_THRESHOLD = 0.0
+    const_module.DISCHARGE_DURATIONS = [5, 10, 15, 30, 45, 60, 75, 90, 105, 120, 150, 180, 210, 240]
     sys.modules["power_sync.const"] = const_module
 
     battery_module = types.ModuleType("power_sync.optimization.battery_optimizer")
@@ -363,6 +364,7 @@ class _FakeBattery:
         self.self_consumption_calls = 0
         self.backup_reserve_calls = []
         self.force_charge_calls = []
+        self.force_discharge_calls = []
 
     async def get_tesla_operation_mode(self):
         return self.hardware_mode
@@ -375,6 +377,9 @@ class _FakeBattery:
 
     async def force_charge(self, duration_minutes=60, power_w=5000, _extend_hardware=False):
         self.force_charge_calls.append((duration_minutes, power_w, _extend_hardware))
+
+    async def force_discharge(self, duration_minutes=60, power_w=5000, _extend_hardware=False):
+        self.force_discharge_calls.append((duration_minutes, power_w, _extend_hardware))
 
 
 def _execution_coordinator(opt_module, battery: _FakeBattery, soc: float):
@@ -433,3 +438,30 @@ def test_charge_below_reserve_bypasses_charge_hysteresis(opt_module):
     assert battery.force_charge_calls == [(10, 4200, False)]
     assert battery.self_consumption_calls == 0
     assert coordinator._last_executed_action == "charge"
+
+
+def test_tesla_export_uses_contiguous_export_window_duration(opt_module):
+    battery = _FakeBattery()
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.80)
+    start = datetime(2026, 5, 3, 18, 30, tzinfo=timezone.utc)
+    actions = [
+        SimpleNamespace(
+            action="export",
+            power_w=4200,
+            timestamp=start + idx * timedelta(minutes=5),
+        )
+        for idx in range(8)
+    ]
+    actions.append(
+        SimpleNamespace(
+            action="self_consumption",
+            power_w=0,
+            timestamp=start + timedelta(minutes=40),
+        )
+    )
+    coordinator._current_schedule = SimpleNamespace(actions=actions)
+
+    asyncio.run(coordinator._execute_optimizer_action(actions[0]))
+
+    assert battery.force_discharge_calls == [(45, 5000, False)]
+    assert coordinator._last_executed_action == "export"

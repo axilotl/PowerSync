@@ -104,6 +104,56 @@ def _nem_region_from_iana_tz(tz_name: str | None) -> str | None:
         return None
     return _TZ_TO_NEM_REGION.get(tz_name)
 
+
+_FORCE_TARIFF_TEXT_MARKERS = ("force charge", "force discharge")
+_FORCE_TARIFF_CODE_PREFIXES = ("charge_", "discharge_")
+
+
+def _iter_tariff_strings(value: Any):
+    """Yield string values from a Tesla tariff payload."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _iter_tariff_strings(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _iter_tariff_strings(item)
+
+
+def _is_powersync_force_tariff(tariff: Any) -> bool:
+    """Return True for temporary PowerSync force charge/discharge tariffs."""
+    if not isinstance(tariff, dict):
+        return False
+
+    code = str(tariff.get("code", "")).strip().lower()
+    if code.startswith(_FORCE_TARIFF_CODE_PREFIXES):
+        return True
+
+    utility = str(tariff.get("utility", "")).strip().lower()
+    if utility == "powersync":
+        return True
+
+    return any(
+        marker in text.strip().lower()
+        for text in _iter_tariff_strings(tariff)
+        for marker in _FORCE_TARIFF_TEXT_MARKERS
+    )
+
+
+def _select_restorable_tesla_tariff(*tariffs: Any) -> dict[str, Any] | None:
+    """Return the first tariff that is safe to use as a normal restore tariff."""
+    for tariff in tariffs:
+        if isinstance(tariff, dict) and tariff and not _is_powersync_force_tariff(tariff):
+            return tariff
+    return None
+
+
+def _tariff_display_name(tariff: Any) -> str:
+    if not isinstance(tariff, dict):
+        return "unknown"
+    return str(tariff.get("name") or tariff.get("code") or "unknown")
+
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState
 import homeassistant.helpers.config_validation as cv
 from homeassistant.const import Platform, CONF_ACCESS_TOKEN, CONF_TOKEN
@@ -1565,10 +1615,16 @@ class AEMOSpikeManager:
                     data = await response.json()
                     resp = data.get("response", {})
                     # Try tariff_content_v2 first, then fall back to tariff_content
-                    self._saved_tariff = resp.get("tariff_content_v2") or resp.get("tariff_content")
+                    tariff_candidate = resp.get("tariff_content_v2") or resp.get("tariff_content")
+                    self._saved_tariff = _select_restorable_tesla_tariff(tariff_candidate)
                     if self._saved_tariff:
                         _LOGGER.info("Saved current tariff for restoration after spike (name: %s)",
                                     self._saved_tariff.get("name", "unknown"))
+                    elif tariff_candidate:
+                        _LOGGER.warning(
+                            "Ignoring PowerSync force tariff from tariff_rate as spike restore baseline (name: %s)",
+                            _tariff_display_name(tariff_candidate),
+                        )
                     else:
                         _LOGGER.warning("Could not extract tariff from tariff_rate response - will try site_info")
                 else:
@@ -1589,10 +1645,15 @@ class AEMOSpikeManager:
                     # Fallback: if tariff wasn't saved from tariff_rate, try to get it from site_info
                     if not self._saved_tariff:
                         site_tariff = site_info.get("tariff_content_v2") or site_info.get("tariff_content")
-                        if site_tariff:
-                            self._saved_tariff = site_tariff
+                        self._saved_tariff = _select_restorable_tesla_tariff(site_tariff)
+                        if self._saved_tariff:
                             _LOGGER.info("Saved tariff from site_info fallback (name: %s)",
-                                        site_tariff.get("name", "unknown"))
+                                        self._saved_tariff.get("name", "unknown"))
+                        elif site_tariff:
+                            _LOGGER.warning(
+                                "Ignoring PowerSync force tariff from site_info as spike restore baseline (name: %s)",
+                                _tariff_display_name(site_tariff),
+                            )
                         else:
                             _LOGGER.warning("No tariff found in site_info either - restore may not work")
 
@@ -1667,12 +1728,13 @@ class AEMOSpikeManager:
                     _LOGGER.info("Switched to self_consumption mode")
 
             # Step 2: Restore saved tariff
-            if self._saved_tariff:
+            restore_tariff = _select_restorable_tesla_tariff(self._saved_tariff)
+            if restore_tariff:
                 _LOGGER.info("Restoring saved tariff...")
                 success = await send_tariff_to_tesla(
                     self.hass,
                     self.site_id,
-                    self._saved_tariff,
+                    restore_tariff,
                     current_token,
                     current_provider,
                     fleet_base_url=self.entry.data.get(CONF_FLEET_API_BASE_URL),
@@ -1681,6 +1743,11 @@ class AEMOSpikeManager:
                     _LOGGER.info("Restored saved tariff successfully")
                 else:
                     _LOGGER.error("Failed to restore saved tariff")
+            elif self._saved_tariff:
+                _LOGGER.warning(
+                    "Skipping restore of PowerSync force tariff after spike mode (name: %s)",
+                    _tariff_display_name(self._saved_tariff),
+                )
             else:
                 _LOGGER.warning("No saved tariff to restore")
 
@@ -2118,9 +2185,15 @@ class SavingSessionTariffManager:
                 if response.status == 200:
                     data = await response.json()
                     resp = data.get("response", {})
-                    self._saved_tariff = resp.get("tariff_content_v2") or resp.get("tariff_content")
+                    tariff_candidate = resp.get("tariff_content_v2") or resp.get("tariff_content")
+                    self._saved_tariff = _select_restorable_tesla_tariff(tariff_candidate)
                     if self._saved_tariff:
                         _LOGGER.info("Saved current tariff (name: %s)", self._saved_tariff.get("name", "unknown"))
+                    elif tariff_candidate:
+                        _LOGGER.warning(
+                            "Ignoring PowerSync force tariff from tariff_rate as session restore baseline (name: %s)",
+                            _tariff_display_name(tariff_candidate),
+                        )
                     else:
                         _LOGGER.warning("Could not extract tariff from tariff_rate response")
 
@@ -2138,9 +2211,14 @@ class SavingSessionTariffManager:
 
                     if not self._saved_tariff:
                         site_tariff = site_info.get("tariff_content_v2") or site_info.get("tariff_content")
-                        if site_tariff:
-                            self._saved_tariff = site_tariff
+                        self._saved_tariff = _select_restorable_tesla_tariff(site_tariff)
+                        if self._saved_tariff:
                             _LOGGER.info("Saved tariff from site_info fallback")
+                        elif site_tariff:
+                            _LOGGER.warning(
+                                "Ignoring PowerSync force tariff from site_info as session restore baseline (name: %s)",
+                                _tariff_display_name(site_tariff),
+                            )
 
             # Step 3: Switch to autonomous mode
             if self._saved_operation_mode != "autonomous":
@@ -2263,12 +2341,13 @@ class SavingSessionTariffManager:
                     _LOGGER.info("Switched to self_consumption mode")
 
             # Step 2: Restore saved tariff
-            if self._saved_tariff:
+            restore_tariff = _select_restorable_tesla_tariff(self._saved_tariff)
+            if restore_tariff:
                 _LOGGER.info("Restoring saved tariff...")
                 success = await send_tariff_to_tesla(
                     self.hass,
                     self.site_id,
-                    self._saved_tariff,
+                    restore_tariff,
                     current_token,
                     current_provider,
                     fleet_base_url=self.entry.data.get(CONF_FLEET_API_BASE_URL),
@@ -2277,6 +2356,11 @@ class SavingSessionTariffManager:
                     _LOGGER.info("Restored saved tariff successfully")
                 else:
                     _LOGGER.error("Failed to restore saved tariff")
+            elif self._saved_tariff:
+                _LOGGER.warning(
+                    "Skipping restore of PowerSync force tariff after saving session (name: %s)",
+                    _tariff_display_name(self._saved_tariff),
+                )
 
             # Step 3: Wait for Tesla to process
             await asyncio.sleep(5)
@@ -6846,13 +6930,19 @@ class TariffPriceView(HomeAssistantView):
             saved_tariff = None
             force_mode_active = False
             if force_charge_state.get("active") and force_charge_state.get("saved_tariff"):
-                saved_tariff = force_charge_state["saved_tariff"]
+                saved_tariff = _select_restorable_tesla_tariff(force_charge_state["saved_tariff"])
                 force_mode_active = True
-                _LOGGER.info("Force charge active - using saved real tariff instead of fake ML tariff")
+                if saved_tariff:
+                    _LOGGER.info("Force charge active - using saved real tariff instead of fake ML tariff")
+                else:
+                    _LOGGER.warning("Force charge saved tariff is a PowerSync force tariff; ignoring for price response")
             elif force_discharge_state.get("active") and force_discharge_state.get("saved_tariff"):
-                saved_tariff = force_discharge_state["saved_tariff"]
+                saved_tariff = _select_restorable_tesla_tariff(force_discharge_state["saved_tariff"])
                 force_mode_active = True
-                _LOGGER.info("Force discharge active - using saved real tariff instead of fake ML tariff")
+                if saved_tariff:
+                    _LOGGER.info("Force discharge active - using saved real tariff instead of fake ML tariff")
+                else:
+                    _LOGGER.warning("Force discharge saved tariff is a PowerSync force tariff; ignoring for price response")
 
             if saved_tariff:
                 # Use saved tariff to calculate current prices
@@ -6961,6 +7051,13 @@ class TariffPriceView(HomeAssistantView):
           - Buy rates at saved_tariff["energy_charges"][season]["rates"][period]
           - Sell rates at saved_tariff["sell_tariff"]["energy_charges"][season]["rates"][period]
         """
+        if _is_powersync_force_tariff(saved_tariff):
+            _LOGGER.warning(
+                "Refusing to calculate static TOU prices from PowerSync force tariff (name: %s)",
+                _tariff_display_name(saved_tariff),
+            )
+            return None
+
         try:
             from .tariff_time import find_matching_tou_period
 
@@ -7104,11 +7201,11 @@ async def fetch_tesla_tariff_schedule(hass: HomeAssistant, entry: ConfigEntry) -
         # Reject PowerSync-generated fake tariffs (force charge/discharge).
         # If HA restarts while a force mode tariff is on the Tesla API, we must
         # not use it as the real TOU schedule.
-        if tariff.get("utility") == "PowerSync":
+        if _is_powersync_force_tariff(tariff):
             _LOGGER.warning(
-                "Tesla API returned a PowerSync-generated tariff (%s) — "
+                "Tesla API returned a PowerSync force tariff (%s) — "
                 "ignoring and falling back to custom tariff",
-                tariff.get("name"),
+                _tariff_display_name(tariff),
             )
             return None
 
@@ -7206,7 +7303,17 @@ async def fetch_tesla_tariff_schedule(hass: HomeAssistant, entry: ConfigEntry) -
 
         # Store for future use
         if DOMAIN in hass.data and entry.entry_id in hass.data[DOMAIN]:
-            hass.data[DOMAIN][entry.entry_id]["tariff_schedule"] = tariff_result
+            entry_data = hass.data[DOMAIN][entry.entry_id]
+            entry_data["tariff_schedule"] = tariff_result
+            entry_data["last_restorable_tesla_tariff"] = tariff
+            store = entry_data.get("store")
+            if store:
+                try:
+                    stored_data = await store.async_load() or {}
+                    stored_data["last_restorable_tesla_tariff"] = tariff
+                    await store.async_save(stored_data)
+                except Exception as store_err:
+                    _LOGGER.debug("Could not persist last restorable Tesla tariff: %s", store_err)
             _LOGGER.info(f"✅ Tesla tariff schedule stored with {len(tou_periods)} TOU periods")
 
         return tariff_result
@@ -15039,6 +15146,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if force_mode_state:
         _LOGGER.info(f"Found persisted force mode state: {force_mode_state}")
 
+    last_restorable_tesla_tariff = _select_restorable_tesla_tariff(
+        stored_data.get("last_restorable_tesla_tariff")
+    )
+    if last_restorable_tesla_tariff:
+        _LOGGER.info(
+            "Restored cached Tesla tariff baseline from storage (name: %s)",
+            _tariff_display_name(last_restorable_tesla_tariff),
+        )
+
     # Store coordinators and WebSocket client in hass.data
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = {
@@ -15079,6 +15195,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "manual_export_rule": stored_manual_export_rule,  # Restored from persistent storage
         "battery_health": battery_health,  # Restored from persistent storage (from mobile app TEDAPI scans)
         "force_mode_state": force_mode_state,  # Restored force charge/discharge state
+        "last_restorable_tesla_tariff": last_restorable_tesla_tariff,
         "store": store,  # Reference to Store for saving updates
         "token_getter": token_getter,  # Function to get fresh Tesla API token
         "is_sigenergy": is_sigenergy,  # Track battery system type
@@ -18712,6 +18829,43 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data[DOMAIN][entry.entry_id]["force_charge_state"] = force_charge_state
     hass.data[DOMAIN][entry.entry_id]["force_discharge_state"] = force_discharge_state
 
+    async def _cache_restorable_tesla_tariff(tariff: Any, source: str) -> dict[str, Any] | None:
+        """Cache a normal Tesla TOU tariff; ignore temporary force tariffs."""
+        restorable_tariff = _select_restorable_tesla_tariff(tariff)
+        if not restorable_tariff:
+            if tariff:
+                _LOGGER.warning(
+                    "Ignoring PowerSync force tariff from %s as restore baseline (name: %s)",
+                    source,
+                    _tariff_display_name(tariff),
+                )
+            return None
+
+        hass.data[DOMAIN][entry.entry_id]["last_restorable_tesla_tariff"] = restorable_tariff
+        try:
+            stored_data = await store.async_load() or {}
+            stored_data["last_restorable_tesla_tariff"] = restorable_tariff
+            await store.async_save(stored_data)
+        except Exception as store_err:
+            _LOGGER.debug("Could not persist Tesla tariff baseline from %s: %s", source, store_err)
+        return restorable_tariff
+
+    def _cached_restorable_tesla_tariff() -> dict[str, Any] | None:
+        return _select_restorable_tesla_tariff(
+            hass.data.get(DOMAIN, {}).get(entry.entry_id, {}).get("last_restorable_tesla_tariff")
+        )
+
+    def _configured_restorable_tesla_tariff() -> dict[str, Any] | None:
+        custom_tariff = None
+        try:
+            custom_tariff = automation_store.get_custom_tariff()
+        except Exception:
+            custom_tariff = None
+        return _select_restorable_tesla_tariff(
+            custom_tariff,
+            entry.data.get("initial_custom_tariff"),
+        )
+
     # Helper function to persist force mode state to storage
     async def persist_force_mode_state() -> None:
         """Persist current force charge/discharge state to storage."""
@@ -18724,7 +18878,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 "mode": "charge",
                 "expires_at": force_charge_state["expires_at"].isoformat() if force_charge_state["expires_at"] else None,
                 "source": force_charge_state.get("source", "user"),
-                "saved_tariff": force_charge_state["saved_tariff"],
+                "saved_tariff": _select_restorable_tesla_tariff(force_charge_state["saved_tariff"]),
                 "saved_operation_mode": force_charge_state["saved_operation_mode"],
                 "saved_backup_reserve": force_charge_state["saved_backup_reserve"],
             }
@@ -18733,7 +18887,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 "mode": "discharge",
                 "expires_at": force_discharge_state["expires_at"].isoformat() if force_discharge_state["expires_at"] else None,
                 "source": force_discharge_state.get("source", "user"),
-                "saved_tariff": force_discharge_state["saved_tariff"],
+                "saved_tariff": _select_restorable_tesla_tariff(force_discharge_state["saved_tariff"]),
                 "saved_operation_mode": force_discharge_state["saved_operation_mode"],
                 "saved_backup_reserve": force_discharge_state["saved_backup_reserve"],
                 "saved_export_rule": force_discharge_state["saved_export_rule"],
@@ -18772,7 +18926,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 # Force mode has expired during restart - need to restore Tesla to normal
                 _LOGGER.info(f"⏰ Persisted force {mode} has expired (was {expires_at_str}), restoring saved tariff")
 
-                saved_tariff = persisted_force_state.get("saved_tariff")
+                saved_tariff = _select_restorable_tesla_tariff(
+                    persisted_force_state.get("saved_tariff"),
+                    _cached_restorable_tesla_tariff(),
+                    _configured_restorable_tesla_tariff(),
+                )
                 saved_backup_reserve = persisted_force_state.get("saved_backup_reserve")
 
                 # Populate force state so handle_restore_normal can do a full cleanup
@@ -18809,7 +18967,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     force_charge_state["expires_at"] = expires_at
                     force_charge_state["duration"] = persisted_force_state.get("duration", int(remaining_minutes))
                     force_charge_state["source"] = persisted_force_state.get("source", "user")
-                    force_charge_state["saved_tariff"] = persisted_force_state.get("saved_tariff")
+                    force_charge_state["saved_tariff"] = _select_restorable_tesla_tariff(
+                        persisted_force_state.get("saved_tariff"),
+                        _cached_restorable_tesla_tariff(),
+                        _configured_restorable_tesla_tariff(),
+                    )
                     force_charge_state["saved_operation_mode"] = persisted_force_state.get("saved_operation_mode")
                     force_charge_state["saved_backup_reserve"] = persisted_force_state.get("saved_backup_reserve")
 
@@ -18856,7 +19018,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     force_discharge_state["expires_at"] = expires_at
                     force_discharge_state["duration"] = persisted_force_state.get("duration", int(remaining_minutes))
                     force_discharge_state["source"] = persisted_force_state.get("source", "user")
-                    force_discharge_state["saved_tariff"] = persisted_force_state.get("saved_tariff")
+                    force_discharge_state["saved_tariff"] = _select_restorable_tesla_tariff(
+                        persisted_force_state.get("saved_tariff"),
+                        _cached_restorable_tesla_tariff(),
+                        _configured_restorable_tesla_tariff(),
+                    )
                     force_discharge_state["saved_operation_mode"] = persisted_force_state.get("saved_operation_mode")
                     force_discharge_state["saved_backup_reserve"] = persisted_force_state.get("saved_backup_reserve")
                     force_discharge_state["saved_export_rule"] = persisted_force_state.get("saved_export_rule")
@@ -19570,7 +19736,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             session = async_get_clientsession(hass)
 
             # Step 1: Save current tariff and state (if not already in discharge mode)
-            tariff_saved_from_site_info = False
             if not was_already_force_discharging:
                 # Initialize per-site saved states dict
                 saved_states = {}
@@ -19591,11 +19756,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         if response.status == 200:
                             data = await response.json()
                             resp = data.get("response", {})
-                            saved_tariff = resp.get("tariff_content_v2") or resp.get("tariff_content")
+                            tariff_candidate = resp.get("tariff_content_v2") or resp.get("tariff_content")
+                            saved_tariff = await _cache_restorable_tesla_tariff(
+                                tariff_candidate,
+                                f"tariff_rate for site {site_id}",
+                            )
                             site_state["saved_tariff"] = saved_tariff
                             if saved_tariff:
                                 _LOGGER.info("Saved tariff for site %s (name: %s)", site_id,
                                             saved_tariff.get("name", "unknown"))
+                            elif tariff_candidate:
+                                _LOGGER.warning(
+                                    "Current tariff for site %s is a PowerSync force tariff; not saving as restore tariff",
+                                    site_id,
+                                )
                             else:
                                 _LOGGER.warning("Could not extract tariff from tariff_rate for site %s - will try site_info", site_id)
                         else:
@@ -19642,11 +19816,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
                             if not site_state.get("saved_tariff"):
                                 site_tariff = site_info.get("tariff_content_v2") or site_info.get("tariff_content")
-                                if site_tariff:
-                                    site_state["saved_tariff"] = site_tariff
-                                    tariff_saved_from_site_info = True
+                                saved_tariff = await _cache_restorable_tesla_tariff(
+                                    site_tariff,
+                                    f"site_info for site {site_id}",
+                                )
+                                if saved_tariff:
+                                    site_state["saved_tariff"] = saved_tariff
                                     _LOGGER.info("Saved tariff from site_info fallback for site %s (name: %s)",
-                                                site_id, site_tariff.get("name", "unknown"))
+                                                site_id, saved_tariff.get("name", "unknown"))
+                                elif _cached_restorable_tesla_tariff():
+                                    site_state["saved_tariff"] = _cached_restorable_tesla_tariff()
+                                    _LOGGER.info(
+                                        "Using cached Tesla tariff baseline for site %s (name: %s)",
+                                        site_id,
+                                        _tariff_display_name(site_state["saved_tariff"]),
+                                    )
                                 else:
                                     _LOGGER.warning("No tariff found in site_info either for site %s", site_id)
                                     electricity_provider = entry.options.get(
@@ -20743,11 +20927,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         if response.status == 200:
                             data = await response.json()
                             resp = data.get("response", {})
-                            saved_tariff = resp.get("tariff_content_v2") or resp.get("tariff_content")
+                            tariff_candidate = resp.get("tariff_content_v2") or resp.get("tariff_content")
+                            saved_tariff = await _cache_restorable_tesla_tariff(
+                                tariff_candidate,
+                                f"tariff_rate for site {site_id}",
+                            )
                             site_state["saved_tariff"] = saved_tariff
                             if saved_tariff:
                                 _LOGGER.info("Saved tariff for site %s (name: %s)", site_id,
                                             saved_tariff.get("name", "unknown"))
+                            elif tariff_candidate:
+                                _LOGGER.warning(
+                                    "Current tariff for site %s is a PowerSync force tariff; not saving as restore tariff",
+                                    site_id,
+                                )
                             else:
                                 _LOGGER.warning("Could not extract tariff from tariff_rate for site %s - will try site_info", site_id)
                         else:
@@ -20786,10 +20979,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
                             if not site_state.get("saved_tariff"):
                                 site_tariff = site_info.get("tariff_content_v2") or site_info.get("tariff_content")
-                                if site_tariff:
-                                    site_state["saved_tariff"] = site_tariff
+                                saved_tariff = await _cache_restorable_tesla_tariff(
+                                    site_tariff,
+                                    f"site_info for site {site_id}",
+                                )
+                                if saved_tariff:
+                                    site_state["saved_tariff"] = saved_tariff
                                     _LOGGER.info("Saved tariff from site_info fallback for site %s (name: %s)",
-                                                site_id, site_tariff.get("name", "unknown"))
+                                                site_id, saved_tariff.get("name", "unknown"))
+                                elif _cached_restorable_tesla_tariff():
+                                    site_state["saved_tariff"] = _cached_restorable_tesla_tariff()
+                                    _LOGGER.info(
+                                        "Using cached Tesla tariff baseline for site %s (name: %s)",
+                                        site_id,
+                                        _tariff_display_name(site_state["saved_tariff"]),
+                                    )
                                 else:
                                     _LOGGER.warning("No tariff found in site_info for site %s", site_id)
                                     electricity_provider = entry.options.get(
@@ -21536,8 +21740,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # wrong mode switches (autonomous instead of self_consumption), and
         # spurious push notifications.
         has_active_force = force_discharge_state.get("active") or force_charge_state.get("active")
+        restorable_saved_tariff = _select_restorable_tesla_tariff(
+            force_discharge_state.get("saved_tariff"),
+            force_charge_state.get("saved_tariff"),
+            _cached_restorable_tesla_tariff(),
+            _configured_restorable_tesla_tariff(),
+        )
         has_saved_state = (
-            force_discharge_state.get("saved_tariff") or force_charge_state.get("saved_tariff") or
+            restorable_saved_tariff or
             force_discharge_state.get("saved_operation_mode") or force_charge_state.get("saved_operation_mode") or
             force_discharge_state.get("saved_backup_reserve") is not None or
             force_charge_state.get("saved_backup_reserve") is not None
@@ -21581,8 +21791,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 entry.data.get(CONF_ELECTRICITY_PROVIDER, "amber")
             )
 
-            # Find saved tariff (prefer discharge, then charge)
-            saved_tariff = force_discharge_state.get("saved_tariff") or force_charge_state.get("saved_tariff")
+            # Find saved tariff (prefer discharge, then charge), but never use
+            # a temporary PowerSync force tariff as the restore tariff.
+            saved_tariff = _select_restorable_tesla_tariff(
+                force_discharge_state.get("saved_tariff"),
+                force_charge_state.get("saved_tariff"),
+                _cached_restorable_tesla_tariff(),
+                _configured_restorable_tesla_tariff(),
+            )
 
             # Dynamic pricing providers should sync fresh prices, not restore stale saved tariff
             dynamic_providers = ("amber", "flow_power", "aemo_vpp")
@@ -21598,10 +21814,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 discharge_saved = force_discharge_state.get("saved_states") or {}
                 charge_saved = force_charge_state.get("saved_states") or {}
                 for site_id, current_token, provider in site_configs:
-                    site_tariff = (
+                    site_tariff = _select_restorable_tesla_tariff(
                         discharge_saved.get(site_id, {}).get("saved_tariff") or
+                        None,
                         charge_saved.get(site_id, {}).get("saved_tariff") or
-                        saved_tariff  # Fall back to global saved tariff
+                        None,
+                        saved_tariff,  # Fall back to global saved tariff
+                        _cached_restorable_tesla_tariff(),
+                        _configured_restorable_tesla_tariff(),
                     )
                     if site_tariff:
                         success = await send_tariff_to_tesla(
@@ -21612,6 +21832,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                             _LOGGER.info("Restored saved tariff for site %s", site_id)
                         else:
                             _LOGGER.error("Failed to restore saved tariff for site %s", site_id)
+                    else:
+                        _LOGGER.warning(
+                            "No restorable saved tariff for site %s; refusing to restore a PowerSync force tariff",
+                            site_id,
+                        )
                     if len(site_configs) > 1:
                         await asyncio.sleep(1)
             else:
@@ -23981,17 +24206,32 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             fc_state = force_state.get("force_charge_state", {})
             saved_tariff = None
             if fd_state.get("active") and fd_state.get("saved_tariff"):
-                saved_tariff = fd_state["saved_tariff"]
-                _LOGGER.info("Force discharge active - using saved tariff for schedule instead of Tesla API")
+                saved_tariff = _select_restorable_tesla_tariff(fd_state["saved_tariff"])
+                if saved_tariff:
+                    _LOGGER.info("Force discharge active - using saved tariff for schedule instead of Tesla API")
+                else:
+                    _LOGGER.warning(
+                        "Force discharge saved tariff is a PowerSync force tariff; not using it as tariff schedule"
+                    )
             elif fc_state.get("active") and fc_state.get("saved_tariff"):
-                saved_tariff = fc_state["saved_tariff"]
-                _LOGGER.info("Force charge active - using saved tariff for schedule instead of Tesla API")
+                saved_tariff = _select_restorable_tesla_tariff(fc_state["saved_tariff"])
+                if saved_tariff:
+                    _LOGGER.info("Force charge active - using saved tariff for schedule instead of Tesla API")
+                else:
+                    _LOGGER.warning(
+                        "Force charge saved tariff is a PowerSync force tariff; not using it as tariff schedule"
+                    )
             elif persisted_force_state and persisted_force_state.get("saved_tariff"):
                 # Force mode expired during restart — restore_normal is uploading
                 # the real tariff but may not have completed yet. Use saved tariff
                 # so the optimizer gets correct prices immediately.
-                saved_tariff = persisted_force_state["saved_tariff"]
-                _LOGGER.info("Force mode recently expired - using saved tariff to avoid stale force-charge tariff")
+                saved_tariff = _select_restorable_tesla_tariff(persisted_force_state["saved_tariff"])
+                if saved_tariff:
+                    _LOGGER.info("Force mode recently expired - using saved tariff to avoid stale force-charge tariff")
+                else:
+                    _LOGGER.warning(
+                        "Persisted force-mode saved tariff is a PowerSync force tariff; not using it as tariff schedule"
+                    )
 
             if saved_tariff:
                 tariff_data = convert_custom_tariff_to_schedule(
@@ -24002,6 +24242,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     hass.data[DOMAIN][entry.entry_id]["tariff_schedule"] = tariff_data
             else:
                 tariff_data = await fetch_tesla_tariff_schedule(hass, entry)
+                if not tariff_data:
+                    cached_tariff = _select_restorable_tesla_tariff(
+                        force_state.get("last_restorable_tesla_tariff")
+                    )
+                    if cached_tariff:
+                        _LOGGER.info(
+                            "Tesla tariff fetch unavailable or force-tainted; using cached Tesla tariff baseline"
+                        )
+                        tariff_data = convert_custom_tariff_to_schedule(
+                            cached_tariff,
+                            currency=currency_for_entry(entry, hass),
+                        )
+                        if tariff_data:
+                            hass.data[DOMAIN][entry.entry_id]["tariff_schedule"] = tariff_data
             if tariff_data:
                 tou_count = len(tariff_data.get("tou_periods", {}))
                 _LOGGER.info(

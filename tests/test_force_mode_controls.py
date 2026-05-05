@@ -85,3 +85,39 @@ def test_force_mode_persistence_uses_setup_store_reference():
     assert function_source is not None
     assert 'hass.data[DOMAIN][entry.entry_id]["store"]' not in function_source
     assert "await store.async_load()" in function_source
+
+
+def test_force_tariff_filter_matches_names_and_codes():
+    source = INIT_PATH.read_text()
+    tree = ast.parse(source)
+    function = _find_function(tree, "_is_powersync_force_tariff")
+    function_source = ast.get_source_segment(source, function)
+
+    assert function_source is not None
+    assert "force charge" in source
+    assert "force discharge" in source
+    assert "_FORCE_TARIFF_CODE_PREFIXES" in function_source
+    assert "_iter_tariff_strings" in function_source
+
+
+def test_restore_normal_filters_force_tariffs_before_upload():
+    source = INIT_PATH.read_text()
+    tree = ast.parse(source)
+    function = _find_function(tree, "handle_restore_normal")
+    function_source = ast.get_source_segment(source, function)
+
+    assert function_source is not None
+    assert "saved_tariff = _select_restorable_tesla_tariff" in function_source
+    assert "site_tariff = _select_restorable_tesla_tariff" in function_source
+    assert "send_tariff_to_tesla" in function_source
+
+
+def test_tesla_tariff_fetch_rejects_force_tariffs():
+    source = INIT_PATH.read_text()
+    tree = ast.parse(source)
+    function = _find_function(tree, "fetch_tesla_tariff_schedule")
+    function_source = ast.get_source_segment(source, function)
+
+    assert function_source is not None
+    assert "if _is_powersync_force_tariff(tariff):" in function_source
+    assert '"last_restorable_tesla_tariff"' in function_source

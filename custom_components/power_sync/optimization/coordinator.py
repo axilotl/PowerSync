@@ -1363,6 +1363,45 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         return self._current_schedule.actions[0] if self._current_schedule.actions else None
 
+    def _force_duration_for_action_window(
+        self,
+        action: Any,
+        matching_actions: set[str],
+    ) -> int:
+        """Return a supported force duration covering the contiguous LP action block."""
+        interval = max(1, int(getattr(self._config, "interval_minutes", 5) or 5))
+        minimum = interval + 5
+        actions = getattr(getattr(self, "_current_schedule", None), "actions", None) or []
+
+        start_idx = None
+        action_ts = getattr(action, "timestamp", None)
+        for idx, scheduled in enumerate(actions):
+            if scheduled is action or (
+                action_ts is not None and getattr(scheduled, "timestamp", None) == action_ts
+            ):
+                start_idx = idx
+                break
+
+        if start_idx is None:
+            requested = minimum
+        else:
+            slots = 0
+            for scheduled in actions[start_idx:]:
+                if getattr(scheduled, "action", None) not in matching_actions:
+                    break
+                slots += 1
+            requested = max(minimum, slots * interval)
+
+        try:
+            from ..const import DISCHARGE_DURATIONS
+        except Exception:
+            DISCHARGE_DURATIONS = [5, 10, 15, 30, 45, 60, 75, 90, 105, 120, 150, 180, 210, 240]
+
+        for duration in sorted(DISCHARGE_DURATIONS):
+            if duration >= requested:
+                return int(duration)
+        return int(max(DISCHARGE_DURATIONS))
+
     async def _execute_optimizer_action(self, action: Any) -> None:
         """Execute an optimizer action on the battery."""
         if not self._executor or not self._executor.battery_controller:
@@ -1839,8 +1878,14 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     # would cap the inverter at that low power. Max discharge
                     # lets the inverter export at full rate.
                     discharge_power = self._config.max_discharge_w
+                    discharge_duration = self._config.interval_minutes + 5
+                    if self.battery_system == "tesla":
+                        discharge_duration = self._force_duration_for_action_window(
+                            action,
+                            {"discharge", "export"},
+                        )
                     await battery.force_discharge(
-                        duration_minutes=self._config.interval_minutes + 5,
+                        duration_minutes=discharge_duration,
                         power_w=discharge_power,
                     )
                     # Don't override Tesla's hardware backup_reserve here.
@@ -1850,8 +1895,8 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     # if SOC reaches the floor. The user's Tesla hardware
                     # reserve (e.g. 20%) is the absolute safety net.
                     _LOGGER.info(
-                        "Optimizer: Discharging/exporting at %.0fW",
-                        action.power_w,
+                        "Optimizer: Discharging/exporting at %.0fW for %dmin",
+                        action.power_w, discharge_duration,
                     )
             elif effective_action == "idle":
                 # IDLE: Hold battery at current SOC by setting backup reserve
