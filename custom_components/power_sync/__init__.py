@@ -4178,6 +4178,7 @@ class BatteryHealthView(HomeAssistantView):
             build_signed_routable_message,
             parse_device_controller_response,
         )
+        from .powerwall_local.bms_health import reconcile_pack_remaining_with_aggregate
 
         private_key_pem = entry.data.get(CONF_POWERWALL_LOCAL_PRIVATE_KEY)
         din = entry.data.get(CONF_POWERWALL_LOCAL_DIN)
@@ -4441,6 +4442,13 @@ class BatteryHealthView(HomeAssistantView):
                     )
                     individual = kept
                     bms_module_count -= ghost_count
+
+        individual = reconcile_pack_remaining_with_aggregate(
+            individual,
+            rem_wh,
+            current_wh,
+            logger=_LOGGER,
+        )
 
         # Module count: BMS signal presence is the most accurate count (includes follower packs
         # that report the signal key but have None values). batteryBlocks counts inverter units

@@ -1009,8 +1009,9 @@ class SigenergyController(InverterController):
         """Force battery to charge from grid.
 
         Enables Remote EMS mode and sets control mode to charge.
-        Does NOT reduce the charge rate limit — the ESS max charge limit
-        should stay at rated capacity so the battery can charge at full speed.
+        Applies the requested ESS max charge limit before entering charge mode
+        so optimizer/manual setpoints do not charge at the inverter's rated
+        capacity.
 
         Args:
             power_kw: Charge power in kW (used for logging, rate set by inverter)
@@ -1021,6 +1022,28 @@ class SigenergyController(InverterController):
         try:
             if not await self.connect():
                 return False
+
+            try:
+                target_kw = max(0.0, float(power_kw))
+            except (TypeError, ValueError):
+                target_kw = 10.0
+
+            scaled_value = int(target_kw * self.GAIN_POWER)
+            scaled_value = min(max(scaled_value, 0), 0xFFFFFFFE)
+            rate_result = await self._write_holding_registers(
+                self.REG_ESS_MAX_CHARGE_LIMIT,
+                self._from_unsigned32(scaled_value),
+            )
+            if not rate_result:
+                _LOGGER.error(
+                    "Failed to set ESS max charge limit to %.2f kW for force charge",
+                    target_kw,
+                )
+                return False
+            _LOGGER.info(
+                "Sigenergy ESS max charge limit set to %.2f kW for force charge",
+                target_kw,
+            )
 
             # 1. Enable Remote EMS
             ems_result = await self._write_holding_registers(self.REG_REMOTE_EMS_ENABLE, [1])
@@ -1040,10 +1063,7 @@ class SigenergyController(InverterController):
                 return False
             _LOGGER.info("Remote EMS control mode set to CHARGE_PV")
 
-            # Note: ESS max charge/discharge limits are left at rated capacity.
-            # Reducing them would prevent the battery from covering home load.
-
-            _LOGGER.info(f"Sigenergy FORCE CHARGE active (requested {power_kw} kW)")
+            _LOGGER.info(f"Sigenergy FORCE CHARGE active (target {target_kw} kW)")
             return True
 
         except Exception as e:
