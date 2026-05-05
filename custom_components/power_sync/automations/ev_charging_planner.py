@@ -2972,6 +2972,12 @@ class AutoScheduleSettings:
     charger_amps_entity: Optional[str] = None
     charger_status_entity: Optional[str] = None
     ocpp_charger_id: Optional[int] = None
+    pre_charge_wake_entity: Optional[str] = None
+    pre_charge_wake_duration_seconds: Optional[int] = None
+    pre_charge_wake_on_service: Optional[str] = None
+    pre_charge_wake_off_service: Optional[str] = None
+    pre_charge_wake_on_service_data: Optional[dict] = None
+    pre_charge_wake_off_service_data: Optional[dict] = None
 
     def apply_charger_config(self, config: Mapping[str, Any]) -> None:
         """Apply app-managed physical charger settings to these settings."""
@@ -2985,6 +2991,12 @@ class AutoScheduleSettings:
             "charger_amps_entity": "charger_amps_entity",
             "charger_status_entity": "charger_status_entity",
             "ocpp_charger_id": "ocpp_charger_id",
+            "pre_charge_wake_entity": "pre_charge_wake_entity",
+            "pre_charge_wake_duration_seconds": "pre_charge_wake_duration_seconds",
+            "pre_charge_wake_on_service": "pre_charge_wake_on_service",
+            "pre_charge_wake_off_service": "pre_charge_wake_off_service",
+            "pre_charge_wake_on_service_data": "pre_charge_wake_on_service_data",
+            "pre_charge_wake_off_service_data": "pre_charge_wake_off_service_data",
         }
         for source_key, attr_name in field_map.items():
             if source_key in config:
@@ -3031,6 +3043,12 @@ class AutoScheduleSettings:
             "charger_amps_entity": self.charger_amps_entity,
             "charger_status_entity": self.charger_status_entity,
             "ocpp_charger_id": self.ocpp_charger_id,
+            "pre_charge_wake_entity": self.pre_charge_wake_entity,
+            "pre_charge_wake_duration_seconds": self.pre_charge_wake_duration_seconds,
+            "pre_charge_wake_on_service": self.pre_charge_wake_on_service,
+            "pre_charge_wake_off_service": self.pre_charge_wake_off_service,
+            "pre_charge_wake_on_service_data": self.pre_charge_wake_on_service_data,
+            "pre_charge_wake_off_service_data": self.pre_charge_wake_off_service_data,
         }
 
     @classmethod
@@ -3132,6 +3150,12 @@ class AutoScheduleSettings:
             charger_amps_entity=data.get("charger_amps_entity"),
             charger_status_entity=data.get("charger_status_entity"),
             ocpp_charger_id=data.get("ocpp_charger_id"),
+            pre_charge_wake_entity=data.get("pre_charge_wake_entity"),
+            pre_charge_wake_duration_seconds=data.get("pre_charge_wake_duration_seconds"),
+            pre_charge_wake_on_service=data.get("pre_charge_wake_on_service"),
+            pre_charge_wake_off_service=data.get("pre_charge_wake_off_service"),
+            pre_charge_wake_on_service_data=data.get("pre_charge_wake_on_service_data"),
+            pre_charge_wake_off_service_data=data.get("pre_charge_wake_off_service_data"),
         )
 
 
@@ -3411,6 +3435,12 @@ class AutoScheduleExecutor:
             "charger_amps_entity": settings.charger_amps_entity,
             "charger_status_entity": settings.charger_status_entity,
             "ocpp_charger_id": settings.ocpp_charger_id,
+            "pre_charge_wake_entity": settings.pre_charge_wake_entity,
+            "pre_charge_wake_duration_seconds": settings.pre_charge_wake_duration_seconds,
+            "pre_charge_wake_on_service": settings.pre_charge_wake_on_service,
+            "pre_charge_wake_off_service": settings.pre_charge_wake_off_service,
+            "pre_charge_wake_on_service_data": settings.pre_charge_wake_on_service_data,
+            "pre_charge_wake_off_service_data": settings.pre_charge_wake_off_service_data,
         }
 
         try:
@@ -5006,6 +5036,12 @@ class AutoScheduleExecutor:
             "charger_amps_entity": settings.charger_amps_entity,
             "charger_status_entity": settings.charger_status_entity,
             "ocpp_charger_id": settings.ocpp_charger_id,
+            "pre_charge_wake_entity": settings.pre_charge_wake_entity,
+            "pre_charge_wake_duration_seconds": settings.pre_charge_wake_duration_seconds,
+            "pre_charge_wake_on_service": settings.pre_charge_wake_on_service,
+            "pre_charge_wake_off_service": settings.pre_charge_wake_off_service,
+            "pre_charge_wake_on_service_data": settings.pre_charge_wake_on_service_data,
+            "pre_charge_wake_off_service_data": settings.pre_charge_wake_off_service_data,
             "no_grid_import": settings.get_effective_limit_grid_import(dt_util.now().weekday()),
             **_get_optimizer_battery_params(self.hass, self.config_entry),
         }
@@ -5517,6 +5553,12 @@ def _get_vehicle_charger_params(
                         "charger_amps_entity",
                         "charger_status_entity",
                         "ocpp_charger_id",
+                        "pre_charge_wake_entity",
+                        "pre_charge_wake_duration_seconds",
+                        "pre_charge_wake_on_service",
+                        "pre_charge_wake_off_service",
+                        "pre_charge_wake_on_service_data",
+                        "pre_charge_wake_off_service_data",
                     ):
                         if vc.get(key) is not None:
                             params[key] = vc.get(key)
@@ -5537,6 +5579,12 @@ def _get_vehicle_charger_params(
                     "charger_amps_entity",
                     "charger_status_entity",
                     "ocpp_charger_id",
+                    "pre_charge_wake_entity",
+                    "pre_charge_wake_duration_seconds",
+                    "pre_charge_wake_on_service",
+                    "pre_charge_wake_off_service",
+                    "pre_charge_wake_on_service_data",
+                    "pre_charge_wake_off_service_data",
                 ):
                     if vc.get(key) is not None:
                         params[key] = vc.get(key)
@@ -5562,6 +5610,12 @@ def _get_vehicle_charger_params(
                             "charger_amps_entity": settings.charger_amps_entity,
                             "charger_status_entity": settings.charger_status_entity,
                             "ocpp_charger_id": settings.ocpp_charger_id,
+                            "pre_charge_wake_entity": settings.pre_charge_wake_entity,
+                            "pre_charge_wake_duration_seconds": settings.pre_charge_wake_duration_seconds,
+                            "pre_charge_wake_on_service": settings.pre_charge_wake_on_service,
+                            "pre_charge_wake_off_service": settings.pre_charge_wake_off_service,
+                            "pre_charge_wake_on_service_data": settings.pre_charge_wake_on_service_data,
+                            "pre_charge_wake_off_service_data": settings.pre_charge_wake_off_service_data,
                         }
             # No VIN match — use first available settings
             for vid, settings in exec_instance._settings.items():
@@ -5576,6 +5630,12 @@ def _get_vehicle_charger_params(
                     "charger_amps_entity": settings.charger_amps_entity,
                     "charger_status_entity": settings.charger_status_entity,
                     "ocpp_charger_id": settings.ocpp_charger_id,
+                    "pre_charge_wake_entity": settings.pre_charge_wake_entity,
+                    "pre_charge_wake_duration_seconds": settings.pre_charge_wake_duration_seconds,
+                    "pre_charge_wake_on_service": settings.pre_charge_wake_on_service,
+                    "pre_charge_wake_off_service": settings.pre_charge_wake_off_service,
+                    "pre_charge_wake_on_service_data": settings.pre_charge_wake_on_service_data,
+                    "pre_charge_wake_off_service_data": settings.pre_charge_wake_off_service_data,
                 }
     except Exception:
         pass

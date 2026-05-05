@@ -303,6 +303,89 @@ def test_generic_start_allows_available_status_when_connector_has_car():
     ]
 
 
+def test_generic_start_runs_pre_charge_wake_before_switch_on():
+    hass = _Hass([
+        _State("switch.garage_ev", "off"),
+        _State("sensor.garage_ev_status", "Preparing"),
+        _State("switch.byd_aircon", "off"),
+    ])
+
+    result = asyncio.run(
+        actions._action_start_ev_charging(
+            hass,
+            _Entry(),
+            {
+                "charger_type": "generic",
+                "charger_switch_entity": "switch.garage_ev",
+                "charger_status_entity": "sensor.garage_ev_status",
+                "pre_charge_wake_entity": "switch.byd_aircon",
+                "pre_charge_wake_duration_seconds": 0,
+            },
+        )
+    )
+
+    assert result is True
+    assert hass.services.calls == [
+        ("switch", "turn_on", {"entity_id": "switch.byd_aircon"}),
+        ("switch", "turn_off", {"entity_id": "switch.byd_aircon"}),
+        ("switch", "turn_on", {"entity_id": "switch.garage_ev"}),
+    ]
+
+
+def test_ocpp_pre_charge_wake_blocks_when_connector_available():
+    hass = _Hass([
+        _State("switch.evse_1_charge_control", "off"),
+        _State("sensor.evse_1_status_connector", "Available"),
+        _State("switch.byd_aircon", "off"),
+    ])
+
+    result = asyncio.run(
+        actions._action_start_ev_charging(
+            hass,
+            _Entry(),
+            {
+                "charger_type": "ocpp",
+                "ocpp_charger_id": "evse_1",
+                "pre_charge_wake_entity": "switch.byd_aircon",
+                "pre_charge_wake_duration_seconds": 0,
+            },
+        )
+    )
+
+    assert result is False
+    assert hass.services.calls == []
+
+
+def test_ocpp_set_vehicle_amps_runs_pre_charge_wake_before_start():
+    hass = _Hass([
+        _State("switch.evse_1_charge_control", "off"),
+        _State("sensor.evse_1_status_connector", "Preparing"),
+        _State("switch.byd_aircon", "off"),
+    ])
+
+    result = asyncio.run(
+        actions._set_vehicle_amps(
+            hass,
+            _Entry(),
+            "ocpp_evse_1",
+            16,
+            {
+                "charger_type": "ocpp",
+                "ocpp_charger_id": "evse_1",
+                "pre_charge_wake_entity": "switch.byd_aircon",
+                "pre_charge_wake_duration_seconds": 0,
+            },
+        )
+    )
+
+    assert result is True
+    assert hass.services.calls == [
+        ("switch", "turn_on", {"entity_id": "switch.byd_aircon"}),
+        ("switch", "turn_off", {"entity_id": "switch.byd_aircon"}),
+        ("switch", "turn_on", {"entity_id": "switch.evse_1_charge_control"}),
+    ]
+
+
 def test_direct_ev_start_action_records_manual_ownership(monkeypatch):
     async def fake_start(*args, **kwargs):
         return True

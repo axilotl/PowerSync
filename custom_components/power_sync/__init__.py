@@ -9358,6 +9358,8 @@ class EVVehicleCommandView(HomeAssistantView):
         # Accept pseudo-VINs for non-Tesla chargers directly
         if vehicle_id in ("generic_ev", "zaptec_standalone") or (
             vehicle_id and vehicle_id.startswith("ocpp_")
+        ) or (
+            vehicle_id and vehicle_id.startswith("byd_")
         ):
             return vehicle_id
 
@@ -9686,6 +9688,24 @@ class EVVehicleCommandView(HomeAssistantView):
         entries = self._hass.config_entries.async_entries(DOMAIN)
         return entries[0] if entries else None
 
+    def _get_vehicle_charging_config(self, *vehicle_ids: str | None) -> dict | None:
+        """Return an app-managed charger config matching any supplied vehicle id."""
+        wanted = {str(vehicle_id) for vehicle_id in vehicle_ids if vehicle_id}
+        if not wanted:
+            return None
+
+        for entry_data in self._hass.data.get(DOMAIN, {}).values():
+            if not isinstance(entry_data, dict):
+                continue
+            store = entry_data.get("automation_store")
+            if not store:
+                continue
+            stored = getattr(store, "_data", {}) or {}
+            for config in stored.get("vehicle_charging_configs", []):
+                if str(config.get("vehicle_id")) in wanted:
+                    return config
+        return None
+
     def _manual_session_identity(self, vehicle_vin: str | None) -> tuple[str | None, dict]:
         """Return the loadpoint id and charger params for manual command ownership."""
         if vehicle_vin in (None, "zaptec_standalone") and self._get_zaptec_standalone():
@@ -9742,6 +9762,28 @@ class EVVehicleCommandView(HomeAssistantView):
             params["vehicle_vin"] = vehicle_vin
         else:
             params["vehicle_vin"] = None
+
+        stored_config = self._get_vehicle_charging_config(vehicle_vin, manual_vehicle_id)
+        if stored_config:
+            for key in (
+                "charger_type",
+                "charger_switch_entity",
+                "charger_amps_entity",
+                "charger_status_entity",
+                "ocpp_charger_id",
+                "pre_charge_wake_entity",
+                "pre_charge_wake_duration_seconds",
+                "pre_charge_wake_on_service",
+                "pre_charge_wake_off_service",
+                "pre_charge_wake_on_service_data",
+                "pre_charge_wake_off_service_data",
+            ):
+                if stored_config.get(key) is not None:
+                    params[key] = stored_config.get(key)
+
+            if params.get("charger_type") != "tesla":
+                params["vehicle_vin"] = None
+                params["vehicle_id"] = stored_config.get("vehicle_id") or manual_vehicle_id
 
         return params
 
@@ -10431,6 +10473,8 @@ class VehicleChargingConfigView(HomeAssistantView):
                     "charger_amps_entity": data.get("charger_amps_entity"),
                     "charger_status_entity": data.get("charger_status_entity"),
                     "ocpp_charger_id": data.get("ocpp_charger_id"),
+                    "pre_charge_wake_entity": data.get("pre_charge_wake_entity"),
+                    "pre_charge_wake_duration_seconds": data.get("pre_charge_wake_duration_seconds", 5),
                     "min_amps": data.get("min_amps", 5),
                     "max_amps": data.get("max_amps", 32),
                     "voltage": data.get("voltage", 240),
@@ -10479,6 +10523,10 @@ class VehicleChargingConfigView(HomeAssistantView):
                                 settings.charger_status_entity = saved_config["charger_status_entity"]
                             if "ocpp_charger_id" in saved_config:
                                 settings.ocpp_charger_id = saved_config["ocpp_charger_id"]
+                            if "pre_charge_wake_entity" in saved_config:
+                                settings.pre_charge_wake_entity = saved_config["pre_charge_wake_entity"]
+                            if "pre_charge_wake_duration_seconds" in saved_config:
+                                settings.pre_charge_wake_duration_seconds = saved_config["pre_charge_wake_duration_seconds"]
                         _LOGGER.debug(
                             "Synced charger params to auto-schedule for %s: "
                             "max=%dA, voltage=%dV, phases=%d",
@@ -24887,6 +24935,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                                 "charger_amps_entity": vc.get("charger_amps_entity"),
                                 "charger_status_entity": vc.get("charger_status_entity"),
                                 "ocpp_charger_id": vc.get("ocpp_charger_id"),
+                                "pre_charge_wake_entity": vc.get("pre_charge_wake_entity"),
+                                "pre_charge_wake_duration_seconds": vc.get("pre_charge_wake_duration_seconds"),
                                 "household_buffer_kw": surplus_config.get("household_buffer_kw", 0.5),
                                 "surplus_calculation": surplus_config.get("surplus_calculation", "grid_based"),
                                 "sustained_surplus_minutes": surplus_config.get("sustained_surplus_minutes", 2),

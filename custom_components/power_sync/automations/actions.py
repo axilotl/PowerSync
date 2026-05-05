@@ -69,6 +69,21 @@ TESLA_EV_INTEGRATIONS = TESLA_INTEGRATIONS
 # Global lock to prevent concurrent wake/charging attempts
 _ev_wake_lock: Dict[str, bool] = {}  # vehicle_id -> is_waking
 
+PRE_CHARGE_WAKE_ENTITY_KEYS = (
+    "pre_charge_wake_entity",
+    "ev_wake_entity",
+    "wake_entity",
+)
+PRE_CHARGE_WAKE_DURATION_KEYS = (
+    "pre_charge_wake_duration_seconds",
+    "pre_charge_wake_wait_seconds",
+    "ev_wake_duration_seconds",
+    "wake_duration_seconds",
+)
+PRE_CHARGE_WAKE_DONE_KEY = "_pre_charge_wake_done_entity"
+DEFAULT_PRE_CHARGE_WAKE_DURATION_SECONDS = 5
+MAX_PRE_CHARGE_WAKE_DURATION_SECONDS = 120
+
 # API credit exhaustion tracking - prevents retry loops when Teslemetry credits are depleted
 _api_credit_exhausted: Dict[str, datetime] = {}  # "teslemetry" -> exhaustion_timestamp
 API_CREDIT_COOLDOWN_MINUTES = 15  # Wait before retrying after credit exhaustion
@@ -1831,6 +1846,187 @@ async def _action_restore_inverter(
 # =============================================================================
 
 
+def _pre_charge_wake_entity(params: Dict[str, Any]) -> str:
+    """Return the configured pre-charge wake entity, if any."""
+    for key in PRE_CHARGE_WAKE_ENTITY_KEYS:
+        value = str(params.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _has_pre_charge_wake(params: Dict[str, Any]) -> bool:
+    """Return whether a charger start should run a wake sequence first."""
+    return bool(_pre_charge_wake_entity(params))
+
+
+def _pre_charge_wake_duration(params: Dict[str, Any]) -> int:
+    """Return the wake hold duration in seconds, clamped to a safe range."""
+    raw_value = None
+    for key in PRE_CHARGE_WAKE_DURATION_KEYS:
+        if params.get(key) is not None:
+            raw_value = params.get(key)
+            break
+
+    if raw_value is None:
+        raw_value = DEFAULT_PRE_CHARGE_WAKE_DURATION_SECONDS
+
+    try:
+        seconds = int(float(raw_value))
+    except (TypeError, ValueError):
+        seconds = DEFAULT_PRE_CHARGE_WAKE_DURATION_SECONDS
+
+    return max(0, min(MAX_PRE_CHARGE_WAKE_DURATION_SECONDS, seconds))
+
+
+def _split_pre_charge_wake_service(
+    entity_domain: str,
+    configured: Any,
+    default_domain: str,
+    default_service: str,
+) -> tuple[str, str]:
+    """Resolve a wake service override into HA service domain/name."""
+    value = str(configured or "").strip()
+    if not value:
+        return default_domain, default_service
+
+    if "." in value:
+        service_domain, service = value.split(".", 1)
+    else:
+        service_domain, service = entity_domain, value
+
+    return service_domain.strip(), service.strip()
+
+
+def _pre_charge_wake_service_data(params: Dict[str, Any], key: str) -> dict:
+    """Return optional extra service data for the wake service."""
+    value = params.get(key)
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _default_pre_charge_wake_services(
+    entity_domain: str,
+    params: Dict[str, Any],
+) -> tuple[tuple[str, str], tuple[str, str] | None]:
+    """Return default on/off service calls for a wake entity."""
+    if entity_domain == "button":
+        on_default = ("button", "press")
+        off_default = None
+    elif entity_domain in ("script", "scene"):
+        on_default = (entity_domain, "turn_on")
+        off_default = None
+    else:
+        on_default = (entity_domain, "turn_on")
+        off_default = (entity_domain, "turn_off")
+
+    on_service = _split_pre_charge_wake_service(
+        entity_domain,
+        params.get("pre_charge_wake_on_service"),
+        on_default[0],
+        on_default[1],
+    )
+
+    off_override = params.get("pre_charge_wake_off_service")
+    if str(off_override or "").strip().lower() in ("none", "skip", "disabled"):
+        off_service = None
+    elif off_default is None and not off_override:
+        off_service = None
+    else:
+        fallback = off_default or (entity_domain, "turn_off")
+        off_service = _split_pre_charge_wake_service(
+            entity_domain,
+            off_override,
+            fallback[0],
+            fallback[1],
+        )
+
+    return on_service, off_service
+
+
+async def _run_pre_charge_wake_sequence(
+    hass: HomeAssistant,
+    params: Dict[str, Any],
+    charger_type: str,
+) -> bool:
+    """Run an optional EV wake action before enabling a non-Tesla charger."""
+    entity_id = _pre_charge_wake_entity(params)
+    if not entity_id:
+        return True
+
+    if params.get(PRE_CHARGE_WAKE_DONE_KEY) == entity_id:
+        return True
+
+    if "." not in entity_id:
+        _LOGGER.error("Pre-charge wake entity is invalid: %s", entity_id)
+        return False
+
+    state = hass.states.get(entity_id)
+    if state is None:
+        _LOGGER.error("Pre-charge wake entity not found: %s", entity_id)
+        return False
+
+    entity_domain = entity_id.split(".", 1)[0]
+    on_service, off_service = _default_pre_charge_wake_services(entity_domain, params)
+    duration_seconds = _pre_charge_wake_duration(params)
+
+    try:
+        on_data = {"entity_id": entity_id}
+        on_data.update(_pre_charge_wake_service_data(params, "pre_charge_wake_on_service_data"))
+        await hass.services.async_call(
+            on_service[0],
+            on_service[1],
+            on_data,
+            blocking=True,
+        )
+        _LOGGER.info(
+            "Pre-charge wake: called %s.%s for %s before %s start",
+            on_service[0],
+            on_service[1],
+            entity_id,
+            charger_type,
+        )
+
+        if duration_seconds > 0:
+            await asyncio.sleep(duration_seconds)
+
+        if off_service is not None:
+            off_data = {"entity_id": entity_id}
+            off_data.update(_pre_charge_wake_service_data(params, "pre_charge_wake_off_service_data"))
+            await hass.services.async_call(
+                off_service[0],
+                off_service[1],
+                off_data,
+                blocking=True,
+            )
+            _LOGGER.info(
+                "Pre-charge wake: called %s.%s for %s",
+                off_service[0],
+                off_service[1],
+                entity_id,
+            )
+
+        params[PRE_CHARGE_WAKE_DONE_KEY] = entity_id
+        return True
+    except Exception as err:
+        _LOGGER.error("Pre-charge wake failed for %s: %s", entity_id, err)
+        return False
+
+
+def _ocpp_charger_ready_for_wake(
+    hass: HomeAssistant,
+    charger_id: str,
+) -> tuple[bool, str | None]:
+    """Return whether an OCPP connector appears to have a vehicle plugged in."""
+    connector_state = hass.states.get(f"sensor.{charger_id}_status_connector")
+    if not connector_state or connector_state.state in ("unavailable", "unknown"):
+        return True, None
+
+    if connector_state.state.lower() in ("available", "disconnected"):
+        return False, "Vehicle is not plugged in"
+
+    return True, None
+
+
 async def _start_ocpp_charging(hass: HomeAssistant, charger_id: str) -> bool:
     """Start charging on an OCPP charger via its HA switch entity.
 
@@ -2070,6 +2266,7 @@ async def _start_zaptec_charging(
     hass: HomeAssistant,
     config_entry: ConfigEntry | None,
     amps: Optional[int] = None,
+    params: Dict[str, Any] | None = None,
 ) -> bool:
     """Start Zaptec standalone charging with state-aware command selection."""
     zaptec = _get_zaptec_standalone(hass, config_entry)
@@ -2096,6 +2293,9 @@ async def _start_zaptec_charging(
             await _set_zaptec_charging_amps(hass, config_entry, target_amps)
         _LOGGER.info("Zaptec charger is already charging")
         return True
+
+    if params is not None and not await _run_pre_charge_wake_sequence(hass, params, "zaptec"):
+        return False
 
     if charger_mode == "connected_waiting":
         if not await _set_zaptec_charging_amps(hass, config_entry, target_amps or 16):
@@ -2172,6 +2372,17 @@ async def _action_start_ev_charging(
         if not ocpp_charger_id:
             _LOGGER.error("OCPP start: no charger ID configured")
             return False
+        if _has_pre_charge_wake(params):
+            entity_id = f"switch.{ocpp_charger_id}_charge_control"
+            if not hass.states.get(entity_id):
+                _LOGGER.error("OCPP start: entity %s not found", entity_id)
+                return False
+            ready, block_reason = _ocpp_charger_ready_for_wake(hass, str(ocpp_charger_id))
+            if not ready:
+                _LOGGER.warning("OCPP pre-charge wake blocked: %s", block_reason)
+                return False
+            if not await _run_pre_charge_wake_sequence(hass, params, "ocpp"):
+                return False
         return await _start_ocpp_charging(hass, ocpp_charger_id)
 
     # Zaptec standalone charger: use configured Cloud API client
@@ -2183,6 +2394,7 @@ async def _action_start_ev_charging(
             hass,
             config_entry,
             int(amps) if amps is not None else None,
+            params,
         )
 
     # Generic charger: use configured switch entity
@@ -2198,6 +2410,8 @@ async def _action_start_ev_charging(
             return False
         if "." not in switch_entity:
             _LOGGER.error("Generic charger start: invalid switch entity %s", switch_entity)
+            return False
+        if not await _run_pre_charge_wake_sequence(hass, params, "generic"):
             return False
         try:
             await hass.services.async_call("switch", "turn_on", {"entity_id": switch_entity}, blocking=True)
@@ -2219,6 +2433,8 @@ async def _action_start_ev_charging(
                 _LOGGER.debug(
                     "HA-native charger start will continue although current limit update failed"
                 )
+        if not await _run_pre_charge_wake_sequence(hass, params, str(charger_type)):
+            return False
         return await _start_ha_native_charger(hass, params)
 
     # Tesla charger: existing logic below
@@ -3509,6 +3725,13 @@ async def _set_vehicle_amps(
             return await _stop_ocpp_charging(hass, ocpp_charger_id)
         # Set amps then ensure charger is on (idempotent)
         amps_ok = await _set_ocpp_charging_amps(hass, ocpp_charger_id, amps)
+        if _has_pre_charge_wake(params):
+            ready, block_reason = _ocpp_charger_ready_for_wake(hass, str(ocpp_charger_id))
+            if not ready:
+                _LOGGER.warning("OCPP charger wake/start blocked: %s", block_reason)
+                return False
+            if not await _run_pre_charge_wake_sequence(hass, params, "ocpp"):
+                return False
         start_ok = await _start_ocpp_charging(hass, ocpp_charger_id)
         if not amps_ok:
             _LOGGER.debug(
@@ -3520,13 +3743,15 @@ async def _set_vehicle_amps(
     elif charger_type == "zaptec":
         if amps == 0:
             return await _stop_zaptec_charging(hass, config_entry)
-        return await _start_zaptec_charging(hass, config_entry, amps)
+        return await _start_zaptec_charging(hass, config_entry, amps, params)
 
     elif _is_ha_native_charger_type(charger_type):
         if amps == 0:
             return await _stop_ha_native_charger(hass, params)
 
         amps_ok = await _set_ha_native_charging_amps(hass, params, amps)
+        if not await _run_pre_charge_wake_sequence(hass, params, str(charger_type)):
+            return False
         start_ok = await _start_ha_native_charger(hass, params)
         if not amps_ok:
             _LOGGER.debug(
@@ -3564,6 +3789,8 @@ async def _set_vehicle_amps(
                 ready, block_reason = _generic_charger_ready_for_start(hass, params)
                 if not ready:
                     _LOGGER.warning("Generic charger set amps blocked: %s", block_reason)
+                    return False
+                if not await _run_pre_charge_wake_sequence(hass, params, "generic"):
                     return False
                 if amps_entity:
                     await hass.services.async_call(
