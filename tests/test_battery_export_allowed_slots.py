@@ -181,15 +181,54 @@ def _true_indexes(slots: list[bool]) -> list[int]:
     return [idx for idx, value in enumerate(slots) if value]
 
 
-def test_octopus_profit_max_without_event_blocks_battery_export(opt_module):
-    coordinator = _coordinator(opt_module, "octopus", profit_max=True)
+def test_positive_export_prices_allowed_when_profit_max_off(opt_module):
+    coordinator = _coordinator(opt_module, "octopus", profit_max=False)
 
-    assert coordinator._battery_export_allowed_slots(12, [0.12] * 12) == [False] * 12
+    assert coordinator._battery_export_allowed_slots(4, [0.0, 0.01, 0.08, -0.02]) == [
+        False,
+        True,
+        True,
+        False,
+    ]
     assert coordinator._profit_max_terminal_weight() == 1.0
 
 
+@pytest.mark.parametrize("provider", ["amber", "aemo_vpp", "globird", "octopus", "nz"])
+@pytest.mark.parametrize("profit_max", [False, True])
+def test_positive_export_prices_allowed_for_all_providers(
+    opt_module,
+    provider,
+    profit_max,
+):
+    coordinator = _coordinator(opt_module, provider, profit_max=profit_max)
+
+    slots = coordinator._battery_export_allowed_slots(
+        6,
+        [0.0, -0.02, 0.01, 0.08, 0.12, None],
+    )
+
+    assert _true_indexes(slots) == [2, 3, 4]
+
+
+def test_non_positive_export_prices_are_blocked(opt_module):
+    coordinator = _coordinator(opt_module, "amber", profit_max=False)
+
+    assert coordinator._battery_export_allowed_slots(4, [0.0, -0.03, None, 0.0]) == [
+        False,
+        False,
+        False,
+        False,
+    ]
+
+
+def test_profit_max_reduces_terminal_soc_weight_for_all_providers(opt_module):
+    coordinator = _coordinator(opt_module, "amber", profit_max=True)
+
+    assert coordinator._profit_max_terminal_weight() == 0.3
+
+
 def test_octopus_joined_saving_session_allows_only_session_slots(opt_module):
-    coordinator = _coordinator(opt_module, "octopus", profit_max=True)
+    coordinator = _coordinator(opt_module, "octopus", profit_max=False)
     coordinator._saving_session_coordinator = SimpleNamespace(
         data={
             "sessions": [
@@ -203,13 +242,13 @@ def test_octopus_joined_saving_session_allows_only_session_slots(opt_module):
         }
     )
 
-    slots = coordinator._battery_export_allowed_slots(12, [0.12] * 12)
+    slots = coordinator._battery_export_allowed_slots(12, [0.0] * 12)
 
     assert _true_indexes(slots) == list(range(6, 12))
 
 
 def test_octopus_free_electricity_does_not_allow_battery_export(opt_module):
-    coordinator = _coordinator(opt_module, "octopus", profit_max=True)
+    coordinator = _coordinator(opt_module, "octopus", profit_max=False)
     coordinator._saving_session_coordinator = SimpleNamespace(
         data={
             "sessions": [
@@ -223,7 +262,7 @@ def test_octopus_free_electricity_does_not_allow_battery_export(opt_module):
         }
     )
 
-    assert coordinator._battery_export_allowed_slots(12, [0.12] * 12) == [False] * 12
+    assert coordinator._battery_export_allowed_slots(12, [0.0] * 12) == [False] * 12
 
 
 def test_saving_session_price_overlay_ignores_null_octopoints(opt_module):
@@ -313,7 +352,7 @@ def test_export_boost_allows_only_configured_window_above_threshold(opt_module):
     slots = coordinator._battery_export_allowed_slots(12, boosted)
 
     assert _true_indexes(boost_mask) == list(range(6, 12))
-    assert _true_indexes(slots) == list(range(6, 12))
+    assert _true_indexes(slots) == list(range(12))
     assert boosted[:6] == export_prices[:6]
     assert all(price > 0.12 for price in boosted[6:])
 

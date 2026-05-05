@@ -357,8 +357,8 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
 
     def _profit_max_terminal_weight(self) -> float:
-        """Return the terminal SOC weight for the current profit mode/provider."""
-        if self._config.profit_max_enabled and self._provider_key() == "flow_power":
+        """Return the terminal SOC weight for the current profit mode."""
+        if self._config.profit_max_enabled:
             return 0.3
         return 1.0
 
@@ -2122,6 +2122,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         allowed = [False] * n
 
         for slots in (
+            self._positive_price_export_slots(n, export_prices),
             self._flow_power_profit_export_slots(n),
             self._export_boost_mask_for_run(n, export_prices),
             self._saving_session_export_slots(n),
@@ -2194,6 +2195,33 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return [False] * n
 
         return self._time_window_slots(n, "17:30", "19:30")
+
+    def _positive_price_export_slots(
+        self,
+        n: int,
+        export_prices: list[float] | None,
+    ) -> list[bool]:
+        """Allow battery exports for any provider with positive sell prices."""
+        if not export_prices:
+            return [False] * n
+
+        allowed: list[bool] = []
+        for price in export_prices[:n]:
+            try:
+                allowed.append(float(price or 0.0) > 0.0)
+            except (TypeError, ValueError):
+                allowed.append(False)
+        if len(allowed) < n:
+            allowed.extend([False] * (n - len(allowed)))
+        allowed_count = sum(allowed)
+
+        if allowed_count:
+            _LOGGER.debug(
+                "Battery export: allowing %d/%d intervals with positive sell price",
+                allowed_count,
+                n,
+            )
+        return allowed
 
     def _export_boost_allowed_slots(
         self,
