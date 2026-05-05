@@ -734,12 +734,14 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
 
     def _prefers_static_tou_pricing(self) -> bool:
-        """Return True for providers whose optimizer source is the TOU schedule.
+        """Return True for providers whose LP source is a tariff schedule.
 
         Values match CONF_ELECTRICITY_PROVIDER. New Zealand retailers (Octopus
         NZ, Electric Kiwi, Contact, etc.) all set the provider to "nz"; the
         retailer choice itself lives in CONF_NZ_RETAILER and is not checked
-        here. tou_only is set internally by __init__.py:14540 for Tesla-only
+        here. aemo_vpp is a VPP spike-detection mode; its normal import/export
+        rates still come from the user's tariff schedule, not the AEMO spot
+        feed. tou_only is set internally by __init__.py:14540 for Tesla-only
         TOU users without a retailer integration.
         """
         return self._electricity_provider() in (
@@ -3384,12 +3386,12 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     )
                 return tou_prices
 
-            # No tariff schedule cached yet — never fall through to the
-            # dynamic-pricing path for static-TOU providers. A leftover
+            # No tariff schedule cached yet - never fall through to the
+            # dynamic-pricing path for tariff-backed providers. A leftover
             # AEMOPriceCoordinator (e.g. set up before a provider switch)
             # could still hold stale data and silently feed it to the LP.
             _LOGGER.debug(
-                "Static-TOU provider %s but tariff_schedule not yet cached; "
+                "Tariff-backed provider %s but tariff_schedule not yet cached; "
                 "skipping dynamic-pricing fallback",
                 self._electricity_provider(),
             )

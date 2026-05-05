@@ -6844,7 +6844,7 @@ class TariffPriceView(HomeAssistantView):
 
             # Dynamic pricing providers - fetch real-time prices from their API
             # These are NOT affected by ML fake tariffs since they don't use Tesla tariff
-            dynamic_providers = ("amber", "flow_power", "aemo_vpp")
+            dynamic_providers = ("amber", "flow_power")
             if electricity_provider in dynamic_providers:
                 entry_data = self._hass.data.get(DOMAIN, {}).get(entry_id, {})
 
@@ -21854,8 +21854,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 _configured_restorable_tesla_tariff(),
             )
 
-            # Dynamic pricing providers should sync fresh prices, not restore stale saved tariff
-            dynamic_providers = ("amber", "flow_power", "aemo_vpp")
+            # Dynamic pricing providers should sync fresh prices, not restore stale saved tariff.
+            # AEMO VPP is spike detection on top of the user's normal tariff, so it
+            # must restore the saved tariff instead of calling sync_tou_schedule
+            # (which intentionally skips aemo_vpp).
+            dynamic_providers = ("amber", "flow_power")
             if electricity_provider in dynamic_providers:
                 # Dynamic pricing users - trigger a fresh sync to get current prices
                 # (sync handler already loops over all site_ids)
@@ -21894,9 +21897,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     if len(site_configs) > 1:
                         await asyncio.sleep(1)
             else:
-                # No saved tariff - for Globird users this is a problem since sync does nothing
-                if electricity_provider == "globird":
-                    _LOGGER.warning("No saved tariff to restore for Globird user - tariff may need manual reconfiguration")
+                # No saved tariff - for tariff-backed spike users this is a problem
+                # because sync_tou_schedule intentionally skips these providers.
+                if electricity_provider in ("globird", "aemo_vpp"):
+                    _LOGGER.warning(
+                        "No saved tariff to restore for %s user - tariff may need manual reconfiguration",
+                        electricity_provider,
+                    )
                     try:
                         from .automations.actions import _send_expo_push
                         await _send_expo_push(

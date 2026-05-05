@@ -112,6 +112,44 @@ def test_restore_normal_filters_force_tariffs_before_upload():
     assert "send_tariff_to_tesla" in function_source
 
 
+def test_aemo_vpp_restore_uses_saved_tariff_not_dynamic_sync():
+    source = INIT_PATH.read_text()
+    tree = ast.parse(source)
+    function = _find_function(tree, "handle_restore_normal")
+    function_source = ast.get_source_segment(source, function)
+
+    assert function_source is not None
+    dynamic_assignments = [
+        ast.get_source_segment(source, node)
+        for node in ast.walk(function)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "dynamic_providers"
+            for target in node.targets
+        )
+    ]
+    assert dynamic_assignments == ['dynamic_providers = ("amber", "flow_power")']
+    assert 'if electricity_provider in ("globird", "aemo_vpp"):' in function_source
+
+
+def test_aemo_vpp_tariff_price_view_uses_tariff_schedule_path():
+    source = INIT_PATH.read_text()
+    tree = ast.parse(source)
+    method = _find_class_method(tree, "TariffPriceView", "get")
+
+    dynamic_assignments = [
+        ast.get_source_segment(source, node)
+        for node in ast.walk(method)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "dynamic_providers"
+            for target in node.targets
+        )
+    ]
+
+    assert dynamic_assignments == ['dynamic_providers = ("amber", "flow_power")']
+
+
 def test_tesla_tariff_fetch_rejects_force_tariffs():
     source = INIT_PATH.read_text()
     tree = ast.parse(source)

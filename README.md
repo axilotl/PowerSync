@@ -63,7 +63,7 @@ Solar inverters that bypass the battery can be curtailed during negative feed-in
 | **Amber Electric** | Australia | Dynamic 5-min & 30-min (API token required) |
 | **Localvolts** | Australia | Real-time 5-min wholesale pricing (API key + Partner ID) |
 | **Flow Power / AEMO** | Australia | Wholesale pricing |
-| **Globird / AEMO VPP** | Australia | Static + spike detection |
+| **Globird / AEMO VPP** | Australia | Retail tariff schedule + AEMO spike detection |
 | **Octopus Energy** | UK | Dynamic 30-min (Agile, Go, Intelligent Go, Flux, Tracker). Reads from [BottlecapDave's integration](https://github.com/BottlecapDave/HomeAssistant-OctopusEnergy) when installed |
 | **EPEX Day-Ahead** | EU (DE, AT, BE, NL, DK, SE) | Hourly day-ahead pricing with configurable surcharge & tax |
 | **NZ TOU** | New Zealand | Static TOU (Octopus NZ, Electric Kiwi, Contact Energy, Custom) |

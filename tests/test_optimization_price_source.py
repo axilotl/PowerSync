@@ -239,6 +239,17 @@ def test_static_tou_provider_uses_tariff_even_when_aemo_data_exists(opt_module):
     assert coordinator._last_display_export_prices == [0.0] * 12
 
 
+def test_aemo_vpp_uses_tariff_schedule_for_normal_lp_prices(opt_module):
+    coordinator = _coordinator_with_static_tou_provider(opt_module)
+    coordinator._entry.options = {"electricity_provider": "aemo_vpp"}
+
+    import_prices, export_prices = asyncio.run(coordinator._get_price_forecast())
+
+    assert import_prices == [0.33] * 12
+    assert export_prices == [0.0] * 12
+    assert coordinator.price_coordinator.data is not None
+
+
 def test_static_tou_provider_refreshes_stale_constructor_tariff(opt_module):
     """The tariff API can refresh hass.data after coordinator construction.
 
