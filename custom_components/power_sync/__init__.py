@@ -18956,6 +18956,36 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 await controller.force_discharge(power_kw=power_kw)
                 _LOGGER.debug(f"Sigenergy force discharge hardware extended ({duration}min)")
                 return
+            if entry.data.get(CONF_SIGENERGY_STATION_ID):
+                from .inverters.sigenergy import SigenergyController
+
+                modbus_host = entry.options.get(
+                    CONF_SIGENERGY_MODBUS_HOST,
+                    entry.data.get(CONF_SIGENERGY_MODBUS_HOST),
+                )
+                if modbus_host:
+                    controller = SigenergyController(
+                        host=modbus_host,
+                        port=entry.options.get(
+                            CONF_SIGENERGY_MODBUS_PORT,
+                            entry.data.get(CONF_SIGENERGY_MODBUS_PORT, 502),
+                        ),
+                        slave_id=entry.options.get(
+                            CONF_SIGENERGY_MODBUS_SLAVE_ID,
+                            entry.data.get(CONF_SIGENERGY_MODBUS_SLAVE_ID, 1),
+                        ),
+                        max_export_limit_kw=entry.data.get(CONF_SIGENERGY_EXPORT_LIMIT_KW),
+                    )
+                    try:
+                        power_kw = power_w / 1000 if power_w > 0 else 10.0
+                        await controller.force_discharge(power_kw=power_kw)
+                        _LOGGER.debug(
+                            "Sigenergy force discharge hardware extended without coordinator (%dmin)",
+                            duration,
+                        )
+                        return
+                    finally:
+                        await controller.disconnect()
             sungrow_coord = entry_data.get("sungrow_coordinator")
             if sungrow_coord:
                 await sungrow_coord.force_discharge(duration, power_w=power_w)
@@ -18976,7 +19006,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 await esy_coord.force_discharge(duration, power_w=power_w)
                 _LOGGER.debug(f"ESY Sunhome force discharge hardware extended ({duration}min)")
                 return
-            _LOGGER.warning("_extend_hardware: no coordinator found, falling through to full handler")
+            _LOGGER.debug(
+                "_extend_hardware: no direct coordinator found for source=%s, falling through to full handler",
+                source,
+            )
 
         _LOGGER.info(f"🔋 FORCE DISCHARGE: Activating for {duration} minutes (source={source})")
 
@@ -19987,6 +20020,36 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 await controller.force_charge(power_kw=power_kw)
                 _LOGGER.debug(f"Sigenergy force charge hardware extended ({duration}min)")
                 return
+            if entry.data.get(CONF_SIGENERGY_STATION_ID):
+                from .inverters.sigenergy import SigenergyController
+
+                modbus_host = entry.options.get(
+                    CONF_SIGENERGY_MODBUS_HOST,
+                    entry.data.get(CONF_SIGENERGY_MODBUS_HOST),
+                )
+                if modbus_host:
+                    controller = SigenergyController(
+                        host=modbus_host,
+                        port=entry.options.get(
+                            CONF_SIGENERGY_MODBUS_PORT,
+                            entry.data.get(CONF_SIGENERGY_MODBUS_PORT, 502),
+                        ),
+                        slave_id=entry.options.get(
+                            CONF_SIGENERGY_MODBUS_SLAVE_ID,
+                            entry.data.get(CONF_SIGENERGY_MODBUS_SLAVE_ID, 1),
+                        ),
+                        max_export_limit_kw=entry.data.get(CONF_SIGENERGY_EXPORT_LIMIT_KW),
+                    )
+                    try:
+                        power_kw = power_w / 1000 if power_w > 0 else 10.0
+                        await controller.force_charge(power_kw=power_kw)
+                        _LOGGER.debug(
+                            "Sigenergy force charge hardware extended without coordinator (%dmin)",
+                            duration,
+                        )
+                        return
+                    finally:
+                        await controller.disconnect()
             sungrow_coord = entry_data.get("sungrow_coordinator")
             if sungrow_coord:
                 await sungrow_coord.force_charge(duration, power_w=power_w)
@@ -20008,7 +20071,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 _LOGGER.debug(f"ESY Sunhome force charge hardware extended ({duration}min)")
                 return
             # Fallback: no coordinator found, proceed with full handler
-            _LOGGER.warning("_extend_hardware: no coordinator found, falling through to full handler")
+            _LOGGER.debug(
+                "_extend_hardware: no direct coordinator found for source=%s, falling through to full handler",
+                source,
+            )
 
         _LOGGER.info(f"🔌 FORCE CHARGE: Activating for {duration} minutes (source={source})")
 
