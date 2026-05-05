@@ -1723,7 +1723,20 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # import spikes. Cost: 5-min delay entering charge, negligible
             # for multi-hour off-peak charging.
             if effective_action == "charge":
-                if self._last_executed_action != "charge":
+                bypass_charge_holdoff = False
+                try:
+                    soc_now, _ = await self._get_battery_state()
+                    if soc_now <= self._config.backup_reserve + 0.02:
+                        bypass_charge_holdoff = True
+                except Exception:
+                    pass
+
+                if bypass_charge_holdoff:
+                    self._charge_holdoff = 0
+                    _LOGGER.info(
+                        "Optimizer: CHARGE confirmed immediately — SOC at/below reserve"
+                    )
+                elif self._last_executed_action != "charge":
                     self._charge_holdoff += 1
                     if self._charge_holdoff < 2:
                         _LOGGER.info(
@@ -2052,26 +2065,12 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         if hasattr(battery, "get_tesla_operation_mode"):
                             hw_mode = await battery.get_tesla_operation_mode()
                             if hw_mode is not None and hw_mode != "self_consumption":
-                                _LOGGER.warning(
-                                    "Optimizer: hardware mode drift detected — optimizer believes "
-                                    "self_consumption but Tesla site_info reports '%s'. "
-                                    "Re-applying self_consumption mode.",
+                                _LOGGER.debug(
+                                    "Optimizer: Tesla mode is '%s' while LP action is "
+                                    "self_consumption; respecting external/manual mode "
+                                    "until the optimizer needs charge/export",
                                     hw_mode,
                                 )
-                                if hasattr(battery, "set_self_consumption_mode"):
-                                    await battery.set_self_consumption_mode()
-                                # Also re-apply backup_reserve in case it was elevated
-                                if hasattr(battery, "set_backup_reserve"):
-                                    configured_reserve_pct = int(self._config.backup_reserve * 100)
-                                    startup = self._startup_backup_reserve
-                                    reserve_pct = (
-                                        min(startup, configured_reserve_pct)
-                                        if startup is not None
-                                        else configured_reserve_pct
-                                    )
-                                    await battery.set_backup_reserve(reserve_pct)
-                                # Force re-log actual mode next cycle so we confirm the fix took
-                                self._last_executed_action = None
                     else:
                         if hasattr(battery, "set_self_consumption_mode"):
                             await battery.set_self_consumption_mode()

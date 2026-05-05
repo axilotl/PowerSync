@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import sys
 import types
@@ -98,6 +99,7 @@ def _install_power_sync_stubs() -> None:
     const_module = types.ModuleType("power_sync.const")
     const_module.DOMAIN = "power_sync"
     const_module.CONF_ELECTRICITY_PROVIDER = "electricity_provider"
+    const_module.CONF_MONITORING_MODE = "monitoring_mode"
     const_module.CONF_FLOW_POWER_STATE = "flow_power_state"
     const_module.FLOW_POWER_EXPORT_RATES = {"NSW1": 0.45}
     const_module.CONF_EXPORT_BOOST_ENABLED = "export_boost_enabled"
@@ -260,3 +262,81 @@ def test_export_boost_allows_only_configured_window_above_threshold(opt_module):
     assert _true_indexes(slots) == list(range(6, 12))
     assert boosted[:6] == export_prices[:6]
     assert all(price > 0.12 for price in boosted[6:])
+
+
+class _FakeBattery:
+    def __init__(self, hardware_mode: str | None = None) -> None:
+        self.hardware_mode = hardware_mode
+        self.self_consumption_calls = 0
+        self.backup_reserve_calls = []
+        self.force_charge_calls = []
+
+    async def get_tesla_operation_mode(self):
+        return self.hardware_mode
+
+    async def set_self_consumption_mode(self):
+        self.self_consumption_calls += 1
+
+    async def set_backup_reserve(self, percent):
+        self.backup_reserve_calls.append(percent)
+
+    async def force_charge(self, duration_minutes=60, power_w=5000, _extend_hardware=False):
+        self.force_charge_calls.append((duration_minutes, power_w, _extend_hardware))
+
+
+def _execution_coordinator(opt_module, battery: _FakeBattery, soc: float):
+    coordinator = _coordinator(opt_module, "octopus")
+    coordinator.hass = SimpleNamespace(data={})
+    coordinator.entry_id = "entry-1"
+    coordinator._entry = SimpleNamespace(options={}, data={})
+    coordinator._executor = SimpleNamespace(battery_controller=battery)
+    coordinator._force_state_getter = None
+    coordinator._force_state_clearer = None
+    coordinator._last_executed_action = "self_consumption"
+    coordinator._startup_backup_reserve = 20
+    coordinator._pre_idle_backup_reserve = None
+    coordinator._idle_sc_holdoff = 0
+    coordinator._charge_holdoff = 0
+    coordinator._last_export_prices = None
+    coordinator._offgrid_entry_holdoff = 0
+    coordinator.energy_coordinator = None
+    coordinator.battery_system = "tesla"
+    coordinator._is_in_demand_window = lambda: False
+    coordinator._should_block_export_for_demand = lambda: False
+    coordinator._minutes_to_demand_start = lambda: None
+
+    async def _battery_state():
+        return soc, 13500
+
+    coordinator._get_battery_state = _battery_state
+    return coordinator
+
+
+def test_self_consumption_respects_manual_tesla_tou_override(opt_module):
+    battery = _FakeBattery(hardware_mode="autonomous")
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.50)
+
+    asyncio.run(
+        coordinator._execute_optimizer_action(
+            SimpleNamespace(action="self_consumption", power_w=0)
+        )
+    )
+
+    assert battery.self_consumption_calls == 0
+    assert battery.backup_reserve_calls == []
+    assert coordinator._last_executed_action == "self_consumption"
+
+
+def test_charge_below_reserve_bypasses_charge_hysteresis(opt_module):
+    battery = _FakeBattery()
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.01)
+
+    asyncio.run(
+        coordinator._execute_optimizer_action(
+            SimpleNamespace(action="charge", power_w=4200)
+        )
+    )
+
+    assert battery.force_charge_calls == [(10, 4200, False)]
+    assert battery.self_consumption_calls == 0
+    assert coordinator._last_executed_action == "charge"

@@ -514,13 +514,24 @@ class BatteryOptimizer:
             A_ub.append(row_lower)
             b_ub.append(soc_0 - self.backup_reserve)
 
+            # Prevent same-slot charge/discharge loops. The SOC lower-bound
+            # constraint below includes current-slot charge, which lets the LP
+            # "fund" current-slot discharge with energy that cannot physically
+            # be discharged until a later slot.
+            row_no_instant_discharge = [0.0] * (4 * n)
+            for i in range(t + 1):
+                row_no_instant_discharge[3 * n + i] = dt / (eff * cap)
+            for i in range(t):
+                row_no_instant_discharge[2 * n + i] = -eff * dt / cap
+            A_ub.append(row_no_instant_discharge)
+            b_ub.append(soc_0 - self.backup_reserve)
+
             # Export must be backed by physical energy from solar surplus or
-            # battery discharge, net of any simultaneous battery charge. This
-            # prevents impossible grid -> battery -> grid passthrough arbitrage
-            # that keeps SOC flat by charging and discharging in the same slot.
+            # battery discharge. Same-slot charge is handled by the no-instant
+            # discharge constraint above; including charge here would block
+            # ordinary grid-to-battery charging whenever there is no solar surplus.
             row_export_source = [0.0] * (4 * n)
             row_export_source[n + t] = 1.0
-            row_export_source[2 * n + t] = 1.0
             row_export_source[3 * n + t] = -1.0
             A_ub.append(row_export_source)
             b_ub.append(max(0.0, solar[t] - load[t]))

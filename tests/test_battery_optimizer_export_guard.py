@@ -155,6 +155,31 @@ def test_grid_export_cannot_come_from_grid_passthrough(battery_optimizer_module)
     assert max(result.grid_import_w) <= 1e-6
 
 
+def test_below_reserve_can_grid_charge_during_cheap_window(battery_optimizer_module):
+    optimizer = battery_optimizer_module.BatteryOptimizer(
+        capacity_wh=13500,
+        max_charge_w=5000,
+        max_discharge_w=5000,
+        backup_reserve=0.20,
+        interval_minutes=5,
+        horizon_hours=3,
+    )
+
+    result = optimizer.optimize(
+        import_prices=[0.08] * 12 + [0.30] * 24,
+        export_prices=[0.05] * 36,
+        solar_forecast=[0.0] * 36,
+        load_forecast=[1.0] * 36,
+        current_soc=0.0,
+        acquisition_cost_kwh=0.0,
+        allow_battery_export=[False] * 36,
+    )
+
+    cheap_window = result.schedule.actions[:12]
+    assert any(action.action == "charge" for action in cheap_window)
+    assert max(action.battery_charge_w for action in cheap_window) > 1000
+
+
 def test_battery_export_mask_allows_only_explicit_slots(battery_optimizer_module):
     optimizer = _optimizer(battery_optimizer_module)
 
