@@ -16335,6 +16335,35 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
             timezone_name = _resolve_non_nem_timezone(hass, provider_for_tz)
 
+            demand_charge_enabled = entry.options.get(
+                CONF_DEMAND_CHARGE_ENABLED,
+                entry.data.get(CONF_DEMAND_CHARGE_ENABLED, False)
+            )
+            demand_charge_rate = entry.options.get(
+                CONF_DEMAND_CHARGE_RATE,
+                entry.data.get(CONF_DEMAND_CHARGE_RATE, 0.0)
+            )
+            demand_charge_start_time = entry.options.get(
+                CONF_DEMAND_CHARGE_START_TIME,
+                entry.data.get(CONF_DEMAND_CHARGE_START_TIME, "14:00")
+            )
+            demand_charge_end_time = entry.options.get(
+                CONF_DEMAND_CHARGE_END_TIME,
+                entry.data.get(CONF_DEMAND_CHARGE_END_TIME, "20:00")
+            )
+            demand_charge_apply_to = entry.options.get(
+                CONF_DEMAND_CHARGE_APPLY_TO,
+                entry.data.get(CONF_DEMAND_CHARGE_APPLY_TO, "Buy Only")
+            )
+            demand_charge_days = entry.options.get(
+                CONF_DEMAND_CHARGE_DAYS,
+                entry.data.get(CONF_DEMAND_CHARGE_DAYS, "All Days")
+            )
+            demand_artificial_price_enabled = entry.options.get(
+                CONF_DEMAND_ARTIFICIAL_PRICE,
+                entry.data.get(CONF_DEMAND_ARTIFICIAL_PRICE, False)
+            )
+
             # Convert Amber forecast to Sigenergy format
             general_prices = [p for p in forecast_data if p.get("channelType") == "general"]
             feedin_prices = [p for p in forecast_data if p.get("channelType") == "feedIn"]

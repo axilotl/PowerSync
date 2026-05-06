@@ -249,3 +249,16 @@ def test_sigenergy_visible_upload_mirrors_import_not_feed_in_for_current_slot(
     assert buy_by_start["20:30"] == 35.33
     assert sell_by_start["20:30"] == 35.33
     assert sell_by_start["20:30"] != 9.82
+
+
+def test_sigenergy_sync_resolves_demand_settings_inside_helper():
+    init_source = (COMPONENT_ROOT / "__init__.py").read_text()
+    helper_source = init_source[
+        init_source.index("async def _sync_tariff_to_sigenergy"):
+        init_source.index("async def _sync_tariff_to_foxess")
+    ]
+
+    demand_lookup_pos = helper_source.index("demand_charge_rate = entry.options.get")
+    canonical_call_pos = helper_source.index("canonical_tariff = convert_amber_to_tesla_tariff")
+
+    assert demand_lookup_pos < canonical_call_pos
