@@ -519,7 +519,10 @@ def convert_amber_prices_to_sigenergy(
     current_slot_key = f"{now.hour:02d}:{current_slot_minute:02d}"
     _LOGGER.debug(f"Current 30-min period: {current_slot_key} ({detected_tz})")
 
-    # Group prices by 30-minute slots
+    # Group prices by date + 30-minute slot. Sigenergy accepts a static
+    # 48-slot day plan, so we later choose today/tomorrow per slot to build a
+    # rolling next-24-hours schedule. Grouping by clock time alone mixes past
+    # settled prices and future forecasts into the same upload.
     slots = {}
 
     for price in amber_prices:
@@ -550,7 +553,11 @@ def convert_amber_prices_to_sigenergy(
 
         # Round down to 30-minute slot
         slot_minute = 0 if interval_start_local.minute < 30 else 30
-        slot_key = f"{interval_start_local.hour:02d}:{slot_minute:02d}"
+        slot_key = (
+            interval_start_local.date().isoformat(),
+            interval_start_local.hour,
+            slot_minute,
+        )
 
         # Price extraction - matches Tesla tariff converter logic
         # - ActualInterval (past): Use perKwh (actual settled price)
@@ -565,18 +572,18 @@ def convert_amber_prices_to_sigenergy(
                 # Dict format: {predicted, low, high}
                 per_kwh_cents = advanced_price.get(forecast_type, advanced_price.get("predicted", 0))
                 _LOGGER.debug(
-                    f"{nem_time} [{interval_type}]: advancedPrice.{forecast_type}={per_kwh_cents:.2f}c/kWh → slot {slot_key}"
+                    f"{nem_time} [{interval_type}]: advancedPrice.{forecast_type}={per_kwh_cents:.2f}c/kWh → slot {slot_key[1]:02d}:{slot_key[2]:02d}"
                 )
             elif isinstance(advanced_price, (int, float)):
                 # Numeric format (legacy)
                 per_kwh_cents = advanced_price
                 _LOGGER.debug(
-                    f"{nem_time} [{interval_type}]: advancedPrice={per_kwh_cents:.2f}c/kWh → slot {slot_key}"
+                    f"{nem_time} [{interval_type}]: advancedPrice={per_kwh_cents:.2f}c/kWh → slot {slot_key[1]:02d}:{slot_key[2]:02d}"
                 )
             else:
                 per_kwh_cents = price.get("perKwh", 0)
                 _LOGGER.debug(
-                    f"{nem_time} [{interval_type}]: perKwh={per_kwh_cents:.2f}c/kWh (fallback) → slot {slot_key}"
+                    f"{nem_time} [{interval_type}]: perKwh={per_kwh_cents:.2f}c/kWh (fallback) → slot {slot_key[1]:02d}:{slot_key[2]:02d}"
                 )
         elif interval_type == "CurrentInterval" and advanced_price:
             # CurrentInterval with advancedPrice available
@@ -585,13 +592,13 @@ def convert_amber_prices_to_sigenergy(
             else:
                 per_kwh_cents = advanced_price if isinstance(advanced_price, (int, float)) else price.get("perKwh", 0)
             _LOGGER.debug(
-                f"{nem_time} [{interval_type}]: {per_kwh_cents:.2f}c/kWh → slot {slot_key}"
+                f"{nem_time} [{interval_type}]: {per_kwh_cents:.2f}c/kWh → slot {slot_key[1]:02d}:{slot_key[2]:02d}"
             )
         else:
             # ActualInterval or fallback: Use perKwh (actual retail price)
             per_kwh_cents = price.get("perKwh", 0)
             _LOGGER.debug(
-                f"{nem_time} [{interval_type}]: perKwh={per_kwh_cents:.2f}c/kWh → slot {slot_key}"
+                f"{nem_time} [{interval_type}]: perKwh={per_kwh_cents:.2f}c/kWh → slot {slot_key[1]:02d}:{slot_key[2]:02d}"
             )
 
         # For sell prices (feedIn channel), Amber uses negative values (you receive money)
@@ -612,9 +619,12 @@ def convert_amber_prices_to_sigenergy(
     last_valid_price: Optional[float] = None
     result = []
 
+    today = now.date()
+    tomorrow = today + timedelta(days=1)
+
     for hour in range(24):
         for minute in [0, 30]:
-            slot_key = f"{hour:02d}:{minute:02d}"
+            display_slot_key = f"{hour:02d}:{minute:02d}"
             end_minute = minute + 30
             end_hour = hour
             if end_minute >= 60:
@@ -632,7 +642,7 @@ def convert_amber_prices_to_sigenergy(
 
             # SPECIAL CASE: Use ActualInterval for current period if available
             # This captures short-term (5-min) price spikes that would otherwise be averaged out
-            if slot_key == current_slot_key and current_actual_interval:
+            if display_slot_key == current_slot_key and current_actual_interval:
                 # Determine which channel to use based on price_type
                 channel_key = "general" if price_type == "buy" else "feedIn"
                 interval_data = current_actual_interval.get(channel_key)
@@ -653,9 +663,37 @@ def convert_amber_prices_to_sigenergy(
                     })
                     continue
 
-            # Get average price for this slot
-            if slot_key in slots and slots[slot_key]:
-                avg_price = sum(slots[slot_key]) / len(slots[slot_key])
+            if (hour < now.hour) or (hour == now.hour and minute < current_slot_minute):
+                date_to_use = tomorrow
+            else:
+                date_to_use = today
+
+            lookup_key = (date_to_use.isoformat(), hour, minute)
+            fallback_keys = (
+                lookup_key,
+                (today.isoformat(), hour, minute),
+                (tomorrow.isoformat(), hour, minute),
+            )
+
+            # Get average price for this slot, preferring the upcoming 24-hour
+            # date. Fallbacks only cover partial forecasts; they don't average
+            # multiple days together.
+            prices_for_slot = None
+            for candidate_key in fallback_keys:
+                if candidate_key in slots and slots[candidate_key]:
+                    prices_for_slot = slots[candidate_key]
+                    if candidate_key != lookup_key:
+                        _LOGGER.debug(
+                            "Using fallback %s date for %s: requested=%s actual=%s",
+                            price_type,
+                            time_range,
+                            lookup_key[0],
+                            candidate_key[0],
+                        )
+                    break
+
+            if prices_for_slot:
+                avg_price = sum(prices_for_slot) / len(prices_for_slot)
                 last_valid_price = avg_price  # Track for fallback
             elif last_valid_price is not None:
                 # No data for this slot - use last valid price as fallback
