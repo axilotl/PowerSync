@@ -180,3 +180,38 @@ def test_optimizer_force_modes_are_not_reissued_after_restart():
     assert 'stored_data["force_mode_state"] = None' in optimizer_branch
     assert "SERVICE_FORCE_DISCHARGE" not in optimizer_branch
     assert "SERVICE_FORCE_CHARGE" not in optimizer_branch
+
+
+def _saj_force_charge_branch() -> str:
+    source = INIT_PATH.read_text()
+    tree = ast.parse(source)
+    function = _find_function(tree, "handle_force_charge")
+    function_source = ast.get_source_segment(source, function)
+
+    assert function_source is not None
+    return function_source.split(
+        "is_saj_h2_local = bool(entry.data.get(CONF_SAJ_CONFIG_ENTRY_ID))",
+        1,
+    )[1].split("is_neovolt_local = bool(entry.data.get(CONF_NEOVOLT_CONFIG_ENTRY_ID))", 1)[0]
+
+
+def test_saj_force_charge_success_keeps_force_state_contract():
+    branch = _saj_force_charge_branch()
+
+    assert "charge_result = await saj_coord.force_charge(duration, power_w=power_w)" in branch
+    assert 'force_charge_state["active"] = True' in branch
+    assert 'force_charge_state["source"] = source' in branch
+    assert 'force_charge_state["duration"] = duration' in branch
+    assert 'force_charge_state["expires_at"] = dt_util.utcnow() + timedelta(minutes=duration)' in branch
+    assert 'async_dispatcher_send(hass, f"{DOMAIN}_force_charge_state"' in branch
+    assert "await persist_force_mode_state()" in branch
+
+
+def test_saj_force_charge_false_result_clears_state_and_notifies():
+    branch = _saj_force_charge_branch()
+    failure_branch = branch.split(
+        'else:\n                    force_charge_state["active"] = False\n                    _LOGGER.error("SAJ H2 force charge failed")',
+        1,
+    )[1].split("return", 1)[0]
+
+    assert '_notify_api_error(hass, "Force Charge Failed", "SAJ H2 entity write error")' in failure_branch

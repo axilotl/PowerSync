@@ -63,6 +63,7 @@ Control model (verified against stanus74 discussion #105 and live testing):
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -176,6 +177,7 @@ class SajH2BatteryController:
     # though the on-grid pass-through is at 235V — so we test the inverter (battery)
     # leg specifically, not the grid leg.
     _MIN_ENGAGED_INV_VOLTAGE = 50.0
+    _SWITCH_VERIFY_DELAY_SEC = 0.5
 
     def __init__(
         self,
@@ -395,12 +397,13 @@ class SajH2BatteryController:
         }
 
     def _check_passive_control_entities(self, operation: str) -> bool:
-        """Return False and log an error if passive-mode entities are not mapped.
+        """Return False and log an error if passive-mode entities are not usable.
 
         Used by force_charge and set_idle. force_discharge has its own TOU check.
         """
+        required = ("charge_power", "discharge_power", "passive_charge_control")
         missing = [
-            k for k in ("charge_power", "discharge_power", "passive_charge_control")
+            k for k in required
             if not self._entity_map.get(k)
         ]
         if missing:
@@ -408,6 +411,16 @@ class SajH2BatteryController:
                 "SAJ H2: %s aborted — passive-mode entities not mapped: %s. "
                 "Check that stanus74 exposes switch and number entities for passive mode.",
                 operation, missing,
+            )
+            return False
+        unavailable = [
+            k for k in required
+            if not self._entity_state_available(k)
+        ]
+        if unavailable:
+            _LOGGER.error(
+                "SAJ H2: %s aborted — passive-mode entities unavailable: %s",
+                operation, unavailable,
             )
             return False
         return True
@@ -474,9 +487,15 @@ class SajH2BatteryController:
             return False
         pct = self._power_to_scaled_percent(power_w)
         try:
-            await self._set_number("discharge_power", 0)
-            await self._set_number("charge_power", pct)
-            await self._turn_on("passive_charge_control")
+            if not await self._set_number("discharge_power", 0):
+                await self.restore_normal()
+                return False
+            if not await self._set_number("charge_power", pct):
+                await self.restore_normal()
+                return False
+            if not await self._turn_on("passive_charge_control", verify=True):
+                await self.restore_normal()
+                return False
         except Exception:
             _LOGGER.exception("SAJ H2: force_charge failed mid-sequence — attempting restore_normal")
             await self.restore_normal()
@@ -570,9 +589,15 @@ class SajH2BatteryController:
         if not self._check_engaged("set_idle"):
             return False
         try:
-            await self._set_number("discharge_power", 0)
-            await self._set_number("charge_power", 0)
-            await self._turn_on("passive_charge_control")
+            if not await self._set_number("discharge_power", 0):
+                await self.restore_normal()
+                return False
+            if not await self._set_number("charge_power", 0):
+                await self.restore_normal()
+                return False
+            if not await self._turn_on("passive_charge_control", verify=True):
+                await self.restore_normal()
+                return False
         except Exception:
             _LOGGER.exception("SAJ H2: set_idle failed mid-sequence — attempting restore_normal")
             await self.restore_normal()
@@ -661,17 +686,41 @@ class SajH2BatteryController:
             return None
         return int(val)
 
-    async def _set_number(self, key: str, value: float) -> None:
+    def _entity_state_available(self, key: str) -> bool:
+        entity_id = self._entity_map.get(key)
+        if not entity_id:
+            return False
+        state = self.hass.states.get(entity_id)
+        if not state:
+            return False
+        value = str(state.state).lower().strip()
+        return value not in ("unavailable", "unknown", "")
+
+    def _switch_is_on(self, key: str) -> bool:
+        entity_id = self._entity_map.get(key)
+        if not entity_id:
+            return False
+        state = self.hass.states.get(entity_id)
+        return bool(state and str(state.state).lower().strip() == "on")
+
+    async def _set_number(self, key: str, value: float) -> bool:
         entity_id = self._entity_map.get(key)
         if not entity_id:
             _LOGGER.warning("SAJ H2: cannot set %s — number entity not mapped", key)
-            return
+            return False
         await self.hass.services.async_call(
             "number",
             "set_value",
             {"entity_id": entity_id, "value": value},
             blocking=True,
         )
+        if not self._entity_state_available(key):
+            _LOGGER.error(
+                "SAJ H2: number %s became unavailable after set_value",
+                entity_id,
+            )
+            return False
+        return True
 
     async def _set_text(self, key: str, value: str) -> None:
         entity_id = self._entity_map.get(key)
@@ -685,20 +734,33 @@ class SajH2BatteryController:
             blocking=True,
         )
 
-    async def _turn_on(self, key: str) -> None:
+    async def _turn_on(self, key: str, verify: bool = False) -> bool:
         entity_id = self._entity_map.get(key)
         if not entity_id:
             _LOGGER.debug("SAJ H2: cannot turn_on %s — switch entity not mapped", key)
-            return
+            return False
         await self.hass.services.async_call(
             "switch", "turn_on", {"entity_id": entity_id}, blocking=True,
         )
+        if not verify:
+            return True
+        if self._switch_is_on(key):
+            return True
+        await asyncio.sleep(self._SWITCH_VERIFY_DELAY_SEC)
+        if self._switch_is_on(key):
+            return True
+        _LOGGER.error(
+            "SAJ H2: switch.turn_on for %s completed but state is not on",
+            entity_id,
+        )
+        return False
 
-    async def _turn_off(self, key: str) -> None:
+    async def _turn_off(self, key: str) -> bool:
         entity_id = self._entity_map.get(key)
         if not entity_id:
             _LOGGER.debug("SAJ H2: cannot turn_off %s — switch entity not mapped", key)
-            return
+            return False
         await self.hass.services.async_call(
             "switch", "turn_off", {"entity_id": entity_id}, blocking=True,
         )
+        return True

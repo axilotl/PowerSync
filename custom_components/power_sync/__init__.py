@@ -20834,6 +20834,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 else:
                     force_charge_state["active"] = False
                     _LOGGER.error("SAJ H2 force charge failed")
+                    hass.async_create_task(_notify_api_error(hass, "Force Charge Failed", "SAJ H2 entity write error"))
                 return
             except Exception as e:
                 force_charge_state["active"] = False
