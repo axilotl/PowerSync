@@ -841,6 +841,47 @@ async def test_goodwe_connection(
         return {"success": False, "error": str(err)}
 
 
+def validate_goodwe_ems_entity_prefix(
+    hass: HomeAssistant,
+    prefix: str | None,
+) -> str | None:
+    """Validate optional GoodWe EMS relay entities from the HA GoodWe integration."""
+    if not prefix:
+        return None
+
+    prefix = prefix.strip()
+    if not prefix:
+        return None
+
+    required_entities = (
+        f"select.{prefix}_ems_mode",
+        f"number.{prefix}_ems_power_limit",
+    )
+    missing = [
+        entity_id
+        for entity_id in required_entities
+        if hass.states.get(entity_id) is None
+    ]
+    if missing:
+        _LOGGER.warning(
+            "GoodWe EMS entity prefix '%s' is missing required entities: %s",
+            prefix,
+            ", ".join(missing),
+        )
+        return "goodwe_ems_entities_missing"
+
+    return None
+
+
+def resolve_goodwe_port(protocol: str, port: int | None) -> int:
+    """Resolve GoodWe port defaults when the user switches protocol."""
+    if protocol == "tcp" and (port is None or port == DEFAULT_GOODWE_PORT_UDP):
+        return DEFAULT_GOODWE_PORT_TCP
+    if protocol == "udp" and port is None:
+        return DEFAULT_GOODWE_PORT_UDP
+    return port if port is not None else DEFAULT_GOODWE_PORT_UDP
+
+
 class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for PowerSync."""
 
@@ -2901,59 +2942,79 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             host = user_input.get(CONF_GOODWE_HOST, "").strip()
             protocol = user_input.get(CONF_GOODWE_PROTOCOL, "udp")
-            port = user_input.get(
-                CONF_GOODWE_PORT,
-                DEFAULT_GOODWE_PORT_UDP
-                if protocol == "udp"
-                else DEFAULT_GOODWE_PORT_TCP,
-            )
+            port = resolve_goodwe_port(protocol, user_input.get(CONF_GOODWE_PORT))
+            ems_prefix = user_input.get(CONF_GOODWE_EMS_ENTITY_PREFIX, "").strip()
 
             if not host:
                 errors["base"] = "goodwe_connect_failed"
             else:
-                # Test connection
-                result = await test_goodwe_connection(self.hass, host, port)
-
-                if result.get("success"):
-                    if not result.get("has_battery"):
-                        errors["base"] = "goodwe_no_battery"
-                    else:
-                        self._goodwe_data = {
-                            CONF_GOODWE_HOST: host,
-                            CONF_GOODWE_PORT: port,
-                            CONF_GOODWE_PROTOCOL: protocol,
-                        }
-                        _LOGGER.info(
-                            "GoodWe connection successful: %s (SN: %s, %sW)",
-                            result.get("model_name"),
-                            result.get("serial_number"),
-                            result.get("rated_power"),
-                        )
-                        return self._create_final_entry()
+                ems_error = validate_goodwe_ems_entity_prefix(self.hass, ems_prefix)
+                if ems_error:
+                    errors["base"] = ems_error
                 else:
-                    errors["base"] = "goodwe_connect_failed"
+                    # Test connection
+                    result = await test_goodwe_connection(self.hass, host, port)
+
+                    if result.get("success"):
+                        if not result.get("has_battery"):
+                            errors["base"] = "goodwe_no_battery"
+                        else:
+                            self._goodwe_data = {
+                                CONF_GOODWE_HOST: host,
+                                CONF_GOODWE_PORT: port,
+                                CONF_GOODWE_PROTOCOL: protocol,
+                            }
+                            if ems_prefix:
+                                self._goodwe_data[CONF_GOODWE_EMS_ENTITY_PREFIX] = ems_prefix
+                            _LOGGER.info(
+                                "GoodWe connection successful: %s (SN: %s, %sW)",
+                                result.get("model_name"),
+                                result.get("serial_number"),
+                                result.get("rated_power"),
+                            )
+                            return self._create_final_entry()
+                    else:
+                        errors["base"] = "goodwe_connect_failed"
+
+        current_host = user_input.get(CONF_GOODWE_HOST, "") if user_input else ""
+        current_protocol = user_input.get(CONF_GOODWE_PROTOCOL, "udp") if user_input else "udp"
+        current_port = (
+            resolve_goodwe_port(current_protocol, user_input.get(CONF_GOODWE_PORT))
+            if user_input
+            else DEFAULT_GOODWE_PORT_UDP
+        )
+        current_ems_prefix = (
+            user_input.get(CONF_GOODWE_EMS_ENTITY_PREFIX, "").strip()
+            if user_input
+            else ""
+        )
 
         return self.async_show_form(
             step_id="goodwe_connection",
             data_schema=vol.Schema(
                 {
-                    vol.Required(CONF_GOODWE_HOST): TextSelector(
+                    vol.Required(CONF_GOODWE_HOST, default=current_host): TextSelector(
                         TextSelectorConfig(type=TextSelectorType.TEXT)
                     ),
-                    vol.Required(CONF_GOODWE_PROTOCOL, default="udp"): SelectSelector(
+                    vol.Required(CONF_GOODWE_PROTOCOL, default=current_protocol): SelectSelector(
                         SelectSelectorConfig(
                             options=[
-                                SelectOptionDict(value="udp", label="UDP (WiFi dongle, port 8899)"),
-                                SelectOptionDict(value="tcp", label="TCP (LAN dongle, port 502)"),
+                                SelectOptionDict(value="udp", label="UDP direct control (port 8899)"),
+                                SelectOptionDict(value="tcp", label="TCP / LAN Kit-20 (port 502)"),
                             ],
                             mode=SelectSelectorMode.LIST,
                         )
                     ),
                     vol.Required(
-                        CONF_GOODWE_PORT, default=DEFAULT_GOODWE_PORT_UDP
+                        CONF_GOODWE_PORT, default=current_port
                     ): NumberSelector(
                         NumberSelectorConfig(min=1, max=65535, step=1, mode=NumberSelectorMode.BOX)
                     ),
+                    vol.Optional(
+                        CONF_GOODWE_EMS_ENTITY_PREFIX,
+                        default=current_ems_prefix,
+                        description={"suggested_value": current_ems_prefix},
+                    ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
                 }
             ),
             errors=errors,
@@ -4532,35 +4593,49 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             if not goodwe_host:
                 errors["base"] = "goodwe_connect_failed"
             else:
-                new_data = dict(self.config_entry.data)
-                new_data[CONF_GOODWE_HOST] = goodwe_host
-                new_data[CONF_GOODWE_PORT] = user_input.get(
-                    CONF_GOODWE_PORT, DEFAULT_GOODWE_PORT_UDP
-                )
-                new_data[CONF_GOODWE_PROTOCOL] = user_input.get(
-                    CONF_GOODWE_PROTOCOL, "udp"
-                )
                 ems_prefix = user_input.get(CONF_GOODWE_EMS_ENTITY_PREFIX, "").strip()
-                if ems_prefix:
-                    new_data[CONF_GOODWE_EMS_ENTITY_PREFIX] = ems_prefix
+                ems_error = validate_goodwe_ems_entity_prefix(self.hass, ems_prefix)
+                if ems_error:
+                    errors["base"] = ems_error
                 else:
-                    new_data.pop(CONF_GOODWE_EMS_ENTITY_PREFIX, None)
+                    new_data = dict(self.config_entry.data)
+                    new_options = dict(self.config_entry.options)
+                    protocol = user_input.get(CONF_GOODWE_PROTOCOL, "udp")
+                    port = resolve_goodwe_port(
+                        protocol, user_input.get(CONF_GOODWE_PORT)
+                    )
+                    goodwe_values = {
+                        CONF_GOODWE_HOST: goodwe_host,
+                        CONF_GOODWE_PORT: port,
+                        CONF_GOODWE_PROTOCOL: protocol,
+                    }
+                    new_data.update(goodwe_values)
+                    new_options.update(goodwe_values)
+                    if ems_prefix:
+                        new_data[CONF_GOODWE_EMS_ENTITY_PREFIX] = ems_prefix
+                        new_options[CONF_GOODWE_EMS_ENTITY_PREFIX] = ems_prefix
+                    else:
+                        new_data.pop(CONF_GOODWE_EMS_ENTITY_PREFIX, None)
+                        new_options.pop(CONF_GOODWE_EMS_ENTITY_PREFIX, None)
 
-                self.hass.config_entries.async_update_entry(
-                    self.config_entry, data=new_data
-                )
-                return self.async_create_entry(
-                    title="", data=dict(self.config_entry.options)
-                )
+                    self.hass.config_entries.async_update_entry(
+                        self.config_entry, data=new_data
+                    )
+                    return self.async_create_entry(
+                        title="", data=new_options
+                    )
 
         current_host = self._get_option(CONF_GOODWE_HOST, "")
-        current_port = self._get_option(CONF_GOODWE_PORT, DEFAULT_GOODWE_PORT_UDP)
         current_protocol = self._get_option(CONF_GOODWE_PROTOCOL, "udp")
+        current_port = resolve_goodwe_port(
+            current_protocol,
+            self._get_option(CONF_GOODWE_PORT, DEFAULT_GOODWE_PORT_UDP),
+        )
         current_ems_prefix = self._get_option(CONF_GOODWE_EMS_ENTITY_PREFIX, "")
 
         goodwe_protocols = {
-            "udp": "UDP (WiFi dongle, port 8899)",
-            "tcp": "TCP (LAN dongle, port 502)",
+            "udp": "UDP direct control (port 8899)",
+            "tcp": "TCP / LAN Kit-20 (port 502)",
         }
 
         return self.async_show_form(
@@ -6035,60 +6110,66 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             if not goodwe_host:
                 errors["base"] = "goodwe_connect_failed"
             else:
-                self._provider = user_input.get(CONF_ELECTRICITY_PROVIDER, "amber")
-
-                # Update config entry data with GoodWe settings
-                new_data = dict(self.config_entry.data)
-                new_data[CONF_GOODWE_HOST] = goodwe_host
-                new_data[CONF_GOODWE_PORT] = user_input.get(
-                    CONF_GOODWE_PORT, DEFAULT_GOODWE_PORT_UDP
-                )
-                new_data[CONF_GOODWE_PROTOCOL] = user_input.get(
-                    CONF_GOODWE_PROTOCOL, "udp"
-                )
                 ems_prefix = user_input.get(CONF_GOODWE_EMS_ENTITY_PREFIX, "").strip()
-                if ems_prefix:
-                    new_data[CONF_GOODWE_EMS_ENTITY_PREFIX] = ems_prefix
+                ems_error = validate_goodwe_ems_entity_prefix(self.hass, ems_prefix)
+                if ems_error:
+                    errors["base"] = ems_error
                 else:
-                    new_data.pop(CONF_GOODWE_EMS_ENTITY_PREFIX, None)
+                    self._provider = user_input.get(CONF_ELECTRICITY_PROVIDER, "amber")
 
-                # Optimization provider settings
-                optimization_provider = user_input.get(
-                    CONF_OPTIMIZATION_PROVIDER, OPT_PROVIDER_NATIVE
-                )
-                new_data[CONF_OPTIMIZATION_PROVIDER] = optimization_provider
-                if optimization_provider == OPT_PROVIDER_POWERSYNC:
-                    new_data[CONF_OPTIMIZATION_COST_FUNCTION] = COST_FUNCTION_COST
-                    new_data[CONF_OPTIMIZATION_BACKUP_RESERVE] = (
-                        user_input.get(
-                            CONF_OPTIMIZATION_BACKUP_RESERVE,
-                            int(DEFAULT_OPTIMIZATION_BACKUP_RESERVE * 100),
+                    # Update config entry data with GoodWe settings
+                    new_data = dict(self.config_entry.data)
+                    protocol = user_input.get(CONF_GOODWE_PROTOCOL, "udp")
+                    new_data[CONF_GOODWE_HOST] = goodwe_host
+                    new_data[CONF_GOODWE_PORT] = resolve_goodwe_port(
+                        protocol, user_input.get(CONF_GOODWE_PORT)
+                    )
+                    new_data[CONF_GOODWE_PROTOCOL] = protocol
+                    if ems_prefix:
+                        new_data[CONF_GOODWE_EMS_ENTITY_PREFIX] = ems_prefix
+                    else:
+                        new_data.pop(CONF_GOODWE_EMS_ENTITY_PREFIX, None)
+
+                    # Optimization provider settings
+                    optimization_provider = user_input.get(
+                        CONF_OPTIMIZATION_PROVIDER, OPT_PROVIDER_NATIVE
+                    )
+                    new_data[CONF_OPTIMIZATION_PROVIDER] = optimization_provider
+                    if optimization_provider == OPT_PROVIDER_POWERSYNC:
+                        new_data[CONF_OPTIMIZATION_COST_FUNCTION] = COST_FUNCTION_COST
+                        new_data[CONF_OPTIMIZATION_BACKUP_RESERVE] = (
+                            user_input.get(
+                                CONF_OPTIMIZATION_BACKUP_RESERVE,
+                                int(DEFAULT_OPTIMIZATION_BACKUP_RESERVE * 100),
+                            )
+                            / 100.0
                         )
-                        / 100.0
+
+                    self.hass.config_entries.async_update_entry(
+                        self.config_entry, data=new_data
                     )
 
-                self.hass.config_entries.async_update_entry(
-                    self.config_entry, data=new_data
-                )
-
-                # Route to provider-specific step
-                if self._provider == "amber":
-                    return await self.async_step_amber_options()
-                elif self._provider == "flow_power":
-                    return await self.async_step_flow_power_options()
-                elif self._provider in CUSTOM_TOU_PROVIDER_OPTIONS:
-                    return await self.async_step_globird_options()
-                elif self._provider == "octopus":
-                    return await self.async_step_octopus_options()
-                elif self._provider == "epex":
-                    return await self.async_step_epex_options()
-                elif self._provider == "nz":
-                    return await self.async_step_nz_options()
+                    # Route to provider-specific step
+                    if self._provider == "amber":
+                        return await self.async_step_amber_options()
+                    elif self._provider == "flow_power":
+                        return await self.async_step_flow_power_options()
+                    elif self._provider in CUSTOM_TOU_PROVIDER_OPTIONS:
+                        return await self.async_step_globird_options()
+                    elif self._provider == "octopus":
+                        return await self.async_step_octopus_options()
+                    elif self._provider == "epex":
+                        return await self.async_step_epex_options()
+                    elif self._provider == "nz":
+                        return await self.async_step_nz_options()
 
         current_provider = self._get_option(CONF_ELECTRICITY_PROVIDER, "amber")
         current_host = self._get_option(CONF_GOODWE_HOST, "")
-        current_port = self._get_option(CONF_GOODWE_PORT, DEFAULT_GOODWE_PORT_UDP)
         current_protocol = self._get_option(CONF_GOODWE_PROTOCOL, "udp")
+        current_port = resolve_goodwe_port(
+            current_protocol,
+            self._get_option(CONF_GOODWE_PORT, DEFAULT_GOODWE_PORT_UDP),
+        )
         current_ems_prefix_init = self._get_option(CONF_GOODWE_EMS_ENTITY_PREFIX, "")
         current_opt_provider = self.config_entry.data.get(
             CONF_OPTIMIZATION_PROVIDER, OPT_PROVIDER_NATIVE
@@ -6103,8 +6184,8 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
         }
 
         goodwe_protocols_legacy = {
-            "udp": "UDP (WiFi dongle, port 8899)",
-            "tcp": "TCP (LAN dongle, port 502)",
+            "udp": "UDP direct control (port 8899)",
+            "tcp": "TCP / LAN Kit-20 (port 502)",
         }
 
         return self.async_show_form(

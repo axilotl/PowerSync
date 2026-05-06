@@ -68,7 +68,8 @@ class GoodWeBatteryController:
             _LOGGER.warning(
                 "GoodWe UDP control skipped (port %d unreachable, retry in %ds) — "
                 "TCP write attempted but will not take effect. Ensure UDP port %d "
-                "is reachable from Home Assistant at %s.",
+                "is reachable from Home Assistant at %s, or configure GoodWe EMS "
+                "entity mode for LAN/Kit-20 Modbus TCP setups.",
                 _GOODWE_UDP_PORT, remaining, _GOODWE_UDP_PORT, self.host,
             )
             await self._inverter.set_operation_mode(mode, **kwargs)
@@ -92,7 +93,9 @@ class GoodWeBatteryController:
                 "trying TCP write (will not take effect). "
                 "If using a Modbus TCP gateway, the inverter's direct network IP "
                 "may differ from the gateway IP; UDP port %d must be reachable "
-                "from Home Assistant for force charge/discharge to work.",
+                "from Home Assistant for direct force charge/discharge. For LAN/Kit-20 "
+                "setups that only support Modbus TCP, configure GoodWe EMS entity mode "
+                "using the HA GoodWe integration's EMS entities instead.",
                 self.host, _GOODWE_UDP_PORT, exc, _GOODWE_UDP_PORT,
             )
             # Fall back: write via TCP and verify via TCP.
@@ -135,8 +138,9 @@ class GoodWeBatteryController:
                 _LOGGER.error(
                     "GoodWe mode write did not take effect: expected work_mode=%d "
                     "but read back %s. Ensure the inverter's UDP port %d is reachable "
-                    "from Home Assistant. Force charge/discharge will not work until "
-                    "this is resolved.",
+                    "from Home Assistant, or configure GoodWe EMS entity mode for "
+                    "LAN/Kit-20 Modbus TCP setups. Force charge/discharge will not "
+                    "work until one of these control paths is available.",
                     expected, actual, _GOODWE_UDP_PORT,
                 )
                 return False

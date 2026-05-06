@@ -425,12 +425,14 @@
         "data": {
           "goodwe_host": "Inverter IP address",
           "goodwe_port": "Port",
-          "goodwe_protocol": "Protocol"
+          "goodwe_protocol": "Protocol",
+          "goodwe_ems_entity_prefix": "GoodWe entity mode prefix"
         },
         "data_description": {
           "goodwe_host": "Local IP address of your GoodWe inverter.",
-          "goodwe_protocol": "UDP for WiFi dongles (port 8899), TCP for LAN dongles (port 502).",
-          "goodwe_port": "Default: 8899 for UDP, 502 for TCP."
+          "goodwe_protocol": "UDP uses direct GoodWe control on port 8899. TCP uses Modbus on port 502 for LAN/Kit-20 setups; force charge/discharge over TCP requires the EMS entity prefix below.",
+          "goodwe_port": "Default: 8899 for UDP, 502 for TCP.",
+          "goodwe_ems_entity_prefix": "Optional. Enables entity mode through the GoodWe Experimental HA integration. Enter only the prefix for its EMS controls. Example: goodwe uses select.goodwe_ems_mode and number.goodwe_ems_power_limit."
         },
         "submit": "Connect"
       },
@@ -771,6 +773,7 @@
       "foxess_cloud_connection_error": "Cannot reach FoxESS Cloud. Check your internet connection and retry.",
       "goodwe_connect_failed": "Cannot connect to GoodWe inverter. Verify the IP address is correct and the inverter is powered on and reachable from Home Assistant.",
       "goodwe_no_battery": "This GoodWe model (DT/MS/XS series) does not support battery control. Only ET/EH/ES/EM series hybrid inverters are supported.",
+      "goodwe_ems_entities_missing": "Could not find the GoodWe HA EMS entities for that prefix. Check that the GoodWe Experimental integration exposes matching EMS mode and EMS power limit entities such as select.goodwe_ems_mode and number.goodwe_ems_power_limit, then enter only the prefix.",
       "esy_sunhome_not_installed": "The ESY Sunhome integration is not installed. Install it via HACS (search 'ESY Sunhome') and add a device before continuing.",
       "esy_sunhome_no_device": "No ESY Sunhome device found in the selected integration entry. Verify the ESY Sunhome integration is set up and has a paired device.",
       "invalid_credentials": "Email or password is incorrect. Check your Flow Power portal login credentials.",
@@ -948,12 +951,14 @@
         "data": {
           "goodwe_host": "Inverter IP address",
           "goodwe_protocol": "Connection protocol",
-          "goodwe_port": "Port"
+          "goodwe_port": "Port",
+          "goodwe_ems_entity_prefix": "GoodWe entity mode prefix"
         },
         "data_description": {
           "goodwe_host": "Local IP address of your GoodWe inverter.",
-          "goodwe_protocol": "UDP for WiFi dongles (port 8899), TCP for LAN dongles (port 502).",
-          "goodwe_port": "Default: 8899 for UDP, 502 for TCP."
+          "goodwe_protocol": "UDP uses direct GoodWe control on port 8899. TCP uses Modbus on port 502 for LAN/Kit-20 setups; force charge/discharge over TCP requires the EMS entity prefix below.",
+          "goodwe_port": "Default: 8899 for UDP, 502 for TCP.",
+          "goodwe_ems_entity_prefix": "Optional. Enables entity mode through the GoodWe Experimental HA integration. Enter only the prefix for its EMS controls. Example: goodwe uses select.goodwe_ems_mode and number.goodwe_ems_power_limit."
         },
         "submit": "Save"
       },
@@ -1129,14 +1134,16 @@
           "optimization_backup_reserve": "Minimum discharge level (%)",
           "goodwe_host": "Inverter IP address",
           "goodwe_protocol": "Protocol",
-          "goodwe_port": "Port"
+          "goodwe_port": "Port",
+          "goodwe_ems_entity_prefix": "GoodWe entity mode prefix"
         },
         "data_description": {
           "optimization_provider": "Choose between GoodWe built-in scheduling or Smart Optimization (LP solver).",
           "optimization_backup_reserve": "The optimizer will not discharge below this level. Separate from your battery's hardware backup reserve.",
           "goodwe_host": "Local IP address of your GoodWe inverter.",
-          "goodwe_protocol": "UDP for WiFi dongles (port 8899), TCP for LAN dongles (port 502).",
-          "goodwe_port": "Default: 8899 for UDP, 502 for TCP."
+          "goodwe_protocol": "UDP uses direct GoodWe control on port 8899. TCP uses Modbus on port 502 for LAN/Kit-20 setups; force charge/discharge over TCP requires the EMS entity prefix below.",
+          "goodwe_port": "Default: 8899 for UDP, 502 for TCP.",
+          "goodwe_ems_entity_prefix": "Optional. Enables entity mode through the GoodWe Experimental HA integration. Enter only the prefix for its EMS controls. Example: goodwe uses select.goodwe_ems_mode and number.goodwe_ems_power_limit."
         },
         "submit": "Save"
       },
