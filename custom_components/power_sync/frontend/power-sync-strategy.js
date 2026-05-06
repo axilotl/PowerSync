@@ -2167,6 +2167,7 @@ function _priceChart(e, hass) {
     yUnitCompact: true,
     yMultiplier: 100,
     zeroBaseline: true,
+    stepLine: true,
     series: [
       {
         entity: e('current_import_price'),
