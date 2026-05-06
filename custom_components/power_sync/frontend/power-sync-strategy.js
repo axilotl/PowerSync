@@ -90,6 +90,14 @@ class PowerSyncChart extends HTMLElement {
       allSeries = this._getForecastData(config, hass);
     }
 
+    const configuredYMultiplier = config.yMultiplier || 1;
+    if (configuredYMultiplier !== 1) {
+      allSeries = allSeries.map(series => ({
+        ...series,
+        data: series.data.map(([t, v]) => [t, v * configuredYMultiplier]),
+      }));
+    }
+
     const box = this.getBoundingClientRect();
     const W = Math.max(320, Math.round(box.width || config.width || 640));
     const compact = W < 520;
@@ -115,7 +123,7 @@ class PowerSyncChart extends HTMLElement {
       xMax = xMin + 3600000;
     }
 
-    const yMultiplier = config.yMultiplier || 1;
+    const yMultiplier = 1;
     let rawMin = Infinity, rawMax = -Infinity;
     for (const s of allSeries) {
       for (const [, v] of s.data) {
@@ -318,6 +326,64 @@ class PowerSyncChart extends HTMLElement {
           position: relative;
           z-index: 1;
         }
+        .chart-wrap {
+          position: relative;
+          z-index: 1;
+          touch-action: none;
+        }
+        .tooltip-line {
+          position: absolute;
+          top: 0;
+          bottom: 0;
+          width: 1px;
+          background: var(--primary-color, #03a9f4);
+          opacity: 0;
+          pointer-events: none;
+          transform: translateX(-0.5px);
+        }
+        .tooltip {
+          position: absolute;
+          min-width: 140px;
+          max-width: min(240px, calc(100% - 16px));
+          padding: 8px 10px;
+          border-radius: 8px;
+          background: color-mix(in srgb, var(--ha-card-background, var(--card-background-color, white)) 88%, black);
+          color: var(--primary-text-color, #333);
+          box-shadow: 0 8px 22px rgba(0, 0, 0, 0.28);
+          border: 1px solid var(--divider-color, rgba(255,255,255,0.18));
+          font-size: 12px;
+          line-height: 1.35;
+          opacity: 0;
+          pointer-events: none;
+          transform: translate(-50%, -100%);
+        }
+        .tooltip-time {
+          font-weight: 700;
+          margin-bottom: 5px;
+        }
+        .tooltip-row {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+          white-space: nowrap;
+        }
+        .tooltip-name {
+          display: inline-flex;
+          align-items: center;
+          min-width: 0;
+          gap: 6px;
+          color: var(--secondary-text-color, #888);
+        }
+        .tooltip-dot {
+          width: 7px;
+          height: 7px;
+          border-radius: 999px;
+          flex: 0 0 auto;
+        }
+        .tooltip-value {
+          font-weight: 700;
+        }
         .no-data {
           text-align: center;
           color: var(--secondary-text-color, #888);
@@ -344,10 +410,110 @@ class PowerSyncChart extends HTMLElement {
         </div>
         ${empty
           ? `<div class="no-data">${this._escHtml(title)}<br>No data available</div>`
-          : `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">${svg}</svg>`
+          : `<div class="chart-wrap">
+              <svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">${svg}</svg>
+              <div class="tooltip-line"></div>
+              <div class="tooltip"></div>
+            </div>`
         }
       </div>
     `;
+
+    if (!empty) {
+      this._attachTooltip({
+        allSeries,
+        chartW,
+        config,
+        pad,
+        spanHours,
+        W,
+        xMax,
+        xMin,
+      });
+    }
+  }
+
+  _attachTooltip({ allSeries, chartW, config, pad, spanHours, W, xMax, xMin }) {
+    const wrap = this.shadowRoot.querySelector('.chart-wrap');
+    const svg = this.shadowRoot.querySelector('svg');
+    const line = this.shadowRoot.querySelector('.tooltip-line');
+    const tooltip = this.shadowRoot.querySelector('.tooltip');
+    if (!wrap || !svg || !line || !tooltip) return;
+
+    const hide = () => {
+      line.style.opacity = '0';
+      tooltip.style.opacity = '0';
+    };
+
+    const nearestPoint = (data, targetT) => {
+      let best = null;
+      let bestDistance = Infinity;
+      for (const point of data) {
+        const distance = Math.abs(point[0] - targetT);
+        if (distance < bestDistance) {
+          best = point;
+          bestDistance = distance;
+        }
+      }
+      return best;
+    };
+
+    const move = (event) => {
+      const rect = svg.getBoundingClientRect();
+      if (!rect.width) return;
+      const localX = ((event.clientX - rect.left) / rect.width) * W;
+      if (localX < pad.left || localX > W - pad.right) {
+        hide();
+        return;
+      }
+
+      const targetT = xMin + ((localX - pad.left) / chartW) * (xMax - xMin);
+      const points = allSeries
+        .map((series) => ({ series, point: nearestPoint(series.data, targetT) }))
+        .filter((item) => item.point && Number.isFinite(item.point[1]));
+      if (points.length === 0) {
+        hide();
+        return;
+      }
+
+      const anchorT = points.reduce((best, item) => (
+        Math.abs(item.point[0] - targetT) < Math.abs(best - targetT) ? item.point[0] : best
+      ), points[0].point[0]);
+      const anchorX = pad.left + ((anchorT - xMin) / (xMax - xMin)) * chartW;
+      const cssX = (anchorX / W) * rect.width;
+      const rows = points.map(({ series, point }) => `
+        <div class="tooltip-row">
+          <span class="tooltip-name">
+            <span class="tooltip-dot" style="background:${series.color}"></span>
+            <span>${this._escHtml(series.name || '')}</span>
+          </span>
+          <span class="tooltip-value">${this._escHtml(this._formatValue(point[1], config.yUnit, config.yUnitCompact))}</span>
+        </div>
+      `).join('');
+
+      tooltip.innerHTML = `
+        <div class="tooltip-time">${this._escHtml(this._formatTooltipTime(anchorT, spanHours))}</div>
+        ${rows}
+      `;
+
+      line.style.left = `${cssX}px`;
+      line.style.opacity = '0.75';
+      tooltip.style.left = `${Math.min(Math.max(cssX, 78), rect.width - 78)}px`;
+      tooltip.style.top = `${Math.max(34, rect.height - pad.bottom - 8)}px`;
+      tooltip.style.opacity = '1';
+    };
+
+    svg.addEventListener('pointermove', move);
+    svg.addEventListener('pointerleave', hide);
+    svg.addEventListener('pointercancel', hide);
+  }
+
+  _formatTooltipTime(timestamp, spanHours) {
+    const d = new Date(timestamp);
+    const options = spanHours > 24
+      ? { weekday: 'short', hour: '2-digit', minute: '2-digit' }
+      : { hour: '2-digit', minute: '2-digit' };
+    return d.toLocaleString([], options);
   }
 
   _legendItem(series, yMultiplier, config) {
@@ -946,11 +1112,6 @@ class PowerSyncStrategy {
       center.push(_lpPriceChart(e, hass));
     }
 
-    // --- Center Column: LP Battery Power Chart (48h) ---
-    if (hasE('lp_battery_power_forecast')) {
-      center.push(_lpBatteryPowerChart(e));
-    }
-
     // --- Right Column: LP Solar & Load Chart (48h) ---
     if (hasE('lp_solar_forecast')) {
       right.push(_lpSolarLoadChart(e));
@@ -979,9 +1140,14 @@ class PowerSyncStrategy {
       left.push(_batteryHealth(e, hass));
     }
 
-    // --- Center Column: Combined Energy Chart ---
+    // --- Controls Column: LP Battery Power Chart (48h) ---
+    if (hasE('lp_battery_power_forecast')) {
+      left.push(_lpBatteryPowerChart(e));
+    }
+
+    // --- Controls Column: Combined Energy Chart ---
     if (hasE('solar_power')) {
-      center.push(_combinedEnergyChart(e, hasE('home_load')));
+      left.push(_combinedEnergyChart(e, hasE('home_load')));
     }
 
     // --- Center Column: Daily Energy Summary ---
