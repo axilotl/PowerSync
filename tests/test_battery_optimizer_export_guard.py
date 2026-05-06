@@ -292,3 +292,87 @@ def test_charge_block_mask_overrides_free_import_force_charge(
     assert any(action.action == "charge" for action in unblocked.schedule.actions)
     assert max(action.battery_charge_w for action in blocked.schedule.actions) <= 1e-6
     assert all(action.action != "charge" for action in blocked.schedule.actions)
+
+
+def test_grid_charge_allowed_by_default_for_profitable_export(
+    battery_optimizer_module,
+):
+    optimizer = _optimizer(battery_optimizer_module)
+
+    result = optimizer.optimize(
+        import_prices=[0.05] * 6 + [0.50] * 6,
+        export_prices=[0.0] * 6 + [0.50] * 6,
+        solar_forecast=[0.0] * 12,
+        load_forecast=[0.5] * 12,
+        current_soc=0.05,
+        acquisition_cost_kwh=0.0,
+        allow_battery_export=[False] * 6 + [True] * 6,
+    )
+
+    assert any(action.action == "charge" for action in result.schedule.actions[:6])
+    assert max(action.battery_charge_w for action in result.schedule.actions[:6]) > 1000
+
+
+def test_disallow_grid_charge_blocks_forced_grid_charging(
+    battery_optimizer_module,
+):
+    optimizer = _optimizer(battery_optimizer_module)
+
+    result = optimizer.optimize(
+        import_prices=[0.05] * 6 + [0.50] * 6,
+        export_prices=[0.0] * 6 + [0.50] * 6,
+        solar_forecast=[0.0] * 12,
+        load_forecast=[0.5] * 12,
+        current_soc=0.05,
+        acquisition_cost_kwh=0.0,
+        allow_battery_export=[False] * 6 + [True] * 6,
+        allow_grid_charge=False,
+    )
+
+    assert max(action.battery_charge_w for action in result.schedule.actions) <= 1e-6
+    assert all(action.action != "charge" for action in result.schedule.actions)
+    assert max(result.grid_import_w) <= 500.1
+
+
+def test_disallow_grid_charge_ignores_pre_export_fill_target(
+    battery_optimizer_module,
+):
+    optimizer = _optimizer(battery_optimizer_module)
+    optimizer.pre_window_slot = 6
+    optimizer.pre_window_soc_target = 1.0
+
+    result = optimizer.optimize(
+        import_prices=[0.05] * 6 + [0.50] * 6,
+        export_prices=[0.0] * 6 + [0.50] * 6,
+        solar_forecast=[0.0] * 12,
+        load_forecast=[0.5] * 12,
+        current_soc=0.05,
+        acquisition_cost_kwh=0.0,
+        allow_battery_export=[False] * 6 + [True] * 6,
+        allow_grid_charge=False,
+    )
+
+    assert result.feasible is True
+    assert max(action.battery_charge_w for action in result.schedule.actions) <= 1e-6
+    assert all(action.action != "charge" for action in result.schedule.actions)
+
+
+def test_disallow_grid_charge_still_allows_solar_surplus_charging(
+    battery_optimizer_module,
+):
+    optimizer = _optimizer(battery_optimizer_module)
+
+    result = optimizer.optimize(
+        import_prices=[0.30] * 12,
+        export_prices=[0.0] * 12,
+        solar_forecast=[5.0] * 12,
+        load_forecast=[0.5] * 12,
+        current_soc=0.05,
+        acquisition_cost_kwh=0.0,
+        allow_battery_export=False,
+        allow_grid_charge=False,
+    )
+
+    assert max(action.battery_charge_w for action in result.schedule.actions) > 1000
+    assert all(action.action != "charge" for action in result.schedule.actions)
+    assert max(result.grid_import_w) <= 1e-6

@@ -329,13 +329,15 @@
           "optimization_backup_reserve": "Minimum discharge level",
           "optimization_battery_capacity_wh": "Battery capacity",
           "optimization_max_charge_w": "Maximum charge power",
-          "optimization_max_discharge_w": "Maximum discharge power"
+          "optimization_max_discharge_w": "Maximum discharge power",
+          "optimization_allow_grid_charge": "Allow grid charging"
         },
         "data_description": {
           "optimization_backup_reserve": "The optimizer will never discharge below this percentage. Default 20% is a good starting point. Your battery's hardware backup reserve (set in the Tesla/Sigenergy app) is separate.",
           "optimization_battery_capacity_wh": "Total usable battery capacity in kWh. This should match the battery specs shown in the mobile app.",
           "optimization_max_charge_w": "Maximum grid charge power in kW that the LP optimizer may request.",
-          "optimization_max_discharge_w": "Maximum discharge/export power in kW that the LP optimizer may request."
+          "optimization_max_discharge_w": "Maximum discharge/export power in kW that the LP optimizer may request.",
+          "optimization_allow_grid_charge": "When disabled, Smart Optimization can still charge from solar surplus but will not plan forced battery charging from grid import."
         },
         "submit": "Next"
       },
@@ -1021,14 +1023,16 @@
           "optimization_backup_reserve": "Minimum discharge level",
           "optimization_battery_capacity_wh": "Battery capacity",
           "optimization_max_charge_w": "Maximum charge power",
-          "optimization_max_discharge_w": "Maximum discharge power"
+          "optimization_max_discharge_w": "Maximum discharge power",
+          "optimization_allow_grid_charge": "Allow grid charging"
         },
         "data_description": {
           "optimization_provider": "Smart Optimization uses an LP solver to minimise costs. Native mode uses your battery's built-in TOU scheduler.",
           "optimization_backup_reserve": "The optimizer will not discharge below this percentage. Separate from your battery's hardware backup reserve.",
           "optimization_battery_capacity_wh": "Total usable battery capacity in kWh. This should match the battery specs shown in the mobile app.",
           "optimization_max_charge_w": "Maximum grid charge power in kW that the LP optimizer may request.",
-          "optimization_max_discharge_w": "Maximum discharge/export power in kW that the LP optimizer may request."
+          "optimization_max_discharge_w": "Maximum discharge/export power in kW that the LP optimizer may request.",
+          "optimization_allow_grid_charge": "When disabled, Smart Optimization can still charge from solar surplus but will not plan forced battery charging from grid import."
         },
         "submit": "Save"
       },

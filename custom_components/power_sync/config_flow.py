@@ -319,6 +319,7 @@ from .const import (
     CONF_OPTIMIZATION_COST_FUNCTION,
     CONF_OPTIMIZATION_BACKUP_RESERVE,
     CONF_OPTIMIZATION_BATTERY_CAPACITY_WH,
+    CONF_OPTIMIZATION_ALLOW_GRID_CHARGE,
     CONF_OPTIMIZATION_MAX_CHARGE_W,
     CONF_OPTIMIZATION_MAX_DISCHARGE_W,
     COST_FUNCTION_COST,
@@ -1741,6 +1742,10 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     user_input.get(CONF_OPTIMIZATION_MAX_DISCHARGE_W),
                     default_discharge_kw,
                 ),
+                CONF_OPTIMIZATION_ALLOW_GRID_CHARGE: user_input.get(
+                    CONF_OPTIMIZATION_ALLOW_GRID_CHARGE,
+                    True,
+                ),
             }
             # Proceed to battery connection setup
             return await self._route_to_battery_setup()
@@ -1797,6 +1802,10 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             mode=NumberSelectorMode.BOX,
                         )
                     ),
+                    vol.Required(
+                        CONF_OPTIMIZATION_ALLOW_GRID_CHARGE,
+                        default=True,
+                    ): BooleanSelector(),
                 }
             ),
             description_placeholders={},
@@ -5003,6 +5012,10 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     user_input.get(CONF_OPTIMIZATION_MAX_DISCHARGE_W),
                     default_discharge_kw,
                 )
+                allow_grid_charge = user_input.get(
+                    CONF_OPTIMIZATION_ALLOW_GRID_CHARGE,
+                    True,
+                )
                 new_data[CONF_OPTIMIZATION_COST_FUNCTION] = COST_FUNCTION_COST
                 new_options[CONF_OPTIMIZATION_COST_FUNCTION] = COST_FUNCTION_COST
                 new_data[CONF_OPTIMIZATION_BACKUP_RESERVE] = backup_reserve
@@ -5013,6 +5026,8 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 new_options[CONF_OPTIMIZATION_MAX_CHARGE_W] = charge_w
                 new_data[CONF_OPTIMIZATION_MAX_DISCHARGE_W] = discharge_w
                 new_options[CONF_OPTIMIZATION_MAX_DISCHARGE_W] = discharge_w
+                new_data[CONF_OPTIMIZATION_ALLOW_GRID_CHARGE] = allow_grid_charge
+                new_options[CONF_OPTIMIZATION_ALLOW_GRID_CHARGE] = allow_grid_charge
 
             self.hass.config_entries.async_update_entry(
                 self.config_entry, data=new_data, options=new_options
@@ -5066,6 +5081,10 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 ),
             ),
             default_discharge_w,
+        )
+        current_allow_grid_charge = self._get_option(
+            CONF_OPTIMIZATION_ALLOW_GRID_CHARGE,
+            self.config_entry.data.get(CONF_OPTIMIZATION_ALLOW_GRID_CHARGE, True),
         )
 
         # Build native label based on battery system
@@ -5128,6 +5147,10 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                         min=0.1, max=50, step=0.1, unit_of_measurement="kW",
                         mode=NumberSelectorMode.BOX,
                     )),
+                    vol.Required(
+                        CONF_OPTIMIZATION_ALLOW_GRID_CHARGE,
+                        default=bool(current_allow_grid_charge),
+                    ): BooleanSelector(),
                 }
             ),
         )

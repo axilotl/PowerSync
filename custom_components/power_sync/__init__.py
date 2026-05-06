@@ -484,6 +484,7 @@ from .const import (
     CONF_OPTIMIZATION_BACKUP_RESERVE,
     CONF_HARDWARE_BACKUP_RESERVE,
     CONF_OPTIMIZATION_BATTERY_CAPACITY_WH,
+    CONF_OPTIMIZATION_ALLOW_GRID_CHARGE,
     CONF_OPTIMIZATION_MAX_CHARGE_W,
     CONF_OPTIMIZATION_MAX_DISCHARGE_W,
     DEFAULT_OPTIMIZATION_BACKUP_RESERVE,
@@ -26106,6 +26107,14 @@ class OptimizationSettingsView(HomeAssistantView):
                         CONF_OPTIMIZATION_MAX_DISCHARGE_W,
                         default_power_w,
                     ),
+                    "allow_grid_charge": bool(
+                        config_entry.options.get(
+                            CONF_OPTIMIZATION_ALLOW_GRID_CHARGE,
+                            config_entry.data.get(CONF_OPTIMIZATION_ALLOW_GRID_CHARGE, True),
+                        )
+                        if config_entry
+                        else True
+                    ),
                     "backup_reserve": round(backup_reserve * 100),
                     "hardware_backup_reserve": round(hardware_reserve),
                     "battery_specs_source": "manual"
@@ -26133,6 +26142,7 @@ class OptimizationSettingsView(HomeAssistantView):
                 "battery_capacity_wh": opt_coordinator._config.battery_capacity_wh,
                 "max_charge_w": opt_coordinator._config.max_charge_w,
                 "max_discharge_w": opt_coordinator._config.max_discharge_w,
+                "allow_grid_charge": opt_coordinator._config.allow_grid_charge,
                 "backup_reserve": round(opt_coordinator._config.backup_reserve * 100),
                 "hardware_backup_reserve": opt_coordinator._startup_backup_reserve if opt_coordinator._startup_backup_reserve is not None else 0,
                 "battery_specs_source": opt_coordinator._battery_specs_source,
@@ -26204,6 +26214,10 @@ class OptimizationSettingsView(HomeAssistantView):
                 from .const import CONF_PROFIT_MAX_ENABLED
                 new_options[CONF_PROFIT_MAX_ENABLED] = bool(settings["profit_max_enabled"])
                 changes.append(f"Set profit maximisation mode to {settings['profit_max_enabled']}")
+
+            if "allow_grid_charge" in settings:
+                new_options[CONF_OPTIMIZATION_ALLOW_GRID_CHARGE] = bool(settings["allow_grid_charge"])
+                changes.append(f"Set grid charging to {settings['allow_grid_charge']}")
 
             if "cost_function" in settings:
                 from .const import CONF_OPTIMIZATION_COST_FUNCTION

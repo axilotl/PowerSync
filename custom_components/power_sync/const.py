@@ -1526,6 +1526,7 @@ CONF_OPTIMIZATION_ML_FORECASTING = "optimization_ml_forecasting"
 CONF_OPTIMIZATION_BATTERY_CAPACITY_WH = "optimization_battery_capacity_wh"
 CONF_OPTIMIZATION_MAX_CHARGE_W = "optimization_max_charge_w"
 CONF_OPTIMIZATION_MAX_DISCHARGE_W = "optimization_max_discharge_w"
+CONF_OPTIMIZATION_ALLOW_GRID_CHARGE = "optimization_allow_grid_charge"
 CONF_OPTIMIZATION_WEATHER_INTEGRATION = "optimization_weather_integration"
 CONF_AWAY_ENABLED_AT = "away_enabled_at"    # ISO timestamp when away mode was turned on
 CONF_AWAY_DISABLED_AT = "away_disabled_at"  # ISO timestamp when away mode was turned off

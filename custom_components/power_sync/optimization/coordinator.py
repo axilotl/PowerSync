@@ -52,6 +52,7 @@ class OptimizationConfig:
     battery_capacity_wh: int = 13500
     max_charge_w: int = 5000
     max_discharge_w: int = 5000
+    allow_grid_charge: bool = True
     backup_reserve: float = 0.2
     interval_minutes: int = 5
     horizon_hours: int = 48
@@ -516,7 +517,18 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 _LOGGER.warning("Could not restore away mode timestamps: %s", exc)
 
         if self._entry:
-            from ..const import CONF_PROFIT_MAX_ENABLED
+            from ..const import (
+                CONF_OPTIMIZATION_ALLOW_GRID_CHARGE,
+                CONF_PROFIT_MAX_ENABLED,
+            )
+            allow_grid_charge = self._entry.options.get(
+                CONF_OPTIMIZATION_ALLOW_GRID_CHARGE,
+                self._entry.data.get(CONF_OPTIMIZATION_ALLOW_GRID_CHARGE, True),
+            )
+            self._config.allow_grid_charge = bool(allow_grid_charge)
+            if not self._config.allow_grid_charge:
+                _LOGGER.info("Smart Optimization grid charging: DISABLED")
+
             profit_max = self._entry.options.get(
                 CONF_PROFIT_MAX_ENABLED,
                 self._entry.data.get(CONF_PROFIT_MAX_ENABLED, False),
@@ -1246,9 +1258,15 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # more expensive earlier slots; aligned with profit_max's
             # existing trade of economic-optimal for reliable export.
             _SAFETY_BUFFER_SLOTS = 3  # 15 min @ 5-min intervals
-            _hh_slot = self._next_export_window_slot()
+            _hh_slot = (
+                self._next_export_window_slot()
+                if self._config.allow_grid_charge
+                else None
+            )
             if _hh_slot is not None and _hh_slot > _SAFETY_BUFFER_SLOTS:
-                self._optimizer.pre_window_slot = _hh_slot - _SAFETY_BUFFER_SLOTS
+                self._optimizer.pre_window_slot = (
+                    _hh_slot - _SAFETY_BUFFER_SLOTS
+                )
             else:
                 self._optimizer.pre_window_slot = _hh_slot
             self._optimizer.pre_window_soc_target = (
@@ -1274,6 +1292,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 acq_cost,
                 battery_export_allowed,
                 battery_charge_blocked,
+                self._config.allow_grid_charge,
             )
 
             self._last_optimizer_result = result
@@ -1821,17 +1840,6 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._charge_holdoff = 0
 
             if effective_action == "charge":
-                if (
-                    self.battery_system == "sigenergy"
-                    and self._sigenergy_grid_charge_is_uneconomic()
-                ):
-                    effective_action = "self_consumption"
-                    _LOGGER.info(
-                        "Optimizer: Blocking Sigenergy grid charge during high "
-                        "import price — switching to self_consumption"
-                    )
-
-            if effective_action == "charge":
                 if hasattr(battery, "force_charge"):
                     charge_duration = self._config.interval_minutes + 5
                     # Near the demand window, shorten charge duration so the
@@ -2198,51 +2206,6 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         except Exception as e:
             _LOGGER.error("Failed to execute optimizer action: %s", e)
-
-    def _sigenergy_grid_charge_is_uneconomic(self) -> bool:
-        """Return True when a Sigenergy charge slot would buy peak-priced grid energy."""
-        import_prices = self._last_display_import_prices or self._last_import_prices
-        if not import_prices:
-            return False
-
-        current_import = import_prices[0]
-        if current_import is None or current_import <= 0.001:
-            return False
-
-        export_prices = self._last_display_export_prices or self._last_export_prices or []
-        future_imports = [
-            price for price in import_prices[1:] if price is not None and price > 0
-        ]
-        future_exports = [
-            price for price in export_prices[1:] if price is not None and price > 0
-        ]
-
-        if not future_imports and not future_exports:
-            return False
-
-        efficiency = getattr(getattr(self, "_optimizer", None), "efficiency", 0.9)
-        try:
-            efficiency = float(efficiency)
-        except (TypeError, ValueError):
-            efficiency = 0.9
-        efficiency = min(max(efficiency, 0.01), 1.0)
-
-        best_future_value = max(
-            max(future_imports, default=0.0),
-            max(future_exports, default=0.0),
-        ) * efficiency
-        min_margin = 0.02  # $/kWh buffer for round-trip losses and price noise.
-
-        if current_import + min_margin <= best_future_value:
-            return False
-
-        _LOGGER.debug(
-            "Sigenergy grid charge blocked: current import %.1fc/kWh, best "
-            "future value %.1fc/kWh after efficiency",
-            current_import * 100,
-            best_future_value * 100,
-        )
-        return True
 
     def _battery_export_allowed_slots(
         self,
@@ -4832,6 +4795,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "battery_capacity_wh": self._config.battery_capacity_wh,
                 "max_charge_w": self._config.max_charge_w,
                 "max_discharge_w": self._config.max_discharge_w,
+                "allow_grid_charge": self._config.allow_grid_charge,
                 "battery_specs_source": self._battery_specs_source,
                 "backup_reserve": self._config.backup_reserve,
                 "hardware_backup_reserve": (self._startup_backup_reserve if self._startup_backup_reserve is not None else 0) / 100,
@@ -5066,7 +5030,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Handle config updates
         config_keys = [
             "battery_capacity_wh", "max_charge_w", "max_discharge_w",
-            "backup_reserve", "interval_minutes", "horizon_hours",
+            "allow_grid_charge", "backup_reserve", "interval_minutes", "horizon_hours",
         ]
         config_updates = {k: v for k, v in settings.items() if k in config_keys}
         if config_updates:
@@ -5084,6 +5048,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 from ..const import (
                     CONF_OPTIMIZATION_BACKUP_RESERVE,
                     CONF_OPTIMIZATION_BATTERY_CAPACITY_WH,
+                    CONF_OPTIMIZATION_ALLOW_GRID_CHARGE,
                     CONF_OPTIMIZATION_MAX_CHARGE_W,
                     CONF_OPTIMIZATION_MAX_DISCHARGE_W,
                 )
@@ -5099,6 +5064,8 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     new_options[CONF_OPTIMIZATION_MAX_CHARGE_W] = int(settings["max_charge_w"])
                 if "max_discharge_w" in settings:
                     new_options[CONF_OPTIMIZATION_MAX_DISCHARGE_W] = int(settings["max_discharge_w"])
+                if "allow_grid_charge" in settings:
+                    new_options[CONF_OPTIMIZATION_ALLOW_GRID_CHARGE] = bool(settings["allow_grid_charge"])
                 # Prevent reload from API-driven options update
                 from ..const import DOMAIN as _SKIP_DOM
                 self.hass.data.get(_SKIP_DOM, {}).get(self.entry_id, {})["_skip_reload"] = True

@@ -165,6 +165,7 @@ class BatteryOptimizer:
         acquisition_cost_kwh: float = 0.0,
         allow_battery_export: bool | list[bool] = False,
         block_battery_charge: bool | list[bool] = False,
+        allow_grid_charge: bool = True,
     ) -> OptimizerResult:
         """
         Run the LP optimization.
@@ -182,6 +183,9 @@ class BatteryOptimizer:
             block_battery_charge: Whether battery charging is blocked for each
                 time step. Used for export-only windows where grid charging
                 must not occur even when arbitrage appears profitable.
+            allow_grid_charge: Whether the optimizer may charge the battery
+                from grid import. When false, solar surplus can still charge
+                the battery.
 
         Returns:
             OptimizerResult with schedule and metadata
@@ -222,6 +226,7 @@ class BatteryOptimizer:
                     acquisition_cost_kwh,
                     allow_battery_export,
                     block_battery_charge,
+                    allow_grid_charge,
                 )
                 result.solve_time_s = time.monotonic() - start_time
                 return result
@@ -240,6 +245,7 @@ class BatteryOptimizer:
             acquisition_cost_kwh,
             allow_battery_export,
             block_battery_charge,
+            allow_grid_charge,
         )
         result.solve_time_s = time.monotonic() - start_time
         return result
@@ -315,6 +321,7 @@ class BatteryOptimizer:
         acquisition_cost_kwh: float = 0.0,
         allow_battery_export: list[bool] | None = None,
         block_battery_charge: list[bool] | None = None,
+        allow_grid_charge: bool = True,
     ) -> OptimizerResult:
         """
         Solve the LP formulation using scipy.optimize.linprog.
@@ -353,6 +360,7 @@ class BatteryOptimizer:
                 acquisition_cost_kwh,
                 allow_battery_export or [True] * n,
                 block_battery_charge or [False] * n,
+                allow_grid_charge,
             )
         finally:
             if _soc_below_reserve:
@@ -370,6 +378,7 @@ class BatteryOptimizer:
         acquisition_cost_kwh: float = 0.0,
         allow_battery_export: list[bool] | None = None,
         block_battery_charge: list[bool] | None = None,
+        allow_grid_charge: bool = True,
     ) -> OptimizerResult:
         """Inner LP solver (separated for SOC-below-reserve guard in _solve_lp)."""
         dt = self.dt_hours
@@ -377,6 +386,7 @@ class BatteryOptimizer:
         cap = self.capacity_kwh
         allow_battery_export = allow_battery_export or [True] * n
         block_battery_charge = block_battery_charge or [False] * n
+        allow_grid_charge = bool(allow_grid_charge)
 
         # === Objective function: cost minimization ===
         # minimize SUM(import_price * grid_import - export_price * grid_export) * dt
@@ -400,7 +410,8 @@ class BatteryOptimizer:
         # Solar-SC users (no deadline) keep the prefer-later default so grid
         # imports happen after solar has had a chance to fill the battery.
         deadline_mode = (
-            self.pre_window_slot is not None
+            allow_grid_charge
+            and self.pre_window_slot is not None
             and self.pre_window_slot > 0
             and self.pre_window_soc_target > 0.0
         )
@@ -572,7 +583,8 @@ class BatteryOptimizer:
         # globally cheapest periods, which often misses today's HH entirely.
         # Cap target at what's physically reachable to keep the LP feasible.
         if (
-            self.pre_window_slot is not None
+            allow_grid_charge
+            and self.pre_window_slot is not None
             and self.pre_window_slot > 0
             and self.pre_window_slot <= n
             and self.pre_window_soc_target > 0.0
@@ -624,6 +636,9 @@ class BatteryOptimizer:
         for t in range(n):
             if block_battery_charge[t]:
                 bounds.append((0, 0.0))  # battery_charge blocked in export-only window
+            elif not allow_grid_charge:
+                solar_surplus_kw = max(0.0, solar[t] - load[t])
+                bounds.append((0, min(self.max_charge_kw, solar_surplus_kw)))
             else:
                 bounds.append((0, self.max_charge_kw))  # battery_charge
 
@@ -663,6 +678,7 @@ class BatteryOptimizer:
                     acquisition_cost_kwh,
                     allow_battery_export,
                     block_battery_charge,
+                    allow_grid_charge,
                 )
             # Fall back to greedy
             return self._solve_greedy(
@@ -670,6 +686,7 @@ class BatteryOptimizer:
                 acquisition_cost_kwh,
                 allow_battery_export,
                 block_battery_charge,
+                allow_grid_charge,
             )
 
         # === Extract solution ===
@@ -725,6 +742,7 @@ class BatteryOptimizer:
         acquisition_cost_kwh: float = 0.0,
         allow_battery_export: list[bool] | None = None,
         block_battery_charge: list[bool] | None = None,
+        allow_grid_charge: bool = True,
     ) -> OptimizerResult:
         """Retry LP with relaxed SOC constraints (lower backup reserve)."""
         _LOGGER.warning(
@@ -743,6 +761,7 @@ class BatteryOptimizer:
                 acquisition_cost_kwh,
                 allow_battery_export,
                 block_battery_charge,
+                allow_grid_charge,
             )
             result.feasible = False  # Mark as relaxed
             return result
@@ -753,6 +772,7 @@ class BatteryOptimizer:
                 acquisition_cost_kwh,
                 allow_battery_export,
                 block_battery_charge,
+                allow_grid_charge,
             )
         finally:
             self.backup_reserve = original_reserve
@@ -770,6 +790,7 @@ class BatteryOptimizer:
         acquisition_cost_kwh: float = 0.0,
         allow_battery_export: list[bool] | None = None,
         block_battery_charge: list[bool] | None = None,
+        allow_grid_charge: bool = True,
     ) -> OptimizerResult:
         """
         Greedy fallback optimizer.
@@ -782,6 +803,7 @@ class BatteryOptimizer:
         cap = self.capacity_kwh
         allow_battery_export = allow_battery_export or [True] * n
         block_battery_charge = block_battery_charge or [False] * n
+        allow_grid_charge = bool(allow_grid_charge)
 
         grid_import = [0.0] * n
         grid_export = [0.0] * n
@@ -828,7 +850,10 @@ class BatteryOptimizer:
                 if block_battery_charge[t]:
                     continue
                 charge_room = (1.0 - soc_tracker) * cap / (eff * dt)
-                charge_kw = min(self.max_charge_kw, max(0, charge_room))
+                charge_limit = self.max_charge_kw
+                if not allow_grid_charge:
+                    charge_limit = min(charge_limit, max(0.0, -net_load))
+                charge_kw = min(charge_limit, max(0, charge_room))
                 if charge_kw > 0.01:
                     actions[t] = (charge_kw, 0.0)
                     soc_tracker += charge_kw * eff * dt / cap
