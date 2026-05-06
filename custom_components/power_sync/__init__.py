@@ -16280,17 +16280,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             return
 
         try:
-            # Skip cloud TOU upload when LP optimizer is active. The LP drives
-            # the inverter via Modbus directly; uploading a competing TOU plan
-            # to Sigenergy Cloud causes the inverter to charge/discharge on a
-            # schedule the LP didn't choose.
+            # When Smart Optimization is active, LP dispatch still owns battery
+            # control via Remote EMS/Modbus. The cloud tariff upload is kept so
+            # the Sigenergy app tariff graph reflects the same prices PowerSync
+            # is optimizing against. Users must disable Sigenergy AI/native
+            # optimization to avoid competing dispatch decisions.
             optimization_provider = entry.options.get(
                 CONF_OPTIMIZATION_PROVIDER,
                 entry.data.get(CONF_OPTIMIZATION_PROVIDER, OPT_PROVIDER_NATIVE)
             )
-            if optimization_provider == OPT_PROVIDER_POWERSYNC:
-                _LOGGER.debug("Sigenergy Cloud TOU sync skipped — LP optimizer controls via Modbus")
-                return
+            optimization_enabled = entry.options.get(CONF_OPTIMIZATION_ENABLED, True)
+            if optimization_provider == OPT_PROVIDER_POWERSYNC and optimization_enabled:
+                _LOGGER.info(
+                    "Sigenergy Cloud tariff sync enabled for app tariff visibility; "
+                    "Smart Optimization controls dispatch via Remote EMS/Modbus"
+                )
 
             # Get Sigenergy credentials from config entry
             station_id = entry.data.get(CONF_SIGENERGY_STATION_ID)
