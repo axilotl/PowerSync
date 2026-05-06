@@ -395,6 +395,14 @@ class _FakeBattery:
         self.force_discharge_calls.append((duration_minutes, power_w, _extend_hardware))
 
 
+class _FakeEnergyCoordinator:
+    def __init__(self) -> None:
+        self.restore_work_mode_from_idle_calls = 0
+
+    async def restore_work_mode_from_idle(self):
+        self.restore_work_mode_from_idle_calls += 1
+
+
 def _execution_coordinator(opt_module, battery: _FakeBattery, soc: float):
     coordinator = _coordinator(opt_module, "octopus")
     coordinator.hass = SimpleNamespace(data={})
@@ -406,10 +414,7 @@ def _execution_coordinator(opt_module, battery: _FakeBattery, soc: float):
     coordinator._last_executed_action = "self_consumption"
     coordinator._startup_backup_reserve = 20
     coordinator._pre_idle_backup_reserve = None
-    coordinator._idle_sc_holdoff = 0
-    coordinator._charge_holdoff = 0
     coordinator._last_export_prices = None
-    coordinator._offgrid_entry_holdoff = 0
     coordinator.energy_coordinator = None
     coordinator.battery_system = "tesla"
     coordinator._is_in_demand_window = lambda: False
@@ -453,9 +458,9 @@ def test_self_consumption_skips_redundant_call_when_tesla_mode_matches(opt_modul
     assert coordinator._last_executed_action == "self_consumption"
 
 
-def test_charge_below_reserve_bypasses_charge_hysteresis(opt_module):
+def test_charge_executes_immediately_above_reserve(opt_module):
     battery = _FakeBattery()
-    coordinator = _execution_coordinator(opt_module, battery, soc=0.01)
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.50)
 
     asyncio.run(
         coordinator._execute_optimizer_action(
@@ -466,6 +471,27 @@ def test_charge_below_reserve_bypasses_charge_hysteresis(opt_module):
     assert battery.force_charge_calls == [(10, 4200, False)]
     assert battery.self_consumption_calls == 0
     assert coordinator._last_executed_action == "charge"
+
+
+def test_idle_to_self_consumption_exits_idle_immediately(opt_module):
+    battery = _FakeBattery()
+    energy_coordinator = _FakeEnergyCoordinator()
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.50)
+    coordinator._last_executed_action = "idle"
+    coordinator._pre_idle_backup_reserve = 47
+    coordinator.energy_coordinator = energy_coordinator
+
+    asyncio.run(
+        coordinator._execute_optimizer_action(
+            SimpleNamespace(action="self_consumption", power_w=0)
+        )
+    )
+
+    assert energy_coordinator.restore_work_mode_from_idle_calls == 1
+    assert battery.self_consumption_calls == 1
+    assert battery.backup_reserve_calls == [47, 20]
+    assert coordinator._pre_idle_backup_reserve is None
+    assert coordinator._last_executed_action == "self_consumption"
 
 
 def test_tesla_export_uses_contiguous_export_window_duration(opt_module):

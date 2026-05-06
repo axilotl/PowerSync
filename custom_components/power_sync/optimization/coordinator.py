@@ -202,15 +202,13 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._octopus_gate_listener_unsub: Callable | None = None
         # Deduplication key for AEMO price-update trigger — LP only fires on new dispatch files
         self._last_aemo_dispatch_file: str | None = None
-        # Rate-limit for non-AEMO price-triggered LP runs (Amber/Octopus send 2 updates per
-        # 5-min window — usage price + spot price — which would otherwise fire two consecutive
-        # LP solves and let the 2-consecutive-CHARGE hysteresis clear in a single interval,
-        # causing force_charge↔restore_normal oscillation that can trip battery BMS protections).
+        # Rate-limit for non-AEMO price-triggered LP runs. Amber/Octopus can
+        # send both usage and spot-price updates in one billing window; running
+        # the LP twice in quick succession can churn force mode commands.
         self._last_price_triggered_optimization: datetime | None = None
 
-        # Track last executed action for IDLE→non-IDLE transition
+        # Track last executed action for mode transitions.
         self._last_executed_action: str | None = None
-        self._idle_sc_holdoff: int = 0  # Hysteresis counter for IDLE→SC transitions
         # Physical battery backup reserve saved before IDLE raises it.
         # Restored when exiting IDLE so we don't overwrite the user's
         # hardware reserve with the optimizer's LP floor.
@@ -219,11 +217,6 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # IDLE modifies it. Used as the authoritative restore value.
         self._startup_backup_reserve: int | None = None
         self._idle_reserve_adjustment: bool = False  # True while IDLE is setting backup_reserve (suppresses persistence)
-
-        # Off-grid curtailment hysteresis (mirrors _idle_sc_holdoff pattern)
-        self._offgrid_entry_holdoff: int = 0   # Consecutive OFF_GRID decisions before activating
-        self._offgrid_exit_holdoff: int = 0    # Consecutive non-OFF_GRID decisions before reconnecting
-        self._charge_holdoff: int = 0  # Hysteresis for entering CHARGE (require 2 consecutive)
 
         # Background task handles (for cancellation on disable)
         self._polling_task: asyncio.Task | None = None
@@ -837,10 +830,9 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 return
             self._last_aemo_dispatch_file = current_file
 
-        # Rate-limit: Amber/Octopus fire two coordinator updates per 5-min window (usage
-        # price + spot price). Without this guard both updates trigger an LP run, letting
-        # two consecutive CHARGE decisions satisfy the holdoff counter within seconds and
-        # causing force_charge↔restore_normal oscillation that can trip battery BMS protections.
+        # Rate-limit: Amber/Octopus can fire two coordinator updates per
+        # billing window (usage price + spot price). Avoid duplicate LP runs
+        # and repeated force mode commands inside the same interval.
         now = dt_util.utcnow()
         min_interval_seconds = (self._config.interval_minutes if self._config else 5) * 60
         if self._last_price_triggered_optimization is not None:
@@ -1726,118 +1718,28 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 except Exception:
                     pass
 
-            # When transitioning from IDLE to another action, we need to
-            # undo what IDLE did (restore work mode and backup_reserve).
-            # However, the LP can oscillate between IDLE and self_consumption
-            # at decision boundaries — each exit resets backup_reserve to 0%
-            # for one cycle, slowly draining the battery overnight.
-            # To prevent this, apply hysteresis for IDLE→self_consumption:
-            # require 3 consecutive non-IDLE decisions before resetting
-            # backup_reserve. For charge/export, exit IDLE immediately.
+            # When transitioning from IDLE to another action, immediately undo
+            # what IDLE did (restore work mode and backup_reserve) before
+            # executing the new LP action.
             prev = self._last_executed_action
-            if effective_action == "idle":
-                # Only reset hysteresis when entering IDLE from a non-IDLE
-                # state.  When already in IDLE, preserve the counter so SC
-                # decisions can accumulate across LP cycles.  Without this,
-                # the counter oscillates 0→1→0 because the LP alternates
-                # IDLE/SC at schedule boundaries, and the system stays stuck
-                # in Forced+Stop mode indefinitely.
-                if prev != "idle":
-                    self._idle_sc_holdoff = 0
-            elif prev == "idle":
-                if effective_action in ("charge", "discharge", "export"):
-                    # Charge/export: exit IDLE immediately
-                    self._idle_sc_holdoff = 0
-                    if (
-                        self.energy_coordinator
-                        and hasattr(self.energy_coordinator, "restore_work_mode_from_idle")
-                    ):
-                        await self.energy_coordinator.restore_work_mode_from_idle()
-                    if hasattr(battery, "set_backup_reserve") and self._pre_idle_backup_reserve is not None:
-                        await battery.set_backup_reserve(self._pre_idle_backup_reserve)
-                        _LOGGER.info(
-                            "Optimizer: Exiting IDLE → %s — restored backup "
-                            "reserve to %d%%",
-                            effective_action, self._pre_idle_backup_reserve,
-                        )
-                        self._pre_idle_backup_reserve = None
-                    else:
-                        _LOGGER.info(
-                            "Optimizer: Exiting IDLE → %s — restored work mode",
-                            effective_action,
-                        )
-                else:
-                    # self_consumption: apply hysteresis to prevent oscillation
-                    self._idle_sc_holdoff += 1
-                    if self._idle_sc_holdoff < 3:
-                        # Stay in IDLE — LP hasn't committed yet
-                        _LOGGER.info(
-                            "Optimizer: LP chose self_consumption but staying "
-                            "in IDLE (hysteresis %d/3 — preventing oscillation)",
-                            self._idle_sc_holdoff,
-                        )
-                        effective_action = "idle"
-                    else:
-                        # LP has chosen non-IDLE 3 times — genuinely exit
-                        self._idle_sc_holdoff = 0
-                        if (
-                            self.energy_coordinator
-                            and hasattr(self.energy_coordinator, "restore_work_mode_from_idle")
-                        ):
-                            await self.energy_coordinator.restore_work_mode_from_idle()
-                        if hasattr(battery, "set_backup_reserve") and self._pre_idle_backup_reserve is not None:
-                            await battery.set_backup_reserve(self._pre_idle_backup_reserve)
-                            _LOGGER.info(
-                                "Optimizer: Exiting IDLE → self_consumption "
-                                "(confirmed after 3 cycles) — restored backup "
-                                "reserve to %d%%",
-                                self._pre_idle_backup_reserve,
-                            )
-                            self._pre_idle_backup_reserve = None
-                        else:
-                            _LOGGER.info(
-                                "Optimizer: Exiting IDLE → self_consumption "
-                                "(confirmed after 3 cycles)",
-                            )
-
-            # CHARGE hysteresis: require 2 consecutive CHARGE decisions
-            # before executing force_charge. This prevents oscillation at
-            # decision boundaries (e.g. LP flipping CHARGE↔SC every cycle
-            # near a demand window). Each flip triggers a full tariff
-            # upload + mode switch cycle that creates unnecessary grid
-            # import spikes. Cost: 5-min delay entering charge, negligible
-            # for multi-hour off-peak charging.
-            if effective_action == "charge":
-                bypass_charge_holdoff = False
-                try:
-                    soc_now, _ = await self._get_battery_state()
-                    if soc_now <= self._config.backup_reserve + 0.02:
-                        bypass_charge_holdoff = True
-                except Exception:
-                    pass
-
-                if bypass_charge_holdoff:
-                    self._charge_holdoff = 0
+            if prev == "idle" and effective_action != "idle":
+                if (
+                    self.energy_coordinator
+                    and hasattr(self.energy_coordinator, "restore_work_mode_from_idle")
+                ):
+                    await self.energy_coordinator.restore_work_mode_from_idle()
+                if hasattr(battery, "set_backup_reserve") and self._pre_idle_backup_reserve is not None:
+                    await battery.set_backup_reserve(self._pre_idle_backup_reserve)
                     _LOGGER.info(
-                        "Optimizer: CHARGE confirmed immediately — SOC at/below reserve"
+                        "Optimizer: Exiting IDLE → %s — restored backup reserve to %d%%",
+                        effective_action, self._pre_idle_backup_reserve,
                     )
-                elif self._last_executed_action != "charge":
-                    self._charge_holdoff += 1
-                    if self._charge_holdoff < 2:
-                        _LOGGER.info(
-                            "Optimizer: LP chose CHARGE but holding off "
-                            "(hysteresis %d/2 — confirming commitment)",
-                            self._charge_holdoff,
-                        )
-                        effective_action = "self_consumption"
-                    else:
-                        self._charge_holdoff = 0
-                        _LOGGER.info(
-                            "Optimizer: CHARGE confirmed after 2 consecutive cycles"
-                        )
-                # else: already charging, holdoff stays at 0
-            else:
-                self._charge_holdoff = 0
+                    self._pre_idle_backup_reserve = None
+                else:
+                    _LOGGER.info(
+                        "Optimizer: Exiting IDLE → %s — restored work mode",
+                        effective_action,
+                    )
 
             if effective_action == "charge":
                 if hasattr(battery, "force_charge"):
@@ -2079,9 +1981,8 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 # Delegates to CurtailmentFallback which enforces SOC floor,
                 # daily duration cap, and pairing checks.
                 #
-                # Hysteresis: require 2 consecutive OFF_GRID decisions
-                # before actually going off-grid (avoids contactor cycling
-                # from price noise). Immediate activation if already off-grid.
+                # The off-grid overlay only marks pre-validated contiguous
+                # runs, so execution can activate immediately here.
                 if self._last_executed_action == "off_grid":
                     # Already off-grid — check safety gates are still met
                     try:
@@ -2140,10 +2041,6 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 #   • LP already won't plan below its configured floor, so the
                 #     hardware floor matches the software floor
                 #
-                # Off-grid exit hysteresis: if coming from off_grid, require
-                # 3 consecutive non-off_grid decisions before reconnecting.
-                # Charge/export exit immediately (handled by reconnect block
-                # at the top of this method).
                 # Off-grid exit is handled by the reconnect transition
                 # block at the top of this method — no additional holdoff
                 # needed since the overlay already pre-validated run length.
@@ -2197,10 +2094,6 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                                 configured_reserve_pct,
                             )
                     _LOGGER.debug("Optimizer: Self-consumption mode (action=%s)", effective_action)
-
-            # Reset off-grid holdoffs when action is not off_grid related
-            if effective_action not in ("off_grid",):
-                self._offgrid_entry_holdoff = 0
 
             self._last_executed_action = effective_action
 
