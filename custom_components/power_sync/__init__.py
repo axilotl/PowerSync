@@ -16272,8 +16272,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             from .sigenergy_api import (
                 SigenergyAPIClient,
                 convert_amber_prices_to_sigenergy,
-                apply_export_boost_sigenergy,
-                apply_chip_mode_sigenergy,
                 apply_spike_protection_sigenergy,
             )
         except ImportError as e:
@@ -16365,15 +16363,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 current_actual_interval=current_actual_interval, nem_region=nem_region,
                 timezone_name=timezone_name,
             )
-            sell_prices = convert_amber_prices_to_sigenergy(
-                feedin_prices, price_type="sell", forecast_type=forecast_type,
-                current_actual_interval=current_actual_interval, nem_region=nem_region,
-                timezone_name=timezone_name,
-            )
-
             if not buy_prices:
                 _LOGGER.warning("No buy prices converted for Sigenergy sync")
                 return
+
+            # Sigenergy's cloud/app tariff display can surface the sellPrice
+            # schedule as the visible tariff after save, which makes Amber feed-in
+            # rates look like a second, much lower import tariff upload. For this
+            # display-sync path, upload the import schedule into both payload
+            # branches so the Sig app shows the same LP/import tariff PowerSync is
+            # optimizing against. PowerSync's own export decisions still use the
+            # provider price feed directly; they do not depend on Sigenergy cloud
+            # sellPrice.
+            sell_prices = [dict(slot) for slot in buy_prices]
+            if feedin_prices:
+                _LOGGER.info(
+                    "Sigenergy tariff sync: mirroring buy/import schedule into "
+                    "sellPrice to avoid Amber feed-in rates overwriting the app "
+                    "tariff display"
+                )
 
             # Apply price modifications (same features as Tesla)
             # 1. Spike Protection - cap buy prices during extreme spikes
@@ -16388,36 +16396,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     buy_prices,
                     threshold_cents=100.0,
                     replacement_cents=50.0,
-                )
-
-            # 2. Export Boost - artificially increase sell prices to encourage discharge
-            export_boost_enabled = entry.options.get(CONF_EXPORT_BOOST_ENABLED, False)
-            if export_boost_enabled and sell_prices:
-                offset = entry.options.get(CONF_EXPORT_PRICE_OFFSET, 0) or 0
-                min_price = entry.options.get(CONF_EXPORT_MIN_PRICE, 0) or 0
-                boost_start = entry.options.get(CONF_EXPORT_BOOST_START, DEFAULT_EXPORT_BOOST_START)
-                boost_end = entry.options.get(CONF_EXPORT_BOOST_END, DEFAULT_EXPORT_BOOST_END)
-                threshold = entry.options.get(CONF_EXPORT_BOOST_THRESHOLD, DEFAULT_EXPORT_BOOST_THRESHOLD)
-                _LOGGER.info(
-                    "Applying Sigenergy export boost: offset=%.1fc, min=%.1fc, threshold=%.1fc, window=%s-%s",
-                    offset, min_price, threshold, boost_start, boost_end
-                )
-                sell_prices = apply_export_boost_sigenergy(
-                    sell_prices, offset, min_price, boost_start, boost_end, threshold
-                )
-
-            # 3. Chip Mode - suppress exports unless price exceeds threshold
-            chip_mode_enabled = entry.options.get(CONF_CHIP_MODE_ENABLED, False)
-            if chip_mode_enabled and sell_prices:
-                chip_start = entry.options.get(CONF_CHIP_MODE_START, DEFAULT_CHIP_MODE_START)
-                chip_end = entry.options.get(CONF_CHIP_MODE_END, DEFAULT_CHIP_MODE_END)
-                chip_threshold = entry.options.get(CONF_CHIP_MODE_THRESHOLD, DEFAULT_CHIP_MODE_THRESHOLD)
-                _LOGGER.info(
-                    "Applying Sigenergy Chip Mode: window=%s-%s, threshold=%.1fc",
-                    chip_start, chip_end, chip_threshold
-                )
-                sell_prices = apply_chip_mode_sigenergy(
-                    sell_prices, chip_start, chip_end, chip_threshold
                 )
 
             # Debug: Log price ranges to diagnose buy/sell mismatch
