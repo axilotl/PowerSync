@@ -219,6 +219,11 @@ class PowerSyncChart extends HTMLElement {
       }
 
       svg += `<path d="${pathD}" fill="none" stroke="${series.color}" stroke-width="${series.strokeWidth || 2.25}" stroke-linejoin="round" stroke-linecap="round"/>`;
+
+      const last = series.data[series.data.length - 1];
+      if (last) {
+        svg += `<circle cx="${xScale(last[0])}" cy="${yScale(last[1] * yMultiplier)}" r="${compact ? 3 : 4}" fill="${series.color}" stroke="var(--ha-card-background, var(--card-background-color, white))" stroke-width="2"/>`;
+      }
     }
 
     if (mode === 'forecast' || mode === 'history') {
@@ -231,34 +236,48 @@ class PowerSyncChart extends HTMLElement {
     const title = config.title || '';
     const legend = allSeries.map((s) => this._legendItem(s, yMultiplier, config)).join('');
     const empty = allSeries.every(s => s.data.length === 0);
+    const accent = allSeries.find(s => s.color)?.color || 'var(--primary-color, #03a9f4)';
 
     this.shadowRoot.innerHTML = `
       <style>
         :host {
           display: block;
           min-width: 0;
+          --ps-chart-accent: ${accent};
         }
         .card {
           background: var(--ha-card-background, var(--card-background-color, white));
           border-radius: var(--ha-card-border-radius, 12px);
           box-shadow: var(--ha-card-box-shadow, none);
           border: var(--ha-card-border-width, 1px) solid var(--ha-card-border-color, var(--divider-color, rgba(0,0,0,0.12)));
-          padding: 12px 12px 10px;
+          border-top: 4px solid var(--ps-chart-accent);
+          padding: 14px 14px 12px;
           overflow: hidden;
           box-sizing: border-box;
+          position: relative;
+        }
+        .card::before {
+          content: '';
+          position: absolute;
+          inset: 0;
+          background: linear-gradient(135deg, var(--ps-chart-accent) 0%, transparent 34%);
+          opacity: 0.055;
+          pointer-events: none;
         }
         .head {
           display: flex;
           align-items: flex-start;
           justify-content: space-between;
           gap: 12px;
-          margin-bottom: 4px;
+          margin-bottom: 8px;
+          position: relative;
+          z-index: 1;
         }
         .title {
           min-width: 0;
           color: var(--primary-text-color, #333);
-          font-size: 14px;
-          font-weight: 600;
+          font-size: 15px;
+          font-weight: 700;
           line-height: 1.25;
         }
         .legend {
@@ -275,9 +294,12 @@ class PowerSyncChart extends HTMLElement {
           gap: 5px;
           min-width: 0;
           color: var(--secondary-text-color, #888);
-          font-size: 11px;
+          font-size: 11.5px;
           line-height: 1.2;
           white-space: nowrap;
+          padding: 3px 6px;
+          border-radius: 999px;
+          background: color-mix(in srgb, var(--secondary-background-color, transparent) 65%, transparent);
         }
         .swatch {
           width: 14px;
@@ -293,12 +315,16 @@ class PowerSyncChart extends HTMLElement {
           width: 100%;
           height: ${H}px;
           display: block;
+          position: relative;
+          z-index: 1;
         }
         .no-data {
           text-align: center;
           color: var(--secondary-text-color, #888);
           padding: 36px 0 40px;
           font-size: 14px;
+          position: relative;
+          z-index: 1;
         }
         @media (max-width: 520px) {
           .head {
@@ -561,9 +587,9 @@ class PowerSyncLayout extends HTMLElement {
       .grid {
         display: grid;
         grid-template-columns:
-          minmax(280px, 0.95fr)
-          minmax(380px, 1.25fr)
-          minmax(300px, 1fr);
+          minmax(280px, 0.9fr)
+          minmax(420px, 1.35fr)
+          minmax(320px, 1fr);
         gap: var(--ps-dashboard-gap);
         padding: var(--ps-dashboard-gap);
         align-items: start;
@@ -571,6 +597,9 @@ class PowerSyncLayout extends HTMLElement {
         width: 100%;
         max-width: 1680px;
         margin: 0 auto;
+      }
+      .column:nth-child(2) {
+        order: -1;
       }
       .column {
         display: flex;
@@ -586,10 +615,9 @@ class PowerSyncLayout extends HTMLElement {
           grid-template-columns: minmax(330px, 0.95fr) minmax(390px, 1.05fr);
         }
         .column:nth-child(2) {
-          order: -1;
+          grid-column: 1 / -1;
         }
         .column:nth-child(3) {
-          grid-column: 1 / -1;
           display: grid;
           grid-template-columns: repeat(2, minmax(0, 1fr));
           align-items: start;
@@ -1934,7 +1962,7 @@ function _priceChart(e, hass) {
     title: 'Electricity Prices - 24 Hours',
     mode: 'history',
     historyHours: 24,
-    height: 230,
+    height: 255,
     yUnit: importMeta.minorPriceUnit,
     yUnitCompact: true,
     yMultiplier: 100,
@@ -1961,6 +1989,7 @@ function _touSchedule(e, hass) {
     title: 'TOU Schedule',
     entity: e('tariff_schedule'),
     mode: 'tou',
+    height: 235,
     stepLine: true,
     yUnit: meta.minorPriceUnit,
     yUnitCompact: true,
@@ -1992,6 +2021,7 @@ function _lpSolarLoadChart(e) {
     title: 'LP Forecast - Solar & Load (48h)',
     mode: 'forecast',
     intervalMinutes: 5,
+    height: 260,
     yUnit: 'kW',
     yMin: 0,
     series: [
@@ -2008,6 +2038,7 @@ function _lpPriceChart(e, hass) {
     title: 'LP Forecast - Import & Export Prices (48h)',
     mode: 'forecast',
     intervalMinutes: 5,
+    height: 255,
     stepLine: true,
     yUnit: meta.minorPriceUnit,
     yUnitCompact: true,
@@ -2025,6 +2056,7 @@ function _lpBatteryPowerChart(e) {
     title: 'LP Forecast - Battery Power (48h)',
     mode: 'forecast',
     intervalMinutes: 5,
+    height: 255,
     stepLine: true,
     yUnit: 'kW',
     series: [
@@ -2511,7 +2543,7 @@ function _combinedEnergyChart(e, hasHome) {
     title: 'Energy - 24 Hours',
     mode: 'history',
     historyHours: 24,
-    height: 250,
+    height: 275,
     yUnit: 'kW',
     zeroBaseline: true,
     series,
