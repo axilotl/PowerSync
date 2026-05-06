@@ -16445,6 +16445,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 spike_protection_enabled=False,
                 export_boost_enabled=False,
                 currency=currency_for_entry(entry, hass),
+                include_sell_prices=False,
             )
 
             buy_prices = []

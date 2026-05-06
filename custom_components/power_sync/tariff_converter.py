@@ -460,6 +460,7 @@ def convert_amber_to_tesla_tariff(
     export_price_offset: float = 0.0,
     export_min_price: float = 0.0,
     currency: str | None = None,
+    include_sell_prices: bool = True,
 ) -> dict[str, Any] | None:
     """
     Convert Amber price forecast to Tesla tariff format.
@@ -535,6 +536,8 @@ def convert_amber_to_tesla_tariff(
             nem_time = point.get("nemTime", "")
             timestamp = datetime.fromisoformat(nem_time.replace("Z", "+00:00"))
             channel_type = point.get("channelType", "")
+            if channel_type == "feedIn" and not include_sell_prices:
+                continue
             duration = point.get("duration", 30)  # Get actual interval duration (usually 5 or 30 minutes)
 
             # Price extraction logic:
@@ -683,6 +686,7 @@ def convert_amber_to_tesla_tariff(
         export_boost_enabled=export_boost_enabled,
         export_price_offset=export_price_offset,
         export_min_price=export_min_price,
+        include_sell_prices=include_sell_prices,
     )
 
     # If too many periods are missing, abort sync to preserve last good tariff
@@ -691,9 +695,10 @@ def convert_amber_to_tesla_tariff(
         return None
 
     _LOGGER.info(
-        "Built rolling 24h tariff with %d general and %d feed-in periods",
+        "Built rolling 24h tariff with %d general and %d %s periods",
         len(general_prices),
         len(feedin_prices),
+        "feed-in" if include_sell_prices else "mirrored sell",
     )
 
     # Build demand charge rates if enabled
@@ -789,6 +794,7 @@ def _build_rolling_24h_tariff(
     export_boost_enabled: bool = False,
     export_price_offset: float = 0.0,
     export_min_price: float = 0.0,
+    include_sell_prices: bool = True,
 ) -> tuple[dict[str, float], dict[str, float]]:
     """
     Build a rolling 24-hour tariff where past periods use tomorrow's prices.
@@ -869,7 +875,11 @@ def _build_rolling_24h_tariff(
                     current_actual_interval = None  # Disable for this iteration
 
                 # Use live 5-min ActualInterval sell price for current period
-                if current_actual_interval and current_actual_interval.get("feedIn"):
+                if (
+                    include_sell_prices
+                    and current_actual_interval
+                    and current_actual_interval.get("feedIn")
+                ):
                     actual_feedin_cents = current_actual_interval["feedIn"].get("perKwh", 0)
                     # Amber convention: feedIn is negative, Tesla convention: positive
                     sell_price = _round_price(-actual_feedin_cents / 100)
@@ -886,11 +896,14 @@ def _build_rolling_24h_tariff(
 
                     # Skip normal lookup logic for this period since we've set both prices
                     continue
-                else:
+                elif include_sell_prices:
                     if current_actual_interval:
                         _LOGGER.warning(
                             "%s: No feedIn ActualInterval, falling back to forecast", period_key
                         )
+                else:
+                    feedin_prices[period_key] = general_prices[period_key]
+                    continue
 
             # NORMAL CASE: Use forecast data for all other periods
             # Determine if this period has already passed
@@ -944,6 +957,10 @@ def _build_rolling_24h_tariff(
                     # Mark as missing - will be counted below
                     general_prices[period_key] = None
                     _LOGGER.warning("%s: No price data available", period_key)
+
+            if not include_sell_prices:
+                feedin_prices[period_key] = general_prices[period_key]
+                continue
 
             # Get feedin price (sell price)
             # Use same flexible lookup approach for AEMO compatibility

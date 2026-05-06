@@ -237,11 +237,15 @@ def test_sigenergy_visible_upload_mirrors_import_not_feed_in_for_current_slot(
         powerwall_timezone="Australia/Brisbane",
         current_actual_interval=current_actual,
         electricity_provider="amber",
+        include_sell_prices=False,
     )
     buy_prices = sigenergy_api_module.convert_tariff_rates_to_sigenergy(
         tariff["energy_charges"]["Summer"]["rates"]
     )
-    sell_prices = [dict(slot) for slot in buy_prices]
+    canonical_sell_rates = tariff["sell_tariff"]["energy_charges"]["Summer"]["rates"]
+    sell_prices = sigenergy_api_module.convert_tariff_rates_to_sigenergy(
+        canonical_sell_rates
+    )
 
     buy_by_start = {slot["timeRange"].split("-")[0]: slot["price"] for slot in buy_prices}
     sell_by_start = {slot["timeRange"].split("-")[0]: slot["price"] for slot in sell_prices}
@@ -249,6 +253,20 @@ def test_sigenergy_visible_upload_mirrors_import_not_feed_in_for_current_slot(
     assert buy_by_start["20:30"] == 35.33
     assert sell_by_start["20:30"] == 35.33
     assert sell_by_start["20:30"] != 9.82
+
+
+def test_sigenergy_canonical_upload_disables_feed_in_schedule_in_sync_helper():
+    init_source = (COMPONENT_ROOT / "__init__.py").read_text()
+    helper_source = init_source[
+        init_source.index("async def _sync_tariff_to_sigenergy"):
+        init_source.index("async def _sync_tariff_to_foxess")
+    ]
+
+    canonical_call_pos = helper_source.index("canonical_tariff = convert_amber_to_tesla_tariff")
+    include_sell_pos = helper_source.index("include_sell_prices=False")
+    sigenergy_upload_pos = helper_source.index("client.set_tariff_rate")
+
+    assert canonical_call_pos < include_sell_pos < sigenergy_upload_pos
 
 
 def test_sigenergy_sync_resolves_demand_settings_inside_helper():
