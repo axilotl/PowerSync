@@ -634,8 +634,13 @@ class BatteryOptimizer:
                 bounds.append((0, min(max_grid_kw, solar_surplus_kw)))
 
         for t in range(n):
-            if block_battery_charge[t]:
-                bounds.append((0, 0.0))  # battery_charge blocked in export-only window
+            export_profitable_slot = (
+                allow_battery_export[t] and export_prices[t] > import_prices[t]
+            )
+            if block_battery_charge[t] or export_profitable_slot:
+                # Do not charge during slots that are already marked for
+                # profitable battery export; charge before the export window.
+                bounds.append((0, 0.0))
             elif not allow_grid_charge:
                 solar_surplus_kw = max(0.0, solar[t] - load[t])
                 bounds.append((0, min(self.max_charge_kw, solar_surplus_kw)))
@@ -847,7 +852,10 @@ class BatteryOptimizer:
                     soc_tracker -= discharge_kw * dt / (eff * cap)
             else:
                 # Cheap to charge
-                if block_battery_charge[t]:
+                export_profitable_slot = (
+                    allow_battery_export[t] and export_prices[t] > import_prices[t]
+                )
+                if block_battery_charge[t] or export_profitable_slot:
                     continue
                 charge_room = (1.0 - soc_tracker) * cap / (eff * dt)
                 charge_limit = self.max_charge_kw

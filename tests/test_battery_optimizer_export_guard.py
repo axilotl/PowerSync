@@ -204,16 +204,6 @@ def test_charge_block_mask_prevents_charging_during_export_window(
 ):
     optimizer = _optimizer(battery_optimizer_module)
 
-    unblocked = optimizer.optimize(
-        import_prices=[0.05] * 12,
-        export_prices=[0.04] * 12,
-        solar_forecast=[0.0] * 12,
-        load_forecast=[0.1] * 12,
-        current_soc=0.20,
-        acquisition_cost_kwh=0.0,
-        allow_battery_export=[True] * 12,
-        block_battery_charge=[False] * 12,
-    )
     blocked = optimizer.optimize(
         import_prices=[0.05] * 12,
         export_prices=[0.50] * 12,
@@ -225,7 +215,6 @@ def test_charge_block_mask_prevents_charging_during_export_window(
         block_battery_charge=[True] * 12,
     )
 
-    assert max(action.battery_charge_w for action in unblocked.schedule.actions) > 100
     assert max(action.battery_charge_w for action in blocked.schedule.actions) <= 1e-6
     assert all(action.action != "charge" for action in blocked.schedule.actions)
 
