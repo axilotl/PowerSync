@@ -725,7 +725,11 @@ class PowerSyncLayout extends HTMLElement {
     super();
     this.attachShadow({ mode: 'open' });
     this._cards = [];
+    this._items = [];
+    this._lanes = [];
     this._built = false;
+    this._layoutQueued = false;
+    this._resizeObserver = null;
   }
 
   setConfig(config) {
@@ -736,6 +740,66 @@ class PowerSyncLayout extends HTMLElement {
     this._hass = hass;
     if (!this._built) this._buildLayout();
     for (const c of this._cards) c.hass = hass;
+    this._scheduleLayout();
+  }
+
+  disconnectedCallback() {
+    if (this._resizeObserver) {
+      this._resizeObserver.disconnect();
+      this._resizeObserver = null;
+    }
+  }
+
+  _scheduleLayout() {
+    if (!this._built || this._layoutQueued) return;
+    this._layoutQueued = true;
+    requestAnimationFrame(() => {
+      this._layoutQueued = false;
+      this._balanceLayout();
+    });
+  }
+
+  _columnCount() {
+    const width = this.getBoundingClientRect().width || window.innerWidth || 0;
+    const portrait = window.matchMedia?.('(orientation: portrait)')?.matches;
+    if (width < 760 || (portrait && width < 1040)) return 1;
+    if (width < 1280) return 2;
+    return 3;
+  }
+
+  _flattenCards() {
+    const columns = this._config?.columns || [];
+    const ordered = columns.length === 3 ? [columns[1], columns[0], columns[2]] : columns;
+    return ordered.flatMap(column => column || []);
+  }
+
+  _balanceLayout() {
+    if (!this._items.length) return;
+    const count = Math.min(this._columnCount(), this._items.length);
+    if (this._lanes.length !== count) {
+      this._rebuildLanes(count);
+    }
+
+    const heights = new Array(count).fill(0);
+    for (const item of this._items) {
+      const laneIndex = heights.indexOf(Math.min(...heights));
+      this._lanes[laneIndex].appendChild(item);
+      heights[laneIndex] += item.getBoundingClientRect().height || item.scrollHeight || 180;
+    }
+  }
+
+  _rebuildLanes(count) {
+    const grid = this.shadowRoot.querySelector('.grid');
+    if (!grid) return;
+    grid.innerHTML = '';
+    grid.style.setProperty('--ps-lane-count', String(count));
+    this._lanes = [];
+    for (let i = 0; i < count; i++) {
+      const lane = document.createElement('div');
+      lane.className = 'lane';
+      this._lanes.push(lane);
+      grid.appendChild(lane);
+    }
   }
 
   async _buildLayout() {
@@ -752,62 +816,28 @@ class PowerSyncLayout extends HTMLElement {
       }
       .grid {
         display: grid;
-        grid-template-columns:
-          minmax(280px, 0.9fr)
-          minmax(420px, 1.35fr)
-          minmax(320px, 1fr);
+        grid-template-columns: repeat(var(--ps-lane-count, 3), minmax(0, 1fr));
         gap: var(--ps-dashboard-gap);
         padding: var(--ps-dashboard-gap);
         align-items: start;
         box-sizing: border-box;
         width: 100%;
-        max-width: 1680px;
+        max-width: 1900px;
         margin: 0 auto;
       }
-      .column:nth-child(2) {
-        order: -1;
-      }
-      .column {
+      .lane {
         display: flex;
         flex-direction: column;
         gap: var(--ps-dashboard-gap);
         min-width: 0;
       }
-      .column > * {
+      .item,
+      .item > * {
         min-width: 0;
-      }
-      @media (max-width: 1180px) and (orientation: landscape) {
-        .grid {
-          grid-template-columns: minmax(330px, 0.95fr) minmax(390px, 1.05fr);
-        }
-        .column:nth-child(2) {
-          grid-column: 1 / -1;
-        }
-        .column:nth-child(3) {
-          display: grid;
-          grid-template-columns: repeat(2, minmax(0, 1fr));
-          align-items: start;
-        }
-      }
-      @media (max-width: 900px) and (orientation: portrait) {
-        .grid {
-          grid-template-columns: 1fr;
-          padding: 8px;
-        }
-        .column:nth-child(2) {
-          order: -1;
-        }
       }
       @media (max-width: 760px) {
         .grid {
-          grid-template-columns: 1fr;
           padding: 6px;
-        }
-        .column:nth-child(2) {
-          order: -1;
-        }
-        .column:nth-child(3) {
-          display: flex;
         }
       }
     `;
@@ -815,35 +845,39 @@ class PowerSyncLayout extends HTMLElement {
 
     const grid = document.createElement('div');
     grid.className = 'grid';
+    root.appendChild(grid);
+
+    if ('ResizeObserver' in window) {
+      this._resizeObserver = new ResizeObserver(() => this._scheduleLayout());
+      this._resizeObserver.observe(this);
+    }
 
     let helpers;
     try { helpers = await window.loadCardHelpers(); } catch (_) {}
 
-    for (const columnCards of (this._config.columns || [])) {
-      const col = document.createElement('div');
-      col.className = 'column';
-
-      for (const cardConfig of columnCards) {
-        let card;
-        try {
-          card = helpers
-            ? await helpers.createCardElement(cardConfig)
-            : document.createElement(cardConfig.type);
-          if (!helpers && card.setConfig) card.setConfig(cardConfig);
-        } catch (err) {
-          card = document.createElement('hui-error-card');
-          try { card.setConfig({ type: 'error', error: err.message, origConfig: cardConfig }); } catch (_) {}
-        }
-
-        if (this._hass) card.hass = this._hass;
-        this._cards.push(card);
-        col.appendChild(card);
+    for (const cardConfig of this._flattenCards()) {
+      const item = document.createElement('div');
+      item.className = 'item';
+      let card;
+      try {
+        card = helpers
+          ? await helpers.createCardElement(cardConfig)
+          : document.createElement(cardConfig.type);
+        if (!helpers && card.setConfig) card.setConfig(cardConfig);
+      } catch (err) {
+        card = document.createElement('hui-error-card');
+        try { card.setConfig({ type: 'error', error: err.message, origConfig: cardConfig }); } catch (_) {}
       }
 
-      grid.appendChild(col);
+      if (this._hass) card.hass = this._hass;
+      this._cards.push(card);
+      item.appendChild(card);
+      this._items.push(item);
     }
 
-    root.appendChild(grid);
+    this._scheduleLayout();
+    setTimeout(() => this._scheduleLayout(), 250);
+    setTimeout(() => this._scheduleLayout(), 1000);
   }
 
   getCardSize() { return 12; }
