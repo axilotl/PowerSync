@@ -148,12 +148,12 @@ def _host_states() -> list[_FakeState]:
     ]
 
 
-def _control_states_for(index: int) -> list[_FakeState]:
+def _control_states_for(index: int, mode: str = "Normal") -> list[_FakeState]:
     prefix = f"neovolt_{index}"
     return [
         _FakeState(
             f"select.{prefix}_dispatch_mode",
-            "Normal",
+            mode,
             ["Normal", "Force Charge", "Force Discharge", "Dynamic Export", "Dynamic Import"],
         ),
         _FakeState(f"number.{prefix}_dispatch_power", "3.0"),
@@ -440,6 +440,78 @@ def test_fleet_force_charge_writes_all_inverter_dispatch_controls():
     ]
 
 
+def test_fleet_force_charge_restores_per_inverter_baseline_modes():
+    entry_1_states = _combined_states_for(
+        1,
+        battery_power="0",
+        battery_soc="50",
+        battery_capacity="20.1",
+    ) + _control_states_for(1, mode="Idle (No Dispatch)")
+    entry_2_states = _combined_states_for(
+        2,
+        battery_power="0",
+        battery_soc="50",
+        battery_capacity="30.2",
+    ) + _control_states_for(2, mode="Normal")
+    hass = _FakeHass(
+        entry_1_states + entry_2_states,
+        {
+            "neovolt-1": [state.entity_id for state in entry_1_states],
+            "neovolt-2": [state.entity_id for state in entry_2_states],
+        },
+    )
+    controller = NeovoltFleetBatteryController(
+        hass,
+        ["neovolt-1", "neovolt-2"],
+        max_charge_kw=5.0,
+        max_discharge_kw=5.0,
+    )
+    assert asyncio.run(controller.connect())
+
+    assert asyncio.run(controller.force_charge(duration_minutes=30, power_w=6000))
+    hass.states._states["select.neovolt_1_dispatch_mode"].state = "Force Charge"
+    hass.states._states["select.neovolt_2_dispatch_mode"].state = "Force Charge"
+    assert asyncio.run(controller.restore_normal())
+
+    assert hass.services.calls[-2:] == [
+        ("select", "select_option", {"entity_id": "select.neovolt_1_dispatch_mode", "option": "Idle (No Dispatch)"}),
+        ("select", "select_option", {"entity_id": "select.neovolt_2_dispatch_mode", "option": "Normal"}),
+    ]
+
+
+def test_fleet_restore_normal_keeps_existing_stable_modes_without_saved_baseline():
+    entry_1_states = _combined_states_for(
+        1,
+        battery_power="0",
+        battery_soc="50",
+        battery_capacity="20.1",
+    ) + _control_states_for(1, mode="Idle (No Dispatch)")
+    entry_2_states = _combined_states_for(
+        2,
+        battery_power="0",
+        battery_soc="50",
+        battery_capacity="30.2",
+    ) + _control_states_for(2, mode="Normal")
+    hass = _FakeHass(
+        entry_1_states + entry_2_states,
+        {
+            "neovolt-1": [state.entity_id for state in entry_1_states],
+            "neovolt-2": [state.entity_id for state in entry_2_states],
+        },
+    )
+    controller = NeovoltFleetBatteryController(
+        hass,
+        ["neovolt-1", "neovolt-2"],
+        max_charge_kw=5.0,
+        max_discharge_kw=5.0,
+    )
+    assert asyncio.run(controller.connect())
+
+    assert asyncio.run(controller.restore_normal())
+
+    assert hass.services.calls == []
+
+
 def test_force_charge_writes_numbers_before_mode_select():
     hass = _hass_for(_combined_states() + _control_states())
     controller = NeovoltBatteryController(hass, "neovolt-entry")
@@ -477,7 +549,20 @@ def test_force_discharge_and_backup_reserve_service_calls():
 
 
 def test_restore_normal_uses_select_without_stop_button():
-    hass = _hass_for(_combined_states() + _control_states())
+    states = [
+        state
+        for state in (_combined_states() + _control_states())
+        if state.entity_id != "select.neovolt_1_dispatch_mode"
+    ]
+    states.insert(
+        0,
+        _FakeState(
+            "select.neovolt_1_dispatch_mode",
+            "Force Charge",
+            ["Normal", "Force Charge", "Force Discharge", "Dynamic Export", "Dynamic Import"],
+        ),
+    )
+    hass = _hass_for(states)
     controller = NeovoltBatteryController(hass, "neovolt-entry")
     assert asyncio.run(controller.connect())
 

@@ -91,6 +91,9 @@ _READ_REQUIRED = (
     "solar_power",
 )
 
+_NORMAL_DISPATCH_MODE = "Normal"
+_POWER_SYNC_FORCE_MODES = {"Force Charge", "Force Discharge"}
+
 
 class NeovoltBatteryController:
     """Bridge controller for Neovolt entities exposed by the HACS integration."""
@@ -161,6 +164,16 @@ class NeovoltBatteryController:
             "battery_max_discharge_power_w": self._max_discharge_kw * 1000.0,
         }
 
+    def get_dispatch_mode(self) -> str | None:
+        """Return the current dispatch mode select state."""
+        if not self._entity_map:
+            self._discover_entities()
+        entity_id = self._entity_map.get("dispatch_mode")
+        state = self.hass.states.get(entity_id) if entity_id else None
+        if not state or state.state in ("unavailable", "unknown", ""):
+            return None
+        return str(state.state)
+
     async def force_charge(self, duration_minutes: int, power_w: int | float) -> bool:
         """Force battery to charge via Neovolt dispatch controls."""
         await self._ensure_connected()
@@ -203,12 +216,16 @@ class NeovoltBatteryController:
         )
         return True
 
-    async def restore_normal(self) -> bool:
-        """Return Neovolt dispatch mode to Normal."""
+    async def restore_normal(self, target_mode: str | None = None) -> bool:
+        """Return Neovolt dispatch mode to Normal or a saved baseline mode."""
         await self._ensure_connected()
+        target_mode = target_mode or _NORMAL_DISPATCH_MODE
+        if self.get_dispatch_mode() == target_mode:
+            _LOGGER.info("Neovolt dispatch mode already %s", target_mode)
+            return True
         try:
-            await self._set_select("dispatch_mode", "Normal")
-            _LOGGER.info("Neovolt restored to Normal dispatch mode")
+            await self._set_select("dispatch_mode", target_mode)
+            _LOGGER.info("Neovolt restored to %s dispatch mode", target_mode)
             return True
         except Exception:
             _LOGGER.exception("Neovolt restore_normal select failed")
@@ -414,6 +431,7 @@ class NeovoltFleetBatteryController:
             )
             for entry_id in neovolt_entry_ids
         ]
+        self._restore_modes: list[str | None] | None = None
 
     def set_min_soc_pct(self, min_soc_pct: float) -> None:
         """Update the discharge cutoff used for force-discharge commands."""
@@ -463,6 +481,7 @@ class NeovoltFleetBatteryController:
 
     async def force_charge(self, duration_minutes: int, power_w: int | float) -> bool:
         """Force all batteries to charge via their Neovolt dispatch controls."""
+        self._capture_restore_modes()
         powers = self._split_power_w(power_w, "_max_charge_kw")
         results = [
             await controller.force_charge(duration_minutes, split_power)
@@ -472,6 +491,7 @@ class NeovoltFleetBatteryController:
 
     async def force_discharge(self, duration_minutes: int, power_w: int | float) -> bool:
         """Force all batteries to discharge via their Neovolt dispatch controls."""
+        self._capture_restore_modes()
         powers = self._split_power_w(power_w, "_max_discharge_kw")
         results = [
             await controller.force_discharge(duration_minutes, split_power)
@@ -480,8 +500,13 @@ class NeovoltFleetBatteryController:
         return all(results)
 
     async def restore_normal(self) -> bool:
-        """Return all Neovolt dispatch modes to Normal."""
-        results = [await controller.restore_normal() for controller in self._controllers]
+        """Return all Neovolt dispatch modes to their saved baseline modes."""
+        targets = self._restore_targets()
+        results = [
+            await controller.restore_normal(target)
+            for controller, target in zip(self._controllers, targets)
+        ]
+        self._restore_modes = None
         return all(results)
 
     async def set_backup_reserve(self, percent: int) -> bool:
@@ -526,6 +551,36 @@ class NeovoltFleetBatteryController:
             float(power_w) * (limit_kw / total_kw)
             for limit_kw in limits_kw
         ]
+
+    def _capture_restore_modes(self) -> None:
+        """Remember stable per-inverter dispatch modes before PowerSync takes over."""
+        modes = [
+            self._stable_restore_mode(controller.get_dispatch_mode())
+            for controller in self._controllers
+        ]
+        if any(modes):
+            self._restore_modes = modes
+
+    def _restore_targets(self) -> list[str | None]:
+        if self._restore_modes and len(self._restore_modes) == len(self._controllers):
+            return [
+                mode or _NORMAL_DISPATCH_MODE
+                for mode in self._restore_modes
+            ]
+
+        if len(self._controllers) == 1:
+            return [_NORMAL_DISPATCH_MODE]
+
+        return [
+            self._stable_restore_mode(controller.get_dispatch_mode()) or _NORMAL_DISPATCH_MODE
+            for controller in self._controllers
+        ]
+
+    @staticmethod
+    def _stable_restore_mode(mode: str | None) -> str | None:
+        if not mode or mode in _POWER_SYNC_FORCE_MODES:
+            return None
+        return mode
 
     @staticmethod
     def _weighted_average(

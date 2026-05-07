@@ -735,6 +735,7 @@ class PowerSyncLayout extends HTMLElement {
     this._pointerDrag = null;
     this._dragPlaceholder = null;
     this._storageKey = 'power-sync-dashboard-layout-v2';
+    this._appliedLayoutSignature = '';
   }
 
   setConfig(config) {
@@ -807,6 +808,7 @@ class PowerSyncLayout extends HTMLElement {
         .filter(item => item.classList.contains('item'))
         .map(item => item.dataset.key));
       localStorage.setItem(this._storageKey, JSON.stringify(layouts));
+      this._appliedLayoutSignature = this._layoutSignature(layouts[count]);
     } catch (_) {}
   }
 
@@ -829,6 +831,7 @@ class PowerSyncLayout extends HTMLElement {
     if (this._lanes.length) {
       this._rebuildLanes(this._lanes.length);
     }
+    this._appliedLayoutSignature = '';
     this._scheduleLayout();
   }
 
@@ -1001,10 +1004,47 @@ class PowerSyncLayout extends HTMLElement {
   _savedLayout(count) {
     const layout = this._loadLayouts()[String(count)];
     if (!Array.isArray(layout) || layout.length !== count) return null;
-    return layout.every(lane => Array.isArray(lane)) ? layout : null;
+    if (!layout.every(lane => Array.isArray(lane))) return null;
+
+    const currentKeys = new Set(this._items.map(item => item.dataset.key));
+    const savedKeys = layout.flat();
+    const savedKeySet = new Set(savedKeys);
+    const stale = (
+      savedKeys.length !== currentKeys.size ||
+      savedKeySet.size !== savedKeys.length ||
+      savedKeys.some(key => !currentKeys.has(key)) ||
+      this._items.some(item => !savedKeySet.has(item.dataset.key))
+    );
+    if (!stale) return layout;
+
+    try {
+      const layouts = this._loadLayouts();
+      delete layouts[String(count)];
+      localStorage.setItem(this._storageKey, JSON.stringify(layouts));
+    } catch (_) {}
+    this._appliedLayoutSignature = '';
+    return null;
+  }
+
+  _layoutSignature(layout) {
+    return JSON.stringify(layout || []);
+  }
+
+  _currentLaneLayout() {
+    return this._lanes.map((lane) => Array.from(lane.children)
+      .filter(item => item.classList.contains('item'))
+      .map(item => item.dataset.key));
   }
 
   _applyLaneLayout(layout) {
+    const signature = this._layoutSignature(layout);
+    if (
+      this._appliedLayoutSignature === signature &&
+      this._layoutSignature(this._currentLaneLayout()) === signature
+    ) {
+      return;
+    }
+
     const byKey = new Map(this._items.map(item => [item.dataset.key, item]));
     const placed = new Set();
     layout.forEach((keys, laneIndex) => {
@@ -1027,6 +1067,7 @@ class PowerSyncLayout extends HTMLElement {
         this._lanes[laneIndex].appendChild(item);
         heights[laneIndex] += item.getBoundingClientRect().height || item.scrollHeight || 180;
       });
+    this._appliedLayoutSignature = this._layoutSignature(this._currentLaneLayout());
   }
 
   _balanceLayout() {
@@ -1060,6 +1101,7 @@ class PowerSyncLayout extends HTMLElement {
     grid.innerHTML = '';
     grid.style.setProperty('--ps-lane-count', String(count));
     this._lanes = [];
+    this._appliedLayoutSignature = '';
     for (let i = 0; i < count; i++) {
       const lane = document.createElement('div');
       lane.className = 'lane';
