@@ -3402,10 +3402,12 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
         if self._selected_electricity_provider in ("globird", "aemo_vpp"):
             threshold_hint += (
-                "\n\nTesla Powerwall users: set the correct Globird/TOU tariff in "
+                "\n\nTesla Powerwall users only: set the correct Globird/TOU tariff in "
                 "the Tesla app before continuing. After changing the Tesla tariff, "
                 "restart Home Assistant or reload PowerSync so the tariff scheduler "
-                "fetches and caches the new baseline."
+                "fetches and caches the new baseline. Other battery systems, including "
+                "Sigenergy and FoxESS cloud, configure the Globird/TOU custom tariff in "
+                "PowerSync after selecting the battery system."
             )
 
         return self.async_show_form(
@@ -7945,7 +7947,12 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
         # Tesla users get tariff from the Tesla API — no need for manual configuration
         if not is_tesla:
             schema_fields[vol.Optional("configure_custom_tariff", default=False)] = BooleanSelector()
-            tariff_hint = "**Custom Tariff (recommended):** Enable 'Configure Custom Tariff' to set your TOU rates. These are needed for accurate price sensors, battery optimisation, and EV charging."
+            tariff_hint = (
+                "**Custom Tariff (recommended):** Non-Tesla systems, including "
+                "Sigenergy and FoxESS cloud, should configure the Globird/TOU rates "
+                "inside PowerSync. These rates are needed for accurate price sensors, "
+                "battery optimisation, and EV charging."
+            )
         else:
             tariff_hint = (
                 "Tesla Powerwall detected: PowerSync reads the TOU schedule from "

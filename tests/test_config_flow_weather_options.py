@@ -115,8 +115,11 @@ def test_globird_initial_flow_warns_tesla_users_about_tariff_baseline():
     method_source = ast.get_source_segment(source, method)
 
     assert method_source is not None
-    assert "Tesla Powerwall users" in method_source
+    assert "Tesla Powerwall users only" in method_source
     assert "restart Home Assistant or reload PowerSync" in method_source
+    assert "Other battery systems, including" in method_source
+    assert "Sigenergy and FoxESS cloud" in method_source
+    assert "configure the Globird/TOU custom tariff in" in method_source
     assert '"threshold_hint": threshold_hint' in method_source
 
 
@@ -130,6 +133,9 @@ def test_globird_options_flow_warns_tesla_users_about_tariff_baseline():
     assert "tariff already stored on your Powerwall" in method_source
     assert "restart Home Assistant or reload" in method_source
     assert "PowerSync so the scheduler" in method_source
+    assert "Non-Tesla systems, including" in method_source
+    assert "Sigenergy and FoxESS cloud" in method_source
+    assert "inside PowerSync" in method_source
 
 
 def test_globird_tariff_guidance_is_translated():
