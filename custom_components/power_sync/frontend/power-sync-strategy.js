@@ -733,6 +733,7 @@ class PowerSyncLayout extends HTMLElement {
     this._customizing = false;
     this._dragItem = null;
     this._pointerDrag = null;
+    this._dragPlaceholder = null;
     this._storageKey = 'power-sync-dashboard-layout-v2';
   }
 
@@ -802,7 +803,9 @@ class PowerSyncLayout extends HTMLElement {
     try {
       const count = String(this._lanes.length || this._columnCount());
       const layouts = this._loadLayouts();
-      layouts[count] = this._lanes.map((lane) => Array.from(lane.children).map(item => item.dataset.key));
+      layouts[count] = this._lanes.map((lane) => Array.from(lane.children)
+        .filter(item => item.classList.contains('item'))
+        .map(item => item.dataset.key));
       localStorage.setItem(this._storageKey, JSON.stringify(layouts));
     } catch (_) {}
   }
@@ -812,14 +815,15 @@ class PowerSyncLayout extends HTMLElement {
     this.shadowRoot.querySelector('.toolbar')?.classList.toggle('active', enabled);
     this.shadowRoot.querySelector('.toggle').textContent = enabled ? 'Done' : 'Customize layout';
     for (const item of this._items) {
-      item.draggable = enabled;
+      item.draggable = false;
       item.classList.toggle('customizing', enabled);
       const dragSurface = item.querySelector('.drag-surface');
-      if (dragSurface) dragSurface.draggable = enabled;
+      if (dragSurface) dragSurface.draggable = false;
     }
   }
 
   _resetOrder() {
+    this._cancelActiveDrag();
     try { localStorage.removeItem(this._storageKey); } catch (_) {}
     this._items.sort((a, b) => Number(a.dataset.defaultIndex) - Number(b.dataset.defaultIndex));
     if (this._lanes.length) {
@@ -828,12 +832,10 @@ class PowerSyncLayout extends HTMLElement {
     this._scheduleLayout();
   }
 
-  _itemAtPoint(x, y) {
-    return this._items.find(item => {
-      if (item === this._dragItem) return false;
-      const rect = item.getBoundingClientRect();
-      return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
-    });
+  _renderedItemCount() {
+    return this._lanes.reduce((sum, lane) => (
+      sum + Array.from(lane.children).filter(child => child.classList.contains('item')).length
+    ), 0);
   }
 
   _laneAtPoint(x, y) {
@@ -843,35 +845,117 @@ class PowerSyncLayout extends HTMLElement {
     });
   }
 
-  _moveDragItem(targetItem, clientY) {
-    if (!this._dragItem || !targetItem || this._dragItem === targetItem) return;
-    const rect = targetItem.getBoundingClientRect();
-    const insertAfter = clientY > rect.top + rect.height / 2;
-    targetItem.parentElement?.insertBefore(this._dragItem, insertAfter ? targetItem.nextSibling : targetItem);
-  }
+  _laneForDragPoint(x, y) {
+    const directLane = this._laneAtPoint(x, y);
+    if (directLane) return directLane;
 
-  _moveDragItemToLane(lane) {
-    if (!this._dragItem || !lane) return;
-    lane.appendChild(this._dragItem);
-  }
+    const grid = this.shadowRoot.querySelector('.grid');
+    const gridRect = grid?.getBoundingClientRect();
+    if (!gridRect || x < gridRect.left || x > gridRect.right || y < gridRect.top - 80) return null;
 
-  _startNativeDrag(item, event) {
-    if (!this._customizing) {
-      event.preventDefault();
-      return;
+    let nearestLane = null;
+    let nearestDistance = Infinity;
+    for (const lane of this._lanes) {
+      const rect = lane.getBoundingClientRect();
+      const centerX = rect.left + rect.width / 2;
+      const distance = Math.abs(x - centerX);
+      if (distance < nearestDistance) {
+        nearestDistance = distance;
+        nearestLane = lane;
+      }
     }
-    this._dragItem = item;
-    item.classList.add('dragging');
-    if (event.dataTransfer) {
-      event.dataTransfer.effectAllowed = 'move';
-      event.dataTransfer.setData('text/plain', item.dataset.key);
-    }
+    return nearestLane;
   }
 
-  _endNativeDrag(item) {
+  _clearDragStyles(item) {
     item.classList.remove('dragging');
+    item.style.position = '';
+    item.style.left = '';
+    item.style.top = '';
+    item.style.width = '';
+    item.style.height = '';
+    item.style.zIndex = '';
+    item.style.pointerEvents = '';
+    item.style.transform = '';
+  }
+
+  _positionDragItem(event) {
+    if (!this._dragItem || !this._pointerDrag?.active) return;
+    const x = event.clientX - this._pointerDrag.offsetX;
+    const y = event.clientY - this._pointerDrag.offsetY;
+    this._dragItem.style.transform = `translate3d(${Math.round(x)}px, ${Math.round(y)}px, 0)`;
+  }
+
+  _beginPointerReorder(item, event) {
+    const rect = item.getBoundingClientRect();
+    const placeholder = document.createElement('div');
+    placeholder.className = 'drag-placeholder';
+    placeholder.style.height = `${rect.height}px`;
+
+    item.parentElement?.insertBefore(placeholder, item.nextSibling);
+    this._dragPlaceholder = placeholder;
+    this._dragItem = item;
+
+    this._pointerDrag.active = true;
+    this._pointerDrag.offsetX = event.clientX - rect.left;
+    this._pointerDrag.offsetY = event.clientY - rect.top;
+
+    item.classList.add('dragging');
+    item.style.position = 'fixed';
+    item.style.left = '0';
+    item.style.top = '0';
+    item.style.width = `${rect.width}px`;
+    item.style.height = `${rect.height}px`;
+    item.style.zIndex = '999';
+    item.style.pointerEvents = 'none';
+
+    this._positionDragItem(event);
+    this._placePlaceholder(event.clientX, event.clientY);
+  }
+
+  _placePlaceholder(x, y) {
+    if (!this._dragPlaceholder) return;
+    const lane = this._laneForDragPoint(x, y);
+    if (!lane) return;
+
+    const candidates = Array.from(lane.children).filter(child => (
+      child !== this._dragItem &&
+      child !== this._dragPlaceholder &&
+      child.classList.contains('item')
+    ));
+    const before = candidates.find((child) => {
+      const rect = child.getBoundingClientRect();
+      return y < rect.top + rect.height / 2;
+    });
+    lane.insertBefore(this._dragPlaceholder, before || null);
+  }
+
+  _dropPointerReorder(item) {
+    if (!this._dragPlaceholder) return;
+    this._dragPlaceholder.parentElement?.insertBefore(item, this._dragPlaceholder);
+    this._dragPlaceholder.remove();
+    this._dragPlaceholder = null;
+    this._clearDragStyles(item);
     this._dragItem = null;
     this._saveOrder();
+  }
+
+  _cancelActiveDrag() {
+    if (!this._dragItem) {
+      this._dragPlaceholder?.remove();
+      this._dragPlaceholder = null;
+      this._pointerDrag = null;
+      return;
+    }
+
+    if (this._dragPlaceholder) {
+      this._dragPlaceholder.parentElement?.insertBefore(this._dragItem, this._dragPlaceholder);
+      this._dragPlaceholder.remove();
+      this._dragPlaceholder = null;
+    }
+    this._clearDragStyles(this._dragItem);
+    this._dragItem = null;
+    this._pointerDrag = null;
   }
 
   _startPointerDrag(item, event, captureTarget = item) {
@@ -891,29 +975,27 @@ class PowerSyncLayout extends HTMLElement {
     const distance = Math.hypot(event.clientX - this._pointerDrag.startX, event.clientY - this._pointerDrag.startY);
     if (!this._pointerDrag.active && distance < 8) return;
     if (!this._pointerDrag.active) {
-      this._pointerDrag.active = true;
-      this._dragItem = item;
-      item.classList.add('dragging');
+      this._beginPointerReorder(item, event);
+      return;
     }
     event.preventDefault();
-    const target = this._itemAtPoint(event.clientX, event.clientY);
-    if (target) this._moveDragItem(target, event.clientY);
-    else this._moveDragItemToLane(this._laneAtPoint(event.clientX, event.clientY));
+    this._positionDragItem(event);
+    this._placePlaceholder(event.clientX, event.clientY);
   }
 
   _finishPointerDrag(item) {
     if (!this._pointerDrag || this._pointerDrag.item !== item) return;
-    item.classList.remove('dragging');
+    if (this._pointerDrag.active) {
+      this._dropPointerReorder(item);
+    } else {
+      this._clearDragStyles(item);
+    }
     this._pointerDrag = null;
-    this._dragItem = null;
-    this._saveOrder();
   }
 
   _cancelPointerDrag(item) {
     if (!this._pointerDrag || this._pointerDrag.item !== item) return;
-    item.classList.remove('dragging');
-    this._pointerDrag = null;
-    this._dragItem = null;
+    this._cancelActiveDrag();
   }
 
   _savedLayout(count) {
@@ -954,7 +1036,7 @@ class PowerSyncLayout extends HTMLElement {
       this._rebuildLanes(count);
     }
 
-    const renderedItemCount = this._lanes.reduce((sum, lane) => sum + lane.children.length, 0);
+    const renderedItemCount = this._renderedItemCount();
     if (this._customizing && renderedItemCount === this._items.length) return;
 
     const savedLayout = this._savedLayout(count);
@@ -981,18 +1063,6 @@ class PowerSyncLayout extends HTMLElement {
     for (let i = 0; i < count; i++) {
       const lane = document.createElement('div');
       lane.className = 'lane';
-      lane.addEventListener('dragover', (event) => {
-        if (!this._customizing || !this._dragItem) return;
-        event.preventDefault();
-        const target = this._itemAtPoint(event.clientX, event.clientY);
-        if (target) this._moveDragItem(target, event.clientY);
-        else this._moveDragItemToLane(lane);
-      });
-      lane.addEventListener('drop', (event) => {
-        if (!this._customizing || !this._dragItem) return;
-        event.preventDefault();
-        this._saveOrder();
-      });
       this._lanes.push(lane);
       grid.appendChild(lane);
     }
@@ -1095,9 +1165,18 @@ class PowerSyncLayout extends HTMLElement {
         opacity: 0.55;
         cursor: grabbing;
         touch-action: none;
+        margin: 0;
+        will-change: transform;
       }
       .item.dragging .drag-surface {
         cursor: grabbing;
+      }
+      .drag-placeholder {
+        min-height: 84px;
+        border: 2px dashed color-mix(in srgb, var(--primary-color, #03a9f4) 68%, transparent);
+        border-radius: 10px;
+        background: color-mix(in srgb, var(--primary-color, #03a9f4) 10%, transparent);
+        box-sizing: border-box;
       }
       @media (max-width: 760px) {
         .grid {
@@ -1134,13 +1213,7 @@ class PowerSyncLayout extends HTMLElement {
       item.className = 'item';
       item.dataset.defaultIndex = String(index);
       item.dataset.key = this._cardKey(cardConfig, index);
-      item.addEventListener('dragstart', (event) => this._startNativeDrag(item, event));
-      item.addEventListener('dragend', () => this._endNativeDrag(item));
-      item.addEventListener('dragover', (event) => {
-        if (!this._customizing || !this._dragItem || this._dragItem === item) return;
-        event.preventDefault();
-        this._moveDragItem(item, event.clientY);
-      });
+      item.addEventListener('dragstart', (event) => event.preventDefault());
       item.addEventListener('pointerdown', (event) => this._startPointerDrag(item, event));
       item.addEventListener('pointermove', (event) => this._updatePointerDrag(item, event));
       item.addEventListener('pointerup', () => this._finishPointerDrag(item));
@@ -1151,11 +1224,7 @@ class PowerSyncLayout extends HTMLElement {
       dragSurface.setAttribute('aria-hidden', 'true');
       dragSurface.addEventListener('dragstart', (event) => {
         event.stopPropagation();
-        this._startNativeDrag(item, event);
-      });
-      dragSurface.addEventListener('dragend', (event) => {
-        event.stopPropagation();
-        this._endNativeDrag(item);
+        event.preventDefault();
       });
       dragSurface.addEventListener('pointerdown', (event) => {
         event.stopPropagation();
