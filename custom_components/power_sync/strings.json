@@ -158,7 +158,7 @@
       },
       "aemo_config": {
         "title": "AEMO spike detection",
-        "description": "When AEMO wholesale prices spike above your threshold, PowerSync will switch your battery to export mode to earn spike credits.",
+        "description": "When AEMO wholesale prices spike above your threshold, PowerSync will switch your battery to export mode to earn spike credits.\n\n{threshold_hint}",
         "data": {
           "aemo_spike_enabled": "Enable spike detection",
           "aemo_region": "NEM region",
@@ -1324,8 +1324,8 @@
         "submit": "Save"
       },
       "globird_options": {
-        "title": "Custom TOU / AEMO settings",
-        "description": "Configure your custom tariff plan and optional AEMO spike export. Changes apply after the next sync cycle.\n\n{tariff_hint}",
+        "title": "Globird / AEMO settings",
+        "description": "Configure your tariff source and optional AEMO spike export. Changes apply after the next sync cycle.\n\n{tariff_hint}",
         "data": {
           "aemo_spike_enabled": "Enable AEMO spike export",
           "aemo_region": "AEMO NEM region",

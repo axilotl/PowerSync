@@ -24,6 +24,18 @@ def _top_level_function(name: str) -> ast.FunctionDef:
     raise AssertionError(f"Function {name} not found")
 
 
+def _config_flow_method(name: str) -> ast.FunctionDef | ast.AsyncFunctionDef:
+    for node in _module_tree().body:
+        if isinstance(node, ast.ClassDef) and node.name == "PowerSyncConfigFlow":
+            for item in node.body:
+                if (
+                    isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and item.name == name
+                ):
+                    return item
+    raise AssertionError(f"PowerSyncConfigFlow.{name} not found")
+
+
 def _options_flow_method(name: str) -> ast.FunctionDef | ast.AsyncFunctionDef:
     for node in _module_tree().body:
         if isinstance(node, ast.ClassDef) and node.name == "PowerSyncOptionsFlow":
@@ -95,3 +107,37 @@ def test_weather_entity_label_is_translated():
 
         assert step["data"]["weather_entity"] == "Home Assistant weather entity"
         assert "Optional" in step["data_description"]["weather_entity"]
+
+
+def test_globird_initial_flow_warns_tesla_users_about_tariff_baseline():
+    source = CONFIG_FLOW_PATH.read_text()
+    method = _config_flow_method("async_step_aemo_config")
+    method_source = ast.get_source_segment(source, method)
+
+    assert method_source is not None
+    assert "Tesla Powerwall users" in method_source
+    assert "restart Home Assistant or reload PowerSync" in method_source
+    assert '"threshold_hint": threshold_hint' in method_source
+
+
+def test_globird_options_flow_warns_tesla_users_about_tariff_baseline():
+    source = CONFIG_FLOW_PATH.read_text()
+    method = _options_flow_method("async_step_globird_options")
+    method_source = ast.get_source_segment(source, method)
+
+    assert method_source is not None
+    assert "Tesla Powerwall detected" in method_source
+    assert "tariff already stored on your Powerwall" in method_source
+    assert "restart Home Assistant or reload" in method_source
+    assert "PowerSync so the scheduler" in method_source
+
+
+def test_globird_tariff_guidance_is_translated():
+    for path in (STRINGS_PATH, TRANSLATIONS_PATH):
+        data = json.loads(path.read_text())
+        config_step = data["config"]["step"]["aemo_config"]
+        options_step = data["options"]["step"]["globird_options"]
+
+        assert "{threshold_hint}" in config_step["description"]
+        assert options_step["title"] == "Globird / AEMO settings"
+        assert "tariff source" in options_step["description"]

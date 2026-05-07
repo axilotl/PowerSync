@@ -3396,12 +3396,24 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             }
         )
 
+        threshold_hint = (
+            "Default: $3,000/MWh. GloBird spike exports use $3,000/MWh. "
+            "Adjust only if your plan specifies a different threshold."
+        )
+        if self._selected_electricity_provider in ("globird", "aemo_vpp"):
+            threshold_hint += (
+                "\n\nTesla Powerwall users: set the correct Globird/TOU tariff in "
+                "the Tesla app before continuing. After changing the Tesla tariff, "
+                "restart Home Assistant or reload PowerSync so the tariff scheduler "
+                "fetches and caches the new baseline."
+            )
+
         return self.async_show_form(
             step_id="aemo_config",
             data_schema=data_schema,
             errors=errors,
             description_placeholders={
-                "threshold_hint": "Default: $3,000/MWh. GloBird spike exports use $3,000/MWh. Adjust only if your plan specifies a different threshold.",
+                "threshold_hint": threshold_hint,
             },
         )
 
@@ -7936,7 +7948,11 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             tariff_hint = "**Custom Tariff (recommended):** Enable 'Configure Custom Tariff' to set your TOU rates. These are needed for accurate price sensors, battery optimisation, and EV charging."
         else:
             tariff_hint = (
-                "Tariff rates are automatically synced from your Tesla Powerwall."
+                "Tesla Powerwall detected: PowerSync reads the TOU schedule from "
+                "the tariff already stored on your Powerwall. Set the correct "
+                "Globird/TOU tariff in the Tesla app before saving these settings. "
+                "After changing the Tesla tariff, restart Home Assistant or reload "
+                "PowerSync so the scheduler refreshes its cached baseline."
             )
 
         return self.async_show_form(
