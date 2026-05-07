@@ -503,6 +503,8 @@ class SajH2BatteryController:
         if not self._check_engaged("force_charge"):
             return False
         try:
+            await self._clear_switch_controls_for_tou("force_charge")
+
             # Bootstrap (idempotent): make sure charge slot 7 spans the whole day at 100%.
             await self._set_text("charge7_start_time", "00:00")
             await self._set_text("charge7_end_time", "23:59")
@@ -572,6 +574,8 @@ class SajH2BatteryController:
             )
             return False
         try:
+            await self._clear_switch_controls_for_tou("force_discharge")
+
             # Bootstrap (idempotent): make sure slot 7 spans the whole day at 100%.
             await self._set_text("discharge7_start_time", "00:00")
             await self._set_text("discharge7_end_time", "23:59")
@@ -726,6 +730,18 @@ class SajH2BatteryController:
             return False
         state = self.hass.states.get(entity_id)
         return bool(state and str(state.state).lower().strip() == "on")
+
+    async def _clear_switch_controls_for_tou(self, operation: str) -> None:
+        """Clear stale passive/manual controls before TOU slot control takes over."""
+        for key in (
+            "passive_charge_control",
+            "passive_discharge_control",
+            "charging_control",
+            "discharging_control",
+        ):
+            if key in self._entity_map and self._switch_is_on(key):
+                _LOGGER.debug("SAJ H2: %s turning off stale %s before TOU mode", operation, key)
+                await self._turn_off(key)
 
     async def _ensure_app_mode(self, expected_mode: int, operation: str) -> bool:
         """Drive and verify the inverter AppMode when the upstream switch does not."""

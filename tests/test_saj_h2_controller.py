@@ -129,6 +129,10 @@ def _tou_states(
     *,
     charge_bitmask: str = "0",
     discharge_bitmask: str = "0",
+    passive_charge_control: str = "off",
+    passive_discharge_control: str = "off",
+    charging_control: str = "off",
+    discharging_control: str = "off",
 ) -> list[_FakeState]:
     return [
         _FakeState("text.saj_charge7_start_time_time", "00:00"),
@@ -147,6 +151,10 @@ def _tou_states(
         _FakeState("number.saj_app_mode_input", "0"),
         _FakeState("sensor.saj_inverter_working_mode", "2"),
         _FakeState("sensor.saj_r_phase_inverter_voltage", "0"),
+        _FakeState("switch.saj_passive_charge_control", passive_charge_control),
+        _FakeState("switch.saj_passive_discharge_control", passive_discharge_control),
+        _FakeState("switch.saj_charging_control", charging_control),
+        _FakeState("switch.saj_discharging_control", discharging_control),
     ]
 
 
@@ -183,6 +191,19 @@ def _tou_controller(hass: _FakeHass) -> SajH2BatteryController:
         "inverter_working_mode": "sensor.saj_inverter_working_mode",
         "inverter_voltage_r": "sensor.saj_r_phase_inverter_voltage",
     }
+    return controller
+
+
+def _tou_controller_with_switches(hass: _FakeHass) -> SajH2BatteryController:
+    controller = _tou_controller(hass)
+    controller._entity_map.update(
+        {
+            "passive_charge_control": "switch.saj_passive_charge_control",
+            "passive_discharge_control": "switch.saj_passive_discharge_control",
+            "charging_control": "switch.saj_charging_control",
+            "discharging_control": "switch.saj_discharging_control",
+        }
+    )
     return controller
 
 
@@ -238,6 +259,84 @@ def test_force_charge_uses_tou_charge_slot_7_and_clears_discharge_slots():
         ),
     ]
     assert controller._cached_discharge_enable == 5
+    assert hass.states.get("sensor.saj_app_mode").state == "1"
+
+
+def test_force_charge_clears_stale_switch_controls_before_tou_slot_control():
+    hass = _FakeHass(
+        _tou_states(
+            passive_charge_control="on",
+            passive_discharge_control="on",
+            charging_control="on",
+            discharging_control="on",
+        )
+    )
+    controller = _tou_controller_with_switches(hass)
+
+    assert asyncio.run(controller.force_charge(duration_minutes=30, power_w=2500))
+
+    assert hass.services.calls[:4] == [
+        (
+            "switch",
+            "turn_off",
+            {"entity_id": "switch.saj_passive_charge_control"},
+        ),
+        (
+            "switch",
+            "turn_off",
+            {"entity_id": "switch.saj_passive_discharge_control"},
+        ),
+        (
+            "switch",
+            "turn_off",
+            {"entity_id": "switch.saj_charging_control"},
+        ),
+        (
+            "switch",
+            "turn_off",
+            {"entity_id": "switch.saj_discharging_control"},
+        ),
+    ]
+    assert hass.states.get("switch.saj_passive_charge_control").state == "off"
+    assert hass.states.get("sensor.saj_app_mode").state == "1"
+
+
+def test_force_discharge_clears_stale_switch_controls_before_tou_slot_control():
+    hass = _FakeHass(
+        _tou_states(
+            passive_charge_control="on",
+            passive_discharge_control="on",
+            charging_control="on",
+            discharging_control="on",
+        )
+    )
+    controller = _tou_controller_with_switches(hass)
+
+    assert asyncio.run(controller.force_discharge(duration_minutes=30, power_w=2500))
+
+    assert hass.services.calls[:4] == [
+        (
+            "switch",
+            "turn_off",
+            {"entity_id": "switch.saj_passive_charge_control"},
+        ),
+        (
+            "switch",
+            "turn_off",
+            {"entity_id": "switch.saj_passive_discharge_control"},
+        ),
+        (
+            "switch",
+            "turn_off",
+            {"entity_id": "switch.saj_charging_control"},
+        ),
+        (
+            "switch",
+            "turn_off",
+            {"entity_id": "switch.saj_discharging_control"},
+        ),
+    ]
+    assert hass.states.get("switch.saj_passive_charge_control").state == "off"
     assert hass.states.get("sensor.saj_app_mode").state == "1"
 
 
