@@ -1,4 +1,4 @@
-"""Regression tests for SAJ H2 passive force-charge controls."""
+"""Regression tests for SAJ H2 force-mode controls."""
 
 from __future__ import annotations
 
@@ -66,10 +66,12 @@ class _FakeServices:
         *,
         switch_turn_on_sticks: bool = True,
         fail_on: tuple[str, str, str] | None = None,
+        mirror_app_mode: bool = True,
     ):
         self._states = states
         self._switch_turn_on_sticks = switch_turn_on_sticks
         self._fail_on = fail_on
+        self._mirror_app_mode = mirror_app_mode
         self.calls: list[tuple[str, str, dict]] = []
 
     async def async_call(self, domain: str, service: str, data: dict, blocking: bool = True):
@@ -78,6 +80,10 @@ class _FakeServices:
         if self._fail_on == (domain, service, entity_id):
             raise RuntimeError("service failed")
         if domain == "number" and service == "set_value":
+            self._states.set(entity_id, str(data["value"]))
+            if self._mirror_app_mode and entity_id == "number.saj_app_mode_input":
+                self._states.set("sensor.saj_app_mode", str(data["value"]))
+        elif domain == "text" and service == "set_value":
             self._states.set(entity_id, str(data["value"]))
         elif domain == "switch" and service == "turn_on" and self._switch_turn_on_sticks:
             self._states.set(entity_id, "on")
@@ -92,12 +98,14 @@ class _FakeHass:
         *,
         switch_turn_on_sticks: bool = True,
         fail_on: tuple[str, str, str] | None = None,
+        mirror_app_mode: bool = True,
     ):
         self.states = _FakeStates(states)
         self.services = _FakeServices(
             self.states,
             switch_turn_on_sticks=switch_turn_on_sticks,
             fail_on=fail_on,
+            mirror_app_mode=mirror_app_mode,
         )
         self.entity_registry = object()
 
@@ -117,6 +125,31 @@ def _passive_states(
     ]
 
 
+def _tou_states(
+    *,
+    charge_bitmask: str = "0",
+    discharge_bitmask: str = "0",
+) -> list[_FakeState]:
+    return [
+        _FakeState("text.saj_charge7_start_time_time", "00:00"),
+        _FakeState("text.saj_charge7_end_time_time", "23:59"),
+        _FakeState("number.saj_charge7_day_mask_input", "0"),
+        _FakeState("number.saj_charge7_power_percent_input", "0"),
+        _FakeState("text.saj_discharge7_start_time_time", "00:00"),
+        _FakeState("text.saj_discharge7_end_time_time", "23:59"),
+        _FakeState("number.saj_discharge7_day_mask_input", "0"),
+        _FakeState("number.saj_discharge7_power_percent_input", "0"),
+        _FakeState("number.saj_charge_time_enable_input", charge_bitmask),
+        _FakeState("number.saj_discharge_time_enable_input", discharge_bitmask),
+        _FakeState("sensor.saj_charge_time_enable_bitmask", charge_bitmask),
+        _FakeState("sensor.saj_discharge_time_enable_bitmask", discharge_bitmask),
+        _FakeState("sensor.saj_app_mode", "0"),
+        _FakeState("number.saj_app_mode_input", "0"),
+        _FakeState("sensor.saj_inverter_working_mode", "2"),
+        _FakeState("sensor.saj_r_phase_inverter_voltage", "0"),
+    ]
+
+
 def _controller(hass: _FakeHass) -> SajH2BatteryController:
     controller = SajH2BatteryController(hass, saj_entry_id="saj-entry")
     controller._SWITCH_VERIFY_DELAY_SEC = 0
@@ -130,64 +163,119 @@ def _controller(hass: _FakeHass) -> SajH2BatteryController:
     return controller
 
 
-def test_force_charge_fails_when_passive_entities_are_unavailable():
-    hass = _FakeHass(_passive_states(charge_power="unavailable"))
+def _tou_controller(hass: _FakeHass) -> SajH2BatteryController:
+    controller = SajH2BatteryController(hass, saj_entry_id="saj-entry")
+    controller._entity_map = {
+        "charge7_start_time": "text.saj_charge7_start_time_time",
+        "charge7_end_time": "text.saj_charge7_end_time_time",
+        "charge7_day_mask": "number.saj_charge7_day_mask_input",
+        "charge7_power_percent": "number.saj_charge7_power_percent_input",
+        "discharge7_start_time": "text.saj_discharge7_start_time_time",
+        "discharge7_end_time": "text.saj_discharge7_end_time_time",
+        "discharge7_day_mask": "number.saj_discharge7_day_mask_input",
+        "discharge7_power_percent": "number.saj_discharge7_power_percent_input",
+        "charge_time_enable": "number.saj_charge_time_enable_input",
+        "discharge_time_enable": "number.saj_discharge_time_enable_input",
+        "charge_time_enable_bitmask": "sensor.saj_charge_time_enable_bitmask",
+        "discharge_time_enable_bitmask": "sensor.saj_discharge_time_enable_bitmask",
+        "app_mode": "sensor.saj_app_mode",
+        "app_mode_writable": "number.saj_app_mode_input",
+        "inverter_working_mode": "sensor.saj_inverter_working_mode",
+        "inverter_voltage_r": "sensor.saj_r_phase_inverter_voltage",
+    }
+    return controller
+
+
+def test_force_charge_fails_when_charge_slot_entities_are_unmapped():
+    hass = _FakeHass(_tou_states())
     controller = _controller(hass)
 
     assert not asyncio.run(controller.force_charge(duration_minutes=30, power_w=2500))
     assert hass.services.calls == []
 
 
-def test_force_charge_fails_when_passive_switch_does_not_stick_on():
-    hass = _FakeHass(_passive_states(), switch_turn_on_sticks=False)
-    controller = _controller(hass)
-
-    assert not asyncio.run(controller.force_charge(duration_minutes=30, power_w=2500))
-
-    assert (
-        "switch",
-        "turn_on",
-        {"entity_id": "switch.saj_passive_charge_control"},
-    ) in hass.services.calls
-    assert hass.states.get("switch.saj_passive_charge_control").state == "off"
-
-
-def test_force_charge_succeeds_when_passive_switch_becomes_on():
-    hass = _FakeHass(_passive_states())
-    controller = _controller(hass)
+def test_force_charge_uses_tou_charge_slot_7_and_clears_discharge_slots():
+    hass = _FakeHass(_tou_states(charge_bitmask="2", discharge_bitmask="5"))
+    controller = _tou_controller(hass)
 
     assert asyncio.run(controller.force_charge(duration_minutes=30, power_w=2500))
 
-    assert hass.services.calls[:3] == [
+    assert hass.services.calls == [
         (
-            "number",
+            "text",
             "set_value",
-            {"entity_id": "number.saj_passive_bat_discharge_power_input", "value": 0},
+            {"entity_id": "text.saj_charge7_start_time_time", "value": "00:00"},
+        ),
+        (
+            "text",
+            "set_value",
+            {"entity_id": "text.saj_charge7_end_time_time", "value": "23:59"},
         ),
         (
             "number",
             "set_value",
-            {"entity_id": "number.saj_passive_bat_charge_power_input", "value": 250},
+            {"entity_id": "number.saj_charge7_day_mask_input", "value": 127},
         ),
         (
-            "switch",
-            "turn_on",
-            {"entity_id": "switch.saj_passive_charge_control"},
+            "number",
+            "set_value",
+            {"entity_id": "number.saj_charge7_power_percent_input", "value": 100},
+        ),
+        (
+            "number",
+            "set_value",
+            {"entity_id": "number.saj_discharge_time_enable_input", "value": 0},
+        ),
+        (
+            "number",
+            "set_value",
+            {"entity_id": "number.saj_charge_time_enable_input", "value": 66},
+        ),
+        (
+            "number",
+            "set_value",
+            {"entity_id": "number.saj_app_mode_input", "value": 1},
         ),
     ]
-    assert hass.states.get("switch.saj_passive_charge_control").state == "on"
+    assert controller._cached_discharge_enable == 5
+    assert hass.states.get("sensor.saj_app_mode").state == "1"
+
+
+def test_restore_normal_after_force_charge_clears_charge_slot_and_restores_discharge_slots():
+    hass = _FakeHass(_tou_states(charge_bitmask="64", discharge_bitmask="3"))
+    controller = _tou_controller(hass)
+
+    assert asyncio.run(controller.force_charge(duration_minutes=30, power_w=2500))
+    assert asyncio.run(controller.restore_normal())
+
+    assert (
+        "number",
+        "set_value",
+        {"entity_id": "number.saj_charge_time_enable_input", "value": 0},
+    ) in hass.services.calls
+    assert (
+        "number",
+        "set_value",
+        {"entity_id": "number.saj_discharge_time_enable_input", "value": 3},
+    ) in hass.services.calls
+    assert (
+        "number",
+        "set_value",
+        {"entity_id": "number.saj_app_mode_input", "value": 0},
+    ) in hass.services.calls
+    assert controller._cached_discharge_enable is None
 
 
 def test_force_charge_attempts_restore_normal_on_mid_sequence_exception():
     hass = _FakeHass(
-        _passive_states(),
+        _tou_states(),
         fail_on=(
             "number",
             "set_value",
-            "number.saj_passive_bat_charge_power_input",
+            "number.saj_charge7_power_percent_input",
         ),
     )
-    controller = _controller(hass)
+    controller = _tou_controller(hass)
     restore_calls = 0
 
     async def restore_normal():
@@ -199,3 +287,40 @@ def test_force_charge_attempts_restore_normal_on_mid_sequence_exception():
 
     assert not asyncio.run(controller.force_charge(duration_minutes=30, power_w=2500))
     assert restore_calls == 1
+
+
+def test_set_idle_fails_when_passive_switch_does_not_stick_on():
+    hass = _FakeHass(_passive_states(), switch_turn_on_sticks=False)
+    controller = _controller(hass)
+
+    assert not asyncio.run(controller.set_idle())
+
+    assert (
+        "switch",
+        "turn_on",
+        {"entity_id": "switch.saj_passive_charge_control"},
+    ) in hass.services.calls
+    assert hass.states.get("switch.saj_passive_charge_control").state == "off"
+
+
+def test_set_idle_drives_and_verifies_passive_app_mode_when_mapped():
+    hass = _FakeHass(
+        _passive_states()
+        + [
+            _FakeState("sensor.saj_app_mode", "0"),
+            _FakeState("number.saj_app_mode_input", "0"),
+        ],
+    )
+    controller = _controller(hass)
+    controller._APP_MODE_VERIFY_DELAY_SEC = 0
+    controller._entity_map["app_mode"] = "sensor.saj_app_mode"
+    controller._entity_map["app_mode_writable"] = "number.saj_app_mode_input"
+
+    assert asyncio.run(controller.set_idle())
+
+    assert (
+        "number",
+        "set_value",
+        {"entity_id": "number.saj_app_mode_input", "value": 3},
+    ) in hass.services.calls
+    assert hass.states.get("sensor.saj_app_mode").state == "3"

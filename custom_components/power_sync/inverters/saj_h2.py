@@ -12,21 +12,27 @@ Control model (verified against stanus74 discussion #105 and live testing):
     2 = Backup
     3 = Passive
 
-  force_charge — uses Passive mode (AppMode=3):
-    - Passive mode is "fixed power, PV subtracted from target". A 5 kW
-      charge target with 2 kW PV draws 3 kW from grid. This is the right
-      behaviour for charging during cheap-price windows because the LP
-      picks the rate to fit the energy budget.
+  force_charge — uses TOU mode (AppMode=1) with charge slot 7:
+    - Mirrors force_discharge, but drives charge slot 7 instead of discharge
+      slot 7. Passive mode can leave AppMode in Self-Use on some firmware even
+      when the passive switch reports ON, so force charge uses the same
+      schedule-driven path as force discharge.
+    - PowerSync owns slot 7 (00:00-23:59, days=127, power=100). One-time
+      bootstrap on every force_charge call (idempotent). Toggle bit 6 of
+      `charge_time_enable_input` to start/stop.
     - Sequence:
-        write number.saj_passive_bat_charge_power_input  = pct  (0-1000)
-        write number.saj_passive_bat_discharge_power_input = 0
-        turn ON switch.saj_passive_charge_control
-          (stanus74 atomically captures AppMode → AppMode=3 → passive_enable=2)
-    - pct encoding (per stanus74/home-assistant-saj-h2-modbus#105):
-        value = (requested_w / inverter_rated_w) * 1000, capped at 1000.
-        1000 = 100% of rated, 1100 is a "default" sentinel and is AVOIDED
-        because empirically it triggers fall-back load-following on this
-        firmware instead of true rated discharge.
+        text.saj_charge7_start_time_time = "00:00"
+        text.saj_charge7_end_time_time   = "23:59"
+        number.saj_charge7_day_mask_input = 127
+        number.saj_charge7_power_percent_input = 100
+        cache current discharge_time_enable bitmask, then clear it (so a
+          user-configured discharge slot in AppMode=1 doesn't fight us)
+        number.saj_charge_time_enable_input = current_bitmask | (1<<6)
+        number.saj_app_mode_input = 1
+    - Restore:
+        number.saj_charge_time_enable_input = current_bitmask & ~(1<<6)
+        number.saj_discharge_time_enable_input = cached_discharge_enable
+        number.saj_app_mode_input = 0
 
   force_discharge — uses TOU mode (AppMode=1) with discharge slot 7:
     - Passive discharge is load-following with a small grid-push margin
@@ -50,10 +56,7 @@ Control model (verified against stanus74 discussion #105 and live testing):
         number.saj_charge_time_enable_input = cached_charge_enable
         number.saj_app_mode_input = 0
 
-  Passive grid_charge_power / grid_discharge_power are NOT written. Per
-  discussion #105 stanus74 author confirmed grid_charge_power has no
-  effect; jsjhb confirmed grid_discharge_power can have effect on parallel
-  inverter setups but recommended leaving both at default. We honour that.
+  Passive grid_charge_power / grid_discharge_power are NOT written.
 
   charging_control / discharging_control switches are not used for
   force_charge or force_discharge. They are turned OFF in restore_normal
@@ -105,19 +108,16 @@ _SENSOR_KEYS: dict[str, tuple[str, ...]] = {
 
 # Maps internal slot → unique_id suffix for writable number entities.
 # stanus74 constructs unique_id as f"{hub_name}_{key}_input" for all number entities.
-# NOTE: passive_charge_enable is intentionally absent — passive mode entry is
-# managed via the switch entities below, which handle AppMode internally.
-# passive_grid_charge_power and passive_grid_discharge_power are NOT written
-# (per discussion #105: grid_charge_power has no effect; grid_discharge_power
-# behaviour varies per setup, recommended to leave at default).
 # app_mode_writable is used by restore_normal() to force AppMode=0 (Self-Use)
-# after a force charge/discharge, and by force_discharge to enter AppMode=1 (TOU).
-# discharge7_*_input and charge_time_enable / discharge_time_enable drive the
-# TOU-mode force_discharge path. PowerSync owns slot 7.
+# after a force charge/discharge, and by force modes to enter AppMode=1 (TOU).
+# charge7_*_input / discharge7_*_input and charge_time_enable /
+# discharge_time_enable drive the TOU-mode force paths. PowerSync owns slot 7.
 _NUMBER_KEYS: dict[str, str] = {
     "charge_power":            "passive_bat_charge_power_input",
     "discharge_power":         "passive_bat_discharge_power_input",
     "app_mode_writable":       "app_mode_input",
+    "charge7_day_mask":        "charge7_day_mask_input",
+    "charge7_power_percent":   "charge7_power_percent_input",
     "discharge7_day_mask":     "discharge7_day_mask_input",
     "discharge7_power_percent": "discharge7_power_percent_input",
     "discharge_time_enable":   "discharge_time_enable_input",
@@ -126,22 +126,20 @@ _NUMBER_KEYS: dict[str, str] = {
 
 # Maps internal slot → unique_id suffix for writable text entities.
 # stanus74 exposes slot start/end times under the `text.` domain (not number)
-# with unique_id = f"{hub_name}_discharge{N}_start_time" / "_end_time".
-# We only need slot 7 since PowerSync owns it for force_discharge.
+# with unique_id = f"{hub_name}_charge{N}_start_time" / "_end_time".
+# We only need slot 7 since PowerSync owns it for force modes.
 _TEXT_KEYS: dict[str, str] = {
+    "charge7_start_time":    "charge7_start_time",
+    "charge7_end_time":      "charge7_end_time",
     "discharge7_start_time": "discharge7_start_time",
     "discharge7_end_time":   "discharge7_end_time",
 }
 
-# Read-only sensor for the current discharge_time_enable bitmask. We read this
-# so we can OR/AND our slot-7 bit cleanly without clobbering user-configured
-# slots 1-6.
-_DISCHARGE_ENABLE_SENSOR_SUFFIX = "discharge_time_enable"
-_CHARGE_ENABLE_SENSOR_SUFFIX = "charge_time_enable"
-
 # Slot 7 lives at bit 6 of the enable bitmask (slot N → bit N-1).
-_POWERSYNC_DISCHARGE_SLOT = 7
-_POWERSYNC_DISCHARGE_BIT = 1 << (_POWERSYNC_DISCHARGE_SLOT - 1)  # 0b1000000 = 64
+_POWERSYNC_TOU_SLOT = 7
+_POWERSYNC_TOU_BIT = 1 << (_POWERSYNC_TOU_SLOT - 1)  # 0b1000000 = 64
+_POWERSYNC_DISCHARGE_BIT = _POWERSYNC_TOU_BIT
+_POWERSYNC_CHARGE_BIT = _POWERSYNC_TOU_BIT
 
 # AppMode values
 _APP_MODE_SELF_USE = 0
@@ -178,6 +176,7 @@ class SajH2BatteryController:
     # leg specifically, not the grid leg.
     _MIN_ENGAGED_INV_VOLTAGE = 50.0
     _SWITCH_VERIFY_DELAY_SEC = 0.5
+    _APP_MODE_VERIFY_DELAY_SEC = 0.5
 
     def __init__(
         self,
@@ -197,6 +196,7 @@ class SajH2BatteryController:
         # force_discharge entry, so restore_normal can put it back.
         # None when not currently in force_discharge.
         self._cached_charge_enable: int | None = None
+        self._cached_discharge_enable: int | None = None
 
     def set_min_soc_pct(self, min_soc_pct: float) -> None:
         """Update the software-enforced discharge floor (called when user changes it)."""
@@ -226,12 +226,14 @@ class SajH2BatteryController:
         ]
         if passive_missing:
             _LOGGER.warning(
-                "SAJ H2: passive-mode entities not found (%s) — force_charge will not work. "
+                "SAJ H2: passive-mode entities not found (%s) — set_idle will not work. "
                 "Check that stanus74 exposes switch and number entities for passive mode.",
                 passive_missing,
             )
         tou_missing = [
             k for k in (
+                "charge7_day_mask", "charge7_power_percent",
+                "charge_time_enable", "charge7_start_time", "charge7_end_time",
                 "discharge7_day_mask", "discharge7_power_percent",
                 "discharge_time_enable", "app_mode_writable",
                 "discharge7_start_time", "discharge7_end_time",
@@ -240,9 +242,9 @@ class SajH2BatteryController:
         ]
         if tou_missing:
             _LOGGER.warning(
-                "SAJ H2: TOU-mode entities not found (%s) — force_discharge will not work. "
-                "Requires saj_h2_modbus version exposing discharge7_* number entities and "
-                "discharge slot start/end time text entities.",
+                "SAJ H2: TOU-mode entities not found (%s) — force charge/discharge may not work. "
+                "Requires saj_h2_modbus version exposing charge7_* and discharge7_* "
+                "number/text entities.",
                 tou_missing,
             )
         return True
@@ -399,7 +401,7 @@ class SajH2BatteryController:
     def _check_passive_control_entities(self, operation: str) -> bool:
         """Return False and log an error if passive-mode entities are not usable.
 
-        Used by force_charge and set_idle. force_discharge has its own TOU check.
+        Used by set_idle. Force charge/discharge have their own TOU checks.
         """
         required = ("charge_power", "discharge_power", "passive_charge_control")
         missing = [
@@ -425,8 +427,27 @@ class SajH2BatteryController:
             return False
         return True
 
-    def _check_tou_control_entities(self, operation: str) -> bool:
-        """Return False and log an error if TOU-mode entities are not mapped."""
+    def _check_tou_charge_control_entities(self, operation: str) -> bool:
+        """Return False and log an error if charge-slot TOU entities are not mapped."""
+        missing = [
+            k for k in (
+                "charge7_day_mask", "charge7_power_percent",
+                "charge_time_enable", "app_mode_writable",
+                "charge7_start_time", "charge7_end_time",
+            )
+            if not self._entity_map.get(k)
+        ]
+        if missing:
+            _LOGGER.error(
+                "SAJ H2: %s aborted — TOU charge entities not mapped: %s. "
+                "Requires saj_h2_modbus version exposing charge7_* number/text entities.",
+                operation, missing,
+            )
+            return False
+        return True
+
+    def _check_tou_discharge_control_entities(self, operation: str) -> bool:
+        """Return False and log an error if discharge-slot TOU entities are not mapped."""
         missing = [
             k for k in (
                 "discharge7_day_mask", "discharge7_power_percent",
@@ -470,39 +491,49 @@ class SajH2BatteryController:
         return False
 
     async def force_charge(self, duration_minutes: int, power_w: int) -> bool:
-        """Force battery to charge from grid.
+        """Force battery to charge from grid via TOU charge slot 7.
 
-        Passive charge mode (AppMode=3): sets charge power target then turns on
-        the passive_charge_control switch, which triggers stanus74's
-        _activate_passive_mode() — capturing the current AppMode and setting
-        AppMode=3 atomically.
-
-        PV power is SUBTRACTED from the fixed target (per stanus74 discussions/105):
-        a 5 kW charge target with 2 kW PV draws 3 kW from grid. Grid_charge_power
-        is not written — confirmed by stanus74 author to have no effect.
+        Mirrors force_discharge: bootstrap slot 7 to run all day at 100%, enable
+        only PowerSync's charge slot bit, and enter TOU mode. ``power_w`` is
+        intentionally ignored so manual and optimizer charge requests use the
+        inverter's full configured charge rate, just like force_discharge does.
         """
-        if not self._check_passive_control_entities("force_charge"):
+        if not self._check_tou_charge_control_entities("force_charge"):
             return False
         if not self._check_engaged("force_charge"):
             return False
-        pct = self._power_to_scaled_percent(power_w)
         try:
-            if not await self._set_number("discharge_power", 0):
-                await self.restore_normal()
-                return False
-            if not await self._set_number("charge_power", pct):
-                await self.restore_normal()
-                return False
-            if not await self._turn_on("passive_charge_control", verify=True):
-                await self.restore_normal()
-                return False
+            # Bootstrap (idempotent): make sure charge slot 7 spans the whole day at 100%.
+            await self._set_text("charge7_start_time", "00:00")
+            await self._set_text("charge7_end_time", "23:59")
+            await self._set_number("charge7_day_mask", 127)
+            await self._set_number("charge7_power_percent", 100)
+
+            # Capture & clear discharge_time_enable so user discharge slots don't
+            # contend with us in AppMode=1. Skip if we already cached it
+            # (force_charge called twice without restore in between).
+            if self._cached_discharge_enable is None:
+                cached = self._read_int_sensor("discharge_time_enable_bitmask")
+                self._cached_discharge_enable = cached if cached is not None else 0
+                if "discharge_time_enable" in self._entity_map:
+                    await self._set_number("discharge_time_enable", 0)
+
+            # Set slot 7 bit on the charge_time_enable bitmask.
+            current = self._read_int_sensor("charge_time_enable_bitmask") or 0
+            await self._set_number(
+                "charge_time_enable",
+                current | _POWERSYNC_CHARGE_BIT,
+            )
+
+            # Enter TOU mode.
+            await self._set_number("app_mode_writable", _APP_MODE_TOU)
         except Exception:
             _LOGGER.exception("SAJ H2: force_charge failed mid-sequence — attempting restore_normal")
             await self.restore_normal()
             return False
         _LOGGER.info(
-            "SAJ H2 force_charge: passive mode at %d/1000 (%.0f W of %.0f W rated)",
-            pct, power_w if power_w else 0, self._inverter_rated_w,
+            "SAJ H2 force_charge: TOU mode, slot 7 at 100%% of %.0f W rated",
+            self._inverter_rated_w,
         )
         return True
 
@@ -527,7 +558,7 @@ class SajH2BatteryController:
         future use case needs throttling, we'd write
         number.saj_discharge7_power_percent_input here.
         """
-        if not self._check_tou_control_entities("force_discharge"):
+        if not self._check_tou_discharge_control_entities("force_discharge"):
             return False
         if not self._check_engaged("force_discharge"):
             return False
@@ -598,6 +629,9 @@ class SajH2BatteryController:
             if not await self._turn_on("passive_charge_control", verify=True):
                 await self.restore_normal()
                 return False
+            if not await self._ensure_app_mode(_APP_MODE_PASSIVE, "set_idle"):
+                await self.restore_normal()
+                return False
         except Exception:
             _LOGGER.exception("SAJ H2: set_idle failed mid-sequence — attempting restore_normal")
             await self.restore_normal()
@@ -609,11 +643,11 @@ class SajH2BatteryController:
         """Return to Self-Use mode regardless of which path got us here.
 
         Handles both:
-          - Passive entry (force_charge / set_idle): zeros passive numbers and
+          - Passive entry (set_idle): zeros passive numbers and
             turns off the passive switches so stanus74's _deactivate_passive_mode
             restores the pre-passive AppMode capture.
-          - TOU entry (force_discharge): clears slot 7's enable bit and restores
-            the user's cached charge_time_enable bitmask.
+          - TOU entry (force_charge / force_discharge): clears slot 7's enable
+            bit and restores the user's cached opposing enable bitmask.
 
         Then explicitly writes AppMode=0 (Self-Use) so the user always lands in
         Self-Use after a force operation, regardless of stanus74's AppMode capture.
@@ -626,7 +660,13 @@ class SajH2BatteryController:
         await self._turn_off("charging_control")
         await self._turn_off("discharging_control")
 
-        # TOU-mode unwind: clear slot 7 bit, restore user's charge slots
+        # TOU-mode unwind: clear PowerSync slot 7 bits and restore user slots
+        if "charge_time_enable" in self._entity_map:
+            current = self._read_int_sensor("charge_time_enable_bitmask") or 0
+            await self._set_number(
+                "charge_time_enable",
+                current & ~_POWERSYNC_CHARGE_BIT,
+            )
         if "discharge_time_enable" in self._entity_map:
             current = self._read_int_sensor("discharge_time_enable_bitmask") or 0
             await self._set_number(
@@ -637,6 +677,10 @@ class SajH2BatteryController:
             if "charge_time_enable" in self._entity_map:
                 await self._set_number("charge_time_enable", self._cached_charge_enable)
             self._cached_charge_enable = None
+        if self._cached_discharge_enable is not None:
+            if "discharge_time_enable" in self._entity_map:
+                await self._set_number("discharge_time_enable", self._cached_discharge_enable)
+            self._cached_discharge_enable = None
 
         # Final mode flip
         await self._set_number("app_mode_writable", _APP_MODE_SELF_USE)
@@ -646,26 +690,6 @@ class SajH2BatteryController:
     async def disconnect(self) -> None:
         """No persistent connection to close."""
         return None
-
-    def _power_to_scaled_percent(self, requested_w: int | float) -> int:
-        """Convert watts to SAJ's % × 10 of rated power encoding.
-
-        Per stanus74 discussion #105: 0–1000 = 0–100% of inverter rated AC
-        capacity. Example: 1500 W on a 10K inverter → 150 (15% × 10).
-
-        We deliberately AVOID writing 1100 (the so-called "default" sentinel) —
-        empirically it triggers fall-back load-following on this firmware
-        instead of true rated discharge. The cap is 1000 = 100% of rated.
-
-        Returns 1000 (max) if requested_w is missing or non-positive — i.e.
-        the LP says "max" or didn't provide a target.
-        """
-        rated_w = self._inverter_rated_w
-        if not rated_w or rated_w <= 0:
-            return 1000
-        if not requested_w or requested_w <= 0:
-            return 1000
-        return max(0, min(1000, int(round((requested_w / rated_w) * 1000))))
 
     def _read_float(self, key: str) -> float | None:
         entity_id = self._entity_map.get(key)
@@ -702,6 +726,31 @@ class SajH2BatteryController:
             return False
         state = self.hass.states.get(entity_id)
         return bool(state and str(state.state).lower().strip() == "on")
+
+    async def _ensure_app_mode(self, expected_mode: int, operation: str) -> bool:
+        """Drive and verify the inverter AppMode when the upstream switch does not."""
+        if "app_mode_writable" in self._entity_map:
+            if not await self._set_number("app_mode_writable", expected_mode):
+                return False
+            await asyncio.sleep(self._APP_MODE_VERIFY_DELAY_SEC)
+
+        current_mode = self._read_float("app_mode")
+        if current_mode is None:
+            if "app_mode_writable" not in self._entity_map:
+                _LOGGER.warning(
+                    "SAJ H2: %s cannot verify AppMode — no app_mode sensor or writable entity mapped",
+                    operation,
+                )
+            return True
+
+        if int(current_mode) == expected_mode:
+            return True
+
+        _LOGGER.error(
+            "SAJ H2: %s did not enter expected AppMode %s; current AppMode is %s",
+            operation, expected_mode, current_mode,
+        )
+        return False
 
     async def _set_number(self, key: str, value: float) -> bool:
         entity_id = self._entity_map.get(key)
