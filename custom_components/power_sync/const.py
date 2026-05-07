@@ -1221,8 +1221,9 @@ DEFAULT_INVERTER_RESTORE_SOC = 98  # Restore inverter when battery drops below 9
 # Fronius-specific: load following mode for users without 0W export profile
 CONF_FRONIUS_LOAD_FOLLOWING = "fronius_load_following"
 
-# Supported AC-coupled inverter brands (for systems with separate solar inverter)
-# Note: Sigenergy is NOT here - it's a DC-coupled battery system, not an AC inverter
+# Supported inverter brands for direct curtailment control. Some hybrid battery
+# brands are included because their local controller also exposes export limiting
+# for AC-coupled or third-party PV setups.
 INVERTER_BRANDS = {
     "sungrow": "Sungrow",
     "fronius": "Fronius",
@@ -1339,6 +1340,33 @@ ZEVERSOLAR_MODELS = {
     "zeversolair-tl3000": "Zeversolair TL3000",
 }
 
+# Sigenergy systems (Modbus export limiting)
+SIGENERGY_MODELS = {
+    "sigenstor": "SigenStor / Energy Controller",
+    "sigen-ac-charger": "Sigen AC Charger / Smart Port",
+}
+
+# Solax systems (export control via Modbus or solax_modbus entities)
+SOLAX_MODELS = {
+    "x1-hybrid": "X1 Hybrid",
+    "x3-hybrid": "X3 Hybrid",
+    "x1-ac": "X1 AC / AC Retro-Fit",
+    "x3-ac": "X3 AC / AC Retro-Fit",
+    "x1-boost": "X1 Boost / Mini",
+    "x3-mic-pro": "X3 MIC / PRO",
+}
+
+# AlphaESS hybrid inverter-battery models (SMILE / Storion series)
+ALPHAESS_MODELS = {
+    "smile5": "SMILE5 (Single Phase Hybrid)",
+    "smile-hi5": "SMILE-Hi5 (Single Phase Hybrid)",
+    "smile-hi10": "SMILE-Hi10 (Three Phase Hybrid)",
+    "smile-b3": "SMILE-B3 (Single Phase)",
+    "smile-t10": "SMILE-T10 (Three Phase)",
+    "smile-g3": "SMILE-G3 (Generation 3)",
+    "storion-t30": "Storion-T30 (Three Phase)",
+}
+
 # Sungrow SG series (string inverters) - single phase residential
 SUNGROW_SG_MODELS = {
     "sg2.5rs": "SG2.5RS",
@@ -1430,6 +1458,7 @@ def get_models_for_brand(brand: str, battery_system: str = None) -> dict[str, st
     Returns:
         Dictionary of model_id: model_name pairs
     """
+    brand_key = (brand or "sungrow").lower()
     brand_models = {
         "sungrow": SUNGROW_MODELS,
         "fronius": FRONIUS_MODELS,
@@ -1437,13 +1466,18 @@ def get_models_for_brand(brand: str, battery_system: str = None) -> dict[str, st
         "huawei": HUAWEI_MODELS,
         "enphase": ENPHASE_MODELS,
         "zeversolar": ZEVERSOLAR_MODELS,
+        "sigenergy": SIGENERGY_MODELS,
+        "solax": SOLAX_MODELS,
+        "alphaess": ALPHAESS_MODELS,
     }
 
-    models = brand_models.get(brand.lower(), SUNGROW_MODELS)
+    models = brand_models.get(brand_key)
+    if models is None:
+        return {brand_key: INVERTER_BRANDS.get(brand_key, brand or "Inverter")}
 
     # If battery system is Sungrow and AC inverter is also Sungrow,
     # only show SG-series (string inverters), not SH-series (hybrid with battery)
-    if brand.lower() == "sungrow" and battery_system == BATTERY_SYSTEM_SUNGROW:
+    if brand_key == "sungrow" and battery_system == BATTERY_SYSTEM_SUNGROW:
         return SUNGROW_SG_MODELS
 
     return models
@@ -1451,6 +1485,7 @@ def get_models_for_brand(brand: str, battery_system: str = None) -> dict[str, st
 
 def get_brand_defaults(brand: str) -> dict[str, int]:
     """Get default port and slave ID for an AC-coupled inverter brand."""
+    brand_key = (brand or "").lower()
     defaults = {
         "sungrow": {"port": 502, "slave_id": 1},
         "fronius": {"port": 502, "slave_id": 1},
@@ -1458,8 +1493,11 @@ def get_brand_defaults(brand: str) -> dict[str, int]:
         "huawei": {"port": 502, "slave_id": 1},
         "enphase": {"port": 443, "slave_id": 1},
         "zeversolar": {"port": 80, "slave_id": 1},
+        "sigenergy": {"port": 502, "slave_id": 247},
+        "solax": {"port": 502, "slave_id": 1},
+        "alphaess": {"port": 502, "slave_id": 85},
     }
-    return defaults.get(brand.lower(), {"port": 502, "slave_id": 1})
+    return defaults.get(brand_key, {"port": 502, "slave_id": 1})
 
 
 # ============================================================
