@@ -436,12 +436,18 @@ class NeovoltFleetBatteryController:
         statuses = [controller.get_status() for controller in self._controllers]
         capacities = [status.get("battery_capacity_kwh") for status in statuses]
         total_capacity = sum(cap for cap in capacities if cap is not None)
+        solar_power = sum(status.get("solar_power", 0.0) or 0.0 for status in statuses)
+        grid_power = sum(status.get("grid_power", 0.0) or 0.0 for status in statuses)
+        battery_power = sum(status.get("battery_power", 0.0) or 0.0 for status in statuses)
+        reported_load = sum(status.get("load_power", 0.0) or 0.0 for status in statuses)
+        balanced_load = max(0.0, solar_power + grid_power + battery_power)
+        load_power = balanced_load if len(statuses) > 1 else reported_load
 
         return {
-            "solar_power": sum(status.get("solar_power", 0.0) or 0.0 for status in statuses),
-            "grid_power": sum(status.get("grid_power", 0.0) or 0.0 for status in statuses),
-            "battery_power": sum(status.get("battery_power", 0.0) or 0.0 for status in statuses),
-            "load_power": sum(status.get("load_power", 0.0) or 0.0 for status in statuses),
+            "solar_power": solar_power,
+            "grid_power": grid_power,
+            "battery_power": battery_power,
+            "load_power": load_power,
             "battery_level": self._weighted_average(statuses, "battery_level", capacities),
             "battery_capacity_kwh": total_capacity or None,
             "battery_soh": self._weighted_average(statuses, "battery_soh", capacities),

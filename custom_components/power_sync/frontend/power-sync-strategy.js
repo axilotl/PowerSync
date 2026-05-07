@@ -2901,39 +2901,88 @@ function _acInverterControls(e) {
 }
 
 function _pvStringSensors(e, hass, findSensor) {
-  const entities = [];
+  const pvStringEntities = [];
+  const extraEntities = [];
   const resolveSensor = (names, fallback) =>
     (typeof findSensor === 'function' ? findSensor(names) : null) || e(fallback);
-  const add = (entity, name, icon) => {
+  const isAvailable = (entity) => {
+    const state = hass?.states?.[entity]?.state;
+    return state != null && !['unknown', 'unavailable', 'none'].includes(String(state).toLowerCase());
+  };
+  const numericState = (entity) => {
+    if (!isAvailable(entity)) return null;
+    const value = Number(hass.states[entity].state);
+    return Number.isFinite(value) ? value : null;
+  };
+  const powerWatts = (entity) => {
+    const value = numericState(entity);
+    if (value == null) return null;
+    const unit = String(hass.states[entity]?.attributes?.unit_of_measurement || '').toLowerCase();
+    return unit === 'kw' ? value * 1000 : value;
+  };
+  const hasMeaningfulPower = (entity) => {
+    const watts = powerWatts(entity);
+    return watts != null && Math.abs(watts) > 25;
+  };
+  const hasMeaningfulCurrent = (entity) => {
+    const amps = numericState(entity);
+    return amps != null && Math.abs(amps) > 0.1;
+  };
+  const rowFor = (entity, name, icon) => {
     if (!entity || !hass?.states?.[entity]) return;
     const row = { entity, name };
     if (icon) row.icon = icon;
-    entities.push(row);
+    return row;
+  };
+  const addStringRow = (entity, name, icon) => {
+    if (!isAvailable(entity)) return;
+    const row = rowFor(entity, name, icon);
+    if (row) pvStringEntities.push(row);
+  };
+  const addString = (powerEntity, voltageEntity, currentEntity, label) => {
+    if (!hasMeaningfulPower(powerEntity) && !hasMeaningfulCurrent(currentEntity)) return;
+    addStringRow(powerEntity, `${label} Power`, 'mdi:solar-panel');
+    addStringRow(voltageEntity, `${label} Voltage`, 'mdi:sine-wave');
+    addStringRow(currentEntity, `${label} Current`, 'mdi:current-dc');
+  };
+  const addExtra = (entity, name, icon) => {
+    if (!isAvailable(entity)) return;
+    const row = rowFor(entity, name, icon);
+    if (row) extraEntities.push(row);
   };
 
-  add(resolveSensor(['pv1_power', 'pv_1_power', 'pv_power_1', 'ppv1'], 'pv1_power'), 'PV1 Power', 'mdi:solar-panel');
-  add(resolveSensor(['pv1_voltage', 'pv_1_voltage', 'pv_voltage_1', 'vpv1'], 'pv1_voltage'), 'PV1 Voltage', 'mdi:sine-wave');
-  add(resolveSensor(['pv1_current', 'pv_1_current', 'pv_current_1', 'ipv1'], 'pv1_current'), 'PV1 Current', 'mdi:current-dc');
-  add(resolveSensor(['pv2_power', 'pv_2_power', 'pv_power_2', 'ppv2'], 'pv2_power'), 'PV2 Power', 'mdi:solar-panel');
-  add(resolveSensor(['pv2_voltage', 'pv_2_voltage', 'pv_voltage_2', 'vpv2'], 'pv2_voltage'), 'PV2 Voltage', 'mdi:sine-wave');
-  add(resolveSensor(['pv2_current', 'pv_2_current', 'pv_current_2', 'ipv2'], 'pv2_current'), 'PV2 Current', 'mdi:current-dc');
-  add(resolveSensor(['pv3_power', 'pv_3_power', 'pv_power_3', 'ppv3'], 'pv3_power'), 'PV3 Power', 'mdi:solar-panel');
-  add(resolveSensor(['pv3_voltage', 'pv_3_voltage', 'pv_voltage_3', 'vpv3'], 'pv3_voltage'), 'PV3 Voltage', 'mdi:sine-wave');
-  add(resolveSensor(['pv3_current', 'pv_3_current', 'pv_current_3', 'ipv3'], 'pv3_current'), 'PV3 Current', 'mdi:current-dc');
+  addString(
+    resolveSensor(['pv1_power', 'pv_1_power', 'pv_power_1', 'ppv1'], 'pv1_power'),
+    resolveSensor(['pv1_voltage', 'pv_1_voltage', 'pv_voltage_1', 'vpv1'], 'pv1_voltage'),
+    resolveSensor(['pv1_current', 'pv_1_current', 'pv_current_1', 'ipv1'], 'pv1_current'),
+    'PV1',
+  );
+  addString(
+    resolveSensor(['pv2_power', 'pv_2_power', 'pv_power_2', 'ppv2'], 'pv2_power'),
+    resolveSensor(['pv2_voltage', 'pv_2_voltage', 'pv_voltage_2', 'vpv2'], 'pv2_voltage'),
+    resolveSensor(['pv2_current', 'pv_2_current', 'pv_current_2', 'ipv2'], 'pv2_current'),
+    'PV2',
+  );
+  addString(
+    resolveSensor(['pv3_power', 'pv_3_power', 'pv_power_3', 'ppv3'], 'pv3_power'),
+    resolveSensor(['pv3_voltage', 'pv_3_voltage', 'pv_voltage_3', 'vpv3'], 'pv3_voltage'),
+    resolveSensor(['pv3_current', 'pv_3_current', 'pv_current_3', 'ipv3'], 'pv3_current'),
+    'PV3',
+  );
 
-  add(e('ct2_power'), 'CT2 Power', 'mdi:current-ac');
-  add(e('work_mode'), 'Work Mode', 'mdi:cog');
-  add(e('min_soc'), 'Min SOC', 'mdi:battery-low');
-  add(e('daily_battery_charge_foxess'), 'Daily Charge', 'mdi:battery-charging');
-  add(e('daily_battery_discharge_foxess'), 'Daily Discharge', 'mdi:battery-arrow-down');
+  if (pvStringEntities.length === 0) return null;
 
-  if (entities.length === 0) return null;
+  addExtra(e('ct2_power'), 'CT2 Power', 'mdi:current-ac');
+  addExtra(e('work_mode'), 'Work Mode', 'mdi:cog');
+  addExtra(e('min_soc'), 'Min SOC', 'mdi:battery-low');
+  addExtra(e('daily_battery_charge_foxess'), 'Daily Charge', 'mdi:battery-charging');
+  addExtra(e('daily_battery_discharge_foxess'), 'Daily Discharge', 'mdi:battery-arrow-down');
 
   return {
     type: 'entities',
     title: 'PV String Details',
     show_header_toggle: false,
-    entities,
+    entities: [...pvStringEntities, ...extraEntities],
   };
 }
 

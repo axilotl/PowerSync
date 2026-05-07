@@ -303,12 +303,55 @@ def test_fleet_status_aggregates_power_and_capacity_weighted_soc():
 
     assert status["battery_power"] == pytest.approx(1.922)
     assert status["grid_power"] == pytest.approx(0.039)
-    assert status["load_power"] == pytest.approx(5.386)
+    assert status["load_power"] == pytest.approx(1.961)
     assert status["battery_capacity_kwh"] == pytest.approx(50.3)
     assert status["battery_level"] == pytest.approx(29.5904, rel=1e-4)
     assert status["battery_soh"] == pytest.approx(97.7992, rel=1e-4)
     assert status["battery_max_charge_power_w"] == 10000.0
     assert status["battery_max_discharge_power_w"] == 10000.0
+
+
+def test_fleet_status_derives_load_from_net_power_balance():
+    """Dual Neovolt entries can expose gross per-inverter load, not site load."""
+    entry_1_states = _combined_states_for(
+        1,
+        battery_power="4336",
+        battery_soc="30",
+        battery_capacity="20.1",
+        house_load="5968",
+        pv_power="1632",
+        grid_power="0",
+    ) + _control_states_for(1)
+    entry_2_states = _combined_states_for(
+        2,
+        battery_power="-4661",
+        battery_soc="20.8",
+        battery_capacity="30.2",
+        house_load="-4679",
+        pv_power="0",
+        grid_power="-7",
+    ) + _control_states_for(2)
+    hass = _FakeHass(
+        entry_1_states + entry_2_states,
+        {
+            "neovolt-1": [state.entity_id for state in entry_1_states],
+            "neovolt-2": [state.entity_id for state in entry_2_states],
+        },
+    )
+    controller = NeovoltFleetBatteryController(
+        hass,
+        ["neovolt-1", "neovolt-2"],
+        max_charge_kw=5.0,
+        max_discharge_kw=5.0,
+    )
+
+    assert asyncio.run(controller.connect())
+    status = controller.get_status()
+
+    assert status["solar_power"] == pytest.approx(1.632)
+    assert status["grid_power"] == pytest.approx(-0.007)
+    assert status["battery_power"] == pytest.approx(-0.325)
+    assert status["load_power"] == pytest.approx(1.3)
 
 
 def test_fleet_status_uses_available_inverter_when_an_entry_has_no_live_states():

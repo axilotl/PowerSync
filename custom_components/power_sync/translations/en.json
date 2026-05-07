@@ -1786,14 +1786,14 @@
     },
     "switch": {
       "auto_sync": {
-        "name": "Auto-Sync TOU Schedule"
+        "name": "Auto-Sync Tariff Prices"
       }
     }
   },
   "services": {
     "sync_tou_schedule": {
       "name": "Sync TOU Schedule",
-      "description": "Manually trigger a sync of Time-of-Use schedule from Amber to Tesla"
+      "description": "Manually refresh Time-of-Use tariff prices. Tesla systems upload the schedule; Modbus systems store it for PowerSync display and optimization."
     },
     "sync_now": {
       "name": "Sync Now",

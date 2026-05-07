@@ -19,10 +19,12 @@ from .const import (
     CONF_AUTO_SYNC_ENABLED,
     CONF_AUTO_UPDATE_ENABLED,
     CONF_AUTO_UPDATE_TIME,
+    CONF_BATTERY_SYSTEM,
     DEFAULT_AUTO_UPDATE_TIME,
     CONF_ELECTRICITY_PROVIDER,
     CONF_MONITORING_MODE,
     CONF_POWERWALL_LOCAL_PAIRED,
+    BATTERY_SYSTEM_TESLA,
     SWITCH_TYPE_AUTO_SYNC,
     SWITCH_TYPE_AUTO_UPDATE,
     SWITCH_TYPE_FORCE_DISCHARGE,
@@ -67,8 +69,23 @@ async def async_setup_entry(
         entry.data.get(CONF_ELECTRICITY_PROVIDER, "amber")
     )
     has_tou_sync = electricity_provider in PROVIDERS_WITH_TOU_SYNC
+    battery_system = entry.options.get(
+        CONF_BATTERY_SYSTEM,
+        entry.data.get(CONF_BATTERY_SYSTEM, BATTERY_SYSTEM_TESLA),
+    )
+    auto_sync_name = (
+        "Auto-Sync TOU Schedule"
+        if battery_system == BATTERY_SYSTEM_TESLA
+        else "Auto-Sync Tariff Prices"
+    )
 
-    _LOGGER.info(f"🔋 Switch setup: is_tesla={is_tesla}, provider={electricity_provider}, has_tou_sync={has_tou_sync}")
+    _LOGGER.info(
+        "🔋 Switch setup: is_tesla=%s, battery_system=%s, provider=%s, has_tou_sync=%s",
+        is_tesla,
+        battery_system,
+        electricity_provider,
+        has_tou_sync,
+    )
 
     entities = []
 
@@ -105,7 +122,7 @@ async def async_setup_entry(
                 entry=entry,
                 description=SwitchEntityDescription(
                     key=SWITCH_TYPE_AUTO_SYNC,
-                    name="Auto-Sync TOU Schedule",
+                    name=auto_sync_name,
                     icon="mdi:sync",
                 ),
             ),
