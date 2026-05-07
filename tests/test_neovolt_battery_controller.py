@@ -311,6 +311,50 @@ def test_fleet_status_aggregates_power_and_capacity_weighted_soc():
     assert status["battery_max_discharge_power_w"] == 10000.0
 
 
+def test_fleet_status_uses_available_inverter_when_an_entry_has_no_live_states():
+    entry_2_states = _combined_states_for(
+        2,
+        battery_power="9",
+        battery_soc="14",
+        battery_capacity="30.2",
+        battery_soh="100",
+        house_load="0",
+        pv_power="0",
+        grid_power="-8",
+    ) + _control_states_for(2)
+    hass = _FakeHass(
+        entry_2_states,
+        {
+            "missing-neovolt-1": [
+                state.entity_id
+                for state in (
+                    _combined_states_for(
+                        1,
+                        battery_power="0",
+                        battery_soc="0",
+                        battery_capacity="20.1",
+                    ) + _control_states_for(1)
+                )
+            ],
+            "neovolt-2": [state.entity_id for state in entry_2_states],
+        },
+    )
+    controller = NeovoltFleetBatteryController(
+        hass,
+        ["missing-neovolt-1", "neovolt-2"],
+        max_charge_kw=5.0,
+        max_discharge_kw=5.0,
+    )
+
+    status = controller.get_status()
+
+    assert status["battery_power"] == pytest.approx(0.009)
+    assert status["grid_power"] == pytest.approx(-0.008)
+    assert status["battery_capacity_kwh"] == pytest.approx(30.2)
+    assert status["battery_level"] == pytest.approx(14.0)
+    assert status["battery_soh"] == pytest.approx(100.0)
+
+
 def test_fleet_force_charge_writes_all_inverter_dispatch_controls():
     entry_1_states = _combined_states_for(
         1,
