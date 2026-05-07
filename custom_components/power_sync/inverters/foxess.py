@@ -954,7 +954,12 @@ class FoxESSController(InverterController):
 
         return False
 
-    async def force_charge(self, duration_minutes: int = 60, power_w: float = 5000) -> bool:
+    async def force_charge(
+        self,
+        duration_minutes: int = 60,
+        power_w: float = 5000,
+        min_timeout_seconds: int = 600,
+    ) -> bool:
         """Force battery to charge from grid via remote control registers."""
         if not self._register_map:
             return False
@@ -980,11 +985,16 @@ class FoxESSController(InverterController):
         if not is_pro_smart and reg.work_mode and reg.supports_work_mode_rw:
             await self.set_work_mode(reg.work_mode_backup, _from_force=True)
 
-        timeout_seconds = max(duration_minutes * 60, 600)
+        timeout_seconds = max(duration_minutes * 60, min_timeout_seconds)
         power_val = -int(abs(power_w))
         return await self._write_remote_control(reg, power_val, duration_minutes, timeout_seconds, "force charge")
 
-    async def force_discharge(self, duration_minutes: int = 60, power_w: float = 5000) -> bool:
+    async def force_discharge(
+        self,
+        duration_minutes: int = 60,
+        power_w: float = 5000,
+        min_timeout_seconds: int = 600,
+    ) -> bool:
         """Force battery to discharge/export via remote control registers."""
         if not self._register_map:
             return False
@@ -1010,7 +1020,7 @@ class FoxESSController(InverterController):
         if not is_pro_smart and reg.work_mode and reg.supports_work_mode_rw:
             await self.set_work_mode(reg.work_mode_feed_in, _from_force=True)
 
-        timeout_seconds = max(duration_minutes * 60, 600)
+        timeout_seconds = max(duration_minutes * 60, min_timeout_seconds)
         power_val = int(abs(power_w))
         # Grid target mode: hold total grid feed-in at power_w.
         # Inverter auto-reduces battery contribution when PV is active, so the

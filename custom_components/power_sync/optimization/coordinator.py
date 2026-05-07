@@ -1405,10 +1405,21 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self,
         action: Any,
         matching_actions: set[str],
+        *,
+        allow_boundary_overrun: bool = True,
+        minimum_minutes: int | None = None,
     ) -> int:
-        """Return a supported force duration covering the contiguous LP action block."""
+        """Return a force duration for the contiguous LP action block.
+
+        By default this preserves the legacy behavior: choose a supported
+        duration that covers the block, even if that rounds slightly beyond the
+        final matching slot. For hard action boundaries (for example charge
+        immediately before Flow Power Happy Hour export), callers can disable
+        boundary overrun so the force command cannot cross into the next LP
+        action.
+        """
         interval = max(1, int(getattr(self._config, "interval_minutes", 5) or 5))
-        minimum = interval + 5
+        minimum = minimum_minutes if minimum_minutes is not None else interval + 5
         actions = getattr(getattr(self, "_current_schedule", None), "actions", None) or []
 
         start_idx = None
@@ -1428,17 +1439,25 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if getattr(scheduled, "action", None) not in matching_actions:
                     break
                 slots += 1
-            requested = max(minimum, slots * interval)
+            block_minutes = max(interval, slots * interval)
+            if allow_boundary_overrun:
+                requested = max(minimum, block_minutes)
+            else:
+                requested = block_minutes
 
         try:
             from ..const import DISCHARGE_DURATIONS
         except Exception:
             DISCHARGE_DURATIONS = [5, 10, 15, 30, 45, 60, 75, 90, 105, 120, 150, 180, 210, 240]
 
-        for duration in sorted(DISCHARGE_DURATIONS):
-            if duration >= requested:
-                return int(duration)
-        return int(max(DISCHARGE_DURATIONS))
+        supported = sorted(int(duration) for duration in DISCHARGE_DURATIONS)
+        if allow_boundary_overrun:
+            for duration in supported:
+                if duration >= requested:
+                    return int(duration)
+            return int(max(supported))
+
+        return int(max(1, requested))
 
     async def _execute_optimizer_action(self, action: Any) -> None:
         """Execute an optimizer action on the battery."""
@@ -1519,7 +1538,18 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     )
                     if _ext_state.get("cancel_expiry_timer"):
                         _ext_state["cancel_expiry_timer"]()  # Cancel old timer
-                    new_expiry = dt_util.utcnow() + timedelta(minutes=self._config.interval_minutes + 5)
+                    matching_actions = (
+                        {"charge"}
+                        if force_type == "charge"
+                        else {"discharge", "export"}
+                    )
+                    extend_mins = self._force_duration_for_action_window(
+                        action,
+                        matching_actions,
+                        allow_boundary_overrun=False,
+                        minimum_minutes=self._config.interval_minutes + 5,
+                    )
+                    new_expiry = dt_util.utcnow() + timedelta(minutes=extend_mins)
                     _ext_state["expires_at"] = new_expiry
 
                     # Re-issue Modbus writes for hardware-controlled inverters
@@ -1528,7 +1558,6 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     # extend the software timer, the inverter stops when its
                     # internal timeout hits.
                     if battery and hasattr(battery, "force_charge") and self.battery_system not in ("tesla",):
-                        extend_mins = self._config.interval_minutes + 5
                         try:
                             # Pass _extend_hardware flag so the service handler
                             # only re-issues Modbus writes without setting a new
@@ -1743,7 +1772,12 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
             if effective_action == "charge":
                 if hasattr(battery, "force_charge"):
-                    charge_duration = self._config.interval_minutes + 5
+                    charge_duration = self._force_duration_for_action_window(
+                        action,
+                        {"charge"},
+                        allow_boundary_overrun=False,
+                        minimum_minutes=self._config.interval_minutes + 5,
+                    )
                     # Near the demand window, shorten charge duration so the
                     # auto-restore fires 1 minute before demand starts.  The
                     # optimizer recalculates every 5 minutes and will upload a
@@ -1826,12 +1860,12 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     # would cap the inverter at that low power. Max discharge
                     # lets the inverter export at full rate.
                     discharge_power = self._config.max_discharge_w
-                    discharge_duration = self._config.interval_minutes + 5
-                    if self.battery_system == "tesla":
-                        discharge_duration = self._force_duration_for_action_window(
-                            action,
-                            {"discharge", "export"},
-                        )
+                    discharge_duration = self._force_duration_for_action_window(
+                        action,
+                        {"discharge", "export"},
+                        allow_boundary_overrun=False,
+                        minimum_minutes=self._config.interval_minutes + 5,
+                    )
                     await battery.force_discharge(
                         duration_minutes=discharge_duration,
                         power_w=discharge_power,

@@ -19260,6 +19260,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         raw_duration = call.data.get("duration", DEFAULT_DISCHARGE_DURATION)
         _LOGGER.debug(f"Force discharge raw duration from call.data: {raw_duration!r} (type: {type(raw_duration).__name__})")
+        source = call.data.get("source", "user")
 
         # Convert to int if string (from HA service selector or button-card)
         try:
@@ -19267,11 +19268,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         except (ValueError, TypeError):
             _LOGGER.warning(f"Could not convert duration {raw_duration!r} to int, using default {DEFAULT_DISCHARGE_DURATION}")
             duration = DEFAULT_DISCHARGE_DURATION
-        if duration not in DISCHARGE_DURATIONS:
+        if source == "optimizer":
+            if not (1 <= duration <= 1440):
+                _LOGGER.warning(
+                    "Optimizer force discharge duration %s out of range, using default %d",
+                    duration,
+                    DEFAULT_DISCHARGE_DURATION,
+                )
+                duration = DEFAULT_DISCHARGE_DURATION
+        elif duration not in DISCHARGE_DURATIONS:
             _LOGGER.warning(f"Duration {duration} not in allowed values {DISCHARGE_DURATIONS}, using default {DEFAULT_DISCHARGE_DURATION}")
             duration = DEFAULT_DISCHARGE_DURATION
 
-        source = call.data.get("source", "user")
         extend_hardware = call.data.get("_extend_hardware", False)
 
         # Hardware-only path: fires for BOTH (a) optimizer-issued dispatch and
@@ -19285,7 +19293,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             power_w = call.data.get("power_w", 0)
             foxess_coord = entry_data.get("foxess_coordinator")
             if foxess_coord:
-                await foxess_coord.force_discharge(duration, power_w=power_w)
+                min_timeout = duration * 60 if source == "optimizer" else 600
+                await foxess_coord.force_discharge(
+                    duration,
+                    power_w=power_w,
+                    min_timeout_seconds=min_timeout,
+                )
                 _LOGGER.debug(f"FoxESS force discharge hardware extended ({duration}min, {power_w}W)")
                 return
             sig_coord = entry_data.get("sigenergy_coordinator")
@@ -20345,6 +20358,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         raw_duration = call.data.get("duration", DEFAULT_DISCHARGE_DURATION)
         _LOGGER.debug(f"Force charge raw duration from call.data: {raw_duration!r} (type: {type(raw_duration).__name__})")
+        source = call.data.get("source", "user")
 
         # Convert to int if string (from HA service selector or button-card)
         try:
@@ -20352,11 +20366,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         except (ValueError, TypeError):
             _LOGGER.warning(f"Could not convert duration {raw_duration!r} to int, using default {DEFAULT_DISCHARGE_DURATION}")
             duration = DEFAULT_DISCHARGE_DURATION
-        if duration not in DISCHARGE_DURATIONS:
+        if source == "optimizer":
+            if not (1 <= duration <= 1440):
+                _LOGGER.warning(
+                    "Optimizer force charge duration %s out of range, using default %d",
+                    duration,
+                    DEFAULT_DISCHARGE_DURATION,
+                )
+                duration = DEFAULT_DISCHARGE_DURATION
+        elif duration not in DISCHARGE_DURATIONS:
             _LOGGER.warning(f"Duration {duration} not in allowed values {DISCHARGE_DURATIONS}, using default {DEFAULT_DISCHARGE_DURATION}")
             duration = DEFAULT_DISCHARGE_DURATION
 
-        source = call.data.get("source", "user")
         extend_hardware = call.data.get("_extend_hardware", False)
 
         # Hardware-only path: fires for BOTH (a) optimizer-issued dispatch and
@@ -20367,7 +20388,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             power_w = call.data.get("power_w", 0)
             foxess_coord = entry_data.get("foxess_coordinator")
             if foxess_coord:
-                await foxess_coord.force_charge(duration, power_w=power_w)
+                min_timeout = duration * 60 if source == "optimizer" else 600
+                await foxess_coord.force_charge(
+                    duration,
+                    power_w=power_w,
+                    min_timeout_seconds=min_timeout,
+                )
                 _LOGGER.debug(f"FoxESS force charge hardware extended ({duration}min, {power_w}W)")
                 return
             sig_coord = entry_data.get("sigenergy_coordinator")

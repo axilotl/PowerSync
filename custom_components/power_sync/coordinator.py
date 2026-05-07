@@ -4639,9 +4639,18 @@ class FoxESSEnergyCoordinator(DataUpdateCoordinator):
                     )
             if power_w <= 0:
                 power_w = 5000  # Fallback default
-            return await self._controller.force_charge(duration_minutes, power_w=power_w)
+            return await self._controller.force_charge(
+                duration_minutes,
+                power_w=power_w,
+                min_timeout_seconds=min_timeout_seconds,
+            )
 
-    async def force_discharge(self, duration_minutes: int = 30, power_w: float = 0) -> bool:
+    async def force_discharge(
+        self,
+        duration_minutes: int = 30,
+        power_w: float = 0,
+        min_timeout_seconds: int = 600,
+    ) -> bool:
         """Set FoxESS to force discharge mode.
 
         Args:
@@ -4662,7 +4671,11 @@ class FoxESSEnergyCoordinator(DataUpdateCoordinator):
                     )
             if power_w <= 0:
                 power_w = 5000  # Fallback default
-            return await self._controller.force_discharge(duration_minutes, power_w=power_w)
+            return await self._controller.force_discharge(
+                duration_minutes,
+                power_w=power_w,
+                min_timeout_seconds=min_timeout_seconds,
+            )
 
     async def restore_normal(self) -> bool:
         """Restore FoxESS to normal (Self Use) operation."""

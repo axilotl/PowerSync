@@ -473,6 +473,59 @@ def test_charge_executes_immediately_above_reserve(opt_module):
     assert coordinator._last_executed_action == "charge"
 
 
+def test_charge_duration_clips_at_next_lp_action_boundary(opt_module):
+    battery = _FakeBattery()
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.95)
+    coordinator.battery_system = "foxess"
+    start = datetime(2026, 5, 3, 7, 25, tzinfo=timezone.utc)
+    actions = [
+        SimpleNamespace(
+            action="charge",
+            power_w=23500,
+            timestamp=start,
+        ),
+        SimpleNamespace(
+            action="export",
+            power_w=23600,
+            timestamp=start + timedelta(minutes=5),
+        ),
+    ]
+    coordinator._current_schedule = SimpleNamespace(actions=actions)
+
+    asyncio.run(coordinator._execute_optimizer_action(actions[0]))
+
+    assert battery.force_charge_calls == [(5, 23500, False)]
+    assert coordinator._last_executed_action == "charge"
+
+
+def test_contiguous_charge_duration_uses_full_lp_block(opt_module):
+    battery = _FakeBattery()
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.50)
+    coordinator.battery_system = "foxess"
+    start = datetime(2026, 5, 3, 7, 10, tzinfo=timezone.utc)
+    actions = [
+        SimpleNamespace(
+            action="charge",
+            power_w=12000,
+            timestamp=start + idx * timedelta(minutes=5),
+        )
+        for idx in range(4)
+    ]
+    actions.append(
+        SimpleNamespace(
+            action="export",
+            power_w=12000,
+            timestamp=start + timedelta(minutes=20),
+        )
+    )
+    coordinator._current_schedule = SimpleNamespace(actions=actions)
+
+    asyncio.run(coordinator._execute_optimizer_action(actions[0]))
+
+    assert battery.force_charge_calls == [(20, 12000, False)]
+    assert coordinator._last_executed_action == "charge"
+
+
 def test_idle_to_self_consumption_exits_idle_immediately(opt_module):
     battery = _FakeBattery()
     energy_coordinator = _FakeEnergyCoordinator()
@@ -517,5 +570,30 @@ def test_tesla_export_uses_contiguous_export_window_duration(opt_module):
 
     asyncio.run(coordinator._execute_optimizer_action(actions[0]))
 
-    assert battery.force_discharge_calls == [(45, 5000, False)]
+    assert battery.force_discharge_calls == [(40, 5000, False)]
+    assert coordinator._last_executed_action == "export"
+
+
+def test_export_duration_clips_at_next_non_export_boundary(opt_module):
+    battery = _FakeBattery()
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.80)
+    coordinator.battery_system = "foxess"
+    start = datetime(2026, 5, 3, 9, 25, tzinfo=timezone.utc)
+    actions = [
+        SimpleNamespace(
+            action="export",
+            power_w=4200,
+            timestamp=start,
+        ),
+        SimpleNamespace(
+            action="self_consumption",
+            power_w=0,
+            timestamp=start + timedelta(minutes=5),
+        ),
+    ]
+    coordinator._current_schedule = SimpleNamespace(actions=actions)
+
+    asyncio.run(coordinator._execute_optimizer_action(actions[0]))
+
+    assert battery.force_discharge_calls == [(5, 5000, False)]
     assert coordinator._last_executed_action == "export"
