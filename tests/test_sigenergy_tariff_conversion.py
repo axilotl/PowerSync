@@ -209,7 +209,7 @@ def test_sigenergy_upload_prices_use_canonical_tariff_rates(
     assert by_start["20:30"] == 35.33
 
 
-def test_sigenergy_visible_upload_mirrors_import_not_feed_in_for_current_slot(
+def test_sigenergy_visible_upload_uses_distinct_30_min_buy_and_sell_slots(
     sigenergy_api_module,
     tariff_converter_module,
     monkeypatch,
@@ -237,7 +237,6 @@ def test_sigenergy_visible_upload_mirrors_import_not_feed_in_for_current_slot(
         powerwall_timezone="Australia/Brisbane",
         current_actual_interval=current_actual,
         electricity_provider="amber",
-        include_sell_prices=False,
     )
     buy_prices = sigenergy_api_module.convert_tariff_rates_to_sigenergy(
         tariff["energy_charges"]["Summer"]["rates"]
@@ -250,12 +249,16 @@ def test_sigenergy_visible_upload_mirrors_import_not_feed_in_for_current_slot(
     buy_by_start = {slot["timeRange"].split("-")[0]: slot["price"] for slot in buy_prices}
     sell_by_start = {slot["timeRange"].split("-")[0]: slot["price"] for slot in sell_prices}
 
+    assert len(buy_prices) == 48
+    assert len(sell_prices) == 48
+    assert all(slot["timeRange"].endswith((":00", ":30")) for slot in buy_prices)
+    assert all(slot["timeRange"].endswith((":00", ":30")) for slot in sell_prices)
     assert buy_by_start["20:30"] == 35.33
-    assert sell_by_start["20:30"] == 35.33
-    assert sell_by_start["20:30"] != 9.82
+    assert sell_by_start["20:30"] == 9.82
+    assert sell_by_start["20:30"] != buy_by_start["20:30"]
 
 
-def test_sigenergy_canonical_upload_disables_feed_in_schedule_in_sync_helper():
+def test_sigenergy_canonical_upload_converts_buy_and_sell_in_sync_helper():
     init_source = (COMPONENT_ROOT / "__init__.py").read_text()
     helper_source = init_source[
         init_source.index("async def _sync_tariff_to_sigenergy"):
@@ -263,10 +266,11 @@ def test_sigenergy_canonical_upload_disables_feed_in_schedule_in_sync_helper():
     ]
 
     canonical_call_pos = helper_source.index("canonical_tariff = convert_amber_to_tesla_tariff")
-    include_sell_pos = helper_source.index("include_sell_prices=False")
+    sell_rates_pos = helper_source.index("canonical_sell_rates =")
+    sell_convert_pos = helper_source.index("sell_prices = convert_tariff_rates_to_sigenergy")
     sigenergy_upload_pos = helper_source.index("client.set_tariff_rate")
 
-    assert canonical_call_pos < include_sell_pos < sigenergy_upload_pos
+    assert canonical_call_pos < sell_rates_pos < sell_convert_pos < sigenergy_upload_pos
 
 
 def test_sigenergy_sync_resolves_demand_settings_inside_helper():
