@@ -5116,18 +5116,23 @@ class NeovoltEnergyCoordinator(DataUpdateCoordinator):
     def __init__(
         self,
         hass: HomeAssistant,
-        neovolt_entry_id: str,
+        neovolt_entry_id: str | list[str],
         entry_id: str = "",
         max_charge_kw: float = 5.0,
         max_discharge_kw: float = 5.0,
         min_soc_pct: float = 10.0,
     ) -> None:
-        from .inverters.neovolt import NeovoltBatteryController
+        from .inverters.neovolt import NeovoltFleetBatteryController
 
         self._entry_id = entry_id
-        self._controller = NeovoltBatteryController(
+        neovolt_entry_ids = (
+            [neovolt_entry_id]
+            if isinstance(neovolt_entry_id, str)
+            else list(neovolt_entry_id)
+        )
+        self._controller = NeovoltFleetBatteryController(
             hass,
-            neovolt_entry_id=neovolt_entry_id,
+            neovolt_entry_ids=neovolt_entry_ids,
             max_charge_kw=max_charge_kw,
             max_discharge_kw=max_discharge_kw,
             min_soc_pct=min_soc_pct,

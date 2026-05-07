@@ -43,7 +43,10 @@ def _install_stubs() -> None:
 
 _install_stubs()
 
-from power_sync.inverters.neovolt import NeovoltBatteryController  # noqa: E402
+from power_sync.inverters.neovolt import (  # noqa: E402
+    NeovoltBatteryController,
+    NeovoltFleetBatteryController,
+)
 
 
 class _FakeState:
@@ -145,6 +148,46 @@ def _host_states() -> list[_FakeState]:
     ]
 
 
+def _control_states_for(index: int) -> list[_FakeState]:
+    prefix = f"neovolt_{index}"
+    return [
+        _FakeState(
+            f"select.{prefix}_dispatch_mode",
+            "Normal",
+            ["Normal", "Force Charge", "Force Discharge", "Dynamic Export", "Dynamic Import"],
+        ),
+        _FakeState(f"number.{prefix}_dispatch_power", "3.0"),
+        _FakeState(f"number.{prefix}_dispatch_duration", "120"),
+        _FakeState(f"number.{prefix}_dispatch_charge_target_soc", "100"),
+        _FakeState(f"number.{prefix}_dispatch_discharge_cutoff_soc", "10"),
+        _FakeState(f"number.{prefix}_discharging_cutoff_soc_default", "20"),
+        _FakeState(f"button.{prefix}_stop_force_charge_discharge", "unknown"),
+    ]
+
+
+def _combined_states_for(
+    index: int,
+    *,
+    battery_power: str,
+    battery_soc: str,
+    battery_capacity: str,
+    battery_soh: str = "100",
+    house_load: str = "0",
+    pv_power: str = "0",
+    grid_power: str = "0",
+) -> list[_FakeState]:
+    prefix = f"neovolt_{index}"
+    return [
+        _FakeState(f"sensor.{prefix}_combined_battery_power", battery_power),
+        _FakeState(f"sensor.{prefix}_combined_battery_soc", battery_soc),
+        _FakeState(f"sensor.{prefix}_combined_battery_capacity", battery_capacity),
+        _FakeState(f"sensor.{prefix}_combined_battery_soh", battery_soh),
+        _FakeState(f"sensor.{prefix}_combined_house_load", house_load),
+        _FakeState(f"sensor.{prefix}_combined_pv_power", pv_power),
+        _FakeState(f"sensor.{prefix}_grid_total_active_power", grid_power),
+    ]
+
+
 def _hass_for(states: list[_FakeState]) -> _FakeHass:
     entity_ids = [state.entity_id for state in states]
     return _FakeHass(states, {"neovolt-entry": entity_ids})
@@ -183,6 +226,131 @@ def test_host_sensor_fallback_and_power_signs():
     assert status["grid_power"] == -0.5
     assert status["load_power"] == 3.1
     assert status["solar_power"] == 2.6
+
+
+def test_config_entry_discovery_prefers_selected_entry_over_fallback_states():
+    entry_1_states = _combined_states_for(
+        1,
+        battery_power="-3454",
+        battery_soc="44",
+        battery_capacity="20.1",
+        house_load="0",
+        pv_power="0",
+        grid_power="20",
+    ) + _control_states_for(1)
+    entry_2_states = _combined_states_for(
+        2,
+        battery_power="5376",
+        battery_soc="20",
+        battery_capacity="30.2",
+        house_load="5386",
+        pv_power="0",
+        grid_power="19",
+    ) + _control_states_for(2)
+    hass = _FakeHass(
+        entry_1_states + entry_2_states,
+        {
+            "neovolt-1": [state.entity_id for state in entry_1_states],
+            "neovolt-2": [state.entity_id for state in entry_2_states],
+        },
+    )
+    controller = NeovoltBatteryController(hass, "neovolt-2")
+
+    assert asyncio.run(controller.connect())
+
+    assert controller._entity_map["battery_power"] == "sensor.neovolt_2_combined_battery_power"
+    assert controller._entity_map["dispatch_mode"] == "select.neovolt_2_dispatch_mode"
+    assert controller.get_status()["battery_level"] == 20.0
+
+
+def test_fleet_status_aggregates_power_and_capacity_weighted_soc():
+    entry_1_states = _combined_states_for(
+        1,
+        battery_power="-3454",
+        battery_soc="44",
+        battery_capacity="20.1",
+        battery_soh="99",
+        house_load="0",
+        pv_power="0",
+        grid_power="20",
+    ) + _control_states_for(1)
+    entry_2_states = _combined_states_for(
+        2,
+        battery_power="5376",
+        battery_soc="20",
+        battery_capacity="30.2",
+        battery_soh="97",
+        house_load="5386",
+        pv_power="0",
+        grid_power="19",
+    ) + _control_states_for(2)
+    hass = _FakeHass(
+        entry_1_states + entry_2_states,
+        {
+            "neovolt-1": [state.entity_id for state in entry_1_states],
+            "neovolt-2": [state.entity_id for state in entry_2_states],
+        },
+    )
+    controller = NeovoltFleetBatteryController(
+        hass,
+        ["neovolt-1", "neovolt-2"],
+        max_charge_kw=5.0,
+        max_discharge_kw=5.0,
+    )
+
+    assert asyncio.run(controller.connect())
+    status = controller.get_status()
+
+    assert status["battery_power"] == pytest.approx(1.922)
+    assert status["grid_power"] == pytest.approx(0.039)
+    assert status["load_power"] == pytest.approx(5.386)
+    assert status["battery_capacity_kwh"] == pytest.approx(50.3)
+    assert status["battery_level"] == pytest.approx(29.5904, rel=1e-4)
+    assert status["battery_soh"] == pytest.approx(97.7992, rel=1e-4)
+    assert status["battery_max_charge_power_w"] == 10000.0
+    assert status["battery_max_discharge_power_w"] == 10000.0
+
+
+def test_fleet_force_charge_writes_all_inverter_dispatch_controls():
+    entry_1_states = _combined_states_for(
+        1,
+        battery_power="0",
+        battery_soc="50",
+        battery_capacity="20.1",
+    ) + _control_states_for(1)
+    entry_2_states = _combined_states_for(
+        2,
+        battery_power="0",
+        battery_soc="50",
+        battery_capacity="30.2",
+    ) + _control_states_for(2)
+    hass = _FakeHass(
+        entry_1_states + entry_2_states,
+        {
+            "neovolt-1": [state.entity_id for state in entry_1_states],
+            "neovolt-2": [state.entity_id for state in entry_2_states],
+        },
+    )
+    controller = NeovoltFleetBatteryController(
+        hass,
+        ["neovolt-1", "neovolt-2"],
+        max_charge_kw=5.0,
+        max_discharge_kw=5.0,
+    )
+    assert asyncio.run(controller.connect())
+
+    assert asyncio.run(controller.force_charge(duration_minutes=30, power_w=6000))
+
+    assert hass.services.calls == [
+        ("number", "set_value", {"entity_id": "number.neovolt_1_dispatch_power", "value": 3.0}),
+        ("number", "set_value", {"entity_id": "number.neovolt_1_dispatch_duration", "value": 30}),
+        ("number", "set_value", {"entity_id": "number.neovolt_1_dispatch_charge_target_soc", "value": 100}),
+        ("select", "select_option", {"entity_id": "select.neovolt_1_dispatch_mode", "option": "Force Charge"}),
+        ("number", "set_value", {"entity_id": "number.neovolt_2_dispatch_power", "value": 3.0}),
+        ("number", "set_value", {"entity_id": "number.neovolt_2_dispatch_duration", "value": 30}),
+        ("number", "set_value", {"entity_id": "number.neovolt_2_dispatch_charge_target_soc", "value": 100}),
+        ("select", "select_option", {"entity_id": "select.neovolt_2_dispatch_mode", "option": "Force Charge"}),
+    ]
 
 
 def test_force_charge_writes_numbers_before_mode_select():

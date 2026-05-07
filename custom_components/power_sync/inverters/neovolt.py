@@ -263,15 +263,15 @@ class NeovoltBatteryController:
             if entity_id:
                 self._entity_map[key] = entity_id
 
-    def _entity_candidates(self) -> list[tuple[str, str | None]]:
+    def _entity_candidates(self) -> list[tuple[str, str | None, int]]:
         registry = er.async_get(self.hass)
         entries = er.async_entries_for_config_entry(registry, self._neovolt_entry_id)
-        candidates: list[tuple[str, str | None]] = [
-            (entry.entity_id, getattr(entry, "unique_id", None))
+        candidates: list[tuple[str, str | None, int]] = [
+            (entry.entity_id, getattr(entry, "unique_id", None), 0)
             for entry in entries
             if getattr(entry, "entity_id", None)
         ]
-        seen = {entity_id for entity_id, _unique_id in candidates}
+        seen = {entity_id for entity_id, _unique_id, _priority in candidates}
         for state in self.hass.states.async_all():
             entity_id = state.entity_id
             if (
@@ -279,21 +279,21 @@ class NeovoltBatteryController:
                 and entity_id not in seen
                 and ".neovolt_" in entity_id
             ):
-                candidates.append((entity_id, None))
+                candidates.append((entity_id, None, 1))
                 seen.add(entity_id)
         return candidates
 
     def _resolve_entity_id(
         self,
-        candidates: list[tuple[str, str | None]],
+        candidates: list[tuple[str, str | None, int]],
         patterns: tuple[tuple[str, str], ...],
     ) -> str | None:
         for domain, suffix in patterns:
             domain_prefix = f"{domain}."
-            matches: list[str] = []
+            matches: list[tuple[str, int]] = []
             entity_tail = f"_{suffix}"
             unique_tail = f"_{suffix}"
-            for entity_id, unique_id in candidates:
+            for entity_id, unique_id, priority in candidates:
                 if not entity_id.startswith(domain_prefix):
                     continue
                 object_id = entity_id.split(".", 1)[1]
@@ -301,18 +301,19 @@ class NeovoltBatteryController:
                     object_id.endswith(entity_tail)
                     or (unique_id and unique_id.endswith(unique_tail))
                 ):
-                    matches.append(entity_id)
+                    matches.append((entity_id, priority))
             if not matches:
                 continue
             matches = sorted(
                 matches,
-                key=lambda entity_id: (
-                    0 if self.hass.states.get(entity_id) is not None else 1,
-                    len(entity_id),
-                    entity_id,
+                key=lambda match: (
+                    match[1],
+                    0 if self.hass.states.get(match[0]) is not None else 1,
+                    len(match[0]),
+                    match[0],
                 ),
             )
-            return matches[0]
+            return matches[0][0]
         return None
 
     async def _ensure_connected(self) -> None:
@@ -387,3 +388,157 @@ class NeovoltBatteryController:
         if power_w and power_w > 0:
             return round(float(power_w) / 1000.0, 3)
         return float(default_kw)
+
+
+class NeovoltFleetBatteryController:
+    """Aggregate and control multiple Neovolt battery controllers as one system."""
+
+    def __init__(
+        self,
+        hass: Any,
+        neovolt_entry_ids: list[str],
+        max_charge_kw: float = 5.0,
+        max_discharge_kw: float = 5.0,
+        min_soc_pct: float = 10.0,
+    ) -> None:
+        if not neovolt_entry_ids:
+            raise ValueError("neovolt_missing_entries")
+
+        self._controllers = [
+            NeovoltBatteryController(
+                hass,
+                neovolt_entry_id=entry_id,
+                max_charge_kw=max_charge_kw,
+                max_discharge_kw=max_discharge_kw,
+                min_soc_pct=min_soc_pct,
+            )
+            for entry_id in neovolt_entry_ids
+        ]
+
+    def set_min_soc_pct(self, min_soc_pct: float) -> None:
+        """Update the discharge cutoff used for force-discharge commands."""
+        for controller in self._controllers:
+            controller.set_min_soc_pct(min_soc_pct)
+
+    async def connect(self) -> bool:
+        """Validate all configured Neovolt controllers."""
+        for controller in self._controllers:
+            await controller.connect()
+        return True
+
+    async def disconnect(self) -> None:
+        """Disconnect all child controllers."""
+        for controller in self._controllers:
+            await controller.disconnect()
+
+    def get_status(self) -> dict[str, Any]:
+        """Read and aggregate current Neovolt fleet state."""
+        statuses = [controller.get_status() for controller in self._controllers]
+        capacities = [status.get("battery_capacity_kwh") for status in statuses]
+        total_capacity = sum(cap for cap in capacities if cap is not None)
+
+        return {
+            "solar_power": sum(status.get("solar_power", 0.0) or 0.0 for status in statuses),
+            "grid_power": sum(status.get("grid_power", 0.0) or 0.0 for status in statuses),
+            "battery_power": sum(status.get("battery_power", 0.0) or 0.0 for status in statuses),
+            "load_power": sum(status.get("load_power", 0.0) or 0.0 for status in statuses),
+            "battery_level": self._weighted_average(statuses, "battery_level", capacities),
+            "battery_capacity_kwh": total_capacity or None,
+            "battery_soh": self._weighted_average(statuses, "battery_soh", capacities),
+            "battery_max_charge_power_w": sum(
+                status.get("battery_max_charge_power_w", 0.0) or 0.0
+                for status in statuses
+            ),
+            "battery_max_discharge_power_w": sum(
+                status.get("battery_max_discharge_power_w", 0.0) or 0.0
+                for status in statuses
+            ),
+        }
+
+    async def force_charge(self, duration_minutes: int, power_w: int | float) -> bool:
+        """Force all batteries to charge via their Neovolt dispatch controls."""
+        powers = self._split_power_w(power_w, "_max_charge_kw")
+        results = [
+            await controller.force_charge(duration_minutes, split_power)
+            for controller, split_power in zip(self._controllers, powers)
+        ]
+        return all(results)
+
+    async def force_discharge(self, duration_minutes: int, power_w: int | float) -> bool:
+        """Force all batteries to discharge via their Neovolt dispatch controls."""
+        powers = self._split_power_w(power_w, "_max_discharge_kw")
+        results = [
+            await controller.force_discharge(duration_minutes, split_power)
+            for controller, split_power in zip(self._controllers, powers)
+        ]
+        return all(results)
+
+    async def restore_normal(self) -> bool:
+        """Return all Neovolt dispatch modes to Normal."""
+        results = [await controller.restore_normal() for controller in self._controllers]
+        return all(results)
+
+    async def set_backup_reserve(self, percent: int) -> bool:
+        """Set the default discharging cutoff SOC on all Neovolt controllers."""
+        results = [
+            await controller.set_backup_reserve(percent)
+            for controller in self._controllers
+        ]
+        return all(results)
+
+    async def get_backup_reserve(self) -> int | None:
+        """Read the lowest configured default discharging cutoff SOC."""
+        reserves = [
+            await controller.get_backup_reserve()
+            for controller in self._controllers
+        ]
+        known_reserves = [reserve for reserve in reserves if reserve is not None]
+        return min(known_reserves) if known_reserves else None
+
+    async def set_idle(self) -> bool:
+        """Best-effort hold: raise each inverter's discharge cutoff to its SOC."""
+        results = [await controller.set_idle() for controller in self._controllers]
+        return all(results)
+
+    def _split_power_w(
+        self,
+        power_w: int | float,
+        limit_attr: str,
+    ) -> list[int | float]:
+        if not power_w or power_w <= 0:
+            return [0 for _controller in self._controllers]
+
+        limits_kw = [
+            max(0.0, float(getattr(controller, limit_attr, 0.0)))
+            for controller in self._controllers
+        ]
+        total_kw = sum(limits_kw)
+        if total_kw <= 0:
+            return [float(power_w) / len(self._controllers) for _controller in self._controllers]
+
+        return [
+            float(power_w) * (limit_kw / total_kw)
+            for limit_kw in limits_kw
+        ]
+
+    @staticmethod
+    def _weighted_average(
+        statuses: list[dict[str, Any]],
+        key: str,
+        capacities: list[float | None],
+    ) -> float:
+        weighted_values = [
+            (float(status[key]), float(capacity))
+            for status, capacity in zip(statuses, capacities)
+            if status.get(key) is not None and capacity is not None and capacity > 0
+        ]
+        total_capacity = sum(capacity for _value, capacity in weighted_values)
+        if total_capacity > 0:
+            return sum(value * capacity for value, capacity in weighted_values) / total_capacity
+
+        values = [
+            float(status[key])
+            for status in statuses
+            if status.get(key) is not None
+        ]
+        return sum(values) / len(values) if values else 0.0

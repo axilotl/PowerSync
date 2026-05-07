@@ -103,6 +103,7 @@ from .const import (
     DEFAULT_SAJ_INVERTER_RATED_KW,
     # Neovolt battery system configuration
     CONF_NEOVOLT_CONFIG_ENTRY_ID,
+    CONF_NEOVOLT_CONFIG_ENTRY_IDS,
     CONF_NEOVOLT_MAX_CHARGE_KW,
     CONF_NEOVOLT_MAX_DISCHARGE_KW,
     DEFAULT_NEOVOLT_MAX_CHARGE_KW,
@@ -384,6 +385,23 @@ CONF_NETWORK_TARIFF_COMBINED = "network_tariff_combined"
 CUSTOM_TOU_PROVIDER_OPTIONS = ("globird", "aemo_vpp", "other", "tou_only")
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _normalize_neovolt_entry_ids(
+    raw_entry_ids: Any,
+    fallback_entry_id: str | None = None,
+) -> list[str]:
+    """Normalize Neovolt selector values to a list of entry ids."""
+    if isinstance(raw_entry_ids, (list, tuple)):
+        entry_ids = [entry_id for entry_id in raw_entry_ids if entry_id]
+    elif isinstance(raw_entry_ids, str) and raw_entry_ids:
+        entry_ids = [raw_entry_ids]
+    else:
+        entry_ids = []
+
+    if not entry_ids and fallback_entry_id:
+        entry_ids = [fallback_entry_id]
+    return entry_ids
 
 
 def _stored_wh_to_kwh(value: Any, default_wh: int) -> float:
@@ -2524,7 +2542,7 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         """Configure Neovolt bridge via the upstream neovolt integration."""
-        from .inverters.neovolt import NeovoltBatteryController
+        from .inverters.neovolt import NeovoltFleetBatteryController
 
         neovolt_entries = self.hass.config_entries.async_entries("neovolt")
         if not neovolt_entries:
@@ -2534,9 +2552,12 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             if len(neovolt_entries) == 1:
-                selected_entry_id = neovolt_entries[0].entry_id
+                selected_entry_ids = [neovolt_entries[0].entry_id]
             else:
-                selected_entry_id = user_input.get(CONF_NEOVOLT_CONFIG_ENTRY_ID, "")
+                selected_entry_ids = _normalize_neovolt_entry_ids(
+                    user_input.get(CONF_NEOVOLT_CONFIG_ENTRY_IDS),
+                    user_input.get(CONF_NEOVOLT_CONFIG_ENTRY_ID),
+                )
 
             max_charge_kw = user_input.get(
                 CONF_NEOVOLT_MAX_CHARGE_KW,
@@ -2548,15 +2569,16 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             )
 
             try:
-                ctrl = NeovoltBatteryController(
+                ctrl = NeovoltFleetBatteryController(
                     self.hass,
-                    neovolt_entry_id=selected_entry_id,
+                    neovolt_entry_ids=selected_entry_ids,
                     max_charge_kw=float(max_charge_kw),
                     max_discharge_kw=float(max_discharge_kw),
                 )
                 await ctrl.connect()
                 self._neovolt_data = {
-                    CONF_NEOVOLT_CONFIG_ENTRY_ID: selected_entry_id,
+                    CONF_NEOVOLT_CONFIG_ENTRY_ID: selected_entry_ids[0],
+                    CONF_NEOVOLT_CONFIG_ENTRY_IDS: selected_entry_ids,
                     CONF_NEOVOLT_MAX_CHARGE_KW: float(max_charge_kw),
                     CONF_NEOVOLT_MAX_DISCHARGE_KW: float(max_discharge_kw),
                 }
@@ -2574,13 +2596,17 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if len(neovolt_entries) > 1:
             entry_options = {e.entry_id: e.title or e.entry_id for e in neovolt_entries}
             schema_fields[
-                vol.Required(CONF_NEOVOLT_CONFIG_ENTRY_ID)
+                vol.Required(
+                    CONF_NEOVOLT_CONFIG_ENTRY_IDS,
+                    default=list(entry_options),
+                )
             ] = SelectSelector(
                 SelectSelectorConfig(
                     options=[
                         SelectOptionDict(value=k, label=v)
                         for k, v in entry_options.items()
                     ],
+                    multiple=True,
                     mode=SelectSelectorMode.DROPDOWN,
                 )
             )
@@ -4950,7 +4976,7 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         """Menu handler: Neovolt bridge settings."""
-        from .inverters.neovolt import NeovoltBatteryController
+        from .inverters.neovolt import NeovoltFleetBatteryController
 
         neovolt_entries = self.hass.config_entries.async_entries("neovolt")
         if not neovolt_entries:
@@ -4960,9 +4986,12 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
 
         if user_input is not None:
             if len(neovolt_entries) == 1:
-                selected_entry_id = neovolt_entries[0].entry_id
+                selected_entry_ids = [neovolt_entries[0].entry_id]
             else:
-                selected_entry_id = user_input.get(CONF_NEOVOLT_CONFIG_ENTRY_ID, "")
+                selected_entry_ids = _normalize_neovolt_entry_ids(
+                    user_input.get(CONF_NEOVOLT_CONFIG_ENTRY_IDS),
+                    user_input.get(CONF_NEOVOLT_CONFIG_ENTRY_ID),
+                )
             max_charge_kw = user_input.get(
                 CONF_NEOVOLT_MAX_CHARGE_KW,
                 DEFAULT_NEOVOLT_MAX_CHARGE_KW,
@@ -4972,15 +5001,16 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 DEFAULT_NEOVOLT_MAX_DISCHARGE_KW,
             )
             try:
-                ctrl = NeovoltBatteryController(
+                ctrl = NeovoltFleetBatteryController(
                     self.hass,
-                    neovolt_entry_id=selected_entry_id,
+                    neovolt_entry_ids=selected_entry_ids,
                     max_charge_kw=float(max_charge_kw),
                     max_discharge_kw=float(max_discharge_kw),
                 )
                 await ctrl.connect()
                 new_data = dict(self.config_entry.data)
-                new_data[CONF_NEOVOLT_CONFIG_ENTRY_ID] = selected_entry_id
+                new_data[CONF_NEOVOLT_CONFIG_ENTRY_ID] = selected_entry_ids[0]
+                new_data[CONF_NEOVOLT_CONFIG_ENTRY_IDS] = selected_entry_ids
                 new_data[CONF_NEOVOLT_MAX_CHARGE_KW] = float(max_charge_kw)
                 new_data[CONF_NEOVOLT_MAX_DISCHARGE_KW] = float(max_discharge_kw)
                 self.hass.config_entries.async_update_entry(self.config_entry, data=new_data)
@@ -4995,12 +5025,18 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 errors["base"] = "neovolt_connect_failed"
 
         entry_options = {e.entry_id: e.title or e.entry_id for e in neovolt_entries}
-        current_entry_id = self._get_option(
-            CONF_NEOVOLT_CONFIG_ENTRY_ID,
-            self.config_entry.data.get(CONF_NEOVOLT_CONFIG_ENTRY_ID, ""),
+        current_entry_ids = _normalize_neovolt_entry_ids(
+            self._get_option(
+                CONF_NEOVOLT_CONFIG_ENTRY_IDS,
+                self.config_entry.data.get(CONF_NEOVOLT_CONFIG_ENTRY_IDS),
+            ),
+            self._get_option(
+                CONF_NEOVOLT_CONFIG_ENTRY_ID,
+                self.config_entry.data.get(CONF_NEOVOLT_CONFIG_ENTRY_ID, ""),
+            ),
         )
-        if not current_entry_id and entry_options:
-            current_entry_id = next(iter(entry_options))
+        if not current_entry_ids and entry_options:
+            current_entry_ids = [next(iter(entry_options))]
         current_max_charge_kw = self._get_option(
             CONF_NEOVOLT_MAX_CHARGE_KW,
             self.config_entry.data.get(
@@ -5020,14 +5056,15 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             step_id="neovolt_connection",
             data_schema=vol.Schema({
                 vol.Required(
-                    CONF_NEOVOLT_CONFIG_ENTRY_ID,
-                    default=current_entry_id,
+                    CONF_NEOVOLT_CONFIG_ENTRY_IDS,
+                    default=current_entry_ids,
                 ): SelectSelector(
                     SelectSelectorConfig(
                         options=[
                             SelectOptionDict(value=k, label=v)
                             for k, v in entry_options.items()
                         ],
+                        multiple=True,
                         mode=SelectSelectorMode.DROPDOWN,
                     )
                 ),

@@ -358,6 +358,7 @@ from .const import (
     CONF_SAJ_INVERTER_RATED_KW,
     DEFAULT_SAJ_INVERTER_RATED_KW,
     CONF_NEOVOLT_CONFIG_ENTRY_ID,
+    CONF_NEOVOLT_CONFIG_ENTRY_IDS,
     CONF_NEOVOLT_MAX_CHARGE_KW,
     CONF_NEOVOLT_MAX_DISCHARGE_KW,
     DEFAULT_NEOVOLT_MAX_CHARGE_KW,
@@ -1280,6 +1281,18 @@ class SensitiveDataFilter(logging.Filter):
 
 _LOGGER = logging.getLogger(__name__)
 _LOGGER.addFilter(SensitiveDataFilter())
+
+
+def _get_neovolt_entry_ids(entry_data: dict[str, Any]) -> list[str]:
+    """Return configured Neovolt config entry ids, including legacy single-entry data."""
+    entry_ids = entry_data.get(CONF_NEOVOLT_CONFIG_ENTRY_IDS)
+    if isinstance(entry_ids, list):
+        return [entry_id for entry_id in entry_ids if entry_id]
+    if isinstance(entry_ids, str) and entry_ids:
+        return [entry_ids]
+
+    legacy_entry_id = entry_data.get(CONF_NEOVOLT_CONFIG_ENTRY_ID)
+    return [legacy_entry_id] if legacy_entry_id else []
 
 # Force DEBUG logging for power_sync and all submodules
 _LOGGER.setLevel(logging.DEBUG)
@@ -14219,7 +14232,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         or entry.data.get(CONF_SOLAX_ENTITY_PREFIX)
     )
     is_saj_h2 = bool(entry.data.get(CONF_SAJ_CONFIG_ENTRY_ID))
-    is_neovolt = bool(entry.data.get(CONF_NEOVOLT_CONFIG_ENTRY_ID))
+    is_neovolt = bool(_get_neovolt_entry_ids(entry.data))
     tesla_coordinator = None
     sigenergy_coordinator = None
     sungrow_coordinator = None
@@ -14494,7 +14507,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             neovolt_reserve_pct = neovolt_reserve_pct * 100
         neovolt_coordinator = NeovoltEnergyCoordinator(
             hass,
-            neovolt_entry_id=entry.data[CONF_NEOVOLT_CONFIG_ENTRY_ID],
+            neovolt_entry_id=_get_neovolt_entry_ids(entry.data),
             entry_id=entry.entry_id,
             max_charge_kw=float(neovolt_max_charge_kw),
             max_discharge_kw=float(neovolt_max_discharge_kw),
@@ -19808,7 +19821,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 hass.async_create_task(_notify_api_error(hass, "Force Discharge Failed", "SAJ H2 entity write error"))
                 return
 
-        is_neovolt_local = bool(entry.data.get(CONF_NEOVOLT_CONFIG_ENTRY_ID))
+        is_neovolt_local = bool(_get_neovolt_entry_ids(entry.data))
         if is_neovolt_local:
             try:
                 entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
@@ -20968,7 +20981,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 hass.async_create_task(_notify_api_error(hass, "Force Charge Failed", "SAJ H2 entity write error"))
                 return
 
-        is_neovolt_local = bool(entry.data.get(CONF_NEOVOLT_CONFIG_ENTRY_ID))
+        is_neovolt_local = bool(_get_neovolt_entry_ids(entry.data))
         if is_neovolt_local:
             try:
                 entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
@@ -21864,7 +21877,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 _LOGGER.error(f"Error in SAJ H2 restore normal: {e}", exc_info=True)
                 return
 
-        is_neovolt_local = bool(entry.data.get(CONF_NEOVOLT_CONFIG_ENTRY_ID))
+        is_neovolt_local = bool(_get_neovolt_entry_ids(entry.data))
         if is_neovolt_local:
             try:
                 entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
@@ -22613,7 +22626,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 return
 
         # Check if this is a Neovolt system
-        is_neovolt_sc = bool(entry.data.get(CONF_NEOVOLT_CONFIG_ENTRY_ID))
+        is_neovolt_sc = bool(_get_neovolt_entry_ids(entry.data))
         if is_neovolt_sc:
             try:
                 entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
@@ -22706,7 +22719,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         is_alphaess = bool(entry.data.get(CONF_ALPHAESS_MODBUS_HOST))
         is_esy_sunhome_auto = bool(entry.data.get(CONF_ESY_CONFIG_ENTRY_ID))
         is_saj_h2_auto = bool(entry.data.get(CONF_SAJ_CONFIG_ENTRY_ID))
-        is_neovolt_auto = bool(entry.data.get(CONF_NEOVOLT_CONFIG_ENTRY_ID))
+        is_neovolt_auto = bool(_get_neovolt_entry_ids(entry.data))
         is_solax_auto = bool(
             entry.data.get(CONF_SOLAX_CONFIG_ENTRY_ID)
             or entry.data.get(CONF_SOLAX_ENTITY_PREFIX)
@@ -22887,7 +22900,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         elif bool(entry.data.get(CONF_SAJ_CONFIG_ENTRY_ID)):
             # SAJ H2: no backup reserve register — no-op
             _LOGGER.debug("SAJ H2 does not support backup reserve (no-op)")
-        elif bool(entry.data.get(CONF_NEOVOLT_CONFIG_ENTRY_ID)):
+        elif bool(_get_neovolt_entry_ids(entry.data)):
             # Neovolt via HACS integration entities
             try:
                 entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})

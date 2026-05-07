@@ -424,6 +424,7 @@ DEFAULT_SAJ_INVERTER_RATED_KW = 10.0
 # Neovolt / Bytewatt battery system — bridges via pvandenh/NeovoltBattery_ModbusPlugin
 # Install the neovolt integration from HACS first; PowerSync reads/writes its entities.
 CONF_NEOVOLT_CONFIG_ENTRY_ID = "neovolt_config_entry_id"
+CONF_NEOVOLT_CONFIG_ENTRY_IDS = "neovolt_config_entry_ids"
 CONF_NEOVOLT_MAX_CHARGE_KW = "neovolt_max_charge_kw"
 CONF_NEOVOLT_MAX_DISCHARGE_KW = "neovolt_max_discharge_kw"
 DEFAULT_NEOVOLT_MAX_CHARGE_KW = 5.0
