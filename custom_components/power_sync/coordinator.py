@@ -5155,7 +5155,7 @@ class NeovoltEnergyCoordinator(DataUpdateCoordinator):
         if not self._energy_acc._last_update:
             await self._energy_acc.async_restore()
 
-        if not self._controller._entity_map:
+        if hasattr(self._controller, "_entity_map") and not self._controller._entity_map:
             self._controller._discover_entities()
 
         try:
