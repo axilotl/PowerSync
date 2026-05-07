@@ -279,8 +279,49 @@ def test_charge_block_mask_overrides_free_import_force_charge(
     )
 
     assert any(action.action == "charge" for action in unblocked.schedule.actions)
+    assert all(action.action == "charge" for action in unblocked.schedule.actions)
+    assert all(action.power_w == 7000 for action in unblocked.schedule.actions)
+    assert all(action.battery_charge_w == 7000 for action in unblocked.schedule.actions)
+    assert max(action.battery_discharge_w for action in unblocked.schedule.actions) <= 1e-6
+    assert unblocked.schedule.charge_w == [7000] * 12
     assert max(action.battery_charge_w for action in blocked.schedule.actions) <= 1e-6
     assert all(action.action != "charge" for action in blocked.schedule.actions)
+
+
+def test_zerohero_free_import_window_reports_continuous_force_charge(
+    battery_optimizer_module,
+):
+    optimizer = battery_optimizer_module.BatteryOptimizer(
+        capacity_wh=48000,
+        max_charge_w=12000,
+        max_discharge_w=12000,
+        backup_reserve=0.20,
+        interval_minutes=5,
+        horizon_hours=14,
+    )
+    free_start = 11 * 12
+    free_slots = 3 * 12
+    prices = [0.363] * free_start + [0.0] * free_slots
+
+    result = optimizer.optimize(
+        import_prices=prices,
+        export_prices=[0.0] * len(prices),
+        solar_forecast=[0.0] * len(prices),
+        load_forecast=[1.0] * len(prices),
+        current_soc=0.42,
+        acquisition_cost_kwh=0.0,
+        allow_battery_export=False,
+        block_battery_charge=False,
+    )
+
+    free_window = result.schedule.actions[free_start:free_start + free_slots]
+
+    assert len(free_window) == 36
+    assert all(action.action == "charge" for action in free_window)
+    assert all(action.power_w == 12000 for action in free_window)
+    assert all(action.battery_charge_w == 12000 for action in free_window)
+    assert max(action.battery_discharge_w for action in free_window) <= 1e-6
+    assert result.schedule.charge_w[free_start:free_start + free_slots] == [12000] * 36
 
 
 def test_grid_charge_allowed_by_default_for_profitable_export(

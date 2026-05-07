@@ -966,30 +966,25 @@ class BatteryOptimizer:
             import_kw = grid_import[t]
             export_kw = grid_export[t]
             charge_blocked = block_battery_charge[t]
-
-            # Update SOC — override charge rate during free electricity
-            # so the SOC projection matches the forced max charge action
-            effective_charge_kw = charge_kw
-            if (
+            free_import_slot = (
                 import_prices is not None
                 and import_prices[t] <= 0.001
-                and soc < 0.99
                 and not charge_blocked
-            ):
+            )
+
+            # Update SOC using the command intent. During free electricity we
+            # intentionally request max charge for the whole free window; the
+            # inverter/BMS handles any taper once the battery is physically full.
+            effective_charge_kw = charge_kw
+            if free_import_slot:
                 effective_charge_kw = max(charge_kw, self.max_charge_kw)
             soc += (effective_charge_kw * eff - discharge_kw / eff) * dt / cap
             soc = max(self.backup_reserve, min(1.0, soc))
 
             # Determine action
-            if (
-                import_prices is not None
-                and import_prices[t] <= 0.001
-                and soc < 0.99
-                and not charge_blocked
-                and (charge_kw > 0 or effective_charge_kw > 0)
-            ):
-                # Free electricity and battery not full — always force charge
-                # to maximize free grid intake (don't oscillate with SC)
+            if free_import_slot:
+                # Free electricity — always request force charge for the full
+                # slot so the action plan does not oscillate with the LP.
                 action = "charge"
                 power_w = max(charge_kw * 1000, self.max_charge_w)
             elif charge_kw > threshold_kw and import_kw > (load[t] + threshold_kw):
@@ -1043,13 +1038,19 @@ class BatteryOptimizer:
                 else:
                     power_w = 0.0
 
+            reported_charge_w = charge_kw * 1000
+            reported_discharge_w = discharge_kw * 1000
+            if free_import_slot and action == "charge":
+                reported_charge_w = power_w
+                reported_discharge_w = 0.0
+
             actions.append(ScheduleAction(
                 timestamp=ts,
                 action=action,
                 power_w=round(power_w, 1),
                 soc=round(soc, 4),
-                battery_charge_w=round(charge_kw * 1000, 1),
-                battery_discharge_w=round(discharge_kw * 1000, 1),
+                battery_charge_w=round(reported_charge_w, 1),
+                battery_discharge_w=round(reported_discharge_w, 1),
             ))
 
         return OptimizationSchedule(
