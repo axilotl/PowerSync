@@ -256,6 +256,25 @@ class NeovoltBatteryController:
                 _LOGGER.exception("Neovolt stop dispatch fallback failed")
         return False
 
+    async def set_dispatch_mode(self, mode: str) -> bool:
+        """Set the dispatch mode directly."""
+        await self._ensure_connected()
+        try:
+            await self._set_select("dispatch_mode", mode)
+            _LOGGER.info("Neovolt dispatch mode set to %s", mode)
+            return True
+        except Exception:
+            _LOGGER.exception("Neovolt set_dispatch_mode failed")
+            return False
+
+    async def set_no_battery_charge(self) -> bool:
+        """Park charging/discharging on systems that expose an anti-fighting mode."""
+        options = self._dispatch_mode_options()
+        for mode in ("No Battery Charge", "Idle (No Dispatch)"):
+            if mode in options:
+                return await self.set_dispatch_mode(mode)
+        return await self.set_dispatch_mode("No Battery Charge")
+
     async def set_backup_reserve(self, percent: int) -> bool:
         """Set the default discharging cutoff SOC in the Neovolt integration."""
         await self._ensure_connected()
@@ -402,6 +421,12 @@ class NeovoltBatteryController:
         except (TypeError, ValueError):
             return None
 
+    def _dispatch_mode_options(self) -> list[str]:
+        entity_id = self._entity_map.get("dispatch_mode")
+        state = self.hass.states.get(entity_id) if entity_id else None
+        options = (state.attributes or {}).get("options") if state else None
+        return [str(option) for option in options or []]
+
     async def _set_number(self, key: str, value: float | int) -> None:
         entity_id = self._entity_map.get(key)
         if not entity_id:
@@ -478,6 +503,8 @@ class NeovoltFleetBatteryController:
         self._surplus_balance: dict[str, Any] = {
             "active_index": None,
             "target_index": None,
+            "soc_parked_index": None,
+            "soc_parked_base_mode": None,
             "base_mode": None,
             "settings": None,
             "last_power_w": 0.0,
@@ -556,6 +583,8 @@ class NeovoltFleetBatteryController:
         if not self._surplus_balancer_enabled():
             if active_index is not None:
                 return await self._stop_surplus_balance("disabled", statuses, modes)
+            if self._surplus_balance.get("soc_parked_index") is not None:
+                return await self._restore_soc_parked_stack("disabled", statuses, modes)
             return self._set_surplus_status("disabled", statuses, modes)
 
         if active_index is not None:
@@ -573,6 +602,10 @@ class NeovoltFleetBatteryController:
                 return self._set_surplus_status("external_mode_change", statuses, modes)
 
             return await self._maintain_surplus_balance(active_index, statuses, modes)
+
+        soc_action = await self._manage_soc_balance_modes(statuses, modes)
+        if soc_action is not None:
+            return soc_action
 
         target_index, target_status = self._select_surplus_balance_target(statuses, modes)
         if target_index is None:
@@ -677,6 +710,91 @@ class NeovoltFleetBatteryController:
 
         candidates.sort()
         return candidates[0][1], "idle"
+
+    async def _manage_soc_balance_modes(
+        self,
+        statuses: list[dict[str, Any]],
+        modes: list[str | None],
+    ) -> dict[str, Any] | None:
+        lowest_index, highest_index, delta = self._soc_balance(statuses)
+        parked_index = self._surplus_balance.get("soc_parked_index")
+
+        if parked_index is not None:
+            if parked_index >= len(self._controllers):
+                self._surplus_balance["soc_parked_index"] = None
+                self._surplus_balance["soc_parked_base_mode"] = None
+            elif delta <= self._soc_balance_tolerance_pct:
+                return await self._restore_soc_parked_stack("balanced", statuses, modes)
+            elif modes[parked_index] not in _SURPLUS_BALANCE_BASE_MODES:
+                self._surplus_balance["soc_parked_index"] = None
+                self._surplus_balance["soc_parked_base_mode"] = None
+
+        if (
+            lowest_index is None
+            or highest_index is None
+            or lowest_index == highest_index
+            or delta <= self._soc_balance_tolerance_pct
+        ):
+            return None
+
+        if modes[lowest_index] in _SURPLUS_BALANCE_BASE_MODES:
+            return None
+
+        high_mode = modes[highest_index]
+        if high_mode in _SURPLUS_BALANCE_BASE_MODES:
+            return self._set_surplus_status(
+                "balancing_low_stack",
+                statuses,
+                modes,
+                highest_index,
+            )
+
+        if high_mode == _NORMAL_DISPATCH_MODE:
+            if await self._controllers[highest_index].set_no_battery_charge():
+                self._surplus_balance["soc_parked_index"] = highest_index
+                self._surplus_balance["soc_parked_base_mode"] = high_mode
+                modes = [controller.get_dispatch_mode() for controller in self._controllers]
+                _LOGGER.info(
+                    "Neovolt SOC balancer parked stack %d while stack %d catches up (delta %.1f%%)",
+                    highest_index + 1,
+                    lowest_index + 1,
+                    delta,
+                )
+                return self._set_surplus_status(
+                    "balancing_low_stack",
+                    statuses,
+                    modes,
+                    highest_index,
+                )
+            return self._set_surplus_status(
+                "park_high_stack_failed",
+                statuses,
+                modes,
+                highest_index,
+            )
+
+        return None
+
+    async def _restore_soc_parked_stack(
+        self,
+        reason: str,
+        statuses: list[dict[str, Any]] | None = None,
+        modes: list[str | None] | None = None,
+    ) -> dict[str, Any]:
+        index = self._surplus_balance.get("soc_parked_index")
+        if index is None:
+            return self._set_surplus_status(reason, statuses, modes)
+
+        base_mode = self._surplus_balance.get("soc_parked_base_mode") or _NORMAL_DISPATCH_MODE
+        try:
+            await self._controllers[index].restore_normal(base_mode)
+            _LOGGER.info("Neovolt SOC balancer restored stack %d to %s: %s", index + 1, base_mode, reason)
+        finally:
+            self._surplus_balance["soc_parked_index"] = None
+            self._surplus_balance["soc_parked_base_mode"] = None
+
+        modes = [controller.get_dispatch_mode() for controller in self._controllers]
+        return self._set_surplus_status(f"soc_{reason}", statuses, modes)
 
     async def _start_surplus_balance(
         self,
