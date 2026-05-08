@@ -4,6 +4,7 @@ import json
 import logging
 import re
 import threading
+from concurrent.futures import CancelledError, ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any
 import websockets
@@ -272,6 +273,10 @@ class AmberWebSocketClient:
         self._sync_callback = sync_callback
         self._last_sync_trigger: Optional[datetime] = None
         self._sync_cooldown_seconds = 60  # Minimum 60s between sync triggers
+        self._sync_executor: Optional[ThreadPoolExecutor] = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="WS-Notify",
+        )
 
         _LOGGER.info(f"AmberWebSocketClient initialized for site {site_id} (interval-based polling mode)")
 
@@ -280,6 +285,9 @@ class AmberWebSocketClient:
         if self._running:
             _LOGGER.warning("WebSocket client already running")
             return
+
+        if self._sync_executor is None:
+            self._sync_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="WS-Notify")
 
         self._running = True
         self._thread = threading.Thread(target=self._run_event_loop, daemon=True, name="AmberWebSocket")
@@ -310,6 +318,10 @@ class AmberWebSocketClient:
         # Wait for thread to finish
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=5)
+
+        if self._sync_executor is not None:
+            self._sync_executor.shutdown(wait=False, cancel_futures=True)
+            self._sync_executor = None
 
         _LOGGER.info("WebSocket client stopped")
 
@@ -597,14 +609,27 @@ class AmberWebSocketClient:
             self._last_sync_trigger = datetime.now(timezone.utc)
 
             # Run callback in separate thread to avoid blocking
-            from concurrent.futures import ThreadPoolExecutor
-            executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="WS-Notify")
-            executor.submit(self._sync_callback, prices_data)
+            if self._sync_executor is None:
+                _LOGGER.debug("Skipping sync callback because WebSocket client is stopping")
+                return
+
+            future = self._sync_executor.submit(self._sync_callback, prices_data)
+            future.add_done_callback(self._log_sync_callback_result)
 
             _LOGGER.debug("Notified sync coordinator of price update")
 
         except Exception as e:
             _LOGGER.error(f"Error notifying sync coordinator: {e}", exc_info=True)
+
+    @staticmethod
+    def _log_sync_callback_result(future):
+        """Log callback exceptions that would otherwise be hidden by the executor."""
+        try:
+            future.result()
+        except CancelledError:
+            _LOGGER.debug("WebSocket sync callback cancelled during shutdown")
+        except Exception as e:
+            _LOGGER.error(f"Error in WebSocket sync callback: {e}", exc_info=True)
 
     def get_latest_prices(self, max_age_seconds: int = 360) -> Optional[list]:
         """
