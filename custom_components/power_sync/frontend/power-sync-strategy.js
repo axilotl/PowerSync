@@ -2528,6 +2528,10 @@ function _teslaStyleFlow(e, hass, findSensor) {
   const evPower = e('ev_power');
   if (hass.states[evPower]) {
     config.entities.ev_power = evPower;
+    const matchedVehicleName = String(hass.states[evPower]?.attributes?.vehicle_name || '').trim();
+    if (matchedVehicleName && !/^wall connector$/i.test(matchedVehicleName)) {
+      config.ev_label = matchedVehicleName;
+    }
     const evBattery = e('ev_battery_level');
     if (hass.states[evBattery]) {
       config.entities.ev_battery = evBattery;

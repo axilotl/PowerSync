@@ -4537,11 +4537,62 @@ class EVStatusSensor(SensorEntity):
                 self._ev_data["ev_power_kw"] = ev_power
         self.async_write_ha_state()
 
+    @staticmethod
+    def _active_vehicle(vehicles: list[dict]) -> dict | None:
+        """Return the most relevant vehicle for dashboard attribution."""
+        if not vehicles:
+            return None
+        return (
+            next(
+                (
+                    vehicle
+                    for vehicle in vehicles
+                    if vehicle.get("is_charging")
+                    or (vehicle.get("ev_power_kw") or 0) > 0.05
+                ),
+                None,
+            )
+            or next(
+                (vehicle for vehicle in vehicles if vehicle.get("is_connected")),
+                None,
+            )
+            or vehicles[0]
+        )
+
+    def _apply_vehicle_context(self, vehicles: list[dict]) -> None:
+        """Attach backend-matched vehicle context to the EV sensor data."""
+        if self._ev_data is None:
+            self._ev_data = {}
+
+        active_vehicle = self._active_vehicle(vehicles)
+        if active_vehicle is None:
+            self._ev_data["vehicle_count"] = len(vehicles)
+            return
+
+        self._ev_data["vehicle_count"] = len(vehicles)
+        for source_key, target_key in (
+            ("vehicle_id", "vehicle_id"),
+            ("vehicle_name", "vehicle_name"),
+            ("is_connected", "is_connected"),
+            ("is_charging", "is_charging"),
+        ):
+            if source_key in active_vehicle:
+                self._ev_data[target_key] = active_vehicle.get(source_key)
+
+        active_power = active_vehicle.get("ev_power_kw") or 0
+        if active_power > 0 or self._ev_data.get("ev_power_kw", 0) <= 0:
+            self._ev_data["ev_power_kw"] = active_power
+
+        active_soc = active_vehicle.get("ev_soc")
+        if active_soc is not None:
+            self._ev_data["ev_soc"] = active_soc
+
     async def _async_update_ev(self, _now=None) -> None:
         """Poll EV status from vehicle sensors."""
-        from . import _get_ev_vehicle_status
+        from . import _get_ev_vehicle_status, _get_ev_vehicles_status
         try:
             self._ev_data = _get_ev_vehicle_status(self.hass, self._entry)
+            self._apply_vehicle_context(_get_ev_vehicles_status(self.hass, self._entry))
             # Supplement with Tesla coordinator Wall Connector data
             entry_data = self.hass.data.get(DOMAIN, {}).get(self._entry.entry_id, {})
             tesla_coordinator = entry_data.get("tesla_coordinator")
@@ -4559,6 +4610,25 @@ class EVStatusSensor(SensorEntity):
         if self.entity_description.value_fn:
             return self.entity_description.value_fn(self._ev_data)
         return None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return backend-matched EV attribution for dashboards."""
+        if not self._ev_data:
+            return {}
+
+        attrs: dict[str, Any] = {}
+        for key in (
+            "vehicle_id",
+            "vehicle_name",
+            "is_connected",
+            "is_charging",
+            "vehicle_count",
+        ):
+            value = self._ev_data.get(key)
+            if value is not None:
+                attrs[key] = value
+        return attrs
 
     @property
     def available(self) -> bool:

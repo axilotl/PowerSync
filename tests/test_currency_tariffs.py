@@ -89,3 +89,11 @@ def test_dashboard_has_no_legacy_dollar_or_cent_symbol_formatters():
         1,
     )[0]
     assert "yMultiplier: 100" in tou_section
+
+
+def test_dashboard_prefers_backend_matched_ev_label():
+    dashboard = COMPONENT_ROOT / "frontend" / "power-sync-strategy.js"
+    source = dashboard.read_text()
+
+    assert "attributes?.vehicle_name" in source
+    assert "config.ev_label = matchedVehicleName" in source
