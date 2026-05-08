@@ -403,16 +403,15 @@ class ZaptecCloudClient:
         """Parse raw charger state observations into human-readable dict.
 
         Zaptec state IDs:
-          120 = ChargerOperationMode (1=Disconnected, 2=Connected/Waiting, 3=Charging, 5=Error)
-          151 = CableLockState (locked when vehicle is connected)
-          507 = IsCharging
+          151 = PermanentCableLock
+          507 = CurrentPhase1
+          508 = CurrentPhase2
+          509 = CurrentPhase3
           513 = TotalChargePower (W)
-          514 = TotalChargePowerSession (Wh)
-          520 = PhaseA current
-          521 = PhaseB current
-          522 = PhaseC current
-          710 = ChargerFirmwareVersion
-          908 = CompletedSession (JSON)
+          553 = TotalChargePowerSession (kWh)
+          710 = ChargerOperationMode (1=Disconnected, 2=Connected/Waiting, 3=Charging, 5=Finished)
+          911 = ChargerFirmwareVersion
+          723 = CompletedSession (JSON)
 
         Args:
             state: Dict of StateId -> ValueAsString from get_charger_state
@@ -423,21 +422,31 @@ class ZaptecCloudClient:
         parsed = {}
 
         # Operation mode
-        op_mode_raw = state.get(120, state.get("120", ""))
+        op_mode_raw = state.get(710, state.get("710", ""))
         op_modes = {
             "0": "unknown",  # Autonomous/unknown — NOT paused (mode 0 = charger self-managed)
             "1": "disconnected",
             "2": "connected_waiting",
             "3": "charging",
-            "5": "error",
+            "5": "connected_finished",
         }
         parsed["charger_operation_mode"] = op_modes.get(
             str(op_mode_raw), f"unknown_{op_mode_raw}"
         )
 
-        # CableLockState (StateId 151) — locked means vehicle is connected
-        cable_lock_raw = state.get(151, state.get("151", ""))
-        parsed["cable_locked"] = str(cable_lock_raw).lower() in ("1", "true", "locked")
+        # Existing callers use cable_locked as a connected/plugged-in hint.
+        # Zaptec exposes connection primarily through ChargerOperationMode.
+        permanent_cable_lock_raw = state.get(151, state.get("151", ""))
+        parsed["permanent_cable_lock"] = str(permanent_cable_lock_raw).lower() in (
+            "1",
+            "true",
+            "locked",
+        )
+        parsed["cable_locked"] = parsed["charger_operation_mode"] in (
+            "connected_waiting",
+            "charging",
+            "connected_finished",
+        )
 
         # Power
         try:
@@ -449,21 +458,24 @@ class ZaptecCloudClient:
 
         # Session energy
         try:
-            parsed["session_energy_wh"] = float(
-                state.get(514, state.get("514", 0))
-            )
+            session_energy_kwh = float(state.get(553, state.get("553", 0)))
+            parsed["session_energy_wh"] = session_energy_kwh * 1000
         except (ValueError, TypeError):
             parsed["session_energy_wh"] = 0.0
 
-        # Phase currents (StateId 507=Phase1, 508=Phase2, 509=Phase3)
-        for phase, sid in [("phase_a_current", 507), ("phase_b_current", 508), ("phase_c_current", 509)]:
+        # Phase currents
+        for phase, sid in [
+            ("phase_a_current", 507),
+            ("phase_b_current", 508),
+            ("phase_c_current", 509),
+        ]:
             try:
                 parsed[phase] = float(state.get(sid, state.get(str(sid), 0)))
             except (ValueError, TypeError):
                 parsed[phase] = 0.0
 
         # Firmware
-        parsed["firmware_version"] = state.get(710, state.get("710", ""))
+        parsed["firmware_version"] = state.get(911, state.get("911", ""))
 
         # Mode-0 overrides: mode 0 (unknown/autonomous) needs disambiguation
         # using secondary signals (power, phase currents, cable lock state)

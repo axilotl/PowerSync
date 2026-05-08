@@ -24165,7 +24165,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     "Zaptec state poll OK: mode=%s (raw=%s), power=%sW, "
                     "phase_a=%.1fA, phase_b=%.1fA, phase_c=%.1fA, cable_locked=%s",
                     parsed.get('charger_operation_mode'),
-                    raw_state.get(120, raw_state.get('120', '?')),
+                    raw_state.get(710, raw_state.get('710', '?')),
                     parsed.get('total_charge_power_w'),
                     parsed.get('phase_a_current', 0),
                     parsed.get('phase_b_current', 0),
