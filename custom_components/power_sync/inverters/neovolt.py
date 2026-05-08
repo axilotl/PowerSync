@@ -102,6 +102,10 @@ _SURPLUS_BALANCE_DURATION_MINUTES = 2
 _SURPLUS_BALANCE_POWER_STEP_W = 100.0
 _SURPLUS_BALANCE_ADJUST_THRESHOLD_W = 200.0
 _SURPLUS_BALANCE_MAX_SOURCE_DISCHARGE_W = 250.0
+_SOC_FULL_PCT = 99.5
+_SOC_CATCHUP_DONE_PCT = 99.0
+_DUPLICATE_GRID_RELATIVE_TOLERANCE = 0.20
+_DUPLICATE_GRID_ABSOLUTE_TOLERANCE_KW = 0.10
 _SURPLUS_BALANCER_AUTO = "auto"
 _SURPLUS_BALANCER_ENABLED = "enabled"
 _SURPLUS_BALANCER_DISABLED = "disabled"
@@ -538,7 +542,7 @@ class NeovoltFleetBatteryController:
         capacities = [status.get("battery_capacity_kwh") for status in statuses]
         total_capacity = sum(cap for cap in capacities if cap is not None)
         solar_power = sum(status.get("solar_power", 0.0) or 0.0 for status in statuses)
-        grid_power = sum(status.get("grid_power", 0.0) or 0.0 for status in statuses)
+        grid_power = self._fleet_grid_power_kw(statuses)
         battery_power = sum(status.get("battery_power", 0.0) or 0.0 for status in statuses)
         reported_load = sum(status.get("load_power", 0.0) or 0.0 for status in statuses)
         balanced_load = max(0.0, solar_power + grid_power + battery_power)
@@ -744,7 +748,7 @@ class NeovoltFleetBatteryController:
             if parked_index >= len(self._controllers):
                 self._surplus_balance["soc_parked_index"] = None
                 self._surplus_balance["soc_parked_base_mode"] = None
-            elif delta <= self._soc_balance_tolerance_pct:
+            elif not self._needs_soc_balance_parking(statuses, lowest_index, highest_index, delta):
                 return await self._restore_soc_parked_stack("balanced", statuses, modes)
             elif modes[parked_index] not in _SURPLUS_BALANCE_BASE_MODES:
                 self._surplus_balance["soc_parked_index"] = None
@@ -754,7 +758,7 @@ class NeovoltFleetBatteryController:
             lowest_index is None
             or highest_index is None
             or lowest_index == highest_index
-            or delta <= self._soc_balance_tolerance_pct
+            or not self._needs_soc_balance_parking(statuses, lowest_index, highest_index, delta)
         ):
             return None
 
@@ -1059,7 +1063,54 @@ class NeovoltFleetBatteryController:
 
     @staticmethod
     def _fleet_grid_w(statuses: list[dict[str, Any]]) -> float:
-        return sum(float(status.get("grid_power", 0.0) or 0.0) * 1000.0 for status in statuses)
+        return NeovoltFleetBatteryController._fleet_grid_power_kw(statuses) * 1000.0
+
+    @staticmethod
+    def _fleet_grid_power_kw(statuses: list[dict[str, Any]]) -> float:
+        readings = [
+            float(status.get("grid_power", 0.0) or 0.0)
+            for status in statuses
+        ]
+        non_zero = [
+            reading
+            for reading in readings
+            if abs(reading) >= _DUPLICATE_GRID_ABSOLUTE_TOLERANCE_KW
+        ]
+        if len(non_zero) > 1:
+            all_importing = all(reading > 0 for reading in non_zero)
+            all_exporting = all(reading < 0 for reading in non_zero)
+            magnitudes = [abs(reading) for reading in non_zero]
+            largest = max(magnitudes)
+            smallest = min(magnitudes)
+            close_enough = (
+                (largest - smallest) <= _DUPLICATE_GRID_ABSOLUTE_TOLERANCE_KW
+                or (
+                    smallest > 0
+                    and (largest - smallest) / smallest <= _DUPLICATE_GRID_RELATIVE_TOLERANCE
+                )
+            )
+            if (all_importing or all_exporting) and close_enough:
+                # Multi-stack NeoVolt installs can expose the same site CT reading
+                # on every inverter. Average matching readings instead of doubling
+                # site import/export and the derived home load.
+                return sum(non_zero) / len(non_zero)
+        return sum(readings)
+
+    def _needs_soc_balance_parking(
+        self,
+        statuses: list[dict[str, Any]],
+        lowest_index: int | None,
+        highest_index: int | None,
+        delta: float,
+    ) -> bool:
+        if lowest_index is None or highest_index is None or lowest_index == highest_index:
+            return False
+        if delta > self._soc_balance_tolerance_pct:
+            return True
+
+        highest_soc = float(statuses[highest_index].get("battery_level", 0.0) or 0.0)
+        lowest_soc = float(statuses[lowest_index].get("battery_level", 0.0) or 0.0)
+        return highest_soc >= _SOC_FULL_PCT and lowest_soc < _SOC_CATCHUP_DONE_PCT
 
     @staticmethod
     def _other_stacks_discharging_w(
