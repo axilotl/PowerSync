@@ -20,6 +20,8 @@ from .const import (
     CONF_AUTO_UPDATE_ENABLED,
     CONF_AUTO_UPDATE_TIME,
     CONF_BATTERY_SYSTEM,
+    CONF_FORCE_CHARGE_DURATION,
+    CONF_FORCE_DISCHARGE_DURATION,
     DEFAULT_AUTO_UPDATE_TIME,
     CONF_ELECTRICITY_PROVIDER,
     CONF_MONITORING_MODE,
@@ -48,6 +50,59 @@ from .const import (
 PROVIDERS_WITH_TOU_SYNC = {"amber", "octopus", "flow_power"}
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _coerce_duration(value: Any, default: int = DEFAULT_DISCHARGE_DURATION) -> int:
+    """Return a valid integer duration for manual force controls."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _selected_duration(entry: ConfigEntry, key: str) -> int:
+    """Read the duration selected by the matching select entity."""
+    return _coerce_duration(
+        entry.options.get(key, entry.data.get(key, DEFAULT_DISCHARGE_DURATION))
+    )
+
+
+def _state_float(hass: HomeAssistant, entity_id: str) -> float | None:
+    state = hass.states.get(entity_id)
+    if state is None:
+        return None
+    try:
+        return float(state.state)
+    except (TypeError, ValueError):
+        return None
+
+
+def _selected_force_power_w(hass: HomeAssistant) -> int:
+    """Read the force-power selector and convert it to service power_w."""
+    watts = _state_float(hass, "number.power_sync_force_power_w")
+    if watts is not None and watts > 0:
+        return int(round(watts))
+
+    kw = _state_float(hass, "number.power_sync_force_power_kw")
+    if kw is not None and kw > 0:
+        return int(round(kw * 1000))
+
+    return 0
+
+
+def _parse_expiry(value: Any) -> datetime | None:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _datetime_now_for(expires_at: datetime) -> datetime:
+    return datetime.now(expires_at.tzinfo) if expires_at.tzinfo else datetime.now()
 
 
 async def async_setup_entry(
@@ -115,6 +170,29 @@ async def async_setup_entry(
         ),
     )
 
+    # Manual force controls are service wrappers and are available for every
+    # battery system supported by power_sync.force_charge/force_discharge.
+    entities.extend([
+        ForceDischargeSwitch(
+            hass=hass,
+            entry=entry,
+            description=SwitchEntityDescription(
+                key=SWITCH_TYPE_FORCE_DISCHARGE,
+                name="Force Discharge",
+                icon="mdi:battery-arrow-up",
+            ),
+        ),
+        ForceChargeSwitch(
+            hass=hass,
+            entry=entry,
+            description=SwitchEntityDescription(
+                key=SWITCH_TYPE_FORCE_CHARGE,
+                name="Force Charge",
+                icon="mdi:battery-arrow-down",
+            ),
+        ),
+    ])
+
     # Only add auto-sync switch for providers that actually sync TOU schedules
     if has_tou_sync:
         entities.append(
@@ -131,26 +209,8 @@ async def async_setup_entry(
 
     # Add Tesla-specific switches only if Tesla is selected as battery system
     if is_tesla:
-        _LOGGER.info("Tesla battery system detected - adding force charge/discharge switches")
+        _LOGGER.info("Tesla battery system detected - adding Tesla-specific switches")
         entities.extend([
-            ForceDischargeSwitch(
-                hass=hass,
-                entry=entry,
-                description=SwitchEntityDescription(
-                    key=SWITCH_TYPE_FORCE_DISCHARGE,
-                    name="Force Discharge",
-                    icon="mdi:battery-arrow-up",
-                ),
-            ),
-            ForceChargeSwitch(
-                hass=hass,
-                entry=entry,
-                description=SwitchEntityDescription(
-                    key=SWITCH_TYPE_FORCE_CHARGE,
-                    name="Force Charge",
-                    icon="mdi:battery-arrow-down",
-                ),
-            ),
             GridChargingSwitch(hass=hass, entry=entry),
         ])
 
@@ -423,6 +483,35 @@ class ForceDischargeSwitch(SwitchEntity):
         """Return True if force discharge is active."""
         return self._attr_is_on
 
+    async def async_added_to_hass(self) -> None:
+        """Keep switch state in sync with service/dashboard-triggered discharge."""
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                f"{DOMAIN}_force_discharge_state",
+                self._handle_force_discharge_update,
+            )
+        )
+
+    @callback
+    def _handle_force_discharge_update(self, state: dict[str, Any]) -> None:
+        """Update switch state when force discharge is changed elsewhere."""
+        active = bool(state.get("active")) if isinstance(state, dict) else False
+        self._attr_is_on = active
+        if isinstance(state, dict) and state.get("duration") is not None:
+            self._duration_minutes = _coerce_duration(
+                state.get("duration"), self._duration_minutes
+            )
+        self._discharge_expires_at = None
+        if active and isinstance(state, dict):
+            self._discharge_expires_at = _parse_expiry(state.get("expires_at"))
+        if active and self._discharge_expires_at:
+            self._schedule_expiry_check()
+        elif self._cancel_expiry_timer:
+            self._cancel_expiry_timer()
+            self._cancel_expiry_timer = None
+        self.async_write_ha_state()
+
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn on force discharge mode."""
         # Log context to help debug if triggered by automation vs user
@@ -435,14 +524,24 @@ class ForceDischargeSwitch(SwitchEntity):
         _LOGGER.info("Activating force discharge mode for %d minutes", self._duration_minutes)
 
         # Get the duration from service call data if provided
-        duration = kwargs.get("duration", self._duration_minutes)
+        selected_duration = _selected_duration(
+            self._entry,
+            CONF_FORCE_DISCHARGE_DURATION,
+        )
+        duration = _coerce_duration(
+            kwargs.get("duration", selected_duration), self._duration_minutes,
+        )
+        service_data = {"duration": duration}
+        power_w = _selected_force_power_w(self.hass)
+        if power_w > 0:
+            service_data["power_w"] = power_w
 
         # Call the force discharge service
         try:
             await self.hass.services.async_call(
                 DOMAIN,
                 "force_discharge",
-                {"duration": duration},
+                service_data,
                 blocking=True,
             )
 
@@ -492,7 +591,10 @@ class ForceDischargeSwitch(SwitchEntity):
         @callback
         def _check_expiry(now: datetime) -> None:
             """Check if discharge has expired."""
-            if self._discharge_expires_at and datetime.now() >= self._discharge_expires_at:
+            if (
+                self._discharge_expires_at
+                and _datetime_now_for(self._discharge_expires_at) >= self._discharge_expires_at
+            ):
                 _LOGGER.info("Force discharge expired, restoring normal operation")
                 self._attr_is_on = False
                 self._discharge_expires_at = None
@@ -516,7 +618,9 @@ class ForceDischargeSwitch(SwitchEntity):
 
         if self._discharge_expires_at:
             attrs["expires_at"] = self._discharge_expires_at.isoformat()
-            remaining = self._discharge_expires_at - datetime.now()
+            remaining = self._discharge_expires_at - _datetime_now_for(
+                self._discharge_expires_at
+            )
             if remaining.total_seconds() > 0:
                 attrs["remaining_minutes"] = int(remaining.total_seconds() / 60)
             else:
@@ -564,19 +668,58 @@ class ForceChargeSwitch(SwitchEntity):
         """Return True if force charge is active."""
         return self._attr_is_on
 
+    async def async_added_to_hass(self) -> None:
+        """Keep switch state in sync with service/dashboard-triggered charge."""
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                f"{DOMAIN}_force_charge_state",
+                self._handle_force_charge_update,
+            )
+        )
+
+    @callback
+    def _handle_force_charge_update(self, state: dict[str, Any]) -> None:
+        """Update switch state when force charge is changed elsewhere."""
+        active = bool(state.get("active")) if isinstance(state, dict) else False
+        self._attr_is_on = active
+        if isinstance(state, dict) and state.get("duration") is not None:
+            self._duration_minutes = _coerce_duration(
+                state.get("duration"), self._duration_minutes
+            )
+        self._charge_expires_at = None
+        if active and isinstance(state, dict):
+            self._charge_expires_at = _parse_expiry(state.get("expires_at"))
+        if active and self._charge_expires_at:
+            self._schedule_expiry_check()
+        elif self._cancel_expiry_timer:
+            self._cancel_expiry_timer()
+            self._cancel_expiry_timer = None
+        self.async_write_ha_state()
+
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn on force charge mode."""
         _LOGGER.info("Activating force charge mode for %d minutes", self._duration_minutes)
 
         # Get the duration from service call data if provided
-        duration = kwargs.get("duration", self._duration_minutes)
+        selected_duration = _selected_duration(
+            self._entry,
+            CONF_FORCE_CHARGE_DURATION,
+        )
+        duration = _coerce_duration(
+            kwargs.get("duration", selected_duration), self._duration_minutes,
+        )
+        service_data = {"duration": duration}
+        power_w = _selected_force_power_w(self.hass)
+        if power_w > 0:
+            service_data["power_w"] = power_w
 
         # Call the force charge service
         try:
             await self.hass.services.async_call(
                 DOMAIN,
                 "force_charge",
-                {"duration": duration},
+                service_data,
                 blocking=True,
             )
 
@@ -626,7 +769,10 @@ class ForceChargeSwitch(SwitchEntity):
         @callback
         def _check_expiry(now: datetime) -> None:
             """Check if charge has expired."""
-            if self._charge_expires_at and datetime.now() >= self._charge_expires_at:
+            if (
+                self._charge_expires_at
+                and _datetime_now_for(self._charge_expires_at) >= self._charge_expires_at
+            ):
                 _LOGGER.info("Force charge expired, restoring normal operation")
                 self._attr_is_on = False
                 self._charge_expires_at = None
@@ -650,7 +796,9 @@ class ForceChargeSwitch(SwitchEntity):
 
         if self._charge_expires_at:
             attrs["expires_at"] = self._charge_expires_at.isoformat()
-            remaining = self._charge_expires_at - datetime.now()
+            remaining = self._charge_expires_at - _datetime_now_for(
+                self._charge_expires_at
+            )
             if remaining.total_seconds() > 0:
                 attrs["remaining_minutes"] = int(remaining.total_seconds() / 60)
             else:

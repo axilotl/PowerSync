@@ -18,10 +18,18 @@ from .const import (
     DOMAIN,
     CONF_TESLA_ENERGY_SITE_ID,
     CONF_FOXESS_HOST,
+    CONF_FOXESS_SERIAL_PORT,
     CONF_GOODWE_HOST,
     CONF_SIGENERGY_STATION_ID,
     CONF_SUNGROW_HOST,
+    CONF_SUNGROW_HOST_2,
     CONF_ALPHAESS_MODBUS_HOST,
+    CONF_ESY_CONFIG_ENTRY_ID,
+    CONF_SOLAX_CONFIG_ENTRY_ID,
+    CONF_SOLAX_ENTITY_PREFIX,
+    CONF_SAJ_CONFIG_ENTRY_ID,
+    CONF_NEOVOLT_CONFIG_ENTRY_ID,
+    CONF_NEOVOLT_CONFIG_ENTRY_IDS,
     family_device_info,
     SENSOR_FAMILY_BATTERY,
     SENSOR_FAMILY_EV_CHARGING,
@@ -63,17 +71,28 @@ async def async_setup_entry(
             name=f"{DOMAIN}_capability_gated_numbers",
         )
 
-    # Force power slider — for non-Tesla battery systems that accept a power_w
-    # parameter on force charge/discharge (FoxESS, GoodWe, Sigenergy, Sungrow,
-    # AlphaESS). Stores the user's preferred force power level in kW.
-    _non_tesla_battery = any(
+    # Force power slider — for battery systems whose force charge/discharge
+    # service path accepts a power_w parameter. The entity stores the user's
+    # preferred force power level in kW and service callers convert it to W.
+    _supports_force_power = any(
         entry.data.get(k) or entry.options.get(k)
         for k in (
-            CONF_FOXESS_HOST, CONF_GOODWE_HOST, CONF_SIGENERGY_STATION_ID,
-            CONF_SUNGROW_HOST, CONF_ALPHAESS_MODBUS_HOST,
+            CONF_FOXESS_HOST,
+            CONF_FOXESS_SERIAL_PORT,
+            CONF_GOODWE_HOST,
+            CONF_SIGENERGY_STATION_ID,
+            CONF_SUNGROW_HOST,
+            CONF_SUNGROW_HOST_2,
+            CONF_ALPHAESS_MODBUS_HOST,
+            CONF_ESY_CONFIG_ENTRY_ID,
+            CONF_SOLAX_CONFIG_ENTRY_ID,
+            CONF_SOLAX_ENTITY_PREFIX,
+            CONF_SAJ_CONFIG_ENTRY_ID,
+            CONF_NEOVOLT_CONFIG_ENTRY_ID,
+            CONF_NEOVOLT_CONFIG_ENTRY_IDS,
         )
     )
-    if _non_tesla_battery:
+    if _supports_force_power:
         async_add_entities([ForcePowerNumber(hass, entry)])
 
 

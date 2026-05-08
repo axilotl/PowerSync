@@ -87,6 +87,8 @@ _ps_const.CONF_AUTO_SYNC_ENABLED = "auto_sync_enabled"
 _ps_const.CONF_AUTO_UPDATE_ENABLED = "auto_update_enabled"
 _ps_const.CONF_AUTO_UPDATE_TIME = "auto_update_time"
 _ps_const.CONF_BATTERY_SYSTEM = "battery_system"
+_ps_const.CONF_FORCE_CHARGE_DURATION = "force_charge_duration"
+_ps_const.CONF_FORCE_DISCHARGE_DURATION = "force_discharge_duration"
 _ps_const.DEFAULT_AUTO_UPDATE_TIME = "03:00"
 _ps_const.CONF_ELECTRICITY_PROVIDER = "electricity_provider"
 _ps_const.CONF_MONITORING_MODE = "monitoring_mode"
@@ -204,3 +206,98 @@ def test_on_grid_command_reconnects_and_shares_pending_state():
     ]
     assert on_grid.is_on is True
     assert off_grid.is_on is False
+
+
+def test_force_switches_are_added_for_non_tesla_batteries():
+    hass = _Hass("SystemGridConnected")
+    entry = types.SimpleNamespace(
+        entry_id="entry-1",
+        data={"battery_system": "sigenergy"},
+        options={},
+    )
+    added = []
+
+    asyncio.run(switch.async_setup_entry(hass, entry, added.extend))
+
+    assert any(isinstance(entity, switch.ForceDischargeSwitch) for entity in added)
+    assert any(isinstance(entity, switch.ForceChargeSwitch) for entity in added)
+    assert not any(isinstance(entity, switch.GridChargingSwitch) for entity in added)
+
+
+def test_force_discharge_switch_uses_selected_duration_and_force_power():
+    hass = _Hass("SystemGridConnected")
+    hass.states._states["number.power_sync_force_power_kw"] = _State("5.5")
+    entry = types.SimpleNamespace(
+        entry_id="entry-1",
+        data={},
+        options={"force_discharge_duration": "90"},
+    )
+    force_switch = switch.ForceDischargeSwitch(
+        hass,
+        entry,
+        _SwitchEntityDescription(
+            key="force_discharge",
+            name="Force Discharge",
+            icon="mdi:battery-arrow-up",
+        ),
+    )
+
+    asyncio.run(force_switch.async_turn_on())
+
+    assert hass.services.calls == [
+        ("power_sync", "force_discharge", {"duration": 90, "power_w": 5500}, True),
+    ]
+
+
+def test_force_charge_switch_uses_selected_duration_and_force_power():
+    hass = _Hass("SystemGridConnected")
+    hass.states._states["number.power_sync_force_power_kw"] = _State("4")
+    entry = types.SimpleNamespace(
+        entry_id="entry-1",
+        data={},
+        options={"force_charge_duration": "120"},
+    )
+    force_switch = switch.ForceChargeSwitch(
+        hass,
+        entry,
+        _SwitchEntityDescription(
+            key="force_charge",
+            name="Force Charge",
+            icon="mdi:battery-arrow-down",
+        ),
+    )
+
+    asyncio.run(force_switch.async_turn_on())
+
+    assert hass.services.calls == [
+        ("power_sync", "force_charge", {"duration": 120, "power_w": 4000}, True),
+    ]
+
+
+def test_force_switch_state_tracks_service_dispatch_payload():
+    hass = _Hass("SystemGridConnected")
+    entry = _entry()
+    force_switch = switch.ForceDischargeSwitch(
+        hass,
+        entry,
+        _SwitchEntityDescription(
+            key="force_discharge",
+            name="Force Discharge",
+            icon="mdi:battery-arrow-up",
+        ),
+    )
+
+    force_switch._handle_force_discharge_update({
+        "active": True,
+        "duration": 45,
+        "expires_at": "2026-05-08T12:45:00+00:00",
+    })
+
+    assert force_switch.is_on is True
+    assert force_switch.extra_state_attributes["duration_minutes"] == 45
+    assert force_switch.extra_state_attributes["expires_at"] == "2026-05-08T12:45:00+00:00"
+
+    force_switch._handle_force_discharge_update({"active": False})
+
+    assert force_switch.is_on is False
+    assert "expires_at" not in force_switch.extra_state_attributes

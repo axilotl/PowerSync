@@ -129,3 +129,25 @@ def test_capability_gated_numbers_inner_function_unchanged():
         "_add_capability_gated_numbers no longer references 'tesla_capabilities' — "
         "the inner polling logic may have been removed unintentionally"
     )
+
+
+def test_force_power_slider_covers_power_capable_batteries():
+    """The force-power control should appear for every power_w force path."""
+    source = NUMBER_PATH.read_text()
+
+    for constant_name in (
+        "CONF_FOXESS_HOST",
+        "CONF_FOXESS_SERIAL_PORT",
+        "CONF_GOODWE_HOST",
+        "CONF_SIGENERGY_STATION_ID",
+        "CONF_SUNGROW_HOST",
+        "CONF_SUNGROW_HOST_2",
+        "CONF_ALPHAESS_MODBUS_HOST",
+        "CONF_ESY_CONFIG_ENTRY_ID",
+        "CONF_SOLAX_CONFIG_ENTRY_ID",
+        "CONF_SOLAX_ENTITY_PREFIX",
+        "CONF_SAJ_CONFIG_ENTRY_ID",
+        "CONF_NEOVOLT_CONFIG_ENTRY_ID",
+        "CONF_NEOVOLT_CONFIG_ENTRY_IDS",
+    ):
+        assert constant_name in source
