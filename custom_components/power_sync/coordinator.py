@@ -5166,6 +5166,12 @@ class NeovoltEnergyCoordinator(DataUpdateCoordinator):
                 return self.data
             raise UpdateFailed(f"Neovolt entity read failed: {exc}") from exc
 
+        try:
+            surplus_balancer = await self._controller.balance_solar_surplus(status)
+        except Exception as exc:
+            _LOGGER.warning("Neovolt surplus balancer skipped: %s", exc)
+            surplus_balancer = status.get("surplus_balancer", {})
+
         solar_kw = status.get("solar_power", 0.0) or 0.0
         grid_kw = status.get("grid_power", 0.0) or 0.0
         battery_kw = status.get("battery_power", 0.0) or 0.0
@@ -5185,6 +5191,7 @@ class NeovoltEnergyCoordinator(DataUpdateCoordinator):
             "battery_soh": status.get("battery_soh"),
             "battery_max_charge_power_w": status.get("battery_max_charge_power_w"),
             "battery_max_discharge_power_w": status.get("battery_max_discharge_power_w"),
+            "neovolt_surplus_balancer": surplus_balancer,
             "energy_summary": self._energy_acc.as_dict(),
         }
 

@@ -154,7 +154,15 @@ def _control_states_for(index: int, mode: str = "Normal") -> list[_FakeState]:
         _FakeState(
             f"select.{prefix}_dispatch_mode",
             mode,
-            ["Normal", "Force Charge", "Force Discharge", "Dynamic Export", "Dynamic Import"],
+            [
+                "Normal",
+                "Force Charge",
+                "Force Discharge",
+                "Dynamic Export",
+                "Dynamic Import",
+                "No Battery Charge",
+                "Idle (No Dispatch)",
+            ],
         ),
         _FakeState(f"number.{prefix}_dispatch_power", "3.0"),
         _FakeState(f"number.{prefix}_dispatch_duration", "120"),
@@ -510,6 +518,200 @@ def test_fleet_restore_normal_keeps_existing_stable_modes_without_saved_baseline
     assert asyncio.run(controller.restore_normal())
 
     assert hass.services.calls == []
+
+
+def test_fleet_surplus_balancer_charges_anti_fighting_stack_from_export():
+    entry_1_states = _combined_states_for(
+        1,
+        battery_power="-4600",
+        battery_soc="23",
+        battery_capacity="20.1",
+        house_load="900",
+        pv_power="6000",
+        grid_power="-800",
+    ) + _control_states_for(1, mode="Normal")
+    entry_2_states = _combined_states_for(
+        2,
+        battery_power="0",
+        battery_soc="62",
+        battery_capacity="30.2",
+        house_load="0",
+        pv_power="0",
+        grid_power="0",
+    ) + _control_states_for(2, mode="No Battery Charge")
+    hass = _FakeHass(
+        entry_1_states + entry_2_states,
+        {
+            "neovolt-1": [state.entity_id for state in entry_1_states],
+            "neovolt-2": [state.entity_id for state in entry_2_states],
+        },
+    )
+    controller = NeovoltFleetBatteryController(
+        hass,
+        ["neovolt-1", "neovolt-2"],
+        max_charge_kw=5.0,
+        max_discharge_kw=5.0,
+    )
+    assert asyncio.run(controller.connect())
+
+    status = controller.get_status()
+    balancer = asyncio.run(controller.balance_solar_surplus(status))
+
+    assert balancer["status"] == "charging"
+    assert balancer["active_index"] == 1
+    assert balancer["base_mode"] == "No Battery Charge"
+    assert balancer["last_power_w"] == 800.0
+    assert hass.services.calls == [
+        ("number", "set_value", {"entity_id": "number.neovolt_2_dispatch_power", "value": 0.8}),
+        ("number", "set_value", {"entity_id": "number.neovolt_2_dispatch_duration", "value": 2}),
+        ("number", "set_value", {"entity_id": "number.neovolt_2_dispatch_charge_target_soc", "value": 100}),
+        ("select", "select_option", {"entity_id": "select.neovolt_2_dispatch_mode", "option": "Force Charge"}),
+    ]
+
+
+def test_fleet_surplus_balancer_blocks_start_when_other_stack_is_discharging():
+    entry_1_states = _combined_states_for(
+        1,
+        battery_power="600",
+        battery_soc="23",
+        battery_capacity="20.1",
+        house_load="900",
+        pv_power="6000",
+        grid_power="-800",
+    ) + _control_states_for(1, mode="Normal")
+    entry_2_states = _combined_states_for(
+        2,
+        battery_power="0",
+        battery_soc="62",
+        battery_capacity="30.2",
+        house_load="0",
+        pv_power="0",
+        grid_power="0",
+    ) + _control_states_for(2, mode="No Battery Charge")
+    hass = _FakeHass(
+        entry_1_states + entry_2_states,
+        {
+            "neovolt-1": [state.entity_id for state in entry_1_states],
+            "neovolt-2": [state.entity_id for state in entry_2_states],
+        },
+    )
+    controller = NeovoltFleetBatteryController(
+        hass,
+        ["neovolt-1", "neovolt-2"],
+        max_charge_kw=5.0,
+        max_discharge_kw=5.0,
+    )
+    assert asyncio.run(controller.connect())
+
+    balancer = asyncio.run(controller.balance_solar_surplus(controller.get_status()))
+
+    assert balancer["status"] == "blocked_source_discharging"
+    assert hass.services.calls == []
+
+
+def test_fleet_surplus_balancer_restores_base_mode_and_dispatch_settings_on_import():
+    entry_1_states = _combined_states_for(
+        1,
+        battery_power="-4600",
+        battery_soc="23",
+        battery_capacity="20.1",
+        house_load="900",
+        pv_power="6000",
+        grid_power="-800",
+    ) + _control_states_for(1, mode="Normal")
+    entry_2_states = _combined_states_for(
+        2,
+        battery_power="0",
+        battery_soc="62",
+        battery_capacity="30.2",
+        house_load="0",
+        pv_power="0",
+        grid_power="0",
+    ) + _control_states_for(2, mode="No Battery Charge")
+    hass = _FakeHass(
+        entry_1_states + entry_2_states,
+        {
+            "neovolt-1": [state.entity_id for state in entry_1_states],
+            "neovolt-2": [state.entity_id for state in entry_2_states],
+        },
+    )
+    controller = NeovoltFleetBatteryController(
+        hass,
+        ["neovolt-1", "neovolt-2"],
+        max_charge_kw=5.0,
+        max_discharge_kw=5.0,
+    )
+    assert asyncio.run(controller.connect())
+    asyncio.run(controller.balance_solar_surplus(controller.get_status()))
+
+    hass.services.calls.clear()
+    hass.states._states["select.neovolt_2_dispatch_mode"].state = "Force Charge"
+    hass.states._states["sensor.neovolt_2_combined_battery_power"].state = "-800"
+    hass.states._states["sensor.neovolt_1_grid_total_active_power"].state = "300"
+    hass.states._states["sensor.neovolt_2_grid_total_active_power"].state = "0"
+
+    balancer = asyncio.run(controller.balance_solar_surplus(controller.get_status()))
+
+    assert balancer["status"] == "stopped_importing"
+    assert balancer["active_index"] is None
+    assert hass.services.calls == [
+        ("select", "select_option", {"entity_id": "select.neovolt_2_dispatch_mode", "option": "No Battery Charge"}),
+        ("number", "set_value", {"entity_id": "number.neovolt_2_dispatch_power", "value": 3.0}),
+        ("number", "set_value", {"entity_id": "number.neovolt_2_dispatch_duration", "value": 120}),
+        ("number", "set_value", {"entity_id": "number.neovolt_2_dispatch_charge_target_soc", "value": 100}),
+    ]
+
+
+def test_fleet_surplus_balancer_stops_when_other_stack_starts_discharging():
+    entry_1_states = _combined_states_for(
+        1,
+        battery_power="-4600",
+        battery_soc="23",
+        battery_capacity="20.1",
+        house_load="900",
+        pv_power="6000",
+        grid_power="-800",
+    ) + _control_states_for(1, mode="Normal")
+    entry_2_states = _combined_states_for(
+        2,
+        battery_power="0",
+        battery_soc="62",
+        battery_capacity="30.2",
+        house_load="0",
+        pv_power="0",
+        grid_power="0",
+    ) + _control_states_for(2, mode="No Battery Charge")
+    hass = _FakeHass(
+        entry_1_states + entry_2_states,
+        {
+            "neovolt-1": [state.entity_id for state in entry_1_states],
+            "neovolt-2": [state.entity_id for state in entry_2_states],
+        },
+    )
+    controller = NeovoltFleetBatteryController(
+        hass,
+        ["neovolt-1", "neovolt-2"],
+        max_charge_kw=5.0,
+        max_discharge_kw=5.0,
+    )
+    assert asyncio.run(controller.connect())
+    asyncio.run(controller.balance_solar_surplus(controller.get_status()))
+
+    hass.services.calls.clear()
+    hass.states._states["select.neovolt_2_dispatch_mode"].state = "Force Charge"
+    hass.states._states["sensor.neovolt_2_combined_battery_power"].state = "-800"
+    hass.states._states["sensor.neovolt_1_combined_battery_power"].state = "600"
+    hass.states._states["sensor.neovolt_1_grid_total_active_power"].state = "-500"
+
+    balancer = asyncio.run(controller.balance_solar_surplus(controller.get_status()))
+
+    assert balancer["status"] == "stopped_source_discharging"
+    assert balancer["active_index"] is None
+    assert hass.services.calls[0] == (
+        "select",
+        "select_option",
+        {"entity_id": "select.neovolt_2_dispatch_mode", "option": "No Battery Charge"},
+    )
 
 
 def test_force_charge_writes_numbers_before_mode_select():
