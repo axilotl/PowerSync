@@ -1252,6 +1252,7 @@ import {
       this._lastAppliedSceneFlowProfile = '';
       this._lastAppliedSceneFlowComponentProfile = '';
       this._pendingFlowStates = null;
+      this._renderQueued = false;
     }
 
     setConfig(config) {
@@ -1259,12 +1260,12 @@ import {
       this._initialized = false;
       this._lastAppliedSceneFlowProfile = '';
       this._lastAppliedSceneFlowComponentProfile = '';
-      this._render();
+      this._scheduleRender();
     }
 
     set hass(hass) {
       this._hass = hass;
-      this._render();
+      this._scheduleRender();
     }
 
     getCardSize() {
@@ -1276,6 +1277,15 @@ import {
         rows: 10,
         min_rows: 8
       };
+    }
+
+    _scheduleRender() {
+      if (this._renderQueued) return;
+      this._renderQueued = true;
+      requestAnimationFrame(() => {
+        this._renderQueued = false;
+        this._render();
+      });
     }
 
     _entityState(entityId) {
@@ -1336,10 +1346,14 @@ import {
         : '';
       if ((el.dataset.flowState || '') === signature) return;
 
-      el.classList.remove('active', 'flow-solar', 'flow-green', 'flow-broken', 'flow-reverse');
-      if (desiredClasses.length) {
-        el.classList.add('active', ...desiredClasses);
+      if (!desiredClasses.length) {
+        el.classList.remove('active', 'flow-solar', 'flow-green', 'flow-broken', 'flow-reverse');
+      } else {
+        ['flow-solar', 'flow-green', 'flow-broken'].forEach((flowClass) => {
+          el.classList.toggle(flowClass, desiredClasses.includes(flowClass));
+        });
         el.classList.toggle('flow-reverse', !!reverse);
+        el.classList.add('active');
       }
       el.dataset.flowState = signature;
     }
