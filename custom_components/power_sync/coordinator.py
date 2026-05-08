@@ -4618,13 +4618,19 @@ class FoxESSEnergyCoordinator(DataUpdateCoordinator):
         )
         return float(fallback)
 
-    async def force_charge(self, duration_minutes: int = 30, power_w: float = 0) -> bool:
+    async def force_charge(
+        self,
+        duration_minutes: int = 30,
+        power_w: float = 0,
+        min_timeout_seconds: int = 600,
+    ) -> bool:
         """Set FoxESS to force charge mode.
 
         Args:
             duration_minutes: How long to charge
             power_w: Charge power in watts. If 0, reads max_charge_current from
                      the inverter and uses that (respects user's FoxESS app setting).
+            min_timeout_seconds: Minimum hardware remote-control timeout.
         """
         async with self._modbus_lock, self._controller:
             if power_w <= 0 and self.data:

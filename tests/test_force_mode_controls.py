@@ -8,6 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 INIT_PATH = ROOT / "custom_components" / "power_sync" / "__init__.py"
+COORDINATOR_PATH = ROOT / "custom_components" / "power_sync" / "coordinator.py"
 SELECT_PATH = ROOT / "custom_components" / "power_sync" / "select.py"
 
 
@@ -180,6 +181,19 @@ def test_optimizer_force_modes_are_not_reissued_after_restart():
     assert 'stored_data["force_mode_state"] = None' in optimizer_branch
     assert "SERVICE_FORCE_DISCHARGE" not in optimizer_branch
     assert "SERVICE_FORCE_CHARGE" not in optimizer_branch
+
+
+def test_foxess_force_charge_accepts_optimizer_min_timeout():
+    source = COORDINATOR_PATH.read_text()
+    tree = ast.parse(source)
+    method = _find_class_method(tree, "FoxESSEnergyCoordinator", "force_charge")
+    method_source = ast.get_source_segment(source, method)
+
+    assert method_source is not None
+    arg_names = [arg.arg for arg in method.args.args]
+    assert "min_timeout_seconds" in arg_names
+    assert "min_timeout_seconds: int = 600" in method_source
+    assert "min_timeout_seconds=min_timeout_seconds" in method_source
 
 
 def _saj_force_charge_branch() -> str:
