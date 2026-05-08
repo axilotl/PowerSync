@@ -4831,7 +4831,49 @@ class GoodWeEnergyCoordinator(DataUpdateCoordinator):
             self._connected = False
             raise UpdateFailed(f"Error fetching GoodWe data: {err}") from err
 
-    async def _ems_set_mode(self, ems_option: str, power_w: float) -> bool:
+    def _goodwe_ems_mode_attempts(
+        self,
+        mode_entity: str,
+        preferred_option: str,
+        fallback_option: str | None = None,
+    ) -> list[str]:
+        """Return supported GoodWe EMS mode attempts in preference order."""
+        attempts = [preferred_option]
+        if fallback_option and fallback_option != preferred_option:
+            attempts.append(fallback_option)
+
+        state = self.hass.states.get(mode_entity)
+        raw_options = state.attributes.get("options") if state else None
+        if not isinstance(raw_options, (list, tuple, set)):
+            return attempts
+
+        options = {str(option) for option in raw_options}
+        if preferred_option in options:
+            return [preferred_option]
+        if fallback_option and fallback_option in options:
+            _LOGGER.warning(
+                "GoodWe EMS mode %s is not exposed by %s; falling back to %s",
+                preferred_option,
+                mode_entity,
+                fallback_option,
+            )
+            return [fallback_option]
+
+        _LOGGER.warning(
+            "GoodWe EMS modes %s are not exposed by %s (available: %s); trying %s",
+            attempts,
+            mode_entity,
+            sorted(options),
+            preferred_option,
+        )
+        return [preferred_option]
+
+    async def _ems_set_mode(
+        self,
+        ems_option: str,
+        power_w: float,
+        fallback_option: str | None = None,
+    ) -> bool:
         """Control via the community GoodWe HA integration's EMS entities.
 
         Uses select.<prefix>_ems_mode and number.<prefix>_ems_power_limit.
@@ -4852,16 +4894,42 @@ class GoodWeEnergyCoordinator(DataUpdateCoordinator):
                     {"entity_id": power_entity, "value": capped_w},
                     blocking=True,
                 )
-            await self.hass.services.async_call(
-                "select", "select_option",
-                {"entity_id": mode_entity, "option": ems_option},
-                blocking=True,
+
+            attempts = self._goodwe_ems_mode_attempts(
+                mode_entity,
+                ems_option,
+                fallback_option,
             )
-            _LOGGER.info(
-                "GoodWe EMS control: set %s=%s power_limit=%sW",
-                mode_entity, ems_option, min(int(power_w), GOODWE_EMS_MAX_W) if power_w > 0 else "unchanged",
-            )
-            return True
+            last_exc: Exception | None = None
+            for option in attempts:
+                try:
+                    await self.hass.services.async_call(
+                        "select",
+                        "select_option",
+                        {"entity_id": mode_entity, "option": option},
+                        blocking=True,
+                    )
+                    _LOGGER.info(
+                        "GoodWe EMS control: set %s=%s power_limit=%sW",
+                        mode_entity,
+                        option,
+                        min(int(power_w), GOODWE_EMS_MAX_W) if power_w > 0 else "unchanged",
+                    )
+                    return True
+                except Exception as select_exc:
+                    last_exc = select_exc
+                    if option != attempts[-1]:
+                        _LOGGER.warning(
+                            "GoodWe EMS control failed for %s=%s; trying %s: %s",
+                            mode_entity,
+                            option,
+                            attempts[-1],
+                            select_exc,
+                        )
+
+            if last_exc:
+                raise last_exc
+            return False
         except Exception as exc:
             _LOGGER.error("GoodWe EMS control failed (%s=%s): %s", mode_entity, ems_option, exc)
             return False
@@ -4871,7 +4939,7 @@ class GoodWeEnergyCoordinator(DataUpdateCoordinator):
         if self._ems_prefix:
             if power_w <= 0:
                 power_w = (self.data or {}).get("rated_power_w", 5000)
-            return await self._ems_set_mode("buy_power", power_w)
+            return await self._ems_set_mode("charge_battery", power_w, fallback_option="buy_power")
         if not self._connected:
             await self._controller.connect()
             self._connected = True
@@ -4884,7 +4952,7 @@ class GoodWeEnergyCoordinator(DataUpdateCoordinator):
         if self._ems_prefix:
             if power_w <= 0:
                 power_w = (self.data or {}).get("rated_power_w", 5000)
-            return await self._ems_set_mode("sell_power", power_w)
+            return await self._ems_set_mode("discharge_battery", power_w, fallback_option="sell_power")
         if not self._connected:
             await self._controller.connect()
             self._connected = True

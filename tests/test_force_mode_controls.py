@@ -196,6 +196,31 @@ def test_foxess_force_charge_accepts_optimizer_min_timeout():
     assert "min_timeout_seconds=min_timeout_seconds" in method_source
 
 
+def test_goodwe_entity_mode_prefers_battery_ems_modes_with_legacy_fallbacks():
+    source = COORDINATOR_PATH.read_text()
+    tree = ast.parse(source)
+
+    charge = _find_class_method(tree, "GoodWeEnergyCoordinator", "force_charge")
+    discharge = _find_class_method(tree, "GoodWeEnergyCoordinator", "force_discharge")
+    ems_set_mode = _find_class_method(tree, "GoodWeEnergyCoordinator", "_ems_set_mode")
+    mode_attempts = _find_class_method(tree, "GoodWeEnergyCoordinator", "_goodwe_ems_mode_attempts")
+
+    charge_source = ast.get_source_segment(source, charge)
+    discharge_source = ast.get_source_segment(source, discharge)
+    ems_source = ast.get_source_segment(source, ems_set_mode)
+    attempts_source = ast.get_source_segment(source, mode_attempts)
+
+    assert charge_source is not None
+    assert discharge_source is not None
+    assert ems_source is not None
+    assert attempts_source is not None
+
+    assert '"charge_battery", power_w, fallback_option="buy_power"' in charge_source
+    assert '"discharge_battery", power_w, fallback_option="sell_power"' in discharge_source
+    assert '"options"' in attempts_source
+    assert "fallback_option" in ems_source
+
+
 def _saj_force_charge_branch() -> str:
     source = INIT_PATH.read_text()
     tree = ast.parse(source)

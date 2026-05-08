@@ -56,8 +56,9 @@ Do not enter the full entity ID.
 
 When the prefix is set, PowerSync routes force charge/discharge through those Home Assistant EMS entities:
 
-- Force charge sets EMS mode to `buy_power`
-- Force discharge sets EMS mode to `sell_power`
+- Force charge prefers EMS mode `charge_battery`, which lets PV contribute first and uses grid power only for the shortfall
+- Force discharge prefers EMS mode `discharge_battery`, which targets battery discharge power directly
+- If the GoodWe HA integration does not expose those newer EMS modes, PowerSync falls back to the older `buy_power` / `sell_power` modes
 - Restore normal sets EMS mode to `auto`
 - Requested power is sent to the EMS power limit entity
 
