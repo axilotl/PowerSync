@@ -3813,21 +3813,11 @@ class FlowPowerPriceSensor(PowerSyncCurrencyMixin, CoordinatorEntity, SensorEnti
         return tariff_rate, avg_daily_tariff
 
     def _get_effective_twap(self) -> float:
-        """Get effective TWAP: override → portal → local tracker → fallback 8c."""
+        """Get effective TWAP: override -> raw wholesale tracker -> fallback 8c."""
         override = self._get_config_value(CONF_FP_TWAP_OVERRIDE)
         if override is not None and override != "":
             try:
                 return float(override)
-            except (ValueError, TypeError):
-                pass
-        # Prefer portal TWAP (actual billing data) over local tracker
-        domain_data = self.hass.data.get(DOMAIN, {}).get(self._entry.entry_id, {})
-        portal_data = domain_data.get("flow_power_portal_data")
-        if portal_data:
-            try:
-                portal_twap = portal_data.get("twap")
-                if portal_twap is not None:
-                    return float(portal_twap)
             except (ValueError, TypeError):
                 pass
         return self._get_market_avg()
@@ -3837,10 +3827,6 @@ class FlowPowerPriceSensor(PowerSyncCurrencyMixin, CoordinatorEntity, SensorEnti
         override = self._get_config_value(CONF_FP_TWAP_OVERRIDE)
         if override is not None and override != "":
             return "override"
-        domain_data = self.hass.data.get(DOMAIN, {}).get(self._entry.entry_id, {})
-        portal_data = domain_data.get("flow_power_portal_data")
-        if portal_data and portal_data.get("twap") is not None:
-            return "portal"
         tracker = self._get_twap_tracker()
         if tracker and not tracker.using_fallback:
             return "dynamic"

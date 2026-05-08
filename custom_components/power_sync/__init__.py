@@ -16487,10 +16487,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 except (ValueError, TypeError):
                     pass
             if twap_value is None:
-                portal_data = hass.data[DOMAIN][entry.entry_id].get("flow_power_portal_data")
-                if portal_data and portal_data.get("twap") is not None:
-                    twap_value = portal_data["twap"]
-            if twap_value is None:
                 fp_tracker = hass.data[DOMAIN][entry.entry_id].get("flow_power_twap_tracker")
                 twap_value = fp_tracker.twap if fp_tracker else None
 
@@ -17576,12 +17572,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 else:
                     twap_value = None
 
-                # Prefer portal TWAP (actual billing data) over local tracker
-                if twap_value is None:
-                    portal_data = hass.data[DOMAIN][entry.entry_id].get("flow_power_portal_data")
-                    if portal_data and portal_data.get("twap") is not None:
-                        twap_value = portal_data["twap"]
-                        _LOGGER.debug("Using portal TWAP: %.2f c/kWh", twap_value)
                 if twap_value is None:
                     twap_value = fp_tracker.twap if fp_tracker else None
 
