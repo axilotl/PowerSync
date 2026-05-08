@@ -12493,7 +12493,9 @@ class EVWidgetDataView(HomeAssistantView):
             # Show all known vehicles regardless of connection state. Idle vehicles
             # appear with current_power_kw=0 and source="idle". Only fall back to a
             # placeholder if there are literally zero vehicles in the system.
-            active_widget_data = widget_data
+            from .automations.loadpoint_status import coalesce_ev_widget_data
+
+            active_widget_data = coalesce_ev_widget_data(widget_data)
 
             if not active_widget_data:
                 active_widget_data.append({

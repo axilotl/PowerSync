@@ -20,6 +20,7 @@ from power_sync.automations.loadpoint_status import (  # noqa: E402
     build_generic_charger_observation,
     build_loadpoint_status,
     charging_state_plugged_status,
+    coalesce_ev_widget_data,
 )
 
 
@@ -30,6 +31,40 @@ def test_charging_state_plugged_status_matches_idle_connected_tesla_states():
     assert charging_state_plugged_status("No Power") is True
     assert charging_state_plugged_status("Disconnected") is False
     assert charging_state_plugged_status("unknown") is None
+
+
+def test_widget_data_removes_active_wall_connector_when_named_ev_is_active():
+    widgets = [
+        {
+            "vehicle_name": "TESSY",
+            "is_connected": True,
+            "is_charging": True,
+            "current_soc": 79,
+            "current_power_kw": 3.1,
+        },
+        {
+            "vehicle_name": "Wall Connector",
+            "is_connected": True,
+            "is_charging": True,
+            "current_soc": 0,
+            "current_power_kw": 3.54,
+        },
+    ]
+
+    assert [w["vehicle_name"] for w in coalesce_ev_widget_data(widgets)] == ["TESSY"]
+
+
+def test_widget_data_keeps_wall_connector_without_named_active_ev():
+    widgets = [
+        {
+            "vehicle_name": "Wall Connector",
+            "is_connected": True,
+            "is_charging": True,
+            "current_power_kw": 3.54,
+        },
+    ]
+
+    assert coalesce_ev_widget_data(widgets) == widgets
 
 
 def test_dynamic_state_reports_commanded_no_power_when_observed_power_is_zero():

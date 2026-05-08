@@ -10,6 +10,11 @@ from typing import Any
 ACTIVE_POWER_THRESHOLD_KW = 0.05
 DEFAULT_LOADPOINT_KEYS = {"default", "genericev", "ev"}
 BRIDGE_LOADPOINT_KEYS = {"wallconnector", "teslaev"}
+BRIDGE_WIDGET_KEYS = BRIDGE_LOADPOINT_KEYS | {
+    "teslawallconnector",
+    "teslable",
+    "teslableteslable",
+}
 GENERIC_CHARGING_STATES = {"charging"}
 GENERIC_CONNECTED_STATES = {
     "connected",
@@ -84,6 +89,53 @@ def _is_bridge_loadpoint(observation: Mapping[str, Any]) -> bool:
         or _normal_key(observation.get("charger_id")) in BRIDGE_LOADPOINT_KEYS
         or _normal_key(observation.get("vehicle_name")) in BRIDGE_LOADPOINT_KEYS
     )
+
+
+def _is_bridge_widget(widget: Mapping[str, Any]) -> bool:
+    name_key = _normal_key(widget.get("vehicle_name"))
+    id_key = _normal_key(widget.get("vehicle_id"))
+    return name_key in BRIDGE_WIDGET_KEYS or id_key in BRIDGE_WIDGET_KEYS
+
+
+def _widget_power_kw(widget: Mapping[str, Any]) -> float:
+    return _float_value(
+        widget.get("current_power_kw", widget.get("ev_power_kw")),
+        0.0,
+    )
+
+
+def _widget_is_active(widget: Mapping[str, Any]) -> bool:
+    return (
+        bool(widget.get("is_charging"))
+        or _widget_power_kw(widget) > ACTIVE_POWER_THRESHOLD_KW
+    )
+
+
+def _is_specific_ev_widget(widget: Mapping[str, Any]) -> bool:
+    if _is_bridge_widget(widget):
+        return False
+    name_key = _normal_key(widget.get("vehicle_name"))
+    id_key = _normal_key(widget.get("vehicle_id"))
+    return bool(name_key or id_key) and name_key not in DEFAULT_LOADPOINT_KEYS
+
+
+def coalesce_ev_widget_data(
+    widgets: Iterable[Mapping[str, Any]] | None,
+) -> list[Mapping[str, Any]]:
+    """Hide bridge-only telemetry already represented by a named EV widget."""
+    rows = list(widgets or [])
+    active_specific = [
+        row for row in rows
+        if _is_specific_ev_widget(row) and _widget_is_active(row)
+    ]
+
+    if len(active_specific) != 1:
+        return rows
+
+    return [
+        row for row in rows
+        if not (_is_bridge_widget(row) and _widget_is_active(row))
+    ]
 
 
 def _is_tesla_ble_observation(observation: Mapping[str, Any]) -> bool:
