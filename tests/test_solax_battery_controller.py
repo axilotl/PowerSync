@@ -210,6 +210,29 @@ def test_status_lazily_discovers_entities():
     assert status["battery_power"] == -0.12
 
 
+def test_status_reads_native_daily_energy_counters():
+    hass = _FakeHass(
+        _base_states()
+        + _mode1_states()
+        + [
+            _FakeState("sensor.solax_today_s_solar_energy", "6.5"),
+            _FakeState("sensor.solax_today_s_import_energy", "1.74"),
+            _FakeState("sensor.solax_today_s_export_energy", "0.04"),
+            _FakeState("sensor.solax_battery_input_energy_today", "4.26"),
+            _FakeState("sensor.solax_battery_output_energy_today", "4.10"),
+        ]
+    )
+    controller = SolaxBatteryController(hass, entity_prefix="solax")
+
+    status = controller.get_status()
+
+    assert status["daily_solar_energy_kwh"] == 6.5
+    assert status["daily_grid_import_kwh"] == 1.74
+    assert status["daily_grid_export_kwh"] == 0.04
+    assert status["daily_battery_charge_kwh"] == 4.26
+    assert status["daily_battery_discharge_kwh"] == 4.10
+
+
 def test_mode1_force_charge_uses_remotecontrol_entities():
     hass, controller = asyncio.run(_connect_mode1_controller())
 

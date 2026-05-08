@@ -81,6 +81,37 @@ _READ_ENTITIES = {
         "energy_dashboard_solax_home_consumption_power",
         "inverter_power",
     ),                                                  # W
+    "daily_solar_energy": (
+        "today_s_solar_energy",
+        "today_solar_energy",
+        "today_s_yield",
+        "energy_dashboard_solax_solar_energy_production",
+        "solar_energy_production",
+    ),                                                  # kWh
+    "daily_grid_import": (
+        "today_s_import_energy",
+        "today_grid_import",
+        "today_s_grid_import",
+        "energy_dashboard_solax_grid_energy_import",
+        "grid_energy_import",
+    ),                                                  # kWh
+    "daily_grid_export": (
+        "today_s_export_energy",
+        "today_grid_export",
+        "today_s_grid_export",
+        "energy_dashboard_solax_grid_energy_export",
+        "grid_energy_export",
+    ),                                                  # kWh
+    "daily_battery_charge": (
+        "battery_input_energy_today",
+        "energy_dashboard_solax_battery_energy_charge",
+        "battery_energy_charge",
+    ),                                                  # kWh
+    "daily_battery_discharge": (
+        "battery_output_energy_today",
+        "energy_dashboard_solax_battery_energy_discharge",
+        "battery_energy_discharge",
+    ),                                                  # kWh
     "battery_temp": ("battery_temperature",),          # C
 }
 
@@ -402,6 +433,11 @@ class SolaxBatteryController:
         solar_total_w = self._read_float("solar_power")
         load_w = self._read_float("load_power") or 0.0
         bat_temp = self._read_float("battery_temp")
+        daily_solar_kwh = self._read_float("daily_solar_energy")
+        daily_import_kwh = self._read_float("daily_grid_import")
+        daily_export_kwh = self._read_float("daily_grid_export")
+        daily_charge_kwh = self._read_float("daily_battery_charge")
+        daily_discharge_kwh = self._read_float("daily_battery_discharge")
 
         # wills106 battery_power_charge: +charge, -discharge
         # PowerSync battery_power_kw:    +discharge, -charge -> negate
@@ -449,6 +485,11 @@ class SolaxBatteryController:
             "pv3_current": pv3_a,
             "battery_temperature": bat_temp,
             "mode": mode,
+            "daily_solar_energy_kwh": daily_solar_kwh,
+            "daily_grid_import_kwh": daily_import_kwh,
+            "daily_grid_export_kwh": daily_export_kwh,
+            "daily_battery_charge_kwh": daily_charge_kwh,
+            "daily_battery_discharge_kwh": daily_discharge_kwh,
         }
 
     # -- Force charge / discharge -----------------------------------------

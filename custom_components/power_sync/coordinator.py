@@ -4974,6 +4974,17 @@ class SolaxBatteryEnergyCoordinator(DataUpdateCoordinator):
 
         buy, sell = _get_current_prices(self.hass, self._entry_id)
         self._energy_acc.update(max(0.0, solar_kw), grid_kw, battery_kw, load_kw, buy, sell)
+        energy_summary = self._energy_acc.as_dict()
+        for status_key, summary_key in (
+            ("daily_solar_energy_kwh", "pv_today_kwh"),
+            ("daily_grid_import_kwh", "grid_import_today_kwh"),
+            ("daily_grid_export_kwh", "grid_export_today_kwh"),
+            ("daily_battery_charge_kwh", "charge_today_kwh"),
+            ("daily_battery_discharge_kwh", "discharge_today_kwh"),
+        ):
+            value = status.get(status_key)
+            if isinstance(value, (int, float)) and value >= 0:
+                energy_summary[summary_key] = round(float(value), 3)
 
         return {
             "solar_power": solar_kw,
@@ -4992,7 +5003,7 @@ class SolaxBatteryEnergyCoordinator(DataUpdateCoordinator):
             "pv2_current": status.get("pv2_current"),
             "pv3_current": status.get("pv3_current"),
             "mode": status.get("mode"),
-            "energy_summary": self._energy_acc.as_dict(),
+            "energy_summary": energy_summary,
         }
 
     async def force_charge(self, duration_minutes: int, power_w: int) -> bool:
