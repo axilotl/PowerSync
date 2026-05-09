@@ -599,12 +599,20 @@ class LoadEstimator:
             if key in averages:
                 base = averages[key]
             else:
-                # Fallback: use same time any day
+                # Fallback: prefer same day type so new installs with partial
+                # history don't produce identical weekday/weekend forecasts.
+                candidate_days = [5, 6] if dow >= 5 else [0, 1, 2, 3, 4]
                 fallback_values = [
                     averages.get((d, hour, half_hour))
-                    for d in range(7)
+                    for d in candidate_days
                     if (d, hour, half_hour) in averages
                 ]
+                if not fallback_values:
+                    fallback_values = [
+                        averages.get((d, hour, half_hour))
+                        for d in range(7)
+                        if (d, hour, half_hour) in averages
+                    ]
                 if fallback_values:
                     base = sum(fallback_values) / len(fallback_values)
                 elif averages:

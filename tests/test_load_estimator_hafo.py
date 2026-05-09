@@ -101,6 +101,39 @@ def test_partial_hafo_forecast_uses_history_for_uncovered_tail(monkeypatch):
     assert forecast[-1] == 9000.0 + 275
 
 
+def test_history_fallback_prefers_same_day_type_for_missing_dow(monkeypatch):
+    module = _load_estimator_module(monkeypatch)
+    estimator = module.LoadEstimator(SimpleNamespace(), "sensor.load", interval_minutes=5)
+
+    history = []
+    monday = datetime(2026, 5, 4, tzinfo=timezone.utc)
+    saturday = datetime(2026, 5, 9, tzinfo=timezone.utc)
+
+    # No Sunday or future Monday buckets are present. Weekday history is low,
+    # weekend history is high, so missing days should not collapse to one
+    # identical "same time any day" profile.
+    for day_offset in range(1, 5):
+        day = monday + timedelta(days=day_offset)
+        for half_hour in range(48):
+            history.append((day + timedelta(minutes=30 * half_hour), 500.0))
+
+    for half_hour in range(48):
+        history.append((saturday + timedelta(minutes=30 * half_hour), 2000.0))
+
+    forecast = estimator._forecast_from_history(
+        history,
+        datetime(2026, 5, 10, tzinfo=timezone.utc),
+        576,
+    )
+
+    sunday_kwh = sum(forecast[:288]) / 1000 / 12
+    monday_kwh = sum(forecast[288:576]) / 1000 / 12
+
+    assert sunday_kwh > monday_kwh * 2
+    assert abs(sunday_kwh - 48) < 0.1
+    assert abs(monday_kwh - 12) < 0.1
+
+
 async def _async_value(value):
     return value
 
