@@ -227,6 +227,7 @@ class HAFOForecaster:
         result = []
         current_time = start_time
         sorted_times = sorted(forecast_by_time.keys())
+        latest_time = sorted_times[-1]
 
         for _ in range(n_intervals):
             # Find the closest forecast time
@@ -241,6 +242,11 @@ class HAFOForecaster:
 
             if closest_time and min_diff < 3600:  # Within 1 hour
                 result.append(forecast_by_time[closest_time])
+            elif current_time > latest_time + timedelta(hours=1):
+                # Do not hide a short HAFO horizon by flat-padding the rest of
+                # the optimizer window. The caller can fill uncovered slots
+                # from history with the correct day-of-week pattern.
+                break
             elif result:
                 # Use last known value
                 result.append(result[-1])
@@ -348,11 +354,32 @@ class LoadEstimator:
             try:
                 hafo_forecast = await self._hafo.get_forecast(horizon_hours, start_time)
                 if hafo_forecast and len(hafo_forecast) >= n_intervals * 0.5:
-                    _LOGGER.debug("Using HAFO for load forecast")
-                    # Pad if needed
-                    while len(hafo_forecast) < n_intervals:
-                        hafo_forecast.append(hafo_forecast[-1] if hafo_forecast else 500.0)
-                    return hafo_forecast[:n_intervals]
+                    hafo_forecast = hafo_forecast[:n_intervals]
+                    coverage = len(hafo_forecast)
+                    if coverage >= n_intervals:
+                        _LOGGER.debug("Using HAFO for load forecast")
+                        return hafo_forecast
+
+                    history = await self._get_load_history()
+                    if history:
+                        tail_start = start_time + timedelta(minutes=self.interval_minutes * coverage)
+                        tail = self._forecast_from_history(
+                            history,
+                            tail_start,
+                            n_intervals - coverage,
+                        )
+                        _LOGGER.info(
+                            "Using HAFO load forecast for %d/%d intervals and historical pattern for tail",
+                            coverage,
+                            n_intervals,
+                        )
+                        return hafo_forecast + tail
+
+                    _LOGGER.debug("Using partial HAFO load forecast with last-value tail fallback")
+                    padded = list(hafo_forecast)
+                    while len(padded) < n_intervals:
+                        padded.append(padded[-1] if padded else 500.0)
+                    return padded
             except Exception as e:
                 _LOGGER.warning(f"HAFO forecast failed: {e}")
 

@@ -12,6 +12,9 @@ import {
 (function () {
   const CARD_TYPE = 'power-sync-energy-flow';
   const FLOW_MIN_W = 50;
+  const SVG_WIDTH = 600;
+  const SVG_HEIGHT = 460;
+  const XLINK_NS = 'http://www.w3.org/1999/xlink';
   const SUPPORTED_LANGS = ['it', 'en', 'es', 'fr', 'de'];
   const DEFAULT_LANG = 'it';
   const LANGUAGE_OPTIONS = Object.freeze([
@@ -1038,6 +1041,15 @@ import {
     return Math.min(max, Math.max(min, v));
   }
 
+  function scaledSceneViewBox(scale) {
+    const safeScale = clamp(safeNum(scale, 1), 0.6, 1.4);
+    const width = SVG_WIDTH / safeScale;
+    const height = SVG_HEIGHT / safeScale;
+    const x = (SVG_WIDTH - width) / 2;
+    const y = (SVG_HEIGHT - height) / 2;
+    return `${x.toFixed(2)} ${y.toFixed(2)} ${width.toFixed(2)} ${height.toFixed(2)}`;
+  }
+
   function safeNum(value, fallback = 0) {
     const n = parseFloat(value);
     return Number.isFinite(n) ? n : fallback;
@@ -1312,7 +1324,7 @@ import {
 
     _setText(id, value) {
       const el = this.shadowRoot.querySelector(id);
-      if (el) el.textContent = value;
+      if (el && el.textContent !== value) el.textContent = value;
     }
 
     _toggleNode(id, active) {
@@ -1594,8 +1606,9 @@ import {
     _setBackground(url) {
       const img = this.shadowRoot.querySelector('#flow-scene-image');
       if (!img || !url) return;
-      if (img.getAttribute('href') !== url) {
+      if (img.getAttribute('href') !== url || img.getAttributeNS(XLINK_NS, 'href') !== url) {
         img.setAttribute('href', url);
+        img.setAttributeNS(XLINK_NS, 'xlink:href', url);
       }
     }
 
@@ -1678,6 +1691,7 @@ import {
       const titleText = String(cfg.title || '');
       const titleHtml = (cfg.show_header !== false && titleText) ? `<div class="card-title">${titleText}</div>` : '';
       const sceneScale = clamp(safeNum(cfg.scene_scale, 1.06), 0.6, 1.4);
+      const sceneViewBox = scaledSceneViewBox(sceneScale);
       const fontScale = clamp(safeNum(cfg.font_scale, 1), 0.75, 1.35);
       const pathD = (id, configKey) => p[id] || cfg.paths?.[configKey] || DEFAULT_CONFIG.paths[configKey];
       this._lastAppliedSceneFlowProfile = '';
@@ -1724,7 +1738,6 @@ import {
           }
           .flow-node-bg.active {
             fill: rgba(255,255,255,0.72);
-            filter: drop-shadow(0 0 6px rgba(255,255,255,0.35));
           }
           .flow-node-guide {
             stroke: rgba(255, 255, 255, 0.78);
@@ -1740,9 +1753,10 @@ import {
             text-shadow: 0 1px 2px rgba(2, 6, 23, 0.55);
             text-anchor: start;
             font-family: sans-serif;
-            filter: drop-shadow(0 0 4px rgba(0, 0, 0, 0.95))
-                    drop-shadow(0 0 10px rgba(0, 0, 0, 0.78))
-                    drop-shadow(0 0 16px rgba(0, 0, 0, 0.52));
+            paint-order: stroke fill;
+            stroke: rgba(2, 6, 23, 0.82);
+            stroke-width: 2.25px;
+            stroke-linejoin: round;
           }
           .flow-label {
             font-size: calc(11px * var(--flow-font-scale));
@@ -1770,9 +1784,10 @@ import {
             font-weight: 900;
             text-anchor: start;
             text-shadow: 0 1px 2px rgba(2, 6, 23, 0.55);
-            filter: drop-shadow(0 0 4px rgba(0, 0, 0, 0.95))
-                    drop-shadow(0 0 10px rgba(0, 0, 0, 0.78))
-                    drop-shadow(0 0 16px rgba(0, 0, 0, 0.52));
+            paint-order: stroke fill;
+            stroke: rgba(2, 6, 23, 0.82);
+            stroke-width: 2.25px;
+            stroke-linejoin: round;
             display: none;
           }
           .roof-meta {
@@ -1780,9 +1795,10 @@ import {
             text-shadow: 0 1px 2px rgba(2, 6, 23, 0.55);
             text-anchor: start;
             font-family: sans-serif;
-            filter: drop-shadow(0 0 4px rgba(0, 0, 0, 0.95))
-                    drop-shadow(0 0 10px rgba(0, 0, 0, 0.78))
-                    drop-shadow(0 0 16px rgba(0, 0, 0, 0.52));
+            paint-order: stroke fill;
+            stroke: rgba(2, 6, 23, 0.82);
+            stroke-width: 2.25px;
+            stroke-linejoin: round;
           }
           .roof-meta-label {
             font-size: calc(9px * var(--flow-font-scale));
@@ -1806,7 +1822,7 @@ import {
             fill: rgba(148, 163, 184, 0.72) !important;
             opacity: 0.45;
             text-shadow: none;
-            filter: none;
+            stroke: none;
           }
           .flow-node.inactive .flow-node-guide {
             opacity: 0;
@@ -1825,9 +1841,10 @@ import {
             fill: #f8fafc !important;
             opacity: 0.95;
             text-shadow: 0 1px 2px rgba(2, 6, 23, 0.55);
-            filter: drop-shadow(0 0 4px rgba(0, 0, 0, 0.95))
-                    drop-shadow(0 0 10px rgba(0, 0, 0, 0.78))
-                    drop-shadow(0 0 16px rgba(0, 0, 0, 0.52));
+            paint-order: stroke fill;
+            stroke: rgba(2, 6, 23, 0.82);
+            stroke-width: 2.25px;
+            stroke-linejoin: round;
           }
           .ev-hidden {
             display: none;
@@ -1849,10 +1866,9 @@ import {
           }
           .flow-line.active {
             opacity: 1;
+            stroke-width: 2.35;
             stroke-dasharray: var(--flow-seg, 62) var(--flow-gap, 82);
             animation: flowStream var(--flow-speed, 1.9s) linear infinite;
-            filter: drop-shadow(0 0 3px var(--flow-glow, rgba(125, 249, 255, 0.4)))
-                    drop-shadow(0 0 12px var(--flow-glow, rgba(125, 249, 255, 0.4)));
           }
           .flow-line.active.flow-reverse {
             animation: flowStreamReverse var(--flow-speed, 1.9s) linear infinite;
@@ -1898,8 +1914,8 @@ import {
           <div class="wrap ${showLabelsClass}">
             ${titleHtml}
             <div class="scene">
-              <svg viewBox="0 0 600 460" style="transform: scale(${sceneScale}); transform-origin: center;">
-                <image id="flow-scene-image" href="${cfg.background}" x="0" y="0" width="600" height="460" preserveAspectRatio="xMidYMid slice"></image>
+              <svg viewBox="${sceneViewBox}" xmlns:xlink="${XLINK_NS}">
+                <image id="flow-scene-image" href="${cfg.background}" xlink:href="${cfg.background}" x="0" y="0" width="600" height="460" preserveAspectRatio="xMidYMid slice"></image>
                 <rect class="flow-scene-dim" x="0" y="0" width="600" height="460"></rect>
 
                 <path id="line-solar-load" class="flow-line" d="${pathD('line-solar-load', 'line_solar_load')}"></path>
