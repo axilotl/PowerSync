@@ -91,6 +91,17 @@ def test_dashboard_has_no_legacy_dollar_or_cent_symbol_formatters():
     assert "yMultiplier: 100" in tou_section
 
 
+def test_dashboard_chart_applies_price_multiplier_at_render_boundaries():
+    dashboard = COMPONENT_ROOT / "frontend" / "power-sync-strategy.js"
+    source = dashboard.read_text()
+
+    assert "data: series.data.map(([t, v]) => [t, v * configuredYMultiplier])" not in source
+    assert "const yMultiplier = Number.isFinite(configuredYMultiplier)" in source
+    assert "const scaled = v * yMultiplier" in source
+    assert "const label = this._formatValue(tick, unit, compactUnit)" in source
+    assert "_formatValue(point[1] * yMultiplier" in source
+
+
 def test_dashboard_prefers_backend_matched_ev_label():
     dashboard = COMPONENT_ROOT / "frontend" / "power-sync-strategy.js"
     source = dashboard.read_text()

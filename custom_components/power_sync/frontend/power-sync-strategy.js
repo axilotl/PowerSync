@@ -95,13 +95,6 @@ class PowerSyncChart extends HTMLElement {
       allSeries = this._getForecastData(config, hass);
     }
 
-    const configuredYMultiplier = config.yMultiplier || 1;
-    if (configuredYMultiplier !== 1) {
-      allSeries = allSeries.map(series => ({
-        ...series,
-        data: series.data.map(([t, v]) => [t, v * configuredYMultiplier]),
-      }));
-    }
     allSeries = allSeries.map((series, index) => ({
       ...series,
       _key: this._seriesKey(series, index),
@@ -140,7 +133,10 @@ class PowerSyncChart extends HTMLElement {
       xMax = xMin + 3600000;
     }
 
-    const yMultiplier = 1;
+    const configuredYMultiplier = Number(config.yMultiplier ?? 1);
+    const yMultiplier = Number.isFinite(configuredYMultiplier) && configuredYMultiplier !== 0
+      ? configuredYMultiplier
+      : 1;
     let rawMin = Infinity, rawMax = -Infinity;
     for (const s of chartSeries) {
       for (const [, v] of s.data) {
@@ -183,8 +179,7 @@ class PowerSyncChart extends HTMLElement {
       svg += `<line x1="${pad.left}" y1="${y}" x2="${W - pad.right}" y2="${y}" stroke="${isZero ? 'var(--primary-text-color, #333)' : 'var(--divider-color, #e0e0e0)'}" stroke-width="${isZero ? 0.9 : 0.45}" stroke-dasharray="${isZero ? '0' : '4,3'}" opacity="${isZero ? 0.35 : 0.65}"/>`;
       const unit = config.yUnit || '';
       const compactUnit = config.yUnitCompact || ['c', 'p', 'ct', 'c/kWh', 'p/kWh', 'ct/kWh'].includes(unit);
-      const label = tick.toFixed(tick === Math.round(tick) ? 0 : 1)
-        + (unit ? `${compactUnit ? '' : ' '}${unit}` : '');
+      const label = this._formatValue(tick, unit, compactUnit);
       svg += `<text x="${pad.left - 8}" y="${y + 4}" text-anchor="end" font-size="${compact ? 10 : 11}" fill="var(--secondary-text-color, #888)">${this._escSvg(label)}</text>`;
     }
 
@@ -457,11 +452,12 @@ class PowerSyncChart extends HTMLElement {
         W,
         xMax,
         xMin,
+        yMultiplier,
       });
     }
   }
 
-  _attachTooltip({ allSeries, chartW, config, pad, spanHours, W, xMax, xMin }) {
+  _attachTooltip({ allSeries, chartW, config, pad, spanHours, W, xMax, xMin, yMultiplier }) {
     const wrap = this.shadowRoot.querySelector('.chart-wrap');
     const svg = this.shadowRoot.querySelector('svg');
     const line = this.shadowRoot.querySelector('.tooltip-line');
@@ -515,7 +511,7 @@ class PowerSyncChart extends HTMLElement {
             <span class="tooltip-dot" style="background:${series.color}"></span>
             <span>${this._escHtml(series.name || '')}</span>
           </span>
-          <span class="tooltip-value">${this._escHtml(this._formatValue(point[1], config.yUnit, config.yUnitCompact))}</span>
+          <span class="tooltip-value">${this._escHtml(this._formatValue(point[1] * yMultiplier, config.yUnit, config.yUnitCompact))}</span>
         </div>
       `).join('');
 
