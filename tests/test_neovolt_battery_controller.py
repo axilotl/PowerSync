@@ -885,6 +885,52 @@ def test_fleet_surplus_balancer_parks_full_stack_until_lower_stack_catches_up():
     ]
 
 
+def test_fleet_surplus_balancer_parks_charging_high_stack_when_low_stack_discharges():
+    entry_1_states = _combined_states_for(
+        1,
+        battery_power="5060",
+        battery_soc="92.4",
+        battery_capacity="20.1",
+        house_load="5310",
+        pv_power="246",
+        grid_power="0",
+    ) + _control_states_for(1, mode="Normal")
+    entry_2_states = _combined_states_for(
+        2,
+        battery_power="-4090",
+        battery_soc="99.6",
+        battery_capacity="30.2",
+        house_load="0",
+        pv_power="0",
+        grid_power="0",
+    ) + _control_states_for(2, mode="Force Charge")
+    hass = _FakeHass(
+        entry_1_states + entry_2_states,
+        {
+            "neovolt-1": [state.entity_id for state in entry_1_states],
+            "neovolt-2": [state.entity_id for state in entry_2_states],
+        },
+    )
+    controller = NeovoltFleetBatteryController(
+        hass,
+        ["neovolt-1", "neovolt-2"],
+        max_charge_kw=5.0,
+        max_discharge_kw=5.0,
+    )
+    assert asyncio.run(controller.connect())
+
+    balancer = asyncio.run(controller.balance_solar_surplus(controller.get_status()))
+
+    assert balancer["status"] == "balancing_low_stack"
+    assert balancer["lowest_soc_index"] == 0
+    assert balancer["highest_soc_index"] == 1
+    assert balancer["soc_parked_index"] == 1
+    assert balancer["soc_parked_base_mode"] == "Normal"
+    assert hass.services.calls == [
+        ("select", "select_option", {"entity_id": "select.neovolt_2_dispatch_mode", "option": "No Battery Charge"}),
+    ]
+
+
 def test_fleet_surplus_balancer_restores_soc_parked_stack_when_balanced():
     entry_1_states = _combined_states_for(
         1,

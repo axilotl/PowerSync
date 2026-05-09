@@ -514,6 +514,11 @@ class AutomationEngine:
                 or data.get("sungrow_coordinator")
                 or data.get("foxess_coordinator")
                 or data.get("goodwe_coordinator")
+                or data.get("alphaess_coordinator")
+                or data.get("solax_coordinator")
+                or data.get("esy_coordinator")
+                or data.get("saj_h2_coordinator")
+                or data.get("neovolt_coordinator")
             )
 
             if coordinator and coordinator.data:

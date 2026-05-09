@@ -102,6 +102,7 @@ _SURPLUS_BALANCE_DURATION_MINUTES = 2
 _SURPLUS_BALANCE_POWER_STEP_W = 100.0
 _SURPLUS_BALANCE_ADJUST_THRESHOLD_W = 200.0
 _SURPLUS_BALANCE_MAX_SOURCE_DISCHARGE_W = 250.0
+_BATTERY_FIGHTING_POWER_W = 250.0
 _SOC_FULL_PCT = 99.5
 _SOC_CATCHUP_DONE_PCT = 99.0
 _DUPLICATE_GRID_RELATIVE_TOLERANCE = 0.20
@@ -774,10 +775,16 @@ class NeovoltFleetBatteryController:
                 highest_index,
             )
 
-        if high_mode == _NORMAL_DISPATCH_MODE:
+        if high_mode == _NORMAL_DISPATCH_MODE or self._is_battery_fighting(
+            statuses,
+            lowest_index,
+            highest_index,
+        ):
             if await self._controllers[highest_index].set_no_battery_charge():
                 self._surplus_balance["soc_parked_index"] = highest_index
-                self._surplus_balance["soc_parked_base_mode"] = high_mode
+                self._surplus_balance["soc_parked_base_mode"] = (
+                    self._stable_restore_mode(high_mode) or _NORMAL_DISPATCH_MODE
+                )
                 modes = [controller.get_dispatch_mode() for controller in self._controllers]
                 _LOGGER.info(
                     "Neovolt SOC balancer parked stack %d while stack %d catches up (delta %.1f%%)",
@@ -1111,6 +1118,19 @@ class NeovoltFleetBatteryController:
         highest_soc = float(statuses[highest_index].get("battery_level", 0.0) or 0.0)
         lowest_soc = float(statuses[lowest_index].get("battery_level", 0.0) or 0.0)
         return highest_soc >= _SOC_FULL_PCT and lowest_soc < _SOC_CATCHUP_DONE_PCT
+
+    @staticmethod
+    def _is_battery_fighting(
+        statuses: list[dict[str, Any]],
+        lower_index: int,
+        higher_index: int,
+    ) -> bool:
+        lower_w = float(statuses[lower_index].get("battery_power", 0.0) or 0.0) * 1000.0
+        higher_w = float(statuses[higher_index].get("battery_power", 0.0) or 0.0) * 1000.0
+        return (
+            lower_w > _BATTERY_FIGHTING_POWER_W
+            and higher_w < -_BATTERY_FIGHTING_POWER_W
+        )
 
     @staticmethod
     def _other_stacks_discharging_w(
