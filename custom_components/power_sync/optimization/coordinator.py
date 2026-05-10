@@ -340,6 +340,52 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.hass.data.setdefault(DOMAIN, {}).setdefault(self.entry_id, {})["_skip_reload"] = True
             self.hass.config_entries.async_update_entry(self._entry, options=new_options)
 
+    @staticmethod
+    def _reserve_percent(value: Any) -> int | None:
+        """Normalize reserve values stored as either 0-1 decimals or 0-100 percents."""
+        if value is None:
+            return None
+        try:
+            reserve = float(value)
+        except (TypeError, ValueError):
+            return None
+        if reserve <= 1:
+            reserve *= 100
+        return max(0, min(100, int(reserve)))
+
+    def _configured_startup_backup_reserve(self) -> tuple[int | None, str]:
+        """Return the persisted user reserve target used after temporary IDLE holds."""
+        if not self._entry:
+            return self._reserve_percent(self._config.backup_reserve), "optimizer floor"
+
+        from ..const import CONF_HARDWARE_BACKUP_RESERVE, CONF_OPTIMIZATION_BACKUP_RESERVE
+
+        hw_reserve = self._reserve_percent(
+            self._entry.options.get(
+                CONF_HARDWARE_BACKUP_RESERVE,
+                self._entry.data.get(CONF_HARDWARE_BACKUP_RESERVE),
+            )
+        )
+        if hw_reserve is not None:
+            return hw_reserve, "hardware backup reserve config"
+
+        persisted_user_reserve = self._reserve_percent(
+            self._entry.options.get("_user_backup_reserve")
+        )
+        if persisted_user_reserve is not None:
+            return persisted_user_reserve, "persisted user backup reserve"
+
+        optimizer_reserve = self._reserve_percent(
+            self._entry.options.get(
+                CONF_OPTIMIZATION_BACKUP_RESERVE,
+                self._entry.data.get(CONF_OPTIMIZATION_BACKUP_RESERVE),
+            )
+        )
+        if optimizer_reserve is not None:
+            return optimizer_reserve, "optimizer floor config"
+
+        return self._reserve_percent(self._config.backup_reserve), "optimizer floor"
+
     def _provider_key(self) -> str:
         """Return the configured electricity provider key."""
         if not self._entry:
@@ -914,45 +960,34 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # the optimizer completes its first run.
         battery = self._executor.battery_controller if self._executor else None
         if battery:
-            # Restore persisted user backup reserve (survives restarts).
-            # If not persisted, capture from the battery API.
-            # Priority: 1) CONF_HARDWARE_BACKUP_RESERVE (user-explicit setting)
-            #           2) _user_backup_reserve (persisted from Tesla API)
-            #           3) Tesla API on first boot
-            from ..const import CONF_HARDWARE_BACKUP_RESERVE
-            hw_config = None
-            if self._entry:
-                hw_config = self._entry.options.get(
-                    CONF_HARDWARE_BACKUP_RESERVE,
-                    self._entry.data.get(CONF_HARDWARE_BACKUP_RESERVE)
+            # Restore the user's reserve target without trusting the live
+            # inverter value. GoodWe/Tesla IDLE temporarily raises the hardware
+            # reserve to hold SOC; after an HA restart or update that live value
+            # can still be elevated and must not become the restore target.
+            startup_reserve, reserve_source = self._configured_startup_backup_reserve()
+            if startup_reserve is not None:
+                self._startup_backup_reserve = startup_reserve
+                if self._optimizer:
+                    self._optimizer.update_hardware_reserve(startup_reserve / 100)
+                _LOGGER.info(
+                    "Optimizer startup: using %s: %d%%",
+                    reserve_source,
+                    startup_reserve,
                 )
-            if hw_config is not None:
-                hw_val = int(hw_config * 100) if hw_config <= 1 else int(hw_config)
-                self._startup_backup_reserve = hw_val
-                _LOGGER.info("Optimizer startup: using hardware backup reserve from config: %d%%", hw_val)
             else:
-                persisted_reserve = self._entry.options.get("_user_backup_reserve") if self._entry else None
-                if persisted_reserve is not None:
-                    self._startup_backup_reserve = int(persisted_reserve)
-                    _LOGGER.info("Optimizer startup: restored persisted user backup reserve: %d%%", self._startup_backup_reserve)
-                else:
-                    try:
-                        if hasattr(battery, "get_backup_reserve"):
-                            startup_reserve = await battery.get_backup_reserve()
-                            if startup_reserve is not None:
-                                self._startup_backup_reserve = startup_reserve
-                                _LOGGER.info("Optimizer startup: captured user backup reserve: %d%%", startup_reserve)
-                                if self._optimizer:
-                                    self._optimizer.update_hardware_reserve(startup_reserve / 100)
-                                # Persist it so it survives restarts
-                                if self._entry:
-                                    new_opts = {**self._entry.options, "_user_backup_reserve": startup_reserve}
-                                    from ..const import DOMAIN as _DOM
-                                    _ed = self.hass.data.get(_DOM, {}).get(self.entry_id, {})
-                                    _ed["_skip_reload"] = True
-                                    self.hass.config_entries.async_update_entry(self._entry, options=new_opts)
-                    except Exception as e:
-                        _LOGGER.debug("Could not read startup backup reserve: %s", e)
+                try:
+                    if hasattr(battery, "get_backup_reserve"):
+                        startup_reserve = await battery.get_backup_reserve()
+                        if startup_reserve is not None:
+                            self._startup_backup_reserve = startup_reserve
+                            _LOGGER.info(
+                                "Optimizer startup: captured live backup reserve: %d%%",
+                                startup_reserve,
+                            )
+                            if self._optimizer:
+                                self._optimizer.update_hardware_reserve(startup_reserve / 100)
+                except Exception as e:
+                    _LOGGER.debug("Could not read startup backup reserve: %s", e)
 
             # Skip startup mode change if monitoring mode or force mode is active
             from ..const import CONF_MONITORING_MODE, DOMAIN as _STARTUP_DOMAIN

@@ -101,6 +101,8 @@ def _install_power_sync_stubs() -> None:
     const_module.CONF_ELECTRICITY_PROVIDER = "electricity_provider"
     const_module.CONF_MONITORING_MODE = "monitoring_mode"
     const_module.CONF_FLOW_POWER_STATE = "flow_power_state"
+    const_module.CONF_HARDWARE_BACKUP_RESERVE = "hardware_backup_reserve"
+    const_module.CONF_OPTIMIZATION_BACKUP_RESERVE = "optimization_backup_reserve"
     const_module.FLOW_POWER_EXPORT_RATES = {"NSW1": 0.45}
     const_module.CONF_EXPORT_BOOST_ENABLED = "export_boost_enabled"
     const_module.CONF_EXPORT_PRICE_OFFSET = "export_price_offset"
@@ -196,6 +198,44 @@ def test_update_config_propagates_backup_reserve_to_software_floor(opt_module):
     coordinator.update_config(backup_reserve=0.35)
 
     assert energy.min_soc_calls == [35]
+
+
+def test_startup_restore_target_prefers_hardware_reserve_config(opt_module):
+    coordinator = _coordinator(
+        opt_module,
+        "amber",
+        hardware_backup_reserve=0.2,
+        _user_backup_reserve=45,
+        optimization_backup_reserve=30,
+    )
+
+    assert coordinator._configured_startup_backup_reserve() == (
+        20,
+        "hardware backup reserve config",
+    )
+
+
+def test_startup_restore_target_uses_optimizer_floor_when_no_user_reserve(opt_module):
+    coordinator = _coordinator(
+        opt_module,
+        "amber",
+        optimization_backup_reserve=20,
+    )
+
+    assert coordinator._configured_startup_backup_reserve() == (
+        20,
+        "optimizer floor config",
+    )
+
+
+def test_startup_restore_target_does_not_treat_live_idle_reserve_as_persisted(opt_module):
+    coordinator = _coordinator(opt_module, "amber")
+    coordinator._config.backup_reserve = 0.20
+
+    assert coordinator._configured_startup_backup_reserve() == (
+        20,
+        "optimizer floor",
+    )
 
 
 def _true_indexes(slots: list[bool]) -> list[int]:
