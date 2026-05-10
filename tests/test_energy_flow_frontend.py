@@ -14,12 +14,15 @@ ENERGY_FLOW_PATH = (
 )
 
 
-def test_energy_flow_uses_webkit_safe_svg_image_and_scaling():
+def test_energy_flow_keeps_scene_bitmap_outside_animated_svg_layer():
     source = ENERGY_FLOW_PATH.read_text()
 
-    assert "xlink:href" in source
-    assert "setAttributeNS(XLINK_NS, 'xlink:href', url)" in source
-    assert "getAttributeNS(XLINK_NS, 'href')" in source
+    assert 'id="flow-scene-frame"' in source
+    assert "--scene-background" in source
+    assert "cssBackgroundUrl(url)" in source
+    assert "new Image()" in source
+    assert '<image id="flow-scene-image"' not in source
+    assert "xlink:href" not in source
     assert "function scaledSceneViewBox(scale)" in source
     assert 'viewBox="${sceneViewBox}"' in source
     assert "transform: scale" not in source

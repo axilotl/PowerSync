@@ -14,7 +14,6 @@ import {
   const FLOW_MIN_W = 50;
   const SVG_WIDTH = 600;
   const SVG_HEIGHT = 460;
-  const XLINK_NS = 'http://www.w3.org/1999/xlink';
   const SUPPORTED_LANGS = ['it', 'en', 'es', 'fr', 'de'];
   const DEFAULT_LANG = 'it';
   const LANGUAGE_OPTIONS = Object.freeze([
@@ -1050,6 +1049,14 @@ import {
     return `${x.toFixed(2)} ${y.toFixed(2)} ${width.toFixed(2)} ${height.toFixed(2)}`;
   }
 
+  function cssBackgroundUrl(url) {
+    const safeUrl = String(url || '')
+      .replace(/\\/g, '\\\\')
+      .replace(/"/g, '\\"')
+      .replace(/\n/g, '');
+    return `url("${safeUrl}")`;
+  }
+
   function safeNum(value, fallback = 0) {
     const n = parseFloat(value);
     return Number.isFinite(n) ? n : fallback;
@@ -1265,6 +1272,8 @@ import {
       this._lastAppliedSceneFlowComponentProfile = '';
       this._pendingFlowStates = null;
       this._renderQueued = false;
+      this._preloadedSceneBackgrounds = new Set();
+      this._backgroundLoadToken = 0;
     }
 
     setConfig(config) {
@@ -1604,12 +1613,31 @@ import {
     }
 
     _setBackground(url) {
-      const img = this.shadowRoot.querySelector('#flow-scene-image');
-      if (!img || !url) return;
-      if (img.getAttribute('href') !== url || img.getAttributeNS(XLINK_NS, 'href') !== url) {
-        img.setAttribute('href', url);
-        img.setAttributeNS(XLINK_NS, 'xlink:href', url);
+      const frame = this.shadowRoot.querySelector('#flow-scene-frame');
+      if (!frame || !url) return;
+      if (frame.dataset.sceneBackground === url || frame.dataset.pendingSceneBackground === url) return;
+
+      const token = ++this._backgroundLoadToken;
+      frame.dataset.pendingSceneBackground = url;
+      const applyBackground = () => {
+        if (token !== this._backgroundLoadToken) return;
+        frame.style.setProperty('--scene-background', cssBackgroundUrl(url));
+        frame.dataset.sceneBackground = url;
+        delete frame.dataset.pendingSceneBackground;
+      };
+
+      if (this._preloadedSceneBackgrounds.has(url) || typeof Image === 'undefined') {
+        applyBackground();
+        return;
       }
+
+      const image = new Image();
+      image.onload = () => {
+        this._preloadedSceneBackgrounds.add(url);
+        applyBackground();
+      };
+      image.onerror = applyBackground;
+      image.src = url;
     }
 
     _initialPathProfile() {
@@ -1719,13 +1747,29 @@ import {
           .scene {
             padding: 10px;
           }
-          svg {
-            width: 100%;
-            height: auto;
-            display: block;
+          .scene-frame {
+            position: relative;
+            overflow: hidden;
+            aspect-ratio: ${SVG_WIDTH} / ${SVG_HEIGHT};
             border-radius: 12px;
             border: 1px solid rgba(255,255,255,0.08);
             background: #020617;
+          }
+          .scene-frame::before {
+            content: '';
+            position: absolute;
+            inset: var(--scene-background-inset, 0);
+            background-image: var(--scene-background, none);
+            background-position: center;
+            background-repeat: no-repeat;
+            background-size: cover;
+          }
+          svg {
+            position: absolute;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            display: block;
           }
           .flow-scene-dim {
             fill: #020617;
@@ -1733,7 +1777,7 @@ import {
           }
           .flow-node-bg {
             fill: rgba(255,255,255,0.08);
-            transition: fill 0.2s ease, filter 0.2s ease;
+            transition: fill 0.2s ease;
             display: none;
           }
           .flow-node-bg.active {
@@ -1914,21 +1958,21 @@ import {
           <div class="wrap ${showLabelsClass}">
             ${titleHtml}
             <div class="scene">
-              <svg viewBox="${sceneViewBox}" xmlns:xlink="${XLINK_NS}">
-                <image id="flow-scene-image" href="${cfg.background}" xlink:href="${cfg.background}" x="0" y="0" width="600" height="460" preserveAspectRatio="xMidYMid slice"></image>
-                <rect class="flow-scene-dim" x="0" y="0" width="600" height="460"></rect>
+              <div class="scene-frame" id="flow-scene-frame">
+                <svg viewBox="${sceneViewBox}">
+                  <rect class="flow-scene-dim" x="0" y="0" width="600" height="460"></rect>
 
-                <path id="line-solar-load" class="flow-line" d="${pathD('line-solar-load', 'line_solar_load')}"></path>
-                <path id="line-grid-load" class="flow-line" d="${pathD('line-grid-load', 'line_grid_load')}"></path>
-                <path id="line-battery-load" class="flow-line" d="${pathD('line-battery-load', 'line_battery_load')}"></path>
-                <path id="line-junction-home-load" class="flow-line" d="${pathD('line-junction-home-load', 'line_junction_home_load')}"></path>
-                <path id="line-wallbox-ev" class="flow-line" d="${pathD('line-wallbox-ev', 'line_wallbox_ev')}"></path>
-                <path id="line-wallbox-ev2" class="flow-line" d="${pathD('line-wallbox-ev2', 'line_wallbox_ev2')}"></path>
-                <path id="line-solar-grid" class="flow-line" d="${pathD('line-solar-grid', 'line_solar_grid')}"></path>
-                <path id="line-solar-battery" class="flow-line" d="${pathD('line-solar-battery', 'line_solar_battery')}"></path>
-                <path id="line-grid-battery" class="flow-line" d="${pathD('line-grid-battery', 'line_grid_battery')}"></path>
+                  <path id="line-solar-load" class="flow-line" d="${pathD('line-solar-load', 'line_solar_load')}"></path>
+                  <path id="line-grid-load" class="flow-line" d="${pathD('line-grid-load', 'line_grid_load')}"></path>
+                  <path id="line-battery-load" class="flow-line" d="${pathD('line-battery-load', 'line_battery_load')}"></path>
+                  <path id="line-junction-home-load" class="flow-line" d="${pathD('line-junction-home-load', 'line_junction_home_load')}"></path>
+                  <path id="line-wallbox-ev" class="flow-line" d="${pathD('line-wallbox-ev', 'line_wallbox_ev')}"></path>
+                  <path id="line-wallbox-ev2" class="flow-line" d="${pathD('line-wallbox-ev2', 'line_wallbox_ev2')}"></path>
+                  <path id="line-solar-grid" class="flow-line" d="${pathD('line-solar-grid', 'line_solar_grid')}"></path>
+                  <path id="line-solar-battery" class="flow-line" d="${pathD('line-solar-battery', 'line_solar_battery')}"></path>
+                  <path id="line-grid-battery" class="flow-line" d="${pathD('line-grid-battery', 'line_grid_battery')}"></path>
 
-                <g class="flow-node">
+                  <g class="flow-node">
                   <circle class="flow-node-bg" id="node-solar-bg" cx="286" cy="155" r="5"></circle>
                   <line class="flow-node-guide" id="flow-solar-guide" x1="320" y1="94" x2="320" y2="166"></line>
                   <text class="flow-label" id="flow-solar-label" x="329" y="60">${this._t('card.node.solar', 'Solare')}</text>
@@ -1994,10 +2038,17 @@ import {
                   <text class="flow-status" id="flow-ev2-status" x="106" y="340">${this._t('card.status.off', 'OFF')}</text>
                 </g>
               </svg>
+              </div>
             </div>
           </div>
         </ha-card>
       `;
+      const frame = this.shadowRoot.querySelector('#flow-scene-frame');
+      if (frame) {
+        const backgroundInset = `${((1 - sceneScale) * 50).toFixed(2)}%`;
+        frame.style.setProperty('--scene-background-inset', backgroundInset);
+      }
+      this._setBackground(cfg.background);
       this._initialized = true;
     }
 
