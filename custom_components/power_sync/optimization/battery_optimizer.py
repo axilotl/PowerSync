@@ -1005,8 +1005,11 @@ class BatteryOptimizer:
                 # battery for a future export window. Otherwise, prefer
                 # self_consumption — the battery naturally serves load,
                 # avoiding expensive grid import.
+                reserve_floor_hold = soc <= self.backup_reserve + 0.005
                 meaningful_hold = soc > self.backup_reserve + 0.05
-                if meaningful_hold and export_prices is not None and import_prices is not None:
+                if reserve_floor_hold:
+                    action = "idle"
+                elif meaningful_hold and export_prices is not None and import_prices is not None:
                     # Check if upcoming export prices justify holding battery
                     # over letting it serve load (avoiding import cost).
                     # Need: export_price > import_price / efficiency

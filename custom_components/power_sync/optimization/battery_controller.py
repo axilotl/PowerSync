@@ -184,15 +184,40 @@ class BatteryControllerWrapper:
         """
         Read current battery backup reserve percentage.
 
-        Reads from the energy coordinator's underlying controller (Modbus/API)
-        or from the Tesla coordinator's cached site_info.
+        Reads from the energy coordinator's underlying controller (Modbus/API),
+        current Tesla HA entities, or the Tesla coordinator's cached site_info.
         Returns None if not available.
         """
         try:
             from ..const import DOMAIN
+            if self.battery_system == "tesla" and hasattr(self.hass, "states"):
+                state = self.hass.states.get("number.power_sync_tesla_backup_reserve")
+                if state and state.state not in (None, "unknown", "unavailable"):
+                    return int(float(state.state))
             for entry_id, entry_data in self.hass.data.get(DOMAIN, {}).items():
                 if not isinstance(entry_data, dict):
                     continue
+                # Prefer the coordinator's latest data when available. This
+                # also covers wrappers like DualSungrowCoordinator and entity-
+                # based bridges whose underlying controller may not expose a
+                # direct get_backup_reserve method.
+                for coord_key in (
+                    "sigenergy_coordinator",
+                    "sungrow_coordinator",
+                    "foxess_coordinator",
+                    "goodwe_coordinator",
+                    "esy_sunhome_coordinator",
+                    "solax_coordinator",
+                    "saj_h2_coordinator",
+                    "neovolt_coordinator",
+                ):
+                    coord = entry_data.get(coord_key)
+                    data = getattr(coord, "data", None) or {}
+                    for data_key in ("backup_reserve", "min_soc"):
+                        reserve = data.get(data_key)
+                        if reserve is not None:
+                            return int(float(reserve))
+
                 # Modbus-based batteries: read from controller
                 for coord_key in ("sigenergy_coordinator", "sungrow_coordinator", "foxess_coordinator", "goodwe_coordinator", "esy_sunhome_coordinator", "solax_coordinator", "saj_h2_coordinator", "neovolt_coordinator"):
                     coord = entry_data.get(coord_key)
@@ -211,13 +236,17 @@ class BatteryControllerWrapper:
 
     async def get_tesla_operation_mode(self) -> str | None:
         """
-        Read the actual default_real_mode from Tesla site_info cache.
+        Read the actual Tesla operation mode from HA state or site_info cache.
 
         Returns the live hardware mode string (e.g. "self_consumption",
         "autonomous") or None if not a Tesla / cache not populated.
         """
         try:
             from ..const import DOMAIN
+            if self.battery_system == "tesla" and hasattr(self.hass, "states"):
+                state = self.hass.states.get("select.power_sync_tesla_operation_mode")
+                if state and state.state not in (None, "unknown", "unavailable"):
+                    return str(state.state)
             for entry_id, entry_data in self.hass.data.get(DOMAIN, {}).items():
                 if not isinstance(entry_data, dict):
                     continue

@@ -1,0 +1,118 @@
+from __future__ import annotations
+
+import asyncio
+import importlib
+import sys
+import types
+from pathlib import Path
+from types import SimpleNamespace
+
+
+ROOT = Path(__file__).resolve().parent.parent
+COMPONENT_ROOT = ROOT / "custom_components" / "power_sync"
+
+
+def _load_controller_module():
+    saved = {
+        name: sys.modules.get(name)
+        for name in (
+            "homeassistant",
+            "homeassistant.core",
+            "power_sync",
+            "power_sync.const",
+            "power_sync.optimization",
+            "power_sync.optimization.battery_controller",
+        )
+    }
+
+    ha_root = types.ModuleType("homeassistant")
+    ha_core = types.ModuleType("homeassistant.core")
+    ha_core.HomeAssistant = type("HomeAssistant", (), {})
+
+    ps_module = types.ModuleType("power_sync")
+    ps_module.__path__ = [str(COMPONENT_ROOT)]
+    opt_module = types.ModuleType("power_sync.optimization")
+    opt_module.__path__ = [str(COMPONENT_ROOT / "optimization")]
+    const_module = types.ModuleType("power_sync.const")
+    const_module.DOMAIN = "power_sync"
+
+    sys.modules["homeassistant"] = ha_root
+    sys.modules["homeassistant.core"] = ha_core
+    sys.modules["power_sync"] = ps_module
+    sys.modules["power_sync.optimization"] = opt_module
+    sys.modules["power_sync.const"] = const_module
+    sys.modules.pop("power_sync.optimization.battery_controller", None)
+
+    module = importlib.import_module("power_sync.optimization.battery_controller")
+
+    def restore() -> None:
+        for name, module in saved.items():
+            if module is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
+
+    return module, restore
+
+
+class _States:
+    def __init__(self, values: dict[str, str]) -> None:
+        self._values = values
+
+    def get(self, entity_id: str):
+        value = self._values.get(entity_id)
+        if value is None:
+            return None
+        return SimpleNamespace(state=value)
+
+
+def test_tesla_status_reads_current_ha_entities_before_cache():
+    module, restore = _load_controller_module()
+    try:
+        hass = SimpleNamespace(
+            states=_States({
+                "select.power_sync_tesla_operation_mode": "autonomous",
+                "number.power_sync_tesla_backup_reserve": "0.0",
+            }),
+            data={
+                "power_sync": {
+                    "entry-1": {
+                        "coordinator": SimpleNamespace(
+                            _site_info_cache={
+                                "default_real_mode": "self_consumption",
+                                "backup_reserve_percent": 20,
+                            }
+                        )
+                    }
+                }
+            },
+        )
+        controller = module.BatteryControllerWrapper(hass, "tesla")
+
+        assert asyncio.run(controller.get_tesla_operation_mode()) == "autonomous"
+        assert asyncio.run(controller.get_backup_reserve()) == 0
+    finally:
+        restore()
+
+
+def test_backup_reserve_reads_coordinator_data_before_controller():
+    module, restore = _load_controller_module()
+    try:
+        hass = SimpleNamespace(
+            states=_States({}),
+            data={
+                "power_sync": {
+                    "entry-1": {
+                        "sungrow_coordinator": SimpleNamespace(
+                            data={"backup_reserve": 15},
+                            _controller=SimpleNamespace(),
+                        )
+                    }
+                }
+            },
+        )
+        controller = module.BatteryControllerWrapper(hass, "sungrow")
+
+        assert asyncio.run(controller.get_backup_reserve()) == 15
+    finally:
+        restore()

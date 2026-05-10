@@ -1713,7 +1713,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 try:
                     soc_now, _ = await self._get_battery_state()
                     opt_reserve = self._config.backup_reserve
-                    if soc_now <= opt_reserve + 0.05:
+                    if opt_reserve + 0.005 < soc_now <= opt_reserve + 0.05:
                         hw_reserve_pct = self._startup_backup_reserve or 0
                         _LOGGER.debug(
                             "Optimizer: Overriding IDLE → self_consumption — "
@@ -1909,44 +1909,6 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 # Never hold below the configured optimizer backup reserve
                 configured_idle_floor = int(self._config.backup_reserve * 100)
 
-                # At or below the floor, there's nothing to hold — switch to
-                # self_consumption so the battery naturally serves home load
-                # (avoiding expensive grid import).  The hardware min_soc
-                # prevents over-discharge below the user's physical reserve.
-                if soc_pct <= configured_idle_floor:
-                    effective_action = "self_consumption"
-                    # Already in SC from a previous floor override — skip redundant commands
-                    if self._last_executed_action == "self_consumption":
-                        _LOGGER.debug(
-                            "Optimizer: SOC %d%% at/below floor %d%% — already in self_consumption",
-                            soc_pct, configured_idle_floor,
-                        )
-                        return
-                    _LOGGER.info(
-                        "Optimizer: SOC %d%% at/below floor %d%% — switching to "
-                        "self_consumption (nothing to hold)",
-                        soc_pct, configured_idle_floor,
-                    )
-                    # Restore from IDLE hold mode if we were in it
-                    if self._last_executed_action == "idle":
-                        if (
-                            self.energy_coordinator
-                            and hasattr(self.energy_coordinator, "restore_work_mode_from_idle")
-                        ):
-                            await self.energy_coordinator.restore_work_mode_from_idle()
-                        if hasattr(battery, "set_backup_reserve") and self._pre_idle_backup_reserve is not None:
-                            try:
-                                await battery.set_backup_reserve(self._pre_idle_backup_reserve)
-                                self._pre_idle_backup_reserve = None  # Only clear on success
-                            except Exception as e:
-                                _LOGGER.warning("Failed to restore backup reserve to %d%%: %s (will retry)", self._pre_idle_backup_reserve, e)
-                    if hasattr(battery, "set_self_consumption_mode"):
-                        await battery.set_self_consumption_mode()
-                    elif hasattr(battery, "restore_normal"):
-                        await battery.restore_normal()
-                    self._last_executed_action = effective_action
-                    return
-
                 # Use the startup-captured backup reserve as the restore value.
                 # Don't read from the API here — it may already show an
                 # IDLE-elevated value from a previous cycle.
@@ -2100,6 +2062,8 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
                 if effective_action != "off_grid":
                     apply_self_consumption = self._last_executed_action != "self_consumption"
+                    reapply_backup_reserve = False
+                    configured_reserve_pct = int(self._config.backup_reserve * 100)
                     if not apply_self_consumption:
                         # Verify the hardware mode has not drifted. On HA restart
                         # Tesla can remain in autonomous while the optimizer's
@@ -2113,37 +2077,50 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                                     hw_mode,
                                 )
                                 apply_self_consumption = True
-                        if not apply_self_consumption:
+                        if hasattr(battery, "get_backup_reserve"):
+                            current_reserve = await battery.get_backup_reserve()
+                            if (
+                                current_reserve is not None
+                                and current_reserve < configured_reserve_pct
+                            ):
+                                _LOGGER.info(
+                                    "Optimizer: backup_reserve is %d%% while LP floor "
+                                    "is %d%% — reapplying reserve floor",
+                                    current_reserve,
+                                    configured_reserve_pct,
+                                )
+                                reapply_backup_reserve = True
+                        if not apply_self_consumption and not reapply_backup_reserve:
                             _LOGGER.debug(
                                 "Optimizer: Already in self-consumption mode — "
                                 "skipping redundant API call"
                             )
-                    if apply_self_consumption:
+                    if apply_self_consumption or reapply_backup_reserve:
                         if hasattr(battery, "set_self_consumption_mode"):
-                            await battery.set_self_consumption_mode()
+                            if apply_self_consumption:
+                                await battery.set_self_consumption_mode()
                         elif hasattr(battery, "restore_normal"):
-                            await battery.restore_normal()
+                            if apply_self_consumption:
+                                await battery.restore_normal()
                         # Reset hardware backup_reserve to prevent grid charging when
                         # the user's hardware reserve (restored by restore_normal after
                         # force_discharge) is above the current SOC.
-                        # Use min(startup_reserve, LP_floor): users with a reserve
-                        # already at or below the LP floor keep their setting unchanged;
-                        # users with a high reserve (e.g. 80%) get it capped to the LP
-                        # floor so the Powerwall doesn't charge from grid to reach it.
+                        # Set the runtime floor to the optimizer floor. Startup
+                        # reserve is a restore target only; if it is lower than
+                        # the optimizer floor, preserving it here lets natural
+                        # self-consumption drain below the LP's planned floor.
                         if hasattr(battery, "set_backup_reserve"):
-                            configured_reserve_pct = int(self._config.backup_reserve * 100)
-                            startup = self._startup_backup_reserve
-                            reserve_pct = (
-                                min(startup, configured_reserve_pct)
-                                if startup is not None
-                                else configured_reserve_pct
-                            )
+                            reserve_pct = configured_reserve_pct
                             await battery.set_backup_reserve(reserve_pct)
                             _LOGGER.info(
                                 "Optimizer: self_consumption — set backup_reserve=%d%% "
                                 "(startup=%s%%, floor=%d%%)",
                                 reserve_pct,
-                                startup if startup is not None else "?",
+                                (
+                                    self._startup_backup_reserve
+                                    if self._startup_backup_reserve is not None
+                                    else "?"
+                                ),
                                 configured_reserve_pct,
                             )
                     _LOGGER.debug("Optimizer: Self-consumption mode (action=%s)", effective_action)
@@ -4551,6 +4528,14 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 backup_reserve=self._config.backup_reserve,
             )
             self._optimizer.terminal_weight = self._profit_max_terminal_weight()
+        if (
+            "backup_reserve" in kwargs
+            and self.energy_coordinator
+            and hasattr(self.energy_coordinator, "set_min_soc_pct")
+        ):
+            self.energy_coordinator.set_min_soc_pct(
+                self._config.backup_reserve * 100
+            )
 
     async def force_reoptimize(self) -> Any:
         """Force immediate re-optimization."""

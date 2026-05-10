@@ -175,7 +175,27 @@ def _coordinator(opt_module, provider: str, profit_max: bool = False, **options)
     )
     coordinator._saving_session_coordinator = None
     coordinator._last_export_boost_allowed_slots = []
+    coordinator._optimizer = None
+    coordinator.energy_coordinator = None
     return coordinator
+
+
+class _FakeMinSocCoordinator:
+    def __init__(self) -> None:
+        self.min_soc_calls = []
+
+    def set_min_soc_pct(self, min_soc_pct: float) -> None:
+        self.min_soc_calls.append(min_soc_pct)
+
+
+def test_update_config_propagates_backup_reserve_to_software_floor(opt_module):
+    coordinator = _coordinator(opt_module, "octopus")
+    energy = _FakeMinSocCoordinator()
+    coordinator.energy_coordinator = energy
+
+    coordinator.update_config(backup_reserve=0.35)
+
+    assert energy.min_soc_calls == [35]
 
 
 def _true_indexes(slots: list[bool]) -> list[int]:
@@ -372,8 +392,13 @@ def test_export_boost_allows_only_configured_window_above_threshold(opt_module):
 
 
 class _FakeBattery:
-    def __init__(self, hardware_mode: str | None = None) -> None:
+    def __init__(
+        self,
+        hardware_mode: str | None = None,
+        backup_reserve: int | None = None,
+    ) -> None:
         self.hardware_mode = hardware_mode
+        self.backup_reserve = backup_reserve
         self.self_consumption_calls = 0
         self.backup_reserve_calls = []
         self.force_charge_calls = []
@@ -381,6 +406,9 @@ class _FakeBattery:
 
     async def get_tesla_operation_mode(self):
         return self.hardware_mode
+
+    async def get_backup_reserve(self):
+        return self.backup_reserve
 
     async def set_self_consumption_mode(self):
         self.self_consumption_calls += 1
@@ -456,6 +484,50 @@ def test_self_consumption_skips_redundant_call_when_tesla_mode_matches(opt_modul
     assert battery.self_consumption_calls == 0
     assert battery.backup_reserve_calls == []
     assert coordinator._last_executed_action == "self_consumption"
+
+
+def test_self_consumption_reapplies_tesla_reserve_floor_when_mode_matches(opt_module):
+    battery = _FakeBattery(hardware_mode="self_consumption", backup_reserve=0)
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.50)
+
+    asyncio.run(
+        coordinator._execute_optimizer_action(
+            SimpleNamespace(action="self_consumption", power_w=0)
+        )
+    )
+
+    assert battery.self_consumption_calls == 0
+    assert battery.backup_reserve_calls == [20]
+    assert coordinator._last_executed_action == "self_consumption"
+
+
+def test_self_consumption_uses_optimizer_floor_when_startup_reserve_is_lower(opt_module):
+    battery = _FakeBattery(hardware_mode="self_consumption", backup_reserve=0)
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.50)
+    coordinator._startup_backup_reserve = 0
+
+    asyncio.run(
+        coordinator._execute_optimizer_action(
+            SimpleNamespace(action="self_consumption", power_w=0)
+        )
+    )
+
+    assert battery.backup_reserve_calls == [20]
+
+
+def test_idle_at_reserve_floor_is_not_overridden_to_self_consumption(opt_module):
+    battery = _FakeBattery()
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.20)
+
+    asyncio.run(
+        coordinator._execute_optimizer_action(
+            SimpleNamespace(action="idle", power_w=0)
+        )
+    )
+
+    assert battery.self_consumption_calls == 1
+    assert battery.backup_reserve_calls == [20]
+    assert coordinator._last_executed_action == "idle"
 
 
 def test_charge_executes_immediately_above_reserve(opt_module):

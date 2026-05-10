@@ -5071,6 +5071,8 @@ class SolaxBatteryEnergyCoordinator(DataUpdateCoordinator):
             "pv2_current": status.get("pv2_current"),
             "pv3_current": status.get("pv3_current"),
             "mode": status.get("mode"),
+            "backup_reserve": status.get("backup_reserve"),
+            "min_soc": status.get("min_soc"),
             "energy_summary": energy_summary,
         }
 

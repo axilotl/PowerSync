@@ -433,6 +433,7 @@ class SolaxBatteryController:
         solar_total_w = self._read_float("solar_power")
         load_w = self._read_float("load_power") or 0.0
         bat_temp = self._read_float("battery_temp")
+        backup_reserve = self._read_float("backup_reserve")
         daily_solar_kwh = self._read_float("daily_solar_energy")
         daily_import_kwh = self._read_float("daily_grid_import")
         daily_export_kwh = self._read_float("daily_grid_export")
@@ -484,6 +485,8 @@ class SolaxBatteryController:
             "pv2_current": pv2_a,
             "pv3_current": pv3_a,
             "battery_temperature": bat_temp,
+            "backup_reserve": backup_reserve,
+            "min_soc": backup_reserve,
             "mode": mode,
             "daily_solar_energy_kwh": daily_solar_kwh,
             "daily_grid_import_kwh": daily_import_kwh,
@@ -614,6 +617,12 @@ class SolaxBatteryController:
             await self._set_number("grid_tied_min_soc", clamped)
         _LOGGER.info("Solax backup reserve set to %d%%", clamped)
         return True
+
+    async def get_backup_reserve(self) -> int | None:
+        """Read the current backup reserve (minimum SOC)."""
+        await self._ensure_connected()
+        reserve = self._read_float("backup_reserve")
+        return int(reserve) if reserve is not None else None
 
     async def set_operation_mode(self, mode: str) -> bool:
         """Map PowerSync operation mode to Solax charger_use_mode."""
