@@ -2112,7 +2112,10 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                                     hw_mode,
                                 )
                                 apply_self_consumption = True
-                        if hasattr(battery, "get_backup_reserve"):
+                        if (
+                            self.battery_system == "tesla"
+                            and hasattr(battery, "get_backup_reserve")
+                        ):
                             current_reserve = await battery.get_backup_reserve()
                             if (
                                 current_reserve is not None
@@ -2137,14 +2140,16 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         elif hasattr(battery, "restore_normal"):
                             if apply_self_consumption:
                                 await battery.restore_normal()
-                        # Reset hardware backup_reserve to prevent grid charging when
-                        # the user's hardware reserve (restored by restore_normal after
-                        # force_discharge) is above the current SOC.
-                        # Set the runtime floor to the optimizer floor. Startup
-                        # reserve is a restore target only; if it is lower than
-                        # the optimizer floor, preserving it here lets natural
-                        # self-consumption drain below the LP's planned floor.
-                        if hasattr(battery, "set_backup_reserve"):
+                        # Tesla only: reset hardware backup_reserve to prevent
+                        # grid charging when the user's hardware reserve
+                        # (restored by restore_normal after force_discharge) is
+                        # above the current SOC. Modbus batteries such as GoodWe
+                        # expose this as a real hardware/DOD setting, so ordinary
+                        # self-consumption must not rewrite it to the LP floor.
+                        if (
+                            self.battery_system == "tesla"
+                            and hasattr(battery, "set_backup_reserve")
+                        ):
                             reserve_pct = configured_reserve_pct
                             await battery.set_backup_reserve(reserve_pct)
                             _LOGGER.info(

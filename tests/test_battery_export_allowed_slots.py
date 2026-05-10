@@ -644,6 +644,43 @@ def test_self_consumption_uses_optimizer_floor_when_startup_reserve_is_lower(opt
     assert battery.backup_reserve_calls == [20]
 
 
+def test_self_consumption_does_not_push_optimizer_floor_to_goodwe_reserve(opt_module):
+    battery = _FakeBattery(hardware_mode="self_consumption", backup_reserve=20)
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.43)
+    coordinator.battery_system = "goodwe"
+    coordinator._config.backup_reserve = 0.45
+    coordinator._startup_backup_reserve = 20
+    coordinator._last_executed_action = "idle"
+
+    asyncio.run(
+        coordinator._execute_optimizer_action(
+            SimpleNamespace(action="self_consumption", power_w=0)
+        )
+    )
+
+    assert battery.self_consumption_calls == 1
+    assert battery.backup_reserve_calls == []
+    assert coordinator._last_executed_action == "self_consumption"
+
+
+def test_self_consumption_does_not_reapply_goodwe_reserve_when_mode_matches(opt_module):
+    battery = _FakeBattery(hardware_mode="self_consumption", backup_reserve=20)
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.43)
+    coordinator.battery_system = "goodwe"
+    coordinator._config.backup_reserve = 0.45
+    coordinator._startup_backup_reserve = 20
+
+    asyncio.run(
+        coordinator._execute_optimizer_action(
+            SimpleNamespace(action="self_consumption", power_w=0)
+        )
+    )
+
+    assert battery.self_consumption_calls == 0
+    assert battery.backup_reserve_calls == []
+    assert coordinator._last_executed_action == "self_consumption"
+
+
 def test_idle_at_reserve_floor_is_not_overridden_to_self_consumption(opt_module):
     battery = _FakeBattery()
     coordinator = _execution_coordinator(opt_module, battery, soc=0.20)
