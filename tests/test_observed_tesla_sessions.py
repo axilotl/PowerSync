@@ -37,7 +37,17 @@ class _Coordinator:
 
 class _Hass:
     def __init__(self) -> None:
-        self.data = {"power_sync": {"entry-1": {"tesla_coordinator": _Coordinator()}}}
+        self.data = {
+            "power_sync": {
+                "entry-1": {
+                    "tesla_coordinator": _Coordinator(),
+                    "tariff_schedule": {
+                        "buy_price": 0.0,
+                        "sell_price": 5.0,
+                    },
+                },
+            },
+        }
 
 
 class _Session:
@@ -69,7 +79,17 @@ class _SessionManager:
         export_price_cents=8.0,
         battery_soc=None,
     ):
-        self.updated.append((vehicle_id, power_kw, amps, is_solar, battery_soc))
+        self.updated.append(
+            (
+                vehicle_id,
+                power_kw,
+                amps,
+                is_solar,
+                import_price_cents,
+                export_price_cents,
+                battery_soc,
+            )
+        )
         return self.active_sessions.get(vehicle_id)
 
     async def end_session(self, vehicle_id, reason, end_soc=None):
@@ -103,7 +123,9 @@ def test_observed_tesla_charge_starts_and_updates_session():
     asyncio.run(tracker.poll())
 
     assert manager.started == [("LRW3TESTVIN12345", OBSERVED_SESSION_MODE, 70, None)]
-    assert manager.updated == [("LRW3TESTVIN12345", 10.9, 0, False, 70)]
+    assert manager.updated == [
+        ("LRW3TESTVIN12345", 10.9, 0, False, 0.0, 5.0, 70)
+    ]
 
 
 def test_observed_tesla_charge_does_not_duplicate_powersync_session():

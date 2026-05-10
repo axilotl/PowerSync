@@ -1066,6 +1066,7 @@ OPTIMIZER_ACTION_SENSORS: tuple[PowerSyncSensorEntityDescription, ...] = (
         value_fn=lambda data: data.get("current_action") if data else None,
         attr_fn=lambda data: {
             "power_w": data.get("current_power_w"),
+            "actual_battery_power_w": data.get("actual_battery_power_w"),
             "status": data.get("status"),
             "until": data.get("current_action_end_time"),
         } if data else {},

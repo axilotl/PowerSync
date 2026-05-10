@@ -1,0 +1,78 @@
+"""Tests for EV charging session price lookup."""
+
+from __future__ import annotations
+
+import sys
+import types
+from pathlib import Path
+from types import SimpleNamespace
+
+
+ROOT = Path(__file__).resolve().parent.parent / "custom_components" / "power_sync"
+_ps = types.ModuleType("power_sync")
+_ps.__path__ = [str(ROOT)]
+sys.modules["power_sync"] = _ps
+
+_automations = types.ModuleType("power_sync.automations")
+_automations.__path__ = [str(ROOT / "automations")]
+sys.modules["power_sync.automations"] = _automations
+
+from power_sync.automations.ev_pricing import get_current_ev_prices  # noqa: E402
+
+
+def _hass_with(coordinator_key: str, import_cents: float, export_cents: float):
+    return SimpleNamespace(
+        data={
+            "power_sync": {
+                "entry-1": {
+                    coordinator_key: SimpleNamespace(
+                        data={
+                            "current": [
+                                {
+                                    "channelType": "general",
+                                    "perKwh": import_cents,
+                                },
+                                {
+                                    "channelType": "feedIn",
+                                    "perKwh": -export_cents,
+                                },
+                            ],
+                        },
+                    ),
+                },
+            },
+        },
+    )
+
+
+def test_ev_prices_cover_dynamic_provider_coordinators():
+    provider_prices = {
+        "amber_coordinator": (12.5, 4.0),
+        "localvolts_coordinator": (8.1, 2.2),
+        "octopus_coordinator": (19.0, 15.0),
+        "epex_coordinator": (21.3, 6.7),
+        "aemo_sensor_coordinator": (0.0, 3.0),
+    }
+
+    for coordinator_key, expected in provider_prices.items():
+        assert get_current_ev_prices(
+            _hass_with(coordinator_key, *expected),
+            "entry-1",
+        ) == expected
+
+
+def test_ev_prices_fall_back_to_stored_current_prices():
+    hass = SimpleNamespace(
+        data={
+            "power_sync": {
+                "entry-1": {
+                    "current_prices": {
+                        "import_cents": 27.0,
+                        "export_cents": 9.5,
+                    },
+                },
+            },
+        },
+    )
+
+    assert get_current_ev_prices(hass, "entry-1") == (27.0, 9.5)

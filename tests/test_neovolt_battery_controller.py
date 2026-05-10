@@ -529,7 +529,7 @@ def test_fleet_force_charge_prioritises_low_soc_stack_when_unbalanced():
         ("number", "set_value", {"entity_id": "number.neovolt_1_dispatch_duration", "value": 70}),
         ("number", "set_value", {"entity_id": "number.neovolt_1_dispatch_charge_target_soc", "value": 100}),
         ("select", "select_option", {"entity_id": "select.neovolt_1_dispatch_mode", "option": "Force Charge"}),
-        ("select", "select_option", {"entity_id": "select.neovolt_2_dispatch_mode", "option": "No Battery Charge"}),
+        ("select", "select_option", {"entity_id": "select.neovolt_2_dispatch_mode", "option": "Idle (No Dispatch)"}),
     ]
 
 
@@ -564,7 +564,7 @@ def test_fleet_force_charge_balancer_restores_parked_stack():
 
     hass.services.calls.clear()
     hass.states._states["select.neovolt_1_dispatch_mode"].state = "Force Charge"
-    hass.states._states["select.neovolt_2_dispatch_mode"].state = "No Battery Charge"
+    hass.states._states["select.neovolt_2_dispatch_mode"].state = "Idle (No Dispatch)"
     assert asyncio.run(controller.restore_normal())
 
     assert controller.get_status()["surplus_balancer"]["soc_parked_index"] is None
@@ -607,7 +607,7 @@ def test_fleet_force_charge_refresh_preserves_restore_modes():
     assert controller._restore_modes == ["Normal", "Normal"]
 
     hass.states._states["select.neovolt_1_dispatch_mode"].state = "Force Charge"
-    hass.states._states["select.neovolt_2_dispatch_mode"].state = "No Battery Charge"
+    hass.states._states["select.neovolt_2_dispatch_mode"].state = "Idle (No Dispatch)"
     assert asyncio.run(
         controller.force_charge(
             duration_minutes=69,
@@ -867,7 +867,7 @@ def test_fleet_surplus_balancer_parks_higher_soc_normal_stack():
     assert balancer["soc_parked_index"] == 1
     assert balancer["soc_parked_base_mode"] == "Normal"
     assert hass.services.calls == [
-        ("select", "select_option", {"entity_id": "select.neovolt_2_dispatch_mode", "option": "No Battery Charge"}),
+        ("select", "select_option", {"entity_id": "select.neovolt_2_dispatch_mode", "option": "Idle (No Dispatch)"}),
     ]
 
 
@@ -913,11 +913,11 @@ def test_fleet_surplus_balancer_parks_full_stack_until_lower_stack_catches_up():
     assert balancer["soc_delta_percent"] == 2.4
     assert balancer["soc_parked_index"] == 0
     assert hass.services.calls == [
-        ("select", "select_option", {"entity_id": "select.neovolt_1_dispatch_mode", "option": "No Battery Charge"}),
+        ("select", "select_option", {"entity_id": "select.neovolt_1_dispatch_mode", "option": "Idle (No Dispatch)"}),
     ]
 
     hass.services.calls.clear()
-    hass.states._states["select.neovolt_1_dispatch_mode"].state = "No Battery Charge"
+    hass.states._states["select.neovolt_1_dispatch_mode"].state = "Idle (No Dispatch)"
     hass.states._states["sensor.neovolt_2_combined_battery_soc"].state = "99.0"
 
     balancer = asyncio.run(controller.balance_solar_surplus(controller.get_status()))
@@ -971,7 +971,7 @@ def test_fleet_surplus_balancer_parks_charging_high_stack_when_low_stack_dischar
     assert balancer["soc_parked_index"] == 1
     assert balancer["soc_parked_base_mode"] == "Normal"
     assert hass.services.calls == [
-        ("select", "select_option", {"entity_id": "select.neovolt_2_dispatch_mode", "option": "No Battery Charge"}),
+        ("select", "select_option", {"entity_id": "select.neovolt_2_dispatch_mode", "option": "Idle (No Dispatch)"}),
     ]
 
 
@@ -1011,7 +1011,7 @@ def test_fleet_surplus_balancer_restores_soc_parked_stack_when_balanced():
     asyncio.run(controller.balance_solar_surplus(controller.get_status()))
 
     hass.services.calls.clear()
-    hass.states._states["select.neovolt_2_dispatch_mode"].state = "No Battery Charge"
+    hass.states._states["select.neovolt_2_dispatch_mode"].state = "Idle (No Dispatch)"
     hass.states._states["sensor.neovolt_1_combined_battery_soc"].state = "68"
     hass.states._states["sensor.neovolt_2_combined_battery_soc"].state = "71"
 

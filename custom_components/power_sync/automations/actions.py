@@ -3355,57 +3355,9 @@ def _get_current_ev_prices(hass, entry_id: str) -> tuple:
     Returns:
         (import_price_cents, export_price_cents) tuple with defaults of (30.0, 8.0)
     """
-    import_price = 30.0
-    export_price = 8.0
+    from .ev_pricing import get_current_ev_prices
 
-    entry_data = hass.data.get(DOMAIN, {}).get(entry_id, {})
-
-    # Try Amber coordinator first
-    amber_coordinator = entry_data.get("amber_coordinator")
-    if amber_coordinator and amber_coordinator.data:
-        current_prices = amber_coordinator.data.get("current", [])
-        for price in current_prices:
-            if price.get("channelType") == "general":
-                import_price = price.get("perKwh", 30.0)
-            elif price.get("channelType") == "feedIn":
-                export_price = abs(price.get("perKwh", 8.0))
-        return import_price, export_price
-
-    # Fallback to tariff_schedule (for Globird/AEMO VPP users)
-    if entry_data.get("tariff_schedule"):
-        tariff_schedule = entry_data.get("tariff_schedule", {})
-        import_price = tariff_schedule.get("buy_price", 30.0)
-        export_price = tariff_schedule.get("sell_price", 8.0)
-        return import_price, export_price
-
-    # Fallback to Sigenergy tariff (for Sigenergy users with Amber)
-    if entry_data.get("sigenergy_tariff"):
-        sigenergy_tariff = entry_data.get("sigenergy_tariff", {})
-        buy_prices = sigenergy_tariff.get("buy_prices", [])
-        sell_prices = sigenergy_tariff.get("sell_prices", [])
-        if buy_prices:
-            now = dt_util.now()  # HA tz; container UTC would pick wrong slot
-            current_time = f"{now.hour:02d}:{30 if now.minute >= 30 else 0:02d}"
-            for slot in buy_prices:
-                if slot.get("timeRange", "").startswith(current_time):
-                    import_price = slot.get("price", 30.0)
-                    break
-        if sell_prices:
-            now = dt_util.now()  # HA tz; container UTC would pick wrong slot
-            current_time = f"{now.hour:02d}:{30 if now.minute >= 30 else 0:02d}"
-            for slot in sell_prices:
-                if slot.get("timeRange", "").startswith(current_time):
-                    export_price = slot.get("price", 8.0)
-                    break
-        return import_price, export_price
-
-    # Fallback to stored current_prices
-    price_data = entry_data.get("current_prices", {})
-    if price_data:
-        import_price = price_data.get("import_cents", 30.0)
-        export_price = price_data.get("export_cents", 8.0)
-
-    return import_price, export_price
+    return get_current_ev_prices(hass, entry_id)
 
 
 def get_price_recommendation(

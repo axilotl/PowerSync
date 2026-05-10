@@ -281,10 +281,10 @@ class NeovoltBatteryController:
     async def set_no_battery_charge(self) -> bool:
         """Park charging/discharging on systems that expose an anti-fighting mode."""
         options = self._dispatch_mode_options()
-        for mode in ("No Battery Charge", "Idle (No Dispatch)"):
+        for mode in ("Idle (No Dispatch)", "No Battery Charge"):
             if mode in options:
                 return await self.set_dispatch_mode(mode)
-        return await self.set_dispatch_mode("No Battery Charge")
+        return await self.set_dispatch_mode("Idle (No Dispatch)")
 
     async def set_backup_reserve(self, percent: int) -> bool:
         """Set the default discharging cutoff SOC in the Neovolt integration."""

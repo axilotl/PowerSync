@@ -8,6 +8,7 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from ..const import DOMAIN
+from .ev_pricing import get_current_ev_prices
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -157,11 +158,17 @@ class ObservedTeslaSessionTracker:
                 )
                 _LOGGER.info("Observed Tesla charging session started for %s", vehicle_id)
 
+            import_price, export_price = get_current_ev_prices(
+                self._hass,
+                self._entry.entry_id,
+            )
             await self._session_manager.update_session(
                 vehicle_id=vehicle_id,
                 power_kw=power_kw,
                 amps=_optional_int(vehicle.get("current_amps")) or 0,
                 is_solar=self._is_mostly_solar(power_kw),
+                import_price_cents=import_price,
+                export_price_cents=export_price,
                 battery_soc=soc,
             )
 

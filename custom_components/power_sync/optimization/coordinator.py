@@ -4647,7 +4647,8 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         # Get current action info
         current_action = "idle"
-        current_power_w = self._get_actual_battery_power_w()
+        actual_battery_power_w = self._get_actual_battery_power_w()
+        current_power_w = actual_battery_power_w
         current_action_end_time = None  # When the current scheduled action segment ends
         next_action = "idle"
         next_action_time = None
@@ -4657,6 +4658,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             ca = self._get_current_action()
             if ca:
                 current_action = ca.action
+                current_power_w = ca.power_w
 
             now = dt_util.now()
 
@@ -4708,6 +4710,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "optimization_status": "active" if optimizer_available else "not_available",
             "current_action": current_action,
             "current_power_w": current_power_w,
+            "actual_battery_power_w": actual_battery_power_w,
             "current_action_end_time": current_action_end_time,
             "next_action": next_action,
             "next_action_time": next_action_time,
