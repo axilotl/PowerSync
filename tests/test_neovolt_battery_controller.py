@@ -479,15 +479,93 @@ def test_fleet_force_charge_writes_all_inverter_dispatch_controls():
     assert asyncio.run(controller.force_charge(duration_minutes=30, power_w=6000))
 
     assert hass.services.calls == [
-        ("number", "set_value", {"entity_id": "number.neovolt_1_dispatch_power", "value": 3.0}),
+        ("number", "set_value", {"entity_id": "number.neovolt_1_dispatch_power", "value": 2.398}),
         ("number", "set_value", {"entity_id": "number.neovolt_1_dispatch_duration", "value": 30}),
         ("number", "set_value", {"entity_id": "number.neovolt_1_dispatch_charge_target_soc", "value": 100}),
         ("select", "select_option", {"entity_id": "select.neovolt_1_dispatch_mode", "option": "Force Charge"}),
-        ("number", "set_value", {"entity_id": "number.neovolt_2_dispatch_power", "value": 3.0}),
+        ("number", "set_value", {"entity_id": "number.neovolt_2_dispatch_power", "value": 3.602}),
         ("number", "set_value", {"entity_id": "number.neovolt_2_dispatch_duration", "value": 30}),
         ("number", "set_value", {"entity_id": "number.neovolt_2_dispatch_charge_target_soc", "value": 100}),
         ("select", "select_option", {"entity_id": "select.neovolt_2_dispatch_mode", "option": "Force Charge"}),
     ]
+
+
+def test_fleet_force_charge_capacity_split_respects_larger_stack_limit():
+    entry_1_states = _combined_states_for(
+        1,
+        battery_power="0",
+        battery_soc="50",
+        battery_capacity="20.1",
+    ) + _control_states_for(1)
+    entry_2_states = _combined_states_for(
+        2,
+        battery_power="0",
+        battery_soc="50",
+        battery_capacity="30.2",
+    ) + _control_states_for(2)
+    hass = _FakeHass(
+        entry_1_states + entry_2_states,
+        {
+            "neovolt-1": [state.entity_id for state in entry_1_states],
+            "neovolt-2": [state.entity_id for state in entry_2_states],
+        },
+    )
+    controller = NeovoltFleetBatteryController(
+        hass,
+        ["neovolt-1", "neovolt-2"],
+        max_charge_kw=5.0,
+        max_discharge_kw=5.0,
+    )
+    assert asyncio.run(controller.connect())
+
+    assert asyncio.run(controller.force_charge(duration_minutes=30, power_w=10000))
+
+    assert hass.services.calls[0] == (
+        "number",
+        "set_value",
+        {"entity_id": "number.neovolt_1_dispatch_power", "value": 3.328},
+    )
+    assert hass.services.calls[4] == (
+        "number",
+        "set_value",
+        {"entity_id": "number.neovolt_2_dispatch_power", "value": 5.0},
+    )
+
+
+def test_fleet_uses_configured_capacity_over_sensor_capacity():
+    entry_1_states = _combined_states_for(
+        1,
+        battery_power="0",
+        battery_soc="50",
+        battery_capacity="10.0",
+    ) + _control_states_for(1)
+    entry_2_states = _combined_states_for(
+        2,
+        battery_power="0",
+        battery_soc="80",
+        battery_capacity="10.0",
+    ) + _control_states_for(2)
+    hass = _FakeHass(
+        entry_1_states + entry_2_states,
+        {
+            "neovolt-1": [state.entity_id for state in entry_1_states],
+            "neovolt-2": [state.entity_id for state in entry_2_states],
+        },
+    )
+    controller = NeovoltFleetBatteryController(
+        hass,
+        ["neovolt-1", "neovolt-2"],
+        max_charge_kw=5.0,
+        max_discharge_kw=5.0,
+        battery_capacities_kwh=[20.1, 30.2],
+    )
+
+    status = controller.get_status()
+
+    assert status["battery_capacity_kwh"] == pytest.approx(50.3)
+    assert status["battery_level"] == pytest.approx(68.0119, rel=1e-4)
+    assert status["controller_statuses"][0]["battery_capacity_kwh"] == pytest.approx(20.1)
+    assert status["controller_statuses"][1]["battery_capacity_kwh"] == pytest.approx(30.2)
 
 
 def test_fleet_force_charge_prioritises_low_soc_stack_when_unbalanced():

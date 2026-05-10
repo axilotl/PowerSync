@@ -5208,6 +5208,7 @@ class NeovoltEnergyCoordinator(DataUpdateCoordinator):
         min_soc_pct: float = 10.0,
         surplus_balancer_mode: str = "auto",
         soc_balance_tolerance_pct: float = 5.0,
+        battery_capacities_kwh: list[float | int | str | None] | None = None,
     ) -> None:
         from .inverters.neovolt import NeovoltFleetBatteryController
 
@@ -5225,6 +5226,7 @@ class NeovoltEnergyCoordinator(DataUpdateCoordinator):
             min_soc_pct=min_soc_pct,
             surplus_balancer_mode=surplus_balancer_mode,
             soc_balance_tolerance_pct=soc_balance_tolerance_pct,
+            battery_capacities_kwh=battery_capacities_kwh,
         )
         self._energy_acc = EnergyAccumulator(hass, "neovolt")
 

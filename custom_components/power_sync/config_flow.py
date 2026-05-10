@@ -106,6 +106,7 @@ from .const import (
     CONF_NEOVOLT_CONFIG_ENTRY_IDS,
     CONF_NEOVOLT_MAX_CHARGE_KW,
     CONF_NEOVOLT_MAX_DISCHARGE_KW,
+    CONF_NEOVOLT_BATTERY_CAPACITIES_KWH,
     CONF_NEOVOLT_SURPLUS_BALANCER_MODE,
     CONF_NEOVOLT_SOC_BALANCE_TOLERANCE,
     DEFAULT_NEOVOLT_MAX_CHARGE_KW,
@@ -407,6 +408,43 @@ def _normalize_neovolt_entry_ids(
     if not entry_ids and fallback_entry_id:
         entry_ids = [fallback_entry_id]
     return entry_ids
+
+
+def _parse_neovolt_capacities_kwh(raw_value: Any, stack_count: int) -> list[float]:
+    """Parse optional comma-separated Neovolt stack capacities in selected-entry order."""
+    if raw_value in (None, "", []):
+        return []
+    if isinstance(raw_value, (list, tuple)):
+        raw_parts = list(raw_value)
+    else:
+        raw_parts = [
+            part.strip()
+            for part in str(raw_value).replace(";", ",").split(",")
+            if part.strip()
+        ]
+
+    capacities: list[float] = []
+    for raw_part in raw_parts:
+        try:
+            capacity = float(raw_part)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("capacity_invalid") from exc
+        if capacity <= 0:
+            raise ValueError("capacity_must_be_positive")
+        capacities.append(capacity)
+
+    if capacities and len(capacities) != stack_count:
+        raise ValueError("capacity_count_mismatch")
+    return capacities
+
+
+def _format_neovolt_capacities_kwh(raw_value: Any) -> str:
+    """Format stored Neovolt capacities for the config/options form."""
+    if raw_value in (None, "", []):
+        return ""
+    if not isinstance(raw_value, (list, tuple)):
+        return str(raw_value)
+    return ", ".join(f"{float(capacity):g}" for capacity in raw_value)
 
 
 def _stored_wh_to_kwh(value: Any, default_wh: int) -> float:
@@ -2582,6 +2620,10 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             )
 
             try:
+                battery_capacities_kwh = _parse_neovolt_capacities_kwh(
+                    user_input.get(CONF_NEOVOLT_BATTERY_CAPACITIES_KWH),
+                    len(selected_entry_ids),
+                )
                 ctrl = NeovoltFleetBatteryController(
                     self.hass,
                     neovolt_entry_ids=selected_entry_ids,
@@ -2589,6 +2631,7 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     max_discharge_kw=float(max_discharge_kw),
                     surplus_balancer_mode=str(surplus_balancer_mode),
                     soc_balance_tolerance_pct=float(soc_balance_tolerance),
+                    battery_capacities_kwh=battery_capacities_kwh,
                 )
                 await ctrl.connect()
                 self._neovolt_data = {
@@ -2596,12 +2639,15 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     CONF_NEOVOLT_CONFIG_ENTRY_IDS: selected_entry_ids,
                     CONF_NEOVOLT_MAX_CHARGE_KW: float(max_charge_kw),
                     CONF_NEOVOLT_MAX_DISCHARGE_KW: float(max_discharge_kw),
+                    CONF_NEOVOLT_BATTERY_CAPACITIES_KWH: battery_capacities_kwh,
                     CONF_NEOVOLT_SURPLUS_BALANCER_MODE: str(surplus_balancer_mode),
                     CONF_NEOVOLT_SOC_BALANCE_TOLERANCE: float(soc_balance_tolerance),
                 }
                 return self._create_final_entry()
             except ValueError as exc:
-                if "neovolt_missing_entities:" in str(exc):
+                if "capacity_" in str(exc):
+                    errors["base"] = "neovolt_capacity_invalid"
+                elif "neovolt_missing_entities:" in str(exc):
                     errors["base"] = "neovolt_missing_entities"
                 else:
                     errors["base"] = "neovolt_connect_failed"
@@ -2656,6 +2702,12 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 unit_of_measurement="kW",
             )
         )
+        schema_fields[
+            vol.Optional(
+                CONF_NEOVOLT_BATTERY_CAPACITIES_KWH,
+                default="",
+            )
+        ] = TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT))
         schema_fields[
             vol.Required(
                 CONF_NEOVOLT_SURPLUS_BALANCER_MODE,
@@ -5054,6 +5106,10 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 DEFAULT_NEOVOLT_SOC_BALANCE_TOLERANCE,
             )
             try:
+                battery_capacities_kwh = _parse_neovolt_capacities_kwh(
+                    user_input.get(CONF_NEOVOLT_BATTERY_CAPACITIES_KWH),
+                    len(selected_entry_ids),
+                )
                 ctrl = NeovoltFleetBatteryController(
                     self.hass,
                     neovolt_entry_ids=selected_entry_ids,
@@ -5061,6 +5117,7 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     max_discharge_kw=float(max_discharge_kw),
                     surplus_balancer_mode=str(surplus_balancer_mode),
                     soc_balance_tolerance_pct=float(soc_balance_tolerance),
+                    battery_capacities_kwh=battery_capacities_kwh,
                 )
                 await ctrl.connect()
                 new_data = dict(self.config_entry.data)
@@ -5068,12 +5125,15 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 new_data[CONF_NEOVOLT_CONFIG_ENTRY_IDS] = selected_entry_ids
                 new_data[CONF_NEOVOLT_MAX_CHARGE_KW] = float(max_charge_kw)
                 new_data[CONF_NEOVOLT_MAX_DISCHARGE_KW] = float(max_discharge_kw)
+                new_data[CONF_NEOVOLT_BATTERY_CAPACITIES_KWH] = battery_capacities_kwh
                 new_data[CONF_NEOVOLT_SURPLUS_BALANCER_MODE] = str(surplus_balancer_mode)
                 new_data[CONF_NEOVOLT_SOC_BALANCE_TOLERANCE] = float(soc_balance_tolerance)
                 self.hass.config_entries.async_update_entry(self.config_entry, data=new_data)
                 return self.async_create_entry(title="", data=dict(self.config_entry.options))
             except ValueError as exc:
-                if "neovolt_missing_entities:" in str(exc):
+                if "capacity_" in str(exc):
+                    errors["base"] = "neovolt_capacity_invalid"
+                elif "neovolt_missing_entities:" in str(exc):
                     errors["base"] = "neovolt_missing_entities"
                 else:
                     errors["base"] = "neovolt_connect_failed"
@@ -5122,6 +5182,12 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 DEFAULT_NEOVOLT_SOC_BALANCE_TOLERANCE,
             ),
         )
+        current_battery_capacities = _format_neovolt_capacities_kwh(
+            self._get_option(
+                CONF_NEOVOLT_BATTERY_CAPACITIES_KWH,
+                self.config_entry.data.get(CONF_NEOVOLT_BATTERY_CAPACITIES_KWH, []),
+            )
+        )
 
         return self.async_show_form(
             step_id="neovolt_connection",
@@ -5163,6 +5229,10 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                         unit_of_measurement="kW",
                     )
                 ),
+                vol.Optional(
+                    CONF_NEOVOLT_BATTERY_CAPACITIES_KWH,
+                    default=current_battery_capacities,
+                ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
                 vol.Required(
                     CONF_NEOVOLT_SURPLUS_BALANCER_MODE,
                     default=current_surplus_balancer_mode,

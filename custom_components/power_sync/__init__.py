@@ -361,6 +361,7 @@ from .const import (
     CONF_NEOVOLT_CONFIG_ENTRY_IDS,
     CONF_NEOVOLT_MAX_CHARGE_KW,
     CONF_NEOVOLT_MAX_DISCHARGE_KW,
+    CONF_NEOVOLT_BATTERY_CAPACITIES_KWH,
     CONF_NEOVOLT_SURPLUS_BALANCER_MODE,
     CONF_NEOVOLT_SOC_BALANCE_TOLERANCE,
     DEFAULT_NEOVOLT_MAX_CHARGE_KW,
@@ -14766,6 +14767,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 DEFAULT_NEOVOLT_SOC_BALANCE_TOLERANCE,
             ),
         )
+        neovolt_battery_capacities_kwh = entry.options.get(
+            CONF_NEOVOLT_BATTERY_CAPACITIES_KWH,
+            entry.data.get(CONF_NEOVOLT_BATTERY_CAPACITIES_KWH, []),
+        )
+        if isinstance(neovolt_battery_capacities_kwh, str):
+            neovolt_battery_capacities_kwh = [
+                part.strip()
+                for part in neovolt_battery_capacities_kwh.replace(";", ",").split(",")
+                if part.strip()
+            ]
         neovolt_reserve_pct = entry.options.get(
             CONF_OPTIMIZATION_BACKUP_RESERVE,
             entry.data.get(CONF_OPTIMIZATION_BACKUP_RESERVE, DEFAULT_OPTIMIZATION_BACKUP_RESERVE),
@@ -14781,6 +14792,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             min_soc_pct=float(neovolt_reserve_pct or 10.0),
             surplus_balancer_mode=str(neovolt_surplus_balancer_mode),
             soc_balance_tolerance_pct=float(neovolt_soc_balance_tolerance),
+            battery_capacities_kwh=list(neovolt_battery_capacities_kwh or []),
         )
     else:
         # Get initial Tesla API token and provider

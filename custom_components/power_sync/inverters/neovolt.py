@@ -127,12 +127,14 @@ class NeovoltBatteryController:
         max_charge_kw: float = 5.0,
         max_discharge_kw: float = 5.0,
         min_soc_pct: float = 10.0,
+        battery_capacity_kwh: float | None = None,
     ) -> None:
         self.hass = hass
         self._neovolt_entry_id = neovolt_entry_id
         self._max_charge_kw = float(max_charge_kw)
         self._max_discharge_kw = float(max_discharge_kw)
         self._min_soc_pct = float(min_soc_pct)
+        self._battery_capacity_kwh = self._normalize_capacity_kwh(battery_capacity_kwh)
         self._entity_map: dict[str, str] = {}
 
     def set_min_soc_pct(self, min_soc_pct: float) -> None:
@@ -180,7 +182,9 @@ class NeovoltBatteryController:
             "battery_power": battery_w / 1000.0,
             "load_power": max(0.0, load_w / 1000.0),
             "battery_level": self._read_float("battery_level") or 0.0,
-            "battery_capacity_kwh": self._read_float("battery_capacity_kwh"),
+            "battery_capacity_kwh": self._battery_capacity_kwh
+            if self._battery_capacity_kwh is not None
+            else self._read_float("battery_capacity_kwh"),
             "battery_soh": self._read_float("battery_soh"),
             "battery_max_charge_power_w": self._max_charge_kw * 1000.0,
             "battery_max_discharge_power_w": self._max_discharge_kw * 1000.0,
@@ -477,6 +481,14 @@ class NeovoltBatteryController:
             return round(float(power_w) / 1000.0, 3)
         return float(default_kw)
 
+    @staticmethod
+    def _normalize_capacity_kwh(value: float | int | str | None) -> float | None:
+        try:
+            capacity = float(value)
+        except (TypeError, ValueError):
+            return None
+        return capacity if capacity > 0 else None
+
 
 class NeovoltFleetBatteryController:
     """Aggregate and control multiple Neovolt battery controllers as one system."""
@@ -490,10 +502,15 @@ class NeovoltFleetBatteryController:
         min_soc_pct: float = 10.0,
         surplus_balancer_mode: str = _SURPLUS_BALANCER_AUTO,
         soc_balance_tolerance_pct: float = 5.0,
+        battery_capacities_kwh: list[float | int | str | None] | None = None,
     ) -> None:
         if not neovolt_entry_ids:
             raise ValueError("neovolt_missing_entries")
 
+        capacities = self._normalize_capacity_list(
+            battery_capacities_kwh,
+            len(neovolt_entry_ids),
+        )
         self._controllers = [
             NeovoltBatteryController(
                 hass,
@@ -501,8 +518,9 @@ class NeovoltFleetBatteryController:
                 max_charge_kw=max_charge_kw,
                 max_discharge_kw=max_discharge_kw,
                 min_soc_pct=min_soc_pct,
+                battery_capacity_kwh=capacities[index],
             )
-            for entry_id in neovolt_entry_ids
+            for index, entry_id in enumerate(neovolt_entry_ids)
         ]
         self._restore_modes: list[str | None] | None = None
         self._surplus_balancer_mode = (
@@ -661,7 +679,8 @@ class NeovoltFleetBatteryController:
 
         self._surplus_balance["soc_parked_index"] = None
         self._surplus_balance["soc_parked_base_mode"] = None
-        powers = self._split_power_w(power_w, "_max_charge_kw")
+        statuses = [controller.get_status() for controller in self._controllers]
+        powers = self._split_power_w(power_w, "_max_charge_kw", statuses)
         results = [
             await controller.force_charge(duration_minutes, split_power)
             for controller, split_power in zip(self._controllers, powers)
@@ -672,7 +691,8 @@ class NeovoltFleetBatteryController:
         """Force all batteries to discharge via their Neovolt dispatch controls."""
         await self._stop_surplus_balance("force_discharge")
         self._capture_restore_modes()
-        powers = self._split_power_w(power_w, "_max_discharge_kw")
+        statuses = [controller.get_status() for controller in self._controllers]
+        powers = self._split_power_w(power_w, "_max_discharge_kw", statuses)
         results = [
             await controller.force_discharge(duration_minutes, split_power)
             for controller, split_power in zip(self._controllers, powers)
@@ -1037,10 +1057,14 @@ class NeovoltFleetBatteryController:
                     round(float(status.get("battery_power", 0.0) or 0.0) * 1000.0, 1)
                     for status in statuses
                 ],
-                "stack_grid_power_w": [
-                    round(float(status.get("grid_power", 0.0) or 0.0) * 1000.0, 1)
-                    for status in statuses
-                ],
+            "stack_grid_power_w": [
+                round(float(status.get("grid_power", 0.0) or 0.0) * 1000.0, 1)
+                for status in statuses
+            ],
+            "stack_capacity_kwh": [
+                round(float(capacity), 2) if capacity is not None else None
+                for capacity in self._status_capacities(statuses)
+            ],
             }
         )
 
@@ -1160,6 +1184,7 @@ class NeovoltFleetBatteryController:
         self,
         power_w: int | float,
         limit_attr: str,
+        statuses: list[dict[str, Any]] | None = None,
     ) -> list[int | float]:
         if not power_w or power_w <= 0:
             return [0 for _controller in self._controllers]
@@ -1168,6 +1193,15 @@ class NeovoltFleetBatteryController:
             max(0.0, float(getattr(controller, limit_attr, 0.0)))
             for controller in self._controllers
         ]
+        capacities = self._status_capacities(statuses or [])
+        capacity_split = self._capacity_limited_power_split_w(
+            float(power_w),
+            limits_kw,
+            capacities,
+        )
+        if capacity_split is not None:
+            return capacity_split
+
         total_kw = sum(limits_kw)
         if total_kw <= 0:
             return [float(power_w) / len(self._controllers) for _controller in self._controllers]
@@ -1175,6 +1209,64 @@ class NeovoltFleetBatteryController:
         return [
             float(power_w) * (limit_kw / total_kw)
             for limit_kw in limits_kw
+        ]
+
+    @staticmethod
+    def _normalize_capacity_list(
+        values: list[float | int | str | None] | None,
+        count: int,
+    ) -> list[float | None]:
+        capacities: list[float | None] = []
+        for value in values or []:
+            capacities.append(NeovoltBatteryController._normalize_capacity_kwh(value))
+            if len(capacities) >= count:
+                break
+        while len(capacities) < count:
+            capacities.append(None)
+        return capacities
+
+    @staticmethod
+    def _status_capacities(statuses: list[dict[str, Any]]) -> list[float | None]:
+        capacities: list[float | None] = []
+        for status in statuses:
+            capacities.append(
+                NeovoltBatteryController._normalize_capacity_kwh(
+                    status.get("battery_capacity_kwh")
+                )
+            )
+        return capacities
+
+    @staticmethod
+    def _capacity_limited_power_split_w(
+        power_w: float,
+        limits_kw: list[float],
+        capacities: list[float | None],
+    ) -> list[float] | None:
+        if len(capacities) != len(limits_kw) or any(
+            capacity is None or capacity <= 0 for capacity in capacities
+        ):
+            return None
+
+        total_capacity = sum(float(capacity) for capacity in capacities if capacity)
+        if total_capacity <= 0:
+            return None
+
+        limit_w_by_capacity = [
+            (limit_kw * 1000.0) / float(capacity)
+            for limit_kw, capacity in zip(limits_kw, capacities)
+            if capacity and limit_kw > 0
+        ]
+        if not limit_w_by_capacity:
+            return None
+
+        requested_w_by_capacity = power_w / total_capacity
+        target_w_by_capacity = min(requested_w_by_capacity, min(limit_w_by_capacity))
+        return [
+            min(
+                float(limit_kw) * 1000.0,
+                target_w_by_capacity * float(capacity or 0.0),
+            )
+            for limit_kw, capacity in zip(limits_kw, capacities)
         ]
 
     def _capture_restore_modes(self) -> None:
