@@ -240,13 +240,15 @@ class PowerSyncChart extends HTMLElement {
 
       svg += `<path d="${pathD}" fill="none" stroke="${series.color}" stroke-width="${series.strokeWidth || 2.25}" stroke-linejoin="round" stroke-linecap="round"/>`;
 
-      const last = series.data[series.data.length - 1];
-      if (last) {
-        svg += `<circle cx="${xScale(last[0])}" cy="${yScale(last[1] * yMultiplier)}" r="${compact ? 3 : 4}" fill="${series.color}" stroke="var(--ha-card-background, var(--card-background-color, white))" stroke-width="2"/>`;
+      const marker = mode === 'tou'
+        ? this._pointAt(series.data, Date.now())
+        : series.data[series.data.length - 1];
+      if (marker) {
+        svg += `<circle cx="${xScale(marker[0])}" cy="${yScale(marker[1] * yMultiplier)}" r="${compact ? 3 : 4}" fill="${series.color}" stroke="var(--ha-card-background, var(--card-background-color, white))" stroke-width="2"/>`;
       }
     }
 
-    if (mode === 'forecast' || mode === 'history') {
+    if (mode === 'forecast' || mode === 'history' || mode === 'tou') {
       const nowX = xScale(Date.now());
       if (nowX >= pad.left && nowX <= W - pad.right) {
         svg += `<line x1="${nowX}" y1="${pad.top}" x2="${nowX}" y2="${pad.top + chartH}" stroke="var(--primary-color, #03a9f4)" stroke-width="1" stroke-dasharray="4,2" opacity="0.6"/>`;
@@ -557,8 +559,10 @@ class PowerSyncChart extends HTMLElement {
   }
 
   _legendItem(series, yMultiplier, config) {
-    const last = this._lastValue(series.data);
-    const value = last === null ? '' : this._formatValue(last * yMultiplier, config.yUnit, config.yUnitCompact);
+    const rawValue = config.mode === 'tou'
+      ? this._currentValue(series.data)
+      : this._lastValue(series.data);
+    const value = rawValue === null ? '' : this._formatValue(rawValue * yMultiplier, config.yUnit, config.yUnitCompact);
     const pressed = series.hidden ? 'false' : 'true';
     return `
       <button class="legend-item${series.hidden ? ' is-hidden' : ''}" type="button" data-series-key="${this._escAttr(series._key)}" aria-pressed="${pressed}">
@@ -579,6 +583,25 @@ class PowerSyncChart extends HTMLElement {
       if (Number.isFinite(value)) return value;
     }
     return null;
+  }
+
+  _pointAt(data, timestamp) {
+    if (!Array.isArray(data) || data.length === 0 || !Number.isFinite(timestamp)) return null;
+    let current = null;
+    for (const point of data) {
+      if (!Array.isArray(point) || point.length < 2) continue;
+      const t = Number(point[0]);
+      const v = Number(point[1]);
+      if (!Number.isFinite(t) || !Number.isFinite(v)) continue;
+      if (t > timestamp) break;
+      current = [t, v];
+    }
+    return current || data.find(point => Number.isFinite(Number(point?.[1]))) || null;
+  }
+
+  _currentValue(data) {
+    const point = this._pointAt(data, Date.now());
+    return point ? Number(point[1]) : null;
   }
 
   _formatValue(value, unit, compactUnit) {
