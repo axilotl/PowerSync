@@ -180,7 +180,7 @@ def test_below_reserve_can_grid_charge_during_cheap_window(battery_optimizer_mod
     assert max(action.battery_charge_w for action in cheap_window) > 1000
 
 
-def test_reserve_floor_grid_import_is_hold_not_self_consumption(
+def test_reserve_floor_grid_import_stays_self_consumption_not_hold(
     battery_optimizer_module,
 ):
     optimizer = battery_optimizer_module.BatteryOptimizer(
@@ -207,7 +207,43 @@ def test_reserve_floor_grid_import_is_hold_not_self_consumption(
 
     assert schedule.actions[0].soc == 0.20
     assert schedule.actions[0].battery_discharge_w == 0
-    assert schedule.actions[0].action == "idle"
+    assert schedule.actions[0].action == "self_consumption"
+    api = schedule.to_api_response()
+    assert api["discharge_w"] == [0.0]
+    assert api["battery_consume_w"] == [0.0]
+    assert api["battery_export_w"] == [0.0]
+
+
+def test_schedule_api_reports_self_consumption_discharge_for_charts(
+    battery_optimizer_module,
+):
+    optimizer = battery_optimizer_module.BatteryOptimizer(
+        capacity_wh=13500,
+        max_charge_w=5000,
+        max_discharge_w=5000,
+        backup_reserve=0.20,
+        interval_minutes=5,
+        horizon_hours=1,
+    )
+
+    schedule = optimizer._build_schedule(
+        n=1,
+        grid_import=[0.0],
+        grid_export=[0.0],
+        battery_charge=[0.0],
+        battery_discharge=[1.2],
+        solar=[0.0],
+        load=[1.2],
+        soc_0=0.50,
+        import_prices=[0.30],
+        export_prices=[0.05],
+    )
+
+    assert schedule.actions[0].action == "self_consumption"
+    api = schedule.to_api_response()
+    assert api["discharge_w"] == [1200.0]
+    assert api["battery_consume_w"] == [1200.0]
+    assert api["battery_export_w"] == [0.0]
 
 
 def test_battery_export_mask_allows_only_explicit_slots(battery_optimizer_module):

@@ -46,13 +46,33 @@ class OptimizationSchedule:
 
     @property
     def charge_w(self) -> list[float]:
-        """Get battery charge power schedule (positive = charging)."""
-        return [a.battery_charge_w if a.action == "charge" else 0.0 for a in self.actions]
+        """Get total battery charge power schedule (positive = charging)."""
+        return [a.battery_charge_w for a in self.actions]
 
     @property
     def discharge_w(self) -> list[float]:
-        """Get battery discharge power schedule (positive = discharging)."""
-        return [a.battery_discharge_w if a.action in ("discharge", "export") else 0.0 for a in self.actions]
+        """Get total battery discharge power schedule (positive = discharging)."""
+        return [a.battery_discharge_w for a in self.actions]
+
+    @property
+    def battery_consume_w(self) -> list[float]:
+        """Get battery-to-home consumption power schedule."""
+        return [
+            a.battery_discharge_w
+            if a.action in ("self_consumption", "consume", "off_grid")
+            else 0.0
+            for a in self.actions
+        ]
+
+    @property
+    def battery_export_w(self) -> list[float]:
+        """Get battery-to-grid export power schedule."""
+        return [
+            a.battery_discharge_w
+            if a.action in ("export", "discharge")
+            else 0.0
+            for a in self.actions
+        ]
 
     @property
     def soc(self) -> list[float]:
@@ -69,9 +89,10 @@ class OptimizationSchedule:
             "timestamps": self.timestamps,
             "charge_w": self.charge_w,
             "discharge_w": self.discharge_w,
+            "battery_consume_w": self.battery_consume_w,
+            "battery_export_w": self.battery_export_w,
             "soc": self.soc,
             "grid_import_w": [],
             "grid_export_w": [],
         }
-
 
