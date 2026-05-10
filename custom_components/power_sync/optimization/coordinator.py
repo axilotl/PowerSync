@@ -2099,6 +2099,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     apply_self_consumption = self._last_executed_action != "self_consumption"
                     reapply_backup_reserve = False
                     configured_reserve_pct = int(self._config.backup_reserve * 100)
+                    reserve_pct: int | None = None
                     if not apply_self_consumption:
                         # Verify the hardware mode has not drifted. On HA restart
                         # Tesla can remain in autonomous while the optimizer's
@@ -2116,16 +2117,27 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                             self.battery_system == "tesla"
                             and hasattr(battery, "get_backup_reserve")
                         ):
+                            soc_now, _ = await self._get_battery_state()
+                            soc_pct = max(0, min(100, int(soc_now * 100)))
+                            reserve_pct = configured_reserve_pct
+                            if soc_pct < reserve_pct:
+                                if self._startup_backup_reserve is not None:
+                                    reserve_pct = min(
+                                        reserve_pct,
+                                        self._startup_backup_reserve,
+                                    )
+                                reserve_pct = min(reserve_pct, soc_pct)
                             current_reserve = await battery.get_backup_reserve()
                             if (
                                 current_reserve is not None
-                                and current_reserve < configured_reserve_pct
+                                and reserve_pct is not None
+                                and current_reserve != reserve_pct
                             ):
                                 _LOGGER.info(
-                                    "Optimizer: backup_reserve is %d%% while LP floor "
-                                    "is %d%% — reapplying reserve floor",
+                                    "Optimizer: backup_reserve is %d%% while target "
+                                    "self-consumption reserve is %d%% — reapplying",
                                     current_reserve,
-                                    configured_reserve_pct,
+                                    reserve_pct,
                                 )
                                 reapply_backup_reserve = True
                         if not apply_self_consumption and not reapply_backup_reserve:
@@ -2150,11 +2162,21 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                             self.battery_system == "tesla"
                             and hasattr(battery, "set_backup_reserve")
                         ):
-                            reserve_pct = configured_reserve_pct
+                            if reserve_pct is None:
+                                soc_now, _ = await self._get_battery_state()
+                                soc_pct = max(0, min(100, int(soc_now * 100)))
+                                reserve_pct = configured_reserve_pct
+                                if soc_pct < reserve_pct:
+                                    if self._startup_backup_reserve is not None:
+                                        reserve_pct = min(
+                                            reserve_pct,
+                                            self._startup_backup_reserve,
+                                        )
+                                    reserve_pct = min(reserve_pct, soc_pct)
                             await battery.set_backup_reserve(reserve_pct)
                             _LOGGER.info(
                                 "Optimizer: self_consumption — set backup_reserve=%d%% "
-                                "(startup=%s%%, floor=%d%%)",
+                                "(startup=%s%%, floor=%d%%, current_soc=%d%%)",
                                 reserve_pct,
                                 (
                                     self._startup_backup_reserve
@@ -2162,6 +2184,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                                     else "?"
                                 ),
                                 configured_reserve_pct,
+                                soc_pct,
                             )
                     _LOGGER.debug("Optimizer: Self-consumption mode (action=%s)", effective_action)
 
