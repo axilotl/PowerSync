@@ -4264,6 +4264,35 @@ class DualSungrowCoordinator(DataUpdateCoordinator):
         )
         return p1, p2
 
+    @staticmethod
+    def _power_limit_kw(data: dict[str, Any], direction: str) -> float | None:
+        """Return a per-inverter force-mode power limit from coordinator data."""
+        raw_w = data.get(f"battery_max_{direction}_power_w")
+        if raw_w and raw_w > 0:
+            return float(raw_w) / 1000.0
+
+        raw_kw = data.get(f"battery_max_{direction}_power")
+        if raw_kw and raw_kw > 0:
+            return float(raw_kw)
+
+        return None
+
+    def _combined_power_limit_w(self, direction: str) -> int | None:
+        limits_kw = [
+            self._power_limit_kw(self._coord1.data or {}, direction),
+            self._power_limit_kw(self._coord2.data or {}, direction),
+        ]
+        if any(limit is None or limit <= 0 for limit in limits_kw):
+            return None
+        return int(round(sum(float(limit) for limit in limits_kw) * 1000.0))
+
+    def _max_split_kw(self, direction: str) -> tuple[float, float] | None:
+        limit1 = self._power_limit_kw(self._coord1.data or {}, direction)
+        limit2 = self._power_limit_kw(self._coord2.data or {}, direction)
+        if not limit1 or not limit2:
+            return None
+        return limit1, limit2
+
     # ------------------------------------------------------------------
     # Data aggregation
     # ------------------------------------------------------------------
@@ -4328,6 +4357,8 @@ class DualSungrowCoordinator(DataUpdateCoordinator):
             round((combined_energy["mtd_import_cost"] - combined_energy["mtd_export_earnings"]) / mtd_load, 4)
             if mtd_load > 0 else None
         )
+        charge_limit_w = self._combined_power_limit_w("charge")
+        discharge_limit_w = self._combined_power_limit_w("discharge")
 
         return {
             "solar_power": max(0, solar),
@@ -4351,6 +4382,18 @@ class DualSungrowCoordinator(DataUpdateCoordinator):
             "discharge_rate_limit_kw": d1.get("discharge_rate_limit_kw"),
             "export_limit_w": d1.get("export_limit_w"),
             "export_limit_enabled": d1.get("export_limit_enabled"),
+            "battery_max_charge_power_w": charge_limit_w,
+            "battery_max_discharge_power_w": discharge_limit_w,
+            "battery_max_charge_power": (
+                charge_limit_w / 1000.0
+                if charge_limit_w
+                else None
+            ),
+            "battery_max_discharge_power": (
+                discharge_limit_w / 1000.0
+                if discharge_limit_w
+                else None
+            ),
             "energy_summary": combined_energy,
             # Per-inverter SOC for monitoring
             "battery_level_1": soc1,
@@ -4375,7 +4418,11 @@ class DualSungrowCoordinator(DataUpdateCoordinator):
     async def force_discharge(self, duration_minutes: int = 30, power_w: float = 0) -> bool:
         """Force discharge on both inverters with SOC-proportional power split."""
         if power_w > 0:
-            p1, p2 = await self._split_power(power_w / 1000, prefer_lower_soc=False)
+            max_split = self._max_split_kw("discharge")
+            if max_split and (power_w / 1000.0) >= sum(max_split):
+                p1, p2 = max_split
+            else:
+                p1, p2 = await self._split_power(power_w / 1000, prefer_lower_soc=False)
             r1 = await self._coord1.force_discharge(duration_minutes, power_w=p1 * 1000)
             r2 = await self._coord2.force_discharge(duration_minutes, power_w=p2 * 1000)
         else:
@@ -5301,8 +5348,18 @@ class NeovoltEnergyCoordinator(DataUpdateCoordinator):
             preserve_restore_modes=preserve_restore_modes,
         )
 
-    async def force_discharge(self, duration_minutes: int, power_w: int) -> bool:
-        return await self._controller.force_discharge(duration_minutes, power_w)
+    async def force_discharge(
+        self,
+        duration_minutes: int,
+        power_w: int,
+        *,
+        preserve_restore_modes: bool = False,
+    ) -> bool:
+        return await self._controller.force_discharge(
+            duration_minutes,
+            power_w,
+            preserve_restore_modes=preserve_restore_modes,
+        )
 
     async def restore_normal(self) -> bool:
         return await self._controller.restore_normal()
