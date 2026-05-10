@@ -107,11 +107,13 @@ class PowerSyncChart extends HTMLElement {
     const W = Math.max(320, Math.round(box.width || config.width || 640));
     const compact = W < 520;
     const H = Math.max(190, Math.round(config.height || (compact ? 220 : 250)));
+    const yUnit = String(config.yUnit || '');
+    const needsWideYAxis = /\/kWh$/i.test(yUnit) || yUnit.length >= 5;
     const pad = {
       top: 16,
       right: compact ? 12 : 20,
       bottom: compact ? 34 : 42,
-      left: compact ? 42 : 56,
+      left: needsWideYAxis ? (compact ? 68 : 82) : (compact ? 42 : 56),
     };
     const chartW = W - pad.left - pad.right;
     const chartH = H - pad.top - pad.bottom;
