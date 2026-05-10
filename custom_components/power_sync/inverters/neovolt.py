@@ -795,6 +795,12 @@ class NeovoltFleetBatteryController:
             if parked_index >= len(self._controllers):
                 self._surplus_balance["soc_parked_index"] = None
                 self._surplus_balance["soc_parked_base_mode"] = None
+            elif not self._has_soc_balance_parking_context(
+                statuses,
+                lowest_index,
+                highest_index,
+            ):
+                return await self._restore_soc_parked_stack("no_surplus", statuses, modes)
             elif not self._needs_soc_balance_parking(statuses, lowest_index, highest_index, delta):
                 return await self._restore_soc_parked_stack("balanced", statuses, modes)
             elif modes[parked_index] not in _SURPLUS_BALANCE_BASE_MODES:
@@ -806,6 +812,11 @@ class NeovoltFleetBatteryController:
             or highest_index is None
             or lowest_index == highest_index
             or not self._needs_soc_balance_parking(statuses, lowest_index, highest_index, delta)
+            or not self._has_soc_balance_parking_context(
+                statuses,
+                lowest_index,
+                highest_index,
+            )
         ):
             return None
 
@@ -1168,6 +1179,32 @@ class NeovoltFleetBatteryController:
         highest_soc = float(statuses[highest_index].get("battery_level", 0.0) or 0.0)
         lowest_soc = float(statuses[lowest_index].get("battery_level", 0.0) or 0.0)
         return highest_soc >= _SOC_FULL_PCT and lowest_soc < _SOC_CATCHUP_DONE_PCT
+
+    def _has_soc_balance_parking_context(
+        self,
+        statuses: list[dict[str, Any]],
+        lowest_index: int | None,
+        highest_index: int | None,
+    ) -> bool:
+        """Return true when parking a high-SOC stack can use solar/export safely."""
+        if lowest_index is None or highest_index is None or lowest_index == highest_index:
+            return False
+
+        if self._is_battery_fighting(statuses, lowest_index, highest_index):
+            return True
+
+        grid_w = self._fleet_grid_w(statuses)
+        if grid_w <= -_SURPLUS_BALANCE_START_EXPORT_W:
+            return True
+
+        solar_w = sum(
+            max(0.0, float(status.get("solar_power", 0.0) or 0.0) * 1000.0)
+            for status in statuses
+        )
+        return (
+            solar_w >= _SURPLUS_BALANCE_MIN_W
+            and grid_w <= _SURPLUS_BALANCE_STOP_IMPORT_W
+        )
 
     @staticmethod
     def _is_battery_fighting(
