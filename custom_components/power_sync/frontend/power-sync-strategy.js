@@ -180,7 +180,9 @@ class PowerSyncChart extends HTMLElement {
       const unit = config.yUnit || '';
       const compactUnit = config.yUnitCompact || ['c', 'p', 'ct', 'c/kWh', 'p/kWh', 'ct/kWh'].includes(unit);
       const label = this._formatValue(tick, unit, compactUnit);
-      svg += `<text x="${pad.left - 8}" y="${y + 4}" text-anchor="end" font-size="${compact ? 10 : 11}" fill="var(--secondary-text-color, #888)">${this._escSvg(label)}</text>`;
+      if (!(config.hideZeroTickLabel && isZero)) {
+        svg += `<text x="${pad.left - 8}" y="${y + 4}" text-anchor="end" font-size="${compact ? 10 : 11}" fill="var(--secondary-text-color, #888)">${this._escSvg(label)}</text>`;
+      }
     }
 
     const spanHours = (xMax - xMin) / 3600000;
@@ -596,7 +598,9 @@ class PowerSyncChart extends HTMLElement {
       if (t > timestamp) break;
       current = [t, v];
     }
-    return current || data.find(point => Number.isFinite(Number(point?.[1]))) || null;
+    if (current) return [timestamp, current[1]];
+    const first = data.find(point => Number.isFinite(Number(point?.[0])) && Number.isFinite(Number(point?.[1])));
+    return first ? [Number(first[0]), Number(first[1])] : null;
   }
 
   _currentValue(data) {
@@ -2723,6 +2727,7 @@ function _touSchedule(e, hass) {
     yUnit: meta.minorPriceUnit,
     yUnitCompact: true,
     yMultiplier: 100,
+    hideZeroTickLabel: true,
     series: [
       { key: 'buy', name: 'Buy Price', color: '#FF9800' },
       { key: 'sell', name: 'Sell Price', color: '#4CAF50' },
