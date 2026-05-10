@@ -196,7 +196,13 @@ class NeovoltBatteryController:
             return None
         return str(state.state)
 
-    async def force_charge(self, duration_minutes: int, power_w: int | float) -> bool:
+    async def force_charge(
+        self,
+        duration_minutes: int,
+        power_w: int | float,
+        *,
+        preserve_restore_modes: bool = False,
+    ) -> bool:
         """Force battery to charge via Neovolt dispatch controls."""
         await self._ensure_connected()
         power_kw = self._watts_to_kw(power_w, self._max_charge_kw)
@@ -625,10 +631,17 @@ class NeovoltFleetBatteryController:
 
         return await self._start_surplus_balance(target_index, statuses, export_w, modes[target_index])
 
-    async def force_charge(self, duration_minutes: int, power_w: int | float) -> bool:
+    async def force_charge(
+        self,
+        duration_minutes: int,
+        power_w: int | float,
+        *,
+        preserve_restore_modes: bool = False,
+    ) -> bool:
         """Force all batteries to charge via their Neovolt dispatch controls."""
         await self._stop_surplus_balance("force_charge")
-        self._capture_restore_modes()
+        if not preserve_restore_modes:
+            self._capture_restore_modes()
 
         if self._surplus_balancer_enabled() and len(self._controllers) > 1:
             statuses = [controller.get_status() for controller in self._controllers]

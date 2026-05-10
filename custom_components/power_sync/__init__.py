@@ -19164,6 +19164,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "saved_backup_reserve": None,
         "expires_at": None,
         "cancel_expiry_timer": None,
+        "cancel_hardware_refresh_timer": None,
     }
 
     # Hold-SoC mode: battery locked at current SoC — blocks charge + discharge.
@@ -19210,10 +19211,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if reason:
             _LOGGER.debug("Cancelling pending force timers: %s", reason)
         for _state in (force_discharge_state, force_charge_state):
-            _cancel = _state.get("cancel_expiry_timer")
-            if _cancel:
-                _cancel()
-                _state["cancel_expiry_timer"] = None
+            for _timer_key in ("cancel_expiry_timer", "cancel_hardware_refresh_timer"):
+                _cancel = _state.get(_timer_key)
+                if _cancel:
+                    _cancel()
+                    _state[_timer_key] = None
 
     # Store force states in hass.data so TariffPriceView can access them
     # This allows the endpoint to return real tariff instead of fake ML tariff
@@ -20725,6 +20727,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 await esy_coord.force_charge(duration, power_w=power_w)
                 _LOGGER.debug(f"ESY Sunhome force charge hardware extended ({duration}min)")
                 return
+            neovolt_coord = entry_data.get("neovolt_coordinator")
+            if neovolt_coord:
+                await neovolt_coord.force_charge(
+                    duration,
+                    power_w=power_w,
+                    preserve_restore_modes=True,
+                )
+                _LOGGER.debug(f"Neovolt force charge hardware refreshed ({duration}min, {power_w}W)")
+                return
             # Fallback: no coordinator found, proceed with full handler
             _LOGGER.debug(
                 "_extend_hardware: no direct coordinator found for source=%s, falling through to full handler",
@@ -21286,6 +21297,52 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
                     force_charge_state["cancel_expiry_timer"] = async_track_point_in_utc_time(
                         hass, auto_restore_charge_neovolt, force_charge_state["expires_at"]
+                    )
+
+                    # Some Neovolt bridge versions expose the requested duration entity
+                    # in minutes but still arm the inverter dispatch for a short
+                    # hardware timeout. Refresh the hardware command while the
+                    # PowerSync force window remains active so the inverter cannot
+                    # fall back to Normal early.
+                    from homeassistant.helpers.event import async_track_time_interval
+
+                    async def refresh_neovolt_force_charge(_now):
+                        if _command_generation[0] != _restore_gen or not force_charge_state.get("active"):
+                            _cancel = force_charge_state.get("cancel_hardware_refresh_timer")
+                            if _cancel:
+                                _cancel()
+                                force_charge_state["cancel_hardware_refresh_timer"] = None
+                            return
+
+                        expires_at = force_charge_state.get("expires_at")
+                        if not expires_at:
+                            return
+
+                        remaining_seconds = (expires_at - dt_util.utcnow()).total_seconds()
+                        if remaining_seconds <= 0:
+                            return
+
+                        refresh_duration = max(1, int((remaining_seconds + 59) // 60))
+                        try:
+                            await neovolt_coord.force_charge(
+                                refresh_duration,
+                                power_w=power_w,
+                                preserve_restore_modes=True,
+                            )
+                            _LOGGER.debug(
+                                "Neovolt force charge hardware refreshed (%dmin remaining, %sW)",
+                                refresh_duration,
+                                power_w,
+                            )
+                        except Exception as refresh_err:
+                            _LOGGER.warning("Neovolt force charge hardware refresh failed: %s", refresh_err)
+
+                    if force_charge_state.get("cancel_hardware_refresh_timer"):
+                        force_charge_state["cancel_hardware_refresh_timer"]()
+                    force_charge_state["cancel_hardware_refresh_timer"] = async_track_time_interval(
+                        hass,
+                        refresh_neovolt_force_charge,
+                        timedelta(seconds=60),
                     )
                     await persist_force_mode_state()
                 else:

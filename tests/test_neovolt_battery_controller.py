@@ -575,6 +575,50 @@ def test_fleet_force_charge_balancer_restores_parked_stack():
     ]
 
 
+def test_fleet_force_charge_refresh_preserves_restore_modes():
+    entry_1_states = _combined_states_for(
+        1,
+        battery_power="0",
+        battery_soc="48",
+        battery_capacity="20.1",
+    ) + _control_states_for(1, mode="Normal")
+    entry_2_states = _combined_states_for(
+        2,
+        battery_power="0",
+        battery_soc="80",
+        battery_capacity="30.2",
+    ) + _control_states_for(2, mode="Normal")
+    hass = _FakeHass(
+        entry_1_states + entry_2_states,
+        {
+            "neovolt-1": [state.entity_id for state in entry_1_states],
+            "neovolt-2": [state.entity_id for state in entry_2_states],
+        },
+    )
+    controller = NeovoltFleetBatteryController(
+        hass,
+        ["neovolt-1", "neovolt-2"],
+        max_charge_kw=5.0,
+        max_discharge_kw=5.0,
+    )
+    assert asyncio.run(controller.connect())
+
+    assert asyncio.run(controller.force_charge(duration_minutes=70, power_w=10000))
+    assert controller._restore_modes == ["Normal", "Normal"]
+
+    hass.states._states["select.neovolt_1_dispatch_mode"].state = "Force Charge"
+    hass.states._states["select.neovolt_2_dispatch_mode"].state = "No Battery Charge"
+    assert asyncio.run(
+        controller.force_charge(
+            duration_minutes=69,
+            power_w=10000,
+            preserve_restore_modes=True,
+        )
+    )
+
+    assert controller._restore_modes == ["Normal", "Normal"]
+
+
 def test_fleet_force_charge_restores_per_inverter_baseline_modes():
     entry_1_states = _combined_states_for(
         1,

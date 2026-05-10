@@ -5284,8 +5284,18 @@ class NeovoltEnergyCoordinator(DataUpdateCoordinator):
             "energy_summary": self._energy_acc.as_dict(),
         }
 
-    async def force_charge(self, duration_minutes: int, power_w: int) -> bool:
-        return await self._controller.force_charge(duration_minutes, power_w)
+    async def force_charge(
+        self,
+        duration_minutes: int,
+        power_w: int,
+        *,
+        preserve_restore_modes: bool = False,
+    ) -> bool:
+        return await self._controller.force_charge(
+            duration_minutes,
+            power_w,
+            preserve_restore_modes=preserve_restore_modes,
+        )
 
     async def force_discharge(self, duration_minutes: int, power_w: int) -> bool:
         return await self._controller.force_discharge(duration_minutes, power_w)
