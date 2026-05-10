@@ -215,7 +215,10 @@ def _has_tesla_ev_device(hass: HomeAssistant) -> bool:
         return False
 
     for device in device_registry.devices.values():
-        for domain, identifier in device.identifiers:
+        for identifier_entry in device.identifiers:
+            if not isinstance(identifier_entry, (tuple, list)) or len(identifier_entry) < 2:
+                continue
+            domain, identifier = identifier_entry[0], identifier_entry[1]
             if domain not in TESLA_INTEGRATIONS:
                 continue
             identifier_text = str(identifier)

@@ -475,3 +475,21 @@ def test_powerwall_pack_registry_cleanup_tolerates_legacy_identifier_shape(monke
     assert updated_devices == [
         {"device_id": "legacy-device", "remove_config_entry_id": "entry-1"}
     ]
+
+
+def test_has_tesla_ev_device_tolerates_extended_identifier_shape():
+    sensor = _sensor_module()
+    hass = SimpleNamespace(
+        device_registry=SimpleNamespace(
+            devices={
+                "tesla-device": SimpleNamespace(
+                    identifiers={("teslemetry", "LRWYHCEK3PC907290", "vehicle")},
+                ),
+                "ignored-device": SimpleNamespace(
+                    identifiers={"not-a-valid-identifier"},
+                ),
+            },
+        ),
+    )
+
+    assert sensor._has_tesla_ev_device(hass) is True
