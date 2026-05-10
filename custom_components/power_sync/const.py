@@ -1057,6 +1057,7 @@ SWITCH_TYPE_FORCE_CHARGE = "force_charge"
 SWITCH_TYPE_MONITORING_MODE = "monitoring_mode"
 SWITCH_TYPE_AWAY_MODE = "away_mode"
 SWITCH_TYPE_PROFIT_MAX_MODE = "profit_max_mode"
+SWITCH_TYPE_OPTIMIZATION_ENABLED = "optimization_enabled"
 SWITCH_TYPE_AUTO_UPDATE = "auto_update"
 
 # Monitoring mode — blocks all battery/inverter control commands

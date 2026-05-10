@@ -153,6 +153,40 @@ def test_globird_options_flow_warns_tesla_users_about_tariff_baseline():
     assert "inside PowerSync" in method_source
 
 
+def test_optimization_options_exposes_enabled_toggle():
+    source = CONFIG_FLOW_PATH.read_text()
+    method = _options_flow_method("async_step_optimization")
+    method_source = ast.get_source_segment(source, method)
+
+    assert method_source is not None
+    assert "CONF_OPTIMIZATION_ENABLED" in method_source
+    assert "new_options[CONF_OPTIMIZATION_ENABLED] = optimization_enabled" in method_source
+    assert "optimization_provider != OPT_PROVIDER_POWERSYNC" in method_source
+
+
+def test_initial_smart_optimization_configuration_exposes_enabled_toggle():
+    source = CONFIG_FLOW_PATH.read_text()
+    method = _config_flow_method("async_step_ml_options")
+    method_source = ast.get_source_segment(source, method)
+
+    assert method_source is not None
+    assert "CONF_OPTIMIZATION_ENABLED" in method_source
+    assert "user_input.get(CONF_OPTIMIZATION_ENABLED, True)" in method_source
+
+
+def test_optimization_enabled_toggle_is_translated_in_config_and_options():
+    for path in (STRINGS_PATH, TRANSLATIONS_PATH):
+        data = json.loads(path.read_text())
+        for section, step_name in (
+            ("config", "ml_options"),
+            ("options", "optimization"),
+        ):
+            step = data[section]["step"][step_name]
+
+            assert step["data"]["optimization_enabled"] == "Enable Smart Optimization"
+            assert "LP optimizer" in step["data_description"]["optimization_enabled"]
+
+
 def test_globird_tariff_guidance_is_translated():
     for path in (STRINGS_PATH, TRANSLATIONS_PATH):
         data = json.loads(path.read_text())

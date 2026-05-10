@@ -1829,6 +1829,9 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             self._ml_options = {
+                CONF_OPTIMIZATION_ENABLED: bool(
+                    user_input.get(CONF_OPTIMIZATION_ENABLED, True)
+                ),
                 CONF_OPTIMIZATION_COST_FUNCTION: COST_FUNCTION_COST,
                 CONF_OPTIMIZATION_BACKUP_RESERVE: user_input.get(
                     CONF_OPTIMIZATION_BACKUP_RESERVE,
@@ -1859,6 +1862,10 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="ml_options",
             data_schema=vol.Schema(
                 {
+                    vol.Required(
+                        CONF_OPTIMIZATION_ENABLED,
+                        default=True,
+                    ): BooleanSelector(),
                     vol.Required(
                         CONF_OPTIMIZATION_BACKUP_RESERVE,
                         default=int(DEFAULT_OPTIMIZATION_BACKUP_RESERVE * 100),
@@ -5272,9 +5279,18 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             optimization_provider = user_input.get(
                 CONF_OPTIMIZATION_PROVIDER, OPT_PROVIDER_NATIVE
             )
+            optimization_enabled = bool(
+                user_input.get(
+                    CONF_OPTIMIZATION_ENABLED,
+                    optimization_provider == OPT_PROVIDER_POWERSYNC,
+                )
+            )
+            if optimization_provider != OPT_PROVIDER_POWERSYNC:
+                optimization_enabled = False
             new_data = dict(self.config_entry.data)
             new_options = dict(self.config_entry.options)
             new_data[CONF_OPTIMIZATION_PROVIDER] = optimization_provider
+            new_options[CONF_OPTIMIZATION_ENABLED] = optimization_enabled
             if optimization_provider == OPT_PROVIDER_POWERSYNC:
                 default_capacity_wh, default_charge_w, default_discharge_w = (
                     _default_optimizer_specs_for(
@@ -5335,6 +5351,10 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
         )
         current_opt_provider = self.config_entry.data.get(
             CONF_OPTIMIZATION_PROVIDER, OPT_PROVIDER_NATIVE
+        )
+        current_optimization_enabled = self.config_entry.options.get(
+            CONF_OPTIMIZATION_ENABLED,
+            current_opt_provider == OPT_PROVIDER_POWERSYNC,
         )
         current_backup_reserve = self._get_option(
             CONF_OPTIMIZATION_BACKUP_RESERVE,
@@ -5411,6 +5431,10 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                         ],
                         mode=SelectSelectorMode.DROPDOWN,
                     )),
+                    vol.Required(
+                        CONF_OPTIMIZATION_ENABLED,
+                        default=bool(current_optimization_enabled),
+                    ): BooleanSelector(),
                     vol.Required(
                         CONF_OPTIMIZATION_BACKUP_RESERVE,
                         default=int(current_backup_reserve * 100)

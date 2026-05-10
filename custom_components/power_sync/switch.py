@@ -25,8 +25,11 @@ from .const import (
     DEFAULT_AUTO_UPDATE_TIME,
     CONF_ELECTRICITY_PROVIDER,
     CONF_MONITORING_MODE,
+    CONF_OPTIMIZATION_ENABLED,
+    CONF_OPTIMIZATION_PROVIDER,
     CONF_POWERWALL_LOCAL_PAIRED,
     BATTERY_SYSTEM_TESLA,
+    OPT_PROVIDER_POWERSYNC,
     SWITCH_TYPE_AUTO_SYNC,
     SWITCH_TYPE_AUTO_UPDATE,
     SWITCH_TYPE_FORCE_DISCHARGE,
@@ -34,6 +37,7 @@ from .const import (
     SWITCH_TYPE_MONITORING_MODE,
     SWITCH_TYPE_AWAY_MODE,
     SWITCH_TYPE_PROFIT_MAX_MODE,
+    SWITCH_TYPE_OPTIMIZATION_ENABLED,
     DEFAULT_DISCHARGE_DURATION,
     ATTR_LAST_SYNC,
     ATTR_SYNC_STATUS,
@@ -153,6 +157,18 @@ async def async_setup_entry(
                 key=SWITCH_TYPE_AUTO_UPDATE,
                 name="Auto-Update PowerSync",
                 icon="mdi:update",
+            ),
+        ),
+    )
+
+    entities.append(
+        OptimizationEnabledSwitch(
+            hass=hass,
+            entry=entry,
+            description=SwitchEntityDescription(
+                key=SWITCH_TYPE_OPTIMIZATION_ENABLED,
+                name="Enable Smart Optimization",
+                icon="mdi:chart-timeline-variant-shimmer",
             ),
         ),
     )
@@ -448,6 +464,79 @@ class AutoUpdateSwitch(SwitchEntity):
             "last_check_at": entry_data.get("auto_update_last_check_at"),
             "last_check_decision": entry_data.get("auto_update_last_check_decision"),
         }
+
+
+class OptimizationEnabledSwitch(SwitchEntity):
+    """Switch to enable/disable the built-in Smart Optimization coordinator."""
+
+    _attr_has_entity_name = True
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: ConfigEntry,
+        description: SwitchEntityDescription,
+    ) -> None:
+        """Initialize the switch."""
+        self.hass = hass
+        self.entity_description = description
+        self._entry = entry
+        self._attr_unique_id = f"{entry.entry_id}_{description.key}"
+        self._attr_suggested_object_id = f"power_sync_{description.key}"
+        self._attr_is_on = self._current_enabled_state()
+
+    def _current_enabled_state(self) -> bool:
+        """Return whether Smart Optimization is configured and enabled."""
+        provider = self._entry.options.get(
+            CONF_OPTIMIZATION_PROVIDER,
+            self._entry.data.get(CONF_OPTIMIZATION_PROVIDER),
+        )
+        default_enabled = provider == OPT_PROVIDER_POWERSYNC
+        return bool(
+            self._entry.options.get(
+                CONF_OPTIMIZATION_ENABLED,
+                self._entry.data.get(CONF_OPTIMIZATION_ENABLED, default_enabled),
+            )
+            and provider == OPT_PROVIDER_POWERSYNC
+        )
+
+    @property
+    def device_info(self):
+        return family_device_info(self._entry.entry_id, SENSOR_FAMILY_CONTROLS)
+
+    @property
+    def is_on(self) -> bool:
+        """Return True if Smart Optimization is enabled."""
+        return self._attr_is_on
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Enable Smart Optimization and select the built-in LP provider."""
+        _LOGGER.info("Enabling Smart Optimization from HA switch")
+        self._attr_is_on = True
+        new_data = {**self._entry.data}
+        new_options = {**self._entry.options}
+        new_data[CONF_OPTIMIZATION_PROVIDER] = OPT_PROVIDER_POWERSYNC
+        new_options[CONF_OPTIMIZATION_PROVIDER] = OPT_PROVIDER_POWERSYNC
+        new_options[CONF_OPTIMIZATION_ENABLED] = True
+        self.hass.config_entries.async_update_entry(
+            self._entry,
+            data=new_data,
+            options=new_options,
+        )
+        self.async_write_ha_state()
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Disable Smart Optimization while preserving saved LP settings."""
+        _LOGGER.info("Disabling Smart Optimization from HA switch")
+        self._attr_is_on = False
+        new_options = {**self._entry.options}
+        new_options[CONF_OPTIMIZATION_ENABLED] = False
+        self.hass.config_entries.async_update_entry(
+            self._entry,
+            options=new_options,
+        )
+        self.async_write_ha_state()
 
 
 class ForceDischargeSwitch(SwitchEntity):
