@@ -26142,12 +26142,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 force_discharge_state["expires_at"] = None
 
             # Load settings from config entry (persisted from previous sessions)
-            # Check options first (where set_settings saves), then fall back to data for defaults
+            # Prefer data so stale options from older API writes cannot override
+            # the user's current optimizer reserve after restart.
             saved_cost_function = entry.options.get(CONF_OPTIMIZATION_COST_FUNCTION, entry.data.get(CONF_OPTIMIZATION_COST_FUNCTION, "self_consumption"))
             saved_interval_minutes = entry.options.get(CONF_OPTIMIZATION_INTERVAL, entry.data.get(CONF_OPTIMIZATION_INTERVAL, 5))
-            saved_backup_reserve_pct = entry.options.get(
+            saved_backup_reserve_pct = entry.data.get(
                 CONF_OPTIMIZATION_BACKUP_RESERVE,
-                entry.data.get(CONF_OPTIMIZATION_BACKUP_RESERVE))
+                entry.options.get(CONF_OPTIMIZATION_BACKUP_RESERVE))
             if saved_backup_reserve_pct is not None:
                 # Config flow stores as decimal (0.0-1.0), set_settings stores as percentage (0-100)
                 # Handle both formats: values > 1 are percentages, values <= 1 are already decimal
@@ -26619,9 +26620,9 @@ class OptimizationSettingsView(HomeAssistantView):
             backup_reserve = DEFAULT_OPTIMIZATION_BACKUP_RESERVE
             hardware_reserve = 0
             if config_entry:
-                raw_backup = config_entry.options.get(
+                raw_backup = config_entry.data.get(
                     CONF_OPTIMIZATION_BACKUP_RESERVE,
-                    config_entry.data.get(
+                    config_entry.options.get(
                         CONF_OPTIMIZATION_BACKUP_RESERVE,
                         DEFAULT_OPTIMIZATION_BACKUP_RESERVE,
                     ),
@@ -26789,6 +26790,7 @@ class OptimizationSettingsView(HomeAssistantView):
                 if reserve > 1:
                     reserve = reserve / 100.0
                 new_data[CONF_OPTIMIZATION_BACKUP_RESERVE] = reserve
+                new_options[CONF_OPTIMIZATION_BACKUP_RESERVE] = reserve
                 changes.append(f"Set backup reserve to {int(reserve * 100)}%")
 
             if "hardware_backup_reserve" in settings:

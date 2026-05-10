@@ -103,6 +103,10 @@ def _install_power_sync_stubs() -> None:
     const_module.CONF_FLOW_POWER_STATE = "flow_power_state"
     const_module.CONF_HARDWARE_BACKUP_RESERVE = "hardware_backup_reserve"
     const_module.CONF_OPTIMIZATION_BACKUP_RESERVE = "optimization_backup_reserve"
+    const_module.CONF_OPTIMIZATION_BATTERY_CAPACITY_WH = "battery_capacity_wh"
+    const_module.CONF_OPTIMIZATION_ALLOW_GRID_CHARGE = "allow_grid_charge"
+    const_module.CONF_OPTIMIZATION_MAX_CHARGE_W = "max_charge_w"
+    const_module.CONF_OPTIMIZATION_MAX_DISCHARGE_W = "max_discharge_w"
     const_module.FLOW_POWER_EXPORT_RATES = {"NSW1": 0.45}
     const_module.CONF_EXPORT_BOOST_ENABLED = "export_boost_enabled"
     const_module.CONF_EXPORT_PRICE_OFFSET = "export_price_offset"
@@ -287,6 +291,40 @@ def test_set_settings_persists_hardware_reserve_to_data_and_options(opt_module):
     assert coordinator._entry.options["hardware_backup_reserve"] == 0.2
     assert updates[-1]["data"]["hardware_backup_reserve"] == 0.2
     assert updates[-1]["options"]["hardware_backup_reserve"] == 0.2
+
+
+def test_set_settings_persists_optimizer_reserve_to_data_and_options(opt_module):
+    coordinator = _coordinator(
+        opt_module,
+        "amber",
+        optimization_backup_reserve=45,
+    )
+    coordinator.entry_id = "entry-1"
+    coordinator._entry.data = {"optimization_backup_reserve": 0.45}
+
+    updates = []
+
+    class _ConfigEntries:
+        def async_update_entry(self, entry, **kwargs):
+            updates.append(kwargs)
+            if "data" in kwargs:
+                entry.data = kwargs["data"]
+            if "options" in kwargs:
+                entry.options = kwargs["options"]
+
+    coordinator.hass = SimpleNamespace(
+        data={"power_sync": {"entry-1": {}}},
+        config_entries=_ConfigEntries(),
+    )
+
+    result = asyncio.run(coordinator.set_settings({"backup_reserve": 20}))
+
+    assert result["success"] is True
+    assert coordinator._config.backup_reserve == 0.2
+    assert coordinator._entry.data["optimization_backup_reserve"] == 0.2
+    assert coordinator._entry.options["optimization_backup_reserve"] == 0.2
+    assert updates[-1]["data"]["optimization_backup_reserve"] == 0.2
+    assert updates[-1]["options"]["optimization_backup_reserve"] == 0.2
 
 
 def _true_indexes(slots: list[bool]) -> list[int]:

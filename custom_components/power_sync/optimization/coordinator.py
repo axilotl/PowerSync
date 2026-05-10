@@ -5000,12 +5000,14 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     CONF_OPTIMIZATION_MAX_CHARGE_W,
                     CONF_OPTIMIZATION_MAX_DISCHARGE_W,
                 )
+                new_data = dict(self._entry.data)
                 new_options = dict(self._entry.options)
                 if "backup_reserve" in settings:
-                    reserve_pct = settings["backup_reserve"]
-                    if reserve_pct <= 1:
-                        reserve_pct = int(reserve_pct * 100)
-                    new_options[CONF_OPTIMIZATION_BACKUP_RESERVE] = reserve_pct
+                    reserve_value = settings["backup_reserve"]
+                    if reserve_value > 1:
+                        reserve_value = reserve_value / 100
+                    new_data[CONF_OPTIMIZATION_BACKUP_RESERVE] = reserve_value
+                    new_options[CONF_OPTIMIZATION_BACKUP_RESERVE] = reserve_value
                 if "battery_capacity_wh" in settings:
                     new_options[CONF_OPTIMIZATION_BATTERY_CAPACITY_WH] = int(settings["battery_capacity_wh"])
                 if "max_charge_w" in settings:
@@ -5017,7 +5019,11 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 # Prevent reload from API-driven options update
                 from ..const import DOMAIN as _SKIP_DOM
                 self.hass.data.get(_SKIP_DOM, {}).get(self.entry_id, {})["_skip_reload"] = True
-                self.hass.config_entries.async_update_entry(self._entry, options=new_options)
+                self.hass.config_entries.async_update_entry(
+                    self._entry,
+                    data=new_data,
+                    options=new_options,
+                )
 
             # Mark as manual when user explicitly sets battery specs
             if any(k in settings for k in ("battery_capacity_wh", "max_charge_w", "max_discharge_w")):
