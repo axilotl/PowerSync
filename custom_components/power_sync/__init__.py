@@ -26222,9 +26222,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
             # Load hardware backup reserve (user-configured restore target)
             from .const import CONF_HARDWARE_BACKUP_RESERVE
-            hw_reserve_pct = entry.options.get(
+            hw_reserve_pct = entry.data.get(
                 CONF_HARDWARE_BACKUP_RESERVE,
-                entry.data.get(CONF_HARDWARE_BACKUP_RESERVE)
+                entry.options.get(CONF_HARDWARE_BACKUP_RESERVE)
             )
             if hw_reserve_pct is not None:
                 if hw_reserve_pct > 1:
@@ -26632,9 +26632,9 @@ class OptimizationSettingsView(HomeAssistantView):
                         backup_reserve = backup_reserve / 100
                 except (TypeError, ValueError):
                     backup_reserve = DEFAULT_OPTIMIZATION_BACKUP_RESERVE
-                raw_hardware = config_entry.options.get(
+                raw_hardware = config_entry.data.get(
                     CONF_HARDWARE_BACKUP_RESERVE,
-                    config_entry.data.get(CONF_HARDWARE_BACKUP_RESERVE, 0),
+                    config_entry.options.get(CONF_HARDWARE_BACKUP_RESERVE, 0),
                 )
                 try:
                     hardware_reserve = float(raw_hardware)
@@ -26797,6 +26797,7 @@ class OptimizationSettingsView(HomeAssistantView):
                 if hw_reserve > 1:
                     hw_reserve = hw_reserve / 100.0
                 new_data[CONF_HARDWARE_BACKUP_RESERVE] = hw_reserve
+                new_options[CONF_HARDWARE_BACKUP_RESERVE] = hw_reserve
                 changes.append(f"Set hardware backup reserve to {int(hw_reserve * 100)}%")
                 # Also update the optimizer's startup reserve so force mode
                 # restores to this value instead of the Tesla API value

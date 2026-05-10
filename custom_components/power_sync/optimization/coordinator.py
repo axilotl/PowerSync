@@ -361,9 +361,9 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         from ..const import CONF_HARDWARE_BACKUP_RESERVE, CONF_OPTIMIZATION_BACKUP_RESERVE
 
         hw_reserve = self._reserve_percent(
-            self._entry.options.get(
+            self._entry.data.get(
                 CONF_HARDWARE_BACKUP_RESERVE,
-                self._entry.data.get(CONF_HARDWARE_BACKUP_RESERVE),
+                self._entry.options.get(CONF_HARDWARE_BACKUP_RESERVE),
             )
         )
         if hw_reserve is not None:
@@ -5036,11 +5036,17 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if self._entry:
                 from ..const import CONF_HARDWARE_BACKUP_RESERVE
                 new_data = dict(self._entry.data)
+                new_options = dict(self._entry.options)
                 new_data[CONF_HARDWARE_BACKUP_RESERVE] = hw_reserve
+                new_options[CONF_HARDWARE_BACKUP_RESERVE] = hw_reserve
                 # Prevent reload from API-driven options update
                 from ..const import DOMAIN as _SKIP_DOM
                 self.hass.data.get(_SKIP_DOM, {}).get(self.entry_id, {})["_skip_reload"] = True
-                self.hass.config_entries.async_update_entry(self._entry, data=new_data)
+                self.hass.config_entries.async_update_entry(
+                    self._entry,
+                    data=new_data,
+                    options=new_options,
+                )
             response["changes"].append(f"hardware_backup_reserve: {hw_int}%")
 
         # Handle profit maximisation mode toggle

@@ -215,6 +215,22 @@ def test_startup_restore_target_prefers_hardware_reserve_config(opt_module):
     )
 
 
+def test_startup_restore_target_prefers_data_hardware_reserve_over_stale_options(opt_module):
+    coordinator = _coordinator(
+        opt_module,
+        "amber",
+        hardware_backup_reserve=0.45,
+        _user_backup_reserve=45,
+        optimization_backup_reserve=30,
+    )
+    coordinator._entry.data = {"hardware_backup_reserve": 0.2}
+
+    assert coordinator._configured_startup_backup_reserve() == (
+        20,
+        "hardware backup reserve config",
+    )
+
+
 def test_startup_restore_target_uses_optimizer_floor_when_no_user_reserve(opt_module):
     coordinator = _coordinator(
         opt_module,
@@ -236,6 +252,41 @@ def test_startup_restore_target_does_not_treat_live_idle_reserve_as_persisted(op
         20,
         "optimizer floor",
     )
+
+
+def test_set_settings_persists_hardware_reserve_to_data_and_options(opt_module):
+    coordinator = _coordinator(
+        opt_module,
+        "amber",
+        hardware_backup_reserve=0.45,
+    )
+    coordinator.entry_id = "entry-1"
+    coordinator._startup_backup_reserve = 45
+    coordinator._optimizer = SimpleNamespace(update_hardware_reserve=lambda reserve: None)
+
+    updates = []
+
+    class _ConfigEntries:
+        def async_update_entry(self, entry, **kwargs):
+            updates.append(kwargs)
+            if "data" in kwargs:
+                entry.data = kwargs["data"]
+            if "options" in kwargs:
+                entry.options = kwargs["options"]
+
+    coordinator.hass = SimpleNamespace(
+        data={"power_sync": {"entry-1": {}}},
+        config_entries=_ConfigEntries(),
+    )
+
+    result = asyncio.run(coordinator.set_settings({"hardware_backup_reserve": 20}))
+
+    assert result["success"] is True
+    assert coordinator._startup_backup_reserve == 20
+    assert coordinator._entry.data["hardware_backup_reserve"] == 0.2
+    assert coordinator._entry.options["hardware_backup_reserve"] == 0.2
+    assert updates[-1]["data"]["hardware_backup_reserve"] == 0.2
+    assert updates[-1]["options"]["hardware_backup_reserve"] == 0.2
 
 
 def _true_indexes(slots: list[bool]) -> list[int]:
