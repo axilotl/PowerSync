@@ -133,6 +133,7 @@ BATTERY_SYSTEM_ALPHAESS = "alphaess"
 BATTERY_SYSTEM_ESY_SUNHOME = "esy_sunhome"
 BATTERY_SYSTEM_SOLAX = "solax"
 BATTERY_SYSTEM_SAJ_H2 = "saj_h2"
+BATTERY_SYSTEM_FRONIUS_RESERVA = "fronius_reserva"
 BATTERY_SYSTEM_NEOVOLT = "neovolt"
 
 BATTERY_SYSTEMS = {
@@ -145,6 +146,7 @@ BATTERY_SYSTEMS = {
     BATTERY_SYSTEM_ESY_SUNHOME: "ESY Sunhome — via esy_sunhome companion integration",
     BATTERY_SYSTEM_SOLAX: "Solax Hybrid — via Solax Modbus integration",
     BATTERY_SYSTEM_SAJ_H2: "SAJ H2/HS2 — via SAJ H2 Modbus integration",
+    BATTERY_SYSTEM_FRONIUS_RESERVA: "Fronius Reserva — via Fronius Modbus integration",
     BATTERY_SYSTEM_NEOVOLT: "Neovolt/Bytewatt — via Neovolt Modbus integration",
 }
 
@@ -420,6 +422,16 @@ DEFAULT_SAJ_BATTERY_CAPACITY_KWH = 10.0
 # discharge slot 7 at 100 % of this rated power.
 CONF_SAJ_INVERTER_RATED_KW = "saj_inverter_rated_kw"
 DEFAULT_SAJ_INVERTER_RATED_KW = 10.0
+
+# Fronius Reserva battery system — bridges via callifo/redpomodoro fronius_modbus
+# Install fronius_modbus from HACS first; PowerSync reads/writes its entities.
+CONF_FRONIUS_RESERVA_CONFIG_ENTRY_ID = "fronius_reserva_config_entry_id"
+CONF_FRONIUS_RESERVA_BATTERY_CAPACITY_KWH = "fronius_reserva_battery_capacity_kwh"
+CONF_FRONIUS_RESERVA_MAX_CHARGE_KW = "fronius_reserva_max_charge_kw"
+CONF_FRONIUS_RESERVA_MAX_DISCHARGE_KW = "fronius_reserva_max_discharge_kw"
+DEFAULT_FRONIUS_RESERVA_BATTERY_CAPACITY_KWH = 9.6
+DEFAULT_FRONIUS_RESERVA_MAX_CHARGE_KW = 5.0
+DEFAULT_FRONIUS_RESERVA_MAX_DISCHARGE_KW = 5.0
 
 # Neovolt / Bytewatt battery system — bridges via pvandenh/NeovoltBattery_ModbusPlugin
 # Install the neovolt integration from HACS first; PowerSync reads/writes its entities.
@@ -1558,6 +1570,7 @@ OPTIMIZATION_PROVIDER_NATIVE_NAMES = {
     BATTERY_SYSTEM_ESY_SUNHOME: "ESY Sunhome",
     BATTERY_SYSTEM_SOLAX: "Solax",
     BATTERY_SYSTEM_SAJ_H2: "SAJ H2",
+    BATTERY_SYSTEM_FRONIUS_RESERVA: "Fronius Reserva",
     BATTERY_SYSTEM_NEOVOLT: "Neovolt",
 }
 
@@ -1594,8 +1607,8 @@ COST_FUNCTION_COST = "cost"
 DEFAULT_OPTIMIZATION_INTERVAL = 30     # Re-optimize every 30 minutes
 DEFAULT_OPTIMIZATION_HORIZON = 48      # 48-hour forecast horizon
 DEFAULT_OPTIMIZATION_BACKUP_RESERVE = 0.20  # 20% minimum SOC
-
 DEFAULT_PROFIT_MAX_TARGET_TIME = "17:15"  # 15 min before Flow Power Happy Hour
+
 # Battery capacity defaults by system (Wh)
 BATTERY_CAPACITY_DEFAULTS = {
     BATTERY_SYSTEM_TESLA: 13500,     # Powerwall 2: 13.5 kWh
@@ -1607,6 +1620,7 @@ BATTERY_CAPACITY_DEFAULTS = {
     BATTERY_SYSTEM_ESY_SUNHOME: 10000,  # HM6 varies; default 10 kWh
     BATTERY_SYSTEM_SOLAX: 11600,      # T-BAT-SYS-HV 11.6 kWh typical
     BATTERY_SYSTEM_SAJ_H2: 10000,     # Varies, default 10 kWh
+    BATTERY_SYSTEM_FRONIUS_RESERVA: 9600,  # Fronius Reserva varies by module count
     BATTERY_SYSTEM_NEOVOLT: 20100,    # Bytewatt pack is commonly 20.1 kWh
 }
 
@@ -1621,6 +1635,7 @@ BATTERY_POWER_DEFAULTS = {
     BATTERY_SYSTEM_ESY_SUNHOME: 5000,  # HM6; rate is firmware-decided, using 5 kW default
     BATTERY_SYSTEM_SOLAX: 5000,        # Varies by model (X1-Hybrid G4: 3.7 kW, X3-Hybrid: 6 kW)
     BATTERY_SYSTEM_SAJ_H2: 5000,       # Varies by model
+    BATTERY_SYSTEM_FRONIUS_RESERVA: 5000,  # Reserva/GEN24 common operating target
     BATTERY_SYSTEM_NEOVOLT: 5000,      # Configurable in the upstream Neovolt integration
 }
 

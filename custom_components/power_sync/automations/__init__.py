@@ -518,6 +518,7 @@ class AutomationEngine:
                 or data.get("solax_coordinator")
                 or data.get("esy_coordinator")
                 or data.get("saj_h2_coordinator")
+                or data.get("fronius_reserva_coordinator")
                 or data.get("neovolt_coordinator")
             )
 

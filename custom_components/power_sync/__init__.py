@@ -343,6 +343,7 @@ from .const import (
     BATTERY_SYSTEM_SOLAX,
     CONF_SOLAX_CONFIG_ENTRY_ID,
     BATTERY_SYSTEM_SAJ_H2,
+    BATTERY_SYSTEM_FRONIUS_RESERVA,
     BATTERY_SYSTEM_NEOVOLT,
     CONF_SOLAX_ENTITY_PREFIX,
     CONF_SOLAX_BATTERY_NOMINAL_V,
@@ -357,6 +358,13 @@ from .const import (
     DEFAULT_SAJ_BATTERY_CAPACITY_KWH,
     CONF_SAJ_INVERTER_RATED_KW,
     DEFAULT_SAJ_INVERTER_RATED_KW,
+    CONF_FRONIUS_RESERVA_CONFIG_ENTRY_ID,
+    CONF_FRONIUS_RESERVA_BATTERY_CAPACITY_KWH,
+    CONF_FRONIUS_RESERVA_MAX_CHARGE_KW,
+    CONF_FRONIUS_RESERVA_MAX_DISCHARGE_KW,
+    DEFAULT_FRONIUS_RESERVA_BATTERY_CAPACITY_KWH,
+    DEFAULT_FRONIUS_RESERVA_MAX_CHARGE_KW,
+    DEFAULT_FRONIUS_RESERVA_MAX_DISCHARGE_KW,
     CONF_NEOVOLT_CONFIG_ENTRY_ID,
     CONF_NEOVOLT_CONFIG_ENTRY_IDS,
     CONF_NEOVOLT_MAX_CHARGE_KW,
@@ -520,6 +528,7 @@ from .coordinator import (
     ESYSunhomeEnergyCoordinator,
     SolaxBatteryEnergyCoordinator,
     SajH2EnergyCoordinator,
+    FroniusReservaEnergyCoordinator,
     NeovoltEnergyCoordinator,
     DemandChargeCoordinator,
     AEMOSensorCoordinator,
@@ -3321,6 +3330,7 @@ _CALENDAR_ENERGY_SUMMARY_COORDINATORS = (
     ("esy_sunhome_coordinator", "ESY Sunhome"),
     ("solax_coordinator", "Solax"),
     ("saj_h2_coordinator", "SAJ H2"),
+    ("fronius_reserva_coordinator", "Fronius Reserva"),
     ("neovolt_coordinator", "Neovolt"),
 )
 
@@ -4345,6 +4355,7 @@ class BatteryHealthView(HomeAssistantView):
             "goodwe_coordinator": "goodwe",
             "alphaess_coordinator": "alphaess",
             "foxess_coordinator": "foxess",
+            "fronius_reserva_coordinator": "fronius_reserva",
             "neovolt_coordinator": "neovolt",
         }
 
@@ -4393,6 +4404,14 @@ class BatteryHealthView(HomeAssistantView):
                 if (v := d.get("battery_soh")) is not None: bms["soh_percent"] = round(float(v), 1)
                 if (v := d.get("battery_capacity_kwh")) is not None: bms["rated_capacity_kwh"] = round(float(v), 2)
                 if (v := d.get("battery_level")) is not None: bms["soc_percent"] = round(float(v), 1)
+                if (v := d.get("battery_max_charge_power_w")) is not None: bms["max_charge_power_w"] = int(v)
+                if (v := d.get("battery_max_discharge_power_w")) is not None: bms["max_discharge_power_w"] = int(v)
+
+            elif brand == "fronius_reserva":
+                if (v := d.get("battery_temperature")) is not None: bms["temperature_c"] = round(float(v), 1)
+                if (v := d.get("battery_capacity_kwh")) is not None: bms["rated_capacity_kwh"] = round(float(v), 2)
+                if (v := d.get("battery_level")) is not None: bms["soc_percent"] = round(float(v), 1)
+                if (v := d.get("min_soc")) is not None: bms["min_soc_percent"] = round(float(v), 1)
                 if (v := d.get("battery_max_charge_power_w")) is not None: bms["max_charge_power_w"] = int(v)
                 if (v := d.get("battery_max_discharge_power_w")) is not None: bms["max_discharge_power_w"] = int(v)
 
@@ -6479,6 +6498,27 @@ class ConfigView(HomeAssistantView):
                     "modbus_enabled": bool(goodwe_host),
                 }
 
+            # Add Fronius Reserva bridge info if applicable
+            fronius_reserva_config = None
+            if battery_system == "fronius_reserva":
+                fronius_reserva_config = {
+                    "config_entry_id": entry.data.get(CONF_FRONIUS_RESERVA_CONFIG_ENTRY_ID),
+                    "battery_capacity_kwh": entry.options.get(
+                        CONF_FRONIUS_RESERVA_BATTERY_CAPACITY_KWH,
+                        entry.data.get(CONF_FRONIUS_RESERVA_BATTERY_CAPACITY_KWH),
+                    ),
+                    "max_charge_kw": entry.options.get(
+                        CONF_FRONIUS_RESERVA_MAX_CHARGE_KW,
+                        entry.data.get(CONF_FRONIUS_RESERVA_MAX_CHARGE_KW),
+                    ),
+                    "max_discharge_kw": entry.options.get(
+                        CONF_FRONIUS_RESERVA_MAX_DISCHARGE_KW,
+                        entry.data.get(CONF_FRONIUS_RESERVA_MAX_DISCHARGE_KW),
+                    ),
+                    "integration_domain": "fronius_modbus",
+                    "modbus_enabled": bool(entry.data.get(CONF_FRONIUS_RESERVA_CONFIG_ENTRY_ID)),
+                }
+
             # Get EV provider configuration
             ev_provider = entry.options.get(
                 CONF_EV_PROVIDER,
@@ -6540,7 +6580,7 @@ class ConfigView(HomeAssistantView):
 
             if not battery_health:
                 # Fall back to coordinator battery_soh (Sungrow, Sigenergy, GoodWe)
-                for key in ("sungrow_coordinator", "sigenergy_coordinator", "goodwe_coordinator", "alphaess_coordinator", "solax_coordinator", "saj_h2_coordinator", "neovolt_coordinator"):
+                for key in ("sungrow_coordinator", "sigenergy_coordinator", "goodwe_coordinator", "alphaess_coordinator", "solax_coordinator", "saj_h2_coordinator", "fronius_reserva_coordinator", "neovolt_coordinator"):
                     coord = entry_data.get(key)
                     if coord and coord.data:
                         soh = coord.data.get("battery_soh")
@@ -6582,6 +6622,7 @@ class ConfigView(HomeAssistantView):
                 "sungrow": sungrow_config,
                 "foxess": foxess_config,
                 "goodwe": goodwe_config,
+                "fronius_reserva": fronius_reserva_config,
             }
 
             _LOGGER.info(f"✅ Config response: battery_system={battery_system}, provider={electricity_provider}")
@@ -14500,6 +14541,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         or entry.data.get(CONF_SOLAX_ENTITY_PREFIX)
     )
     is_saj_h2 = bool(entry.data.get(CONF_SAJ_CONFIG_ENTRY_ID))
+    is_fronius_reserva = bool(entry.data.get(CONF_FRONIUS_RESERVA_CONFIG_ENTRY_ID))
     is_neovolt = bool(_get_neovolt_entry_ids(entry.data, hass))
     tesla_coordinator = None
     sigenergy_coordinator = None
@@ -14511,6 +14553,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     esy_sunhome_coordinator = None
     solax_coordinator = None
     saj_h2_coordinator = None
+    fronius_reserva_coordinator = None
     neovolt_coordinator = None
     token_getter = None  # Will be set for Tesla users
 
@@ -14757,6 +14800,37 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             min_soc_pct=float(saj_reserve_pct or 5.0),
             inverter_rated_kw=float(saj_inverter_rated_kw),
         )
+    elif is_fronius_reserva:
+        _LOGGER.info("Running in Fronius Reserva mode — bridging via fronius_modbus integration")
+        fronius_capacity_kwh = entry.options.get(
+            CONF_FRONIUS_RESERVA_BATTERY_CAPACITY_KWH,
+            entry.data.get(
+                CONF_FRONIUS_RESERVA_BATTERY_CAPACITY_KWH,
+                DEFAULT_FRONIUS_RESERVA_BATTERY_CAPACITY_KWH,
+            ),
+        )
+        fronius_max_charge_kw = entry.options.get(
+            CONF_FRONIUS_RESERVA_MAX_CHARGE_KW,
+            entry.data.get(
+                CONF_FRONIUS_RESERVA_MAX_CHARGE_KW,
+                DEFAULT_FRONIUS_RESERVA_MAX_CHARGE_KW,
+            ),
+        )
+        fronius_max_discharge_kw = entry.options.get(
+            CONF_FRONIUS_RESERVA_MAX_DISCHARGE_KW,
+            entry.data.get(
+                CONF_FRONIUS_RESERVA_MAX_DISCHARGE_KW,
+                DEFAULT_FRONIUS_RESERVA_MAX_DISCHARGE_KW,
+            ),
+        )
+        fronius_reserva_coordinator = FroniusReservaEnergyCoordinator(
+            hass,
+            fronius_entry_id=entry.data[CONF_FRONIUS_RESERVA_CONFIG_ENTRY_ID],
+            battery_capacity_kwh=float(fronius_capacity_kwh),
+            entry_id=entry.entry_id,
+            max_charge_kw=float(fronius_max_charge_kw),
+            max_discharge_kw=float(fronius_max_discharge_kw),
+        )
     elif is_neovolt:
         _LOGGER.info("Running in Neovolt mode — bridging via Neovolt Modbus integration")
         neovolt_max_charge_kw = entry.options.get(
@@ -14931,6 +15005,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         except Exception as e:
             _LOGGER.warning("SAJ H2 coordinator failed to initialize: %s", e)
             saj_h2_coordinator = None
+    if fronius_reserva_coordinator:
+        try:
+            await fronius_reserva_coordinator.async_config_entry_first_refresh()
+            _LOGGER.info("Fronius Reserva coordinator initialized successfully")
+        except Exception as e:
+            _LOGGER.warning("Fronius Reserva coordinator failed to initialize: %s", e)
+            fronius_reserva_coordinator = None
     if neovolt_coordinator:
         try:
             await neovolt_coordinator.async_config_entry_first_refresh()
@@ -14949,7 +15030,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         tesla_coordinator or foxess_coordinator or goodwe_coordinator
         or sigenergy_coordinator or sungrow_coordinator or alphaess_coordinator
         or esy_sunhome_coordinator or solax_coordinator or saj_h2_coordinator
-        or neovolt_coordinator
+        or fronius_reserva_coordinator or neovolt_coordinator
     )
     if demand_charge_enabled and energy_coord_for_demand:
         demand_charge_rate = entry.options.get(
@@ -15009,7 +15090,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
 
     # Tesla AEMO Spike Manager (tariff-based) — only for Tesla
-    if aemo_spike_enabled and has_tesla_site and not is_sigenergy and not is_sungrow and not is_foxess and not is_goodwe and not is_alphaess and not is_esy_sunhome and not is_solax and not is_saj_h2 and not is_neovolt:
+    if aemo_spike_enabled and has_tesla_site and not is_sigenergy and not is_sungrow and not is_foxess and not is_goodwe and not is_alphaess and not is_esy_sunhome and not is_solax and not is_saj_h2 and not is_fronius_reserva and not is_neovolt:
         aemo_region = entry.options.get(
             CONF_AEMO_REGION,
             entry.data.get(CONF_AEMO_REGION)
@@ -15039,7 +15120,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.warning("AEMO spike detection enabled but no region configured")
 
     # Generic AEMO Spike Manager (service-call-based) for non-Tesla systems
-    if aemo_spike_enabled and (is_sigenergy or is_sungrow or is_foxess or is_esy_sunhome or is_solax or is_saj_h2 or is_neovolt or is_goodwe or is_alphaess):
+    if aemo_spike_enabled and (is_sigenergy or is_sungrow or is_foxess or is_esy_sunhome or is_solax or is_saj_h2 or is_fronius_reserva or is_neovolt or is_goodwe or is_alphaess):
         aemo_region = entry.options.get(
             CONF_AEMO_REGION,
             entry.data.get(CONF_AEMO_REGION)
@@ -15055,6 +15136,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 "sungrow" if is_sungrow else
                 "solax" if is_solax else
                 "saj_h2" if is_saj_h2 else
+                "fronius_reserva" if is_fronius_reserva else
                 "neovolt" if is_neovolt else
                 "esy_sunhome" if is_esy_sunhome else
                 "goodwe" if is_goodwe else
@@ -15156,7 +15238,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Create session managers for non-LP battery control
         if saving_session_coordinator:
             # Tesla TOU mode manager
-            if has_tesla_site and not is_sigenergy and not is_sungrow and not is_foxess and not is_goodwe:
+            if has_tesla_site and not is_sigenergy and not is_sungrow and not is_foxess and not is_goodwe and not is_fronius_reserva:
                 saving_session_tariff_manager = SavingSessionTariffManager(
                     hass=hass,
                     entry=entry,
@@ -15170,7 +15252,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 _LOGGER.info("Saving Session Tariff Manager initialized for Tesla")
 
             # Non-Tesla generic manager
-            elif is_sigenergy or is_sungrow or is_foxess or is_goodwe or is_esy_sunhome or is_solax or is_saj_h2 or is_neovolt:
+            elif is_sigenergy or is_sungrow or is_foxess or is_goodwe or is_esy_sunhome or is_solax or is_saj_h2 or is_fronius_reserva or is_neovolt:
                 battery_type = (
                     "sigenergy" if is_sigenergy else
                     "sungrow" if is_sungrow else
@@ -15178,6 +15260,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     "esy_sunhome" if is_esy_sunhome else
                     "solax" if is_solax else
                     "saj_h2" if is_saj_h2 else
+                    "fronius_reserva" if is_fronius_reserva else
                     "neovolt" if is_neovolt else
                     "foxess"
                 )
@@ -15522,6 +15605,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "esy_sunhome_coordinator": esy_sunhome_coordinator,  # For ESY Sunhome (bridges via esy_sunhome integration)
         "solax_coordinator": solax_coordinator,  # For Solax Hybrid (bridges via homeassistant-solax-modbus)
         "saj_h2_coordinator": saj_h2_coordinator,  # For SAJ H2 (bridges via saj_h2_modbus)
+        "fronius_reserva_coordinator": fronius_reserva_coordinator,  # For Fronius Reserva (bridges via fronius_modbus)
         "neovolt_coordinator": neovolt_coordinator,  # For Neovolt / Bytewatt (bridges via Neovolt integration)
         "demand_charge_coordinator": demand_charge_coordinator,
         "aemo_spike_manager": aemo_spike_manager,
@@ -15560,6 +15644,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "is_esy_sunhome": is_esy_sunhome,  # Track if ESY Sunhome battery system
         "is_solax": is_solax,  # Track if Solax battery system
         "is_saj_h2": is_saj_h2,  # Track if SAJ H2 battery system
+        "is_fronius_reserva": is_fronius_reserva,  # Track if Fronius Reserva battery system
         "is_neovolt": is_neovolt,  # Track if Neovolt battery system
         "foxess_curtailment_state": "normal",  # Track FoxESS DC curtailment state
         "sigenergy_curtailment_state": "normal",  # Track Sigenergy DC curtailment state
@@ -19710,6 +19795,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 await esy_coord.force_discharge(duration, power_w=power_w)
                 _LOGGER.debug(f"ESY Sunhome force discharge hardware extended ({duration}min)")
                 return
+            fronius_coord = entry_data.get("fronius_reserva_coordinator")
+            if fronius_coord:
+                await fronius_coord.force_discharge(duration, power_w=power_w)
+                _LOGGER.debug(f"Fronius Reserva force discharge hardware refreshed ({duration}min, {power_w}W)")
+                return
             neovolt_coord = entry_data.get("neovolt_coordinator")
             if neovolt_coord:
                 await neovolt_coord.force_discharge(
@@ -20168,6 +20258,57 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 force_discharge_state["active"] = False
                 _LOGGER.error(f"Error in SAJ H2 force discharge: {e}", exc_info=True)
                 hass.async_create_task(_notify_api_error(hass, "Force Discharge Failed", "SAJ H2 entity write error"))
+                return
+
+        is_fronius_reserva_local = bool(entry.data.get(CONF_FRONIUS_RESERVA_CONFIG_ENTRY_ID))
+        if is_fronius_reserva_local:
+            try:
+                entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+                fronius_coord = entry_data.get("fronius_reserva_coordinator")
+                if not fronius_coord:
+                    force_discharge_state["active"] = False
+                    _LOGGER.error("Force discharge: Fronius Reserva coordinator not available")
+                    return
+
+                power_w = call.data.get("power_w", 0)
+                discharge_result = await fronius_coord.force_discharge(duration, power_w=power_w)
+
+                if discharge_result:
+                    force_discharge_state["active"] = True
+                    force_discharge_state["source"] = source
+                    force_discharge_state["duration"] = duration
+                    force_discharge_state["expires_at"] = dt_util.utcnow() + timedelta(minutes=duration)
+                    _LOGGER.info("Fronius Reserva FORCE DISCHARGE ACTIVE for %d minutes", duration)
+
+                    async_dispatcher_send(hass, f"{DOMAIN}_force_discharge_state", {
+                        "active": True,
+                        "expires_at": force_discharge_state["expires_at"].isoformat(),
+                        "duration": duration,
+                    })
+
+                    if force_discharge_state.get("cancel_expiry_timer"):
+                        force_discharge_state["cancel_expiry_timer"]()
+
+                    async def auto_restore_discharge_fronius(_now):
+                        if _command_generation[0] != _restore_gen:
+                            return
+                        if force_discharge_state["active"]:
+                            _LOGGER.info("Fronius Reserva force discharge expired, auto-restoring")
+                            await hass.services.async_call(DOMAIN, SERVICE_RESTORE_NORMAL, {}, blocking=True)
+
+                    force_discharge_state["cancel_expiry_timer"] = async_track_point_in_utc_time(
+                        hass, auto_restore_discharge_fronius, force_discharge_state["expires_at"]
+                    )
+                    await persist_force_mode_state()
+                else:
+                    force_discharge_state["active"] = False
+                    _LOGGER.error("Fronius Reserva force discharge failed")
+                    hass.async_create_task(_notify_api_error(hass, "Force Discharge Failed", "Fronius Reserva entity write error"))
+                return
+            except Exception as e:
+                force_discharge_state["active"] = False
+                _LOGGER.error(f"Error in Fronius Reserva force discharge: {e}", exc_info=True)
+                hass.async_create_task(_notify_api_error(hass, "Force Discharge Failed", "Fronius Reserva entity write error"))
                 return
 
         is_neovolt_local = bool(_get_neovolt_entry_ids(entry.data, hass))
@@ -20817,6 +20958,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 await esy_coord.force_charge(duration, power_w=power_w)
                 _LOGGER.debug(f"ESY Sunhome force charge hardware extended ({duration}min)")
                 return
+            fronius_coord = entry_data.get("fronius_reserva_coordinator")
+            if fronius_coord:
+                await fronius_coord.force_charge(duration, power_w=power_w)
+                _LOGGER.debug(f"Fronius Reserva force charge hardware refreshed ({duration}min, {power_w}W)")
+                return
             neovolt_coord = entry_data.get("neovolt_coordinator")
             if neovolt_coord:
                 await neovolt_coord.force_charge(
@@ -21341,6 +21487,65 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 force_charge_state["active"] = False
                 _LOGGER.error(f"Error in SAJ H2 force charge: {e}", exc_info=True)
                 hass.async_create_task(_notify_api_error(hass, "Force Charge Failed", "SAJ H2 entity write error"))
+                return
+
+        is_fronius_reserva_local = bool(entry.data.get(CONF_FRONIUS_RESERVA_CONFIG_ENTRY_ID))
+        if is_fronius_reserva_local:
+            try:
+                entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+                fronius_coord = entry_data.get("fronius_reserva_coordinator")
+                if not fronius_coord:
+                    force_charge_state["active"] = False
+                    _LOGGER.error("Force charge: Fronius Reserva coordinator not available")
+                    return
+
+                if force_discharge_state["active"]:
+                    _LOGGER.info("Canceling active discharge mode to enable charge mode")
+                    if force_discharge_state.get("cancel_expiry_timer"):
+                        force_discharge_state["cancel_expiry_timer"]()
+                        force_discharge_state["cancel_expiry_timer"] = None
+                    force_discharge_state["active"] = False
+                    force_discharge_state["expires_at"] = None
+
+                power_w = call.data.get("power_w", 0)
+                charge_result = await fronius_coord.force_charge(duration, power_w=power_w)
+
+                if charge_result:
+                    force_charge_state["active"] = True
+                    force_charge_state["source"] = source
+                    force_charge_state["duration"] = duration
+                    force_charge_state["expires_at"] = dt_util.utcnow() + timedelta(minutes=duration)
+                    _LOGGER.info("Fronius Reserva FORCE CHARGE ACTIVE for %d minutes", duration)
+
+                    async_dispatcher_send(hass, f"{DOMAIN}_force_charge_state", {
+                        "active": True,
+                        "expires_at": force_charge_state["expires_at"].isoformat(),
+                        "duration": duration,
+                    })
+
+                    if force_charge_state.get("cancel_expiry_timer"):
+                        force_charge_state["cancel_expiry_timer"]()
+
+                    async def auto_restore_charge_fronius(_now):
+                        if _command_generation[0] != _restore_gen:
+                            return
+                        if force_charge_state["active"]:
+                            _LOGGER.info("Fronius Reserva force charge expired, auto-restoring")
+                            await hass.services.async_call(DOMAIN, SERVICE_RESTORE_NORMAL, {}, blocking=True)
+
+                    force_charge_state["cancel_expiry_timer"] = async_track_point_in_utc_time(
+                        hass, auto_restore_charge_fronius, force_charge_state["expires_at"]
+                    )
+                    await persist_force_mode_state()
+                else:
+                    force_charge_state["active"] = False
+                    _LOGGER.error("Fronius Reserva force charge failed")
+                    hass.async_create_task(_notify_api_error(hass, "Force Charge Failed", "Fronius Reserva entity write error"))
+                return
+            except Exception as e:
+                force_charge_state["active"] = False
+                _LOGGER.error(f"Error in Fronius Reserva force charge: {e}", exc_info=True)
+                hass.async_create_task(_notify_api_error(hass, "Force Charge Failed", "Fronius Reserva entity write error"))
                 return
 
         is_neovolt_local = bool(_get_neovolt_entry_ids(entry.data, hass))
@@ -22288,6 +22493,41 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 _LOGGER.error(f"Error in SAJ H2 restore normal: {e}", exc_info=True)
                 return
 
+        is_fronius_reserva_local = bool(entry.data.get(CONF_FRONIUS_RESERVA_CONFIG_ENTRY_ID))
+        if is_fronius_reserva_local:
+            try:
+                entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+                fronius_coord = entry_data.get("fronius_reserva_coordinator")
+                if fronius_coord:
+                    await fronius_coord.restore_normal()
+
+                force_charge_state["active"] = False
+                force_discharge_state["active"] = False
+                force_charge_state["expires_at"] = None
+                force_discharge_state["expires_at"] = None
+
+                _LOGGER.info("Fronius Reserva NORMAL OPERATION RESTORED (Auto)")
+
+                if not suppress_notification:
+                    try:
+                        from .automations.actions import _send_expo_push
+                        await _send_expo_push(hass, "Battery", "Normal operation restored")
+                    except Exception as notify_err:
+                        _LOGGER.debug(f"Could not send success notification: {notify_err}")
+
+                async_dispatcher_send(hass, f"{DOMAIN}_force_discharge_state", {
+                    "active": False, "expires_at": None, "duration": 0,
+                })
+                async_dispatcher_send(hass, f"{DOMAIN}_force_charge_state", {
+                    "active": False, "expires_at": None, "duration": 0,
+                })
+
+                await persist_force_mode_state()
+                return
+            except Exception as e:
+                _LOGGER.error(f"Error in Fronius Reserva restore normal: {e}", exc_info=True)
+                return
+
         is_neovolt_local = bool(_get_neovolt_entry_ids(entry.data, hass))
         if is_neovolt_local:
             try:
@@ -22744,6 +22984,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             ("goodwe_coordinator", "goodwe"),
             ("alphaess_coordinator", "alphaess"),
             ("saj_h2_coordinator", "saj_h2"),
+            ("fronius_reserva_coordinator", "fronius_reserva"),
             ("neovolt_coordinator", "neovolt"),
         ):
             coord = entry_data.get(coord_key)
@@ -23036,6 +23277,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 _LOGGER.error(f"Error setting SAJ H2 self-consumption: {e}", exc_info=True)
                 return
 
+        # Check if this is a Fronius Reserva system
+        is_fronius_reserva_sc = bool(entry.data.get(CONF_FRONIUS_RESERVA_CONFIG_ENTRY_ID))
+        if is_fronius_reserva_sc:
+            try:
+                entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+                fronius_coord = entry_data.get("fronius_reserva_coordinator")
+                if not fronius_coord:
+                    _LOGGER.error("Self-consumption: Fronius Reserva coordinator not available")
+                    return
+                success = await fronius_coord.restore_normal()
+                if success:
+                    _LOGGER.info("Fronius Reserva self-consumption mode restored (Auto)")
+                else:
+                    _LOGGER.error("Failed to set Fronius Reserva self-consumption mode")
+                return
+            except Exception as e:
+                _LOGGER.error(f"Error setting Fronius Reserva self-consumption: {e}", exc_info=True)
+                return
+
         # Check if this is a Neovolt system
         is_neovolt_sc = bool(_get_neovolt_entry_ids(entry.data, hass))
         if is_neovolt_sc:
@@ -23130,6 +23390,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         is_alphaess = bool(entry.data.get(CONF_ALPHAESS_MODBUS_HOST))
         is_esy_sunhome_auto = bool(entry.data.get(CONF_ESY_CONFIG_ENTRY_ID))
         is_saj_h2_auto = bool(entry.data.get(CONF_SAJ_CONFIG_ENTRY_ID))
+        is_fronius_reserva_auto = bool(entry.data.get(CONF_FRONIUS_RESERVA_CONFIG_ENTRY_ID))
         is_neovolt_auto = bool(_get_neovolt_entry_ids(entry.data, hass))
         is_solax_auto = bool(
             entry.data.get(CONF_SOLAX_CONFIG_ENTRY_ID)
@@ -23143,6 +23404,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             or is_alphaess
             or is_esy_sunhome_auto
             or is_saj_h2_auto
+            or is_fronius_reserva_auto
             or is_neovolt_auto
             or is_solax_auto
         ):
@@ -23311,6 +23573,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         elif bool(entry.data.get(CONF_SAJ_CONFIG_ENTRY_ID)):
             # SAJ H2: no backup reserve register — no-op
             _LOGGER.debug("SAJ H2 does not support backup reserve (no-op)")
+        elif bool(entry.data.get(CONF_FRONIUS_RESERVA_CONFIG_ENTRY_ID)):
+            # Fronius Reserva via fronius_modbus entities
+            try:
+                entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+                fronius_coord = entry_data.get("fronius_reserva_coordinator")
+                if not fronius_coord:
+                    _LOGGER.error("Fronius Reserva coordinator not available for set_backup_reserve")
+                    return
+
+                success = await fronius_coord.set_backup_reserve(percent)
+                if success:
+                    _LOGGER.info(f"Fronius Reserva backup reserve set to {percent}%")
+                else:
+                    _LOGGER.error("Failed to set Fronius Reserva backup reserve")
+
+            except Exception as e:
+                _LOGGER.error(f"Error setting Fronius Reserva backup reserve: {e}", exc_info=True)
         elif bool(_get_neovolt_entry_ids(entry.data, hass)):
             # Neovolt via HACS integration entities
             try:
@@ -25731,7 +26010,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 else:
                     for _key in ("foxess_coordinator", "goodwe_coordinator",
                                  "alphaess_coordinator", "solax_coordinator",
-                                 "saj_h2_coordinator", "neovolt_coordinator"):
+                                 "saj_h2_coordinator", "fronius_reserva_coordinator",
+                                 "neovolt_coordinator"):
                         _c = entry_data.get(_key)
                         if _c and _c.data:
                             _kw_coord = _c
@@ -26114,6 +26394,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             elif is_saj_h2:
                 battery_system = "saj_h2"
                 energy_coordinator = saj_h2_coordinator
+            elif is_fronius_reserva:
+                battery_system = "fronius_reserva"
+                energy_coordinator = fronius_reserva_coordinator
             elif is_neovolt:
                 battery_system = "neovolt"
                 energy_coordinator = neovolt_coordinator
@@ -27109,7 +27392,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # (prevents total_increasing sensors from going backwards after reload)
     for coord_key in ("tesla_coordinator", "sigenergy_coordinator", "sungrow_coordinator",
                       "foxess_coordinator", "goodwe_coordinator", "alphaess_coordinator",
-                      "solax_coordinator", "saj_h2_coordinator", "neovolt_coordinator"):
+                      "solax_coordinator", "saj_h2_coordinator",
+                      "fronius_reserva_coordinator", "neovolt_coordinator"):
         coord = entry_data.get(coord_key)
         if coord and hasattr(coord, "_energy_acc"):
             try:

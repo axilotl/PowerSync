@@ -5256,6 +5256,113 @@ class SajH2EnergyCoordinator(DataUpdateCoordinator):
         await self._controller.disconnect()
 
 
+class FroniusReservaEnergyCoordinator(DataUpdateCoordinator):
+    """Bridge coordinator for Fronius Reserva via the fronius_modbus integration."""
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        fronius_entry_id: str,
+        battery_capacity_kwh: float = 9.6,
+        entry_id: str = "",
+        max_charge_kw: float = 5.0,
+        max_discharge_kw: float = 5.0,
+    ) -> None:
+        from .inverters.fronius_reserva import FroniusReservaBatteryController
+
+        self._entry_id = entry_id
+        self._controller = FroniusReservaBatteryController(
+            hass,
+            fronius_entry_id=fronius_entry_id,
+            battery_capacity_kwh=battery_capacity_kwh,
+            max_charge_kw=max_charge_kw,
+            max_discharge_kw=max_discharge_kw,
+        )
+        self._energy_acc = EnergyAccumulator(hass, "fronius_reserva")
+
+        super().__init__(
+            hass,
+            _LOGGER,
+            name=f"{DOMAIN}_fronius_reserva_energy",
+            update_interval=timedelta(seconds=30),
+        )
+
+    async def _async_update_data(self) -> dict[str, Any]:
+        """Return Fronius Reserva data assembled from HA entity states."""
+        if not self._energy_acc._last_update:
+            await self._energy_acc.async_restore()
+
+        if not self._controller._entity_map:
+            self._controller._discover_entities()
+
+        try:
+            status = self._controller.get_status()
+        except Exception as exc:
+            if self.data:
+                _LOGGER.warning("Fronius Reserva entity read failed, returning stale data: %s", exc)
+                return self.data
+            raise UpdateFailed(f"Fronius Reserva entity read failed: {exc}") from exc
+
+        solar_kw = status.get("solar_power", 0.0) or 0.0
+        grid_kw = status.get("grid_power", 0.0) or 0.0
+        battery_kw = status.get("battery_power", 0.0) or 0.0
+        load_kw = status.get("load_power", 0.0) or 0.0
+        soc = status.get("battery_level", 0.0) or 0.0
+
+        buy, sell = _get_current_prices(self.hass, self._entry_id)
+        self._energy_acc.update(max(0.0, solar_kw), grid_kw, battery_kw, load_kw, buy, sell)
+
+        return {
+            "solar_power": solar_kw,
+            "grid_power": grid_kw,
+            "battery_power": battery_kw,
+            "load_power": load_kw,
+            "battery_level": soc,
+            "battery_temperature": status.get("battery_temperature"),
+            "battery_capacity_kwh": status.get("battery_capacity_kwh"),
+            "battery_max_charge_power_w": status.get("battery_max_charge_power_w"),
+            "battery_max_discharge_power_w": status.get("battery_max_discharge_power_w"),
+            "battery_max_charge_power": (
+                status.get("battery_max_charge_power_w") / 1000.0
+                if status.get("battery_max_charge_power_w") else None
+            ),
+            "battery_max_discharge_power": (
+                status.get("battery_max_discharge_power_w") / 1000.0
+                if status.get("battery_max_discharge_power_w") else None
+            ),
+            "backup_reserve": status.get("backup_reserve"),
+            "min_soc": status.get("min_soc"),
+            "mode": status.get("mode"),
+            "energy_summary": self._energy_acc.as_dict(),
+        }
+
+    async def force_charge(self, duration_minutes: int, power_w: int) -> bool:
+        return await self._controller.force_charge(duration_minutes, power_w)
+
+    async def force_discharge(self, duration_minutes: int, power_w: int) -> bool:
+        return await self._controller.force_discharge(duration_minutes, power_w)
+
+    async def restore_normal(self) -> bool:
+        return await self._controller.restore_normal()
+
+    async def set_backup_reserve(self, percent: int) -> bool:
+        return await self._controller.set_backup_reserve(percent)
+
+    async def get_backup_reserve(self) -> int | None:
+        return await self._controller.get_backup_reserve()
+
+    async def set_backup_mode(self) -> bool:
+        """IDLE hold — lock battery at current SOC, no charge or discharge."""
+        return await self._controller.set_idle()
+
+    async def restore_work_mode_from_idle(self) -> bool:
+        """Exit IDLE — restore automatic storage control."""
+        return await self._controller.restore_normal()
+
+    async def async_shutdown(self) -> None:
+        await self._controller.disconnect()
+
+
 class NeovoltEnergyCoordinator(DataUpdateCoordinator):
     """Bridge coordinator for Neovolt / Bytewatt via the Neovolt Modbus integration."""
 

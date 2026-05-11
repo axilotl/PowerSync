@@ -1300,6 +1300,7 @@ async def async_setup_entry(
     esy_sunhome_coordinator = domain_data.get("esy_sunhome_coordinator")
     solax_coordinator = domain_data.get("solax_coordinator")
     saj_h2_coordinator = domain_data.get("saj_h2_coordinator")
+    fronius_reserva_coordinator = domain_data.get("fronius_reserva_coordinator")
     neovolt_coordinator = domain_data.get("neovolt_coordinator")
     demand_charge_coordinator: DemandChargeCoordinator | None = domain_data.get("demand_charge_coordinator")
     aemo_spike_manager = domain_data.get("aemo_spike_manager")
@@ -1311,6 +1312,7 @@ async def async_setup_entry(
     is_esy_sunhome = domain_data.get("is_esy_sunhome", False)
     is_solax = domain_data.get("is_solax", False)
     is_saj_h2 = domain_data.get("is_saj_h2", False)
+    is_fronius_reserva = domain_data.get("is_fronius_reserva", False)
     is_neovolt = domain_data.get("is_neovolt", False)
 
     entities: list[SensorEntity] = []
@@ -1401,6 +1403,8 @@ async def async_setup_entry(
         energy_coordinator = solax_coordinator
     elif is_saj_h2:
         energy_coordinator = saj_h2_coordinator
+    elif is_fronius_reserva:
+        energy_coordinator = fronius_reserva_coordinator
     elif is_neovolt:
         energy_coordinator = neovolt_coordinator
     else:
@@ -1488,7 +1492,7 @@ async def async_setup_entry(
         _LOGGER.info("NeoVolt surplus balancer diagnostic sensor added")
 
     # Add power ceiling sensors for brands that publish battery_max_* fields.
-    if (is_alphaess or is_foxess) and energy_coordinator:
+    if (is_alphaess or is_foxess or is_fronius_reserva) and energy_coordinator:
         for description in BMS_POWER_LIMIT_SENSORS:
             entities.append(
                 TeslaEnergySensor(
@@ -1804,6 +1808,8 @@ async def async_setup_entry(
         battery_system = "alphaess"
     elif is_saj_h2:
         battery_system = "saj_h2"
+    elif is_fronius_reserva:
+        battery_system = "fronius_reserva"
     elif is_neovolt:
         battery_system = "neovolt"
     entities.append(BatteryHealthSensor(
