@@ -1831,6 +1831,25 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         effective_action,
                     )
 
+            # The optimizer backup reserve is a hard software floor for all
+            # battery systems.  Once SOC reaches it, stop any forced/max
+            # discharge request and return the inverter to self-consumption;
+            # do not keep exporting just because the hardware min-SOC would
+            # eventually stop the battery.
+            if effective_action in ("discharge", "export"):
+                try:
+                    soc_now, _ = await self._get_battery_state()
+                    opt_reserve = self._config.backup_reserve
+                    if soc_now is not None and soc_now <= opt_reserve:
+                        _LOGGER.warning(
+                            "Optimizer: Blocking %s — SOC %.1f%% at/below "
+                            "optimizer reserve %.0f%%; switching to self_consumption",
+                            effective_action, soc_now * 100, opt_reserve * 100,
+                        )
+                        effective_action = "self_consumption"
+                except Exception:
+                    pass
+
             if effective_action == "charge":
                 if hasattr(battery, "force_charge"):
                     charge_duration = self._force_duration_for_action_window(
@@ -1879,40 +1898,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         )
                         _LOGGER.info("Optimizer: Charging at %.0fW", action.power_w)
             elif effective_action in ("discharge", "export"):
-                # Safety guard: do NOT force-discharge if SOC is at or below
-                # the configured backup reserve.  force_discharge sets Tesla
-                # backup_reserve=0%, so if the LP planned discharge based on
-                # stale/forecast data but SOC has already dropped past the
-                # reserve, the battery would drain to 0%.
-                #
-                # Modbus batteries (Sigenergy/Sungrow/FoxESS/GoodWe/AlphaESS/
-                # ESY/Solax/SAJ) respect the inverter's own minimum SOC (set
-                # via set_backup_reserve / DOD register), so force_discharge
-                # is bounded by the BMS regardless of the LP's planned floor.
-                # Applying this guard to them caused exports to stop in the
-                # last ~30 min of Flow Power Happy Hour: as SOC tapered toward
-                # the 20% reserve, the executor flipped to self_consumption,
-                # cancelling the optimizer's force_discharge and letting the
-                # battery drift to load-following only — losing the tail of
-                # HH revenue. Tesla still needs the guard because its
-                # force_discharge actively zeros the soft reserve.
-                _tesla_only_guard = self.battery_system == "tesla"
-                soc_now, _ = await self._get_battery_state()
-                if _tesla_only_guard and soc_now <= self._config.backup_reserve + 0.05:
-                    _LOGGER.warning(
-                        "Optimizer: Skipping %s — SOC %.1f%% at/below backup "
-                        "reserve %.0f%%, switching to self_consumption",
-                        effective_action, soc_now * 100,
-                        self._config.backup_reserve * 100,
-                    )
-                    effective_action = "self_consumption"
-                    if hasattr(battery, "set_self_consumption_mode"):
-                        await battery.set_self_consumption_mode()
-                    # Do NOT set backup_reserve — self_consumption should be
-                    # able to discharge naturally to 0% (powering the home).
-                    # The optimizer will take back over when SOC rises above
-                    # the reserve (e.g. from solar charging).
-                elif hasattr(battery, "force_discharge"):
+                if hasattr(battery, "force_discharge"):
                     # Use max discharge power, not the LP's interval power.
                     # The LP's power_w is the predicted export for one interval
                     # (e.g. 370W surplus). For Modbus-controlled batteries
@@ -1931,12 +1917,6 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         duration_minutes=discharge_duration,
                         power_w=discharge_power,
                     )
-                    # Don't override Tesla's hardware backup_reserve here.
-                    # The optimizer's backup_reserve is a software decision
-                    # boundary only — the LP won't plan discharge below it,
-                    # and the SOC-at-floor check switches to self_consumption
-                    # if SOC reaches the floor. The user's Tesla hardware
-                    # reserve (e.g. 20%) is the absolute safety net.
                     _LOGGER.info(
                         "Optimizer: Discharging/exporting at %.0fW for %dmin",
                         action.power_w, discharge_duration,
