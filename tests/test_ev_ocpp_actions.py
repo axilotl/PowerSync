@@ -244,6 +244,56 @@ def test_ocpp_vehicle_start_succeeds_when_only_switch_control_exists():
     ]
 
 
+def test_ocpp_start_skips_duplicate_remote_start_when_switch_already_on():
+    hass = _Hass(
+        [
+            _State("switch.evse_1_charge_control", "on"),
+            _State("sensor.evse_1_status_connector", "Charging"),
+        ]
+    )
+
+    assert asyncio.run(actions._start_ocpp_charging(hass, "evse_1")) is True
+    assert hass.services.calls == []
+
+
+def test_ocpp_start_still_resets_when_switch_on_but_connector_finishing():
+    hass = _Hass(
+        [
+            _State("switch.evse_1_charge_control", "on"),
+            _State("sensor.evse_1_status_connector", "Finishing"),
+        ]
+    )
+
+    assert asyncio.run(actions._start_ocpp_charging(hass, "evse_1")) is True
+    assert hass.services.calls == [
+        ("switch", "turn_off", {"entity_id": "switch.evse_1_charge_control"}),
+        ("switch", "turn_on", {"entity_id": "switch.evse_1_charge_control"}),
+    ]
+
+
+def test_ocpp_current_limit_rejection_is_cached_for_session(monkeypatch):
+    calls = []
+
+    async def reject_current_limit(hass, charger_id, amps):
+        calls.append((charger_id, amps))
+        return False
+
+    monkeypatch.setattr(actions, "_set_ocpp_charging_amps", reject_current_limit)
+
+    hass = _Hass([_State("switch.evse_1_charge_control", "off")])
+    params = {"charger_type": "ocpp", "ocpp_charger_id": "evse_1"}
+
+    assert asyncio.run(actions._set_vehicle_amps(hass, _Entry(), "ocpp_evse_1", 7, params)) is True
+    assert params["_ocpp_current_limit_unsupported"] is True
+    assert asyncio.run(actions._set_vehicle_amps(hass, _Entry(), "ocpp_evse_1", 5, params)) is True
+
+    assert calls == [("evse_1", 7)]
+    assert hass.services.calls == [
+        ("switch", "turn_on", {"entity_id": "switch.evse_1_charge_control"}),
+        ("switch", "turn_on", {"entity_id": "switch.evse_1_charge_control"}),
+    ]
+
+
 def test_ocpp_loadpoint_id_does_not_double_prefix():
     assert actions._ev_action_loadpoint_id({
         "charger_type": "ocpp",

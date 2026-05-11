@@ -2047,6 +2047,13 @@ async def _start_ocpp_charging(hass: HomeAssistant, charger_id: str) -> bool:
         connector_state is not None
         and connector_state.state.lower() == "finishing"
     )
+    if str(state.state).lower() == "on" and not needs_reset:
+        _LOGGER.debug(
+            "OCPP charger %s: %s already on; skipping duplicate start",
+            charger_id,
+            entity_id,
+        )
+        return True
 
     try:
         if needs_reset:
@@ -3676,7 +3683,17 @@ async def _set_vehicle_amps(
         if amps == 0:
             return await _stop_ocpp_charging(hass, ocpp_charger_id)
         # Set amps then ensure charger is on (idempotent)
-        amps_ok = await _set_ocpp_charging_amps(hass, ocpp_charger_id, amps)
+        amps_ok = True
+        if params.get("_ocpp_current_limit_unsupported"):
+            _LOGGER.debug(
+                "OCPP charger %s: skipping current limit update to %sA after previous rejection",
+                ocpp_charger_id,
+                amps,
+            )
+        else:
+            amps_ok = await _set_ocpp_charging_amps(hass, ocpp_charger_id, amps)
+            if not amps_ok:
+                params["_ocpp_current_limit_unsupported"] = True
         if _has_pre_charge_wake(params):
             ready, block_reason = _ocpp_charger_ready_for_wake(hass, str(ocpp_charger_id))
             if not ready:
