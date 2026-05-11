@@ -23,6 +23,7 @@ _STUB_MODULE_NAMES = (
     "homeassistant.core",
     "homeassistant.exceptions",
     "homeassistant.helpers",
+    "homeassistant.helpers.event",
     "homeassistant.helpers.storage",
     "homeassistant.helpers.update_coordinator",
     "homeassistant.util",
@@ -44,6 +45,7 @@ def _install_ha_stubs() -> None:
     ha_core = types.ModuleType("homeassistant.core")
     ha_exceptions = types.ModuleType("homeassistant.exceptions")
     ha_helpers = types.ModuleType("homeassistant.helpers")
+    ha_event = types.ModuleType("homeassistant.helpers.event")
     ha_storage = types.ModuleType("homeassistant.helpers.storage")
     ha_update = types.ModuleType("homeassistant.helpers.update_coordinator")
     ha_util = types.ModuleType("homeassistant.util")
@@ -68,10 +70,14 @@ def _install_ha_stubs() -> None:
     ha_exceptions.ConfigEntryNotReady = type("ConfigEntryNotReady", (Exception,), {})
     ha_storage.Store = _Store
     ha_update.DataUpdateCoordinator = _DataUpdateCoordinator
+    ha_event.async_track_point_in_utc_time = (
+        lambda hass, callback, when: getattr(hass, "scheduled", []).append((callback, when)) or (lambda: None)
+    )
     ha_dt.now = lambda *args, **kwargs: datetime(2026, 5, 3, 8, 30, tzinfo=timezone.utc)
     ha_dt.utcnow = lambda *args, **kwargs: datetime(2026, 5, 3, 8, 30, tzinfo=timezone.utc)
     ha_dt.UTC = timezone.utc
     ha_helpers.storage = ha_storage
+    ha_helpers.event = ha_event
     ha_helpers.update_coordinator = ha_update
     ha_util.dt = ha_dt
     ha_root.helpers = ha_helpers
@@ -81,6 +87,7 @@ def _install_ha_stubs() -> None:
     sys.modules["homeassistant.core"] = ha_core
     sys.modules["homeassistant.exceptions"] = ha_exceptions
     sys.modules["homeassistant.helpers"] = ha_helpers
+    sys.modules["homeassistant.helpers.event"] = ha_event
     sys.modules["homeassistant.helpers.storage"] = ha_storage
     sys.modules["homeassistant.helpers.update_coordinator"] = ha_update
     sys.modules["homeassistant.util"] = ha_util
@@ -562,7 +569,7 @@ class _FakeEnergyCoordinator:
 
 def _execution_coordinator(opt_module, battery: _FakeBattery, soc: float):
     coordinator = _coordinator(opt_module, "octopus")
-    coordinator.hass = SimpleNamespace(data={})
+    coordinator.hass = SimpleNamespace(data={}, scheduled=[])
     coordinator.entry_id = "entry-1"
     coordinator._entry = SimpleNamespace(options={}, data={})
     coordinator._executor = SimpleNamespace(battery_controller=battery)
@@ -887,3 +894,78 @@ def test_export_duration_clips_at_next_non_export_boundary(opt_module):
 
     assert battery.force_discharge_calls == [(5, 5000, False)]
     assert coordinator._last_executed_action == "export"
+
+
+def test_tesla_force_extension_reuploads_when_tariff_window_missing(opt_module):
+    battery = _FakeBattery()
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.80)
+    start = datetime(2026, 5, 3, 8, 30, tzinfo=timezone.utc)
+    actions = [
+        SimpleNamespace(
+            action="export",
+            power_w=4200,
+            timestamp=start + idx * timedelta(minutes=5),
+        )
+        for idx in range(4)
+    ]
+    coordinator._current_schedule = SimpleNamespace(actions=actions)
+    force_state = {
+        "active": True,
+        "expires_at": start + timedelta(minutes=5),
+        "source": "optimizer",
+    }
+    coordinator.hass.data = {
+        "power_sync": {
+            "entry-1": {
+                "force_discharge_state": force_state,
+            }
+        }
+    }
+    coordinator._force_state_getter = lambda: {
+        "active": True,
+        "type": "discharge",
+        "source": "optimizer",
+    }
+
+    asyncio.run(coordinator._execute_optimizer_action(actions[0]))
+
+    assert battery.force_discharge_calls == [(20, 5000, True)]
+    assert force_state["expires_at"] == datetime(2026, 5, 3, 8, 50, tzinfo=timezone.utc)
+
+
+def test_tesla_force_extension_skips_reupload_when_tariff_window_covers_expiry(opt_module):
+    battery = _FakeBattery()
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.80)
+    start = datetime(2026, 5, 3, 8, 30, tzinfo=timezone.utc)
+    actions = [
+        SimpleNamespace(
+            action="export",
+            power_w=4200,
+            timestamp=start + idx * timedelta(minutes=5),
+        )
+        for idx in range(4)
+    ]
+    coordinator._current_schedule = SimpleNamespace(actions=actions)
+    force_state = {
+        "active": True,
+        "expires_at": start + timedelta(minutes=5),
+        "source": "optimizer",
+        "hardware_expires_at": start + timedelta(minutes=30),
+    }
+    coordinator.hass.data = {
+        "power_sync": {
+            "entry-1": {
+                "force_discharge_state": force_state,
+            }
+        }
+    }
+    coordinator._force_state_getter = lambda: {
+        "active": True,
+        "type": "discharge",
+        "source": "optimizer",
+    }
+
+    asyncio.run(coordinator._execute_optimizer_action(actions[0]))
+
+    assert battery.force_discharge_calls == []
+    assert force_state["expires_at"] == datetime(2026, 5, 3, 8, 50, tzinfo=timezone.utc)

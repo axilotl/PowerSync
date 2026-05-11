@@ -19177,6 +19177,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "saved_backup_reserve": None,
         "saved_export_rule": None,
         "expires_at": None,
+        "hardware_expires_at": None,
         "duration": None,
         "power_w": 0,
         "cancel_expiry_timer": None,
@@ -19189,6 +19190,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "saved_operation_mode": None,
         "saved_backup_reserve": None,
         "expires_at": None,
+        "hardware_expires_at": None,
         "duration": None,
         "power_w": 0,
         "cancel_expiry_timer": None,
@@ -19306,6 +19308,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             state_to_save = {
                 "mode": "charge",
                 "expires_at": force_charge_state["expires_at"].isoformat() if force_charge_state["expires_at"] else None,
+                "hardware_expires_at": force_charge_state["hardware_expires_at"].isoformat() if force_charge_state.get("hardware_expires_at") else None,
                 "duration": force_charge_state.get("duration"),
                 "power_w": _coerce_force_power_w(force_charge_state.get("power_w", 0)),
                 "source": force_charge_state.get("source", "user"),
@@ -19317,6 +19320,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             state_to_save = {
                 "mode": "discharge",
                 "expires_at": force_discharge_state["expires_at"].isoformat() if force_discharge_state["expires_at"] else None,
+                "hardware_expires_at": force_discharge_state["hardware_expires_at"].isoformat() if force_discharge_state.get("hardware_expires_at") else None,
                 "duration": force_discharge_state.get("duration"),
                 "power_w": _coerce_force_power_w(force_discharge_state.get("power_w", 0)),
                 "source": force_discharge_state.get("source", "user"),
@@ -19353,6 +19357,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             if expires_at.tzinfo is None:
                 expires_at = expires_at.replace(tzinfo=dt_util.UTC)
 
+            hardware_expires_at = None
+            hardware_expires_at_str = persisted_force_state.get("hardware_expires_at")
+            if hardware_expires_at_str:
+                try:
+                    hardware_expires_at = datetime.fromisoformat(hardware_expires_at_str)
+                    if hardware_expires_at.tzinfo is None:
+                        hardware_expires_at = hardware_expires_at.replace(tzinfo=dt_util.UTC)
+                except (TypeError, ValueError):
+                    hardware_expires_at = None
+
             now = dt_util.utcnow()
             persisted_source = persisted_force_state.get("source", "user")
             persisted_power_w = _coerce_force_power_w(
@@ -19376,6 +19390,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 state = force_charge_state if mode == "charge" else force_discharge_state
                 state["active"] = True
                 state["expires_at"] = expires_at
+                state["hardware_expires_at"] = hardware_expires_at
                 state["duration"] = persisted_force_state.get("duration")
                 state["power_w"] = persisted_power_w
                 state["source"] = persisted_source
@@ -19430,6 +19445,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 state = force_charge_state if mode == "charge" else force_discharge_state
                 state["active"] = True
                 state["expires_at"] = expires_at
+                state["hardware_expires_at"] = hardware_expires_at
                 state["duration"] = persisted_force_state.get("duration")
                 state["power_w"] = persisted_power_w
                 state["source"] = persisted_force_state.get("source", "user")
@@ -19459,6 +19475,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 if mode == "charge":
                     force_charge_state["active"] = True
                     force_charge_state["expires_at"] = expires_at
+                    force_charge_state["hardware_expires_at"] = hardware_expires_at
                     force_charge_state["duration"] = persisted_force_state.get("duration", int(remaining_minutes))
                     force_charge_state["power_w"] = persisted_power_w
                     force_charge_state["source"] = persisted_force_state.get("source", "user")
@@ -19515,6 +19532,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 elif mode == "discharge":
                     force_discharge_state["active"] = True
                     force_discharge_state["expires_at"] = expires_at
+                    force_discharge_state["hardware_expires_at"] = hardware_expires_at
                     force_discharge_state["duration"] = persisted_force_state.get("duration", int(remaining_minutes))
                     force_discharge_state["power_w"] = persisted_power_w
                     force_discharge_state["source"] = persisted_force_state.get("source", "user")
@@ -20467,6 +20485,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 # after the user's requested duration and restore_normal reverts.
                 requested_expiry = dt_util.now() + timedelta(minutes=duration)
                 force_discharge_state["expires_at"] = requested_expiry.astimezone(dt_util.UTC)
+                force_discharge_state["hardware_expires_at"] = actual_expiry.astimezone(dt_util.UTC)
                 _LOGGER.info(
                     "FORCE DISCHARGE ACTIVE%s: Tariff uploaded to %d gateway(s), "
                     "expires in %dmin (tariff window to %s)",
@@ -20856,6 +20875,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             force_discharge_state["saved_backup_reserve"] = None
             force_discharge_state["saved_export_rule"] = None
             force_discharge_state["expires_at"] = None
+            force_discharge_state["hardware_expires_at"] = None
 
         # Set force charge state IMMEDIATELY so the optimizer sees it
         # before the async Modbus/API call completes.  Prevents a race
@@ -21686,6 +21706,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 # after the user's requested duration and restore_normal reverts.
                 requested_expiry = dt_util.now() + timedelta(minutes=duration)
                 force_charge_state["expires_at"] = requested_expiry.astimezone(dt_util.UTC)
+                force_charge_state["hardware_expires_at"] = actual_expiry.astimezone(dt_util.UTC)
                 _LOGGER.info(
                     "FORCE CHARGE ACTIVE%s: Tariff uploaded to %d gateway(s), "
                     "expires in %dmin (tariff window to %s)",
@@ -22007,11 +22028,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 force_discharge_state["saved_backup_reserve"] = None
                 force_discharge_state["saved_export_rule"] = None
                 force_discharge_state["expires_at"] = None
+                force_discharge_state["hardware_expires_at"] = None
                 force_charge_state["active"] = False
                 force_charge_state["saved_tariff"] = None
                 force_charge_state["saved_operation_mode"] = None
                 force_charge_state["saved_backup_reserve"] = None
                 force_charge_state["expires_at"] = None
+                force_charge_state["hardware_expires_at"] = None
 
                 _LOGGER.info("✅ SIGENERGY NORMAL OPERATION RESTORED")
 

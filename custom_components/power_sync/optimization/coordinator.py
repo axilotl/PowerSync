@@ -1606,16 +1606,41 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     new_expiry = dt_util.utcnow() + timedelta(minutes=extend_mins)
                     _ext_state["expires_at"] = new_expiry
 
-                    # Re-issue Modbus writes for hardware-controlled inverters
-                    # (FoxESS, Sigenergy, Sungrow). Their hardware countdown
-                    # expires independently of the software timer — if we only
-                    # extend the software timer, the inverter stops when its
-                    # internal timeout hits.
-                    if battery and hasattr(battery, "force_charge") and self.battery_system not in ("tesla",):
+                    def _as_utc_datetime(value: Any) -> datetime | None:
+                        if isinstance(value, datetime):
+                            parsed = value
+                        elif isinstance(value, str):
+                            try:
+                                parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                            except ValueError:
+                                return None
+                        else:
+                            return None
+                        if parsed.tzinfo is None:
+                            return parsed.replace(tzinfo=dt_util.UTC)
+                        return parsed.astimezone(dt_util.UTC)
+
+                    hardware_expiry = _as_utc_datetime(_ext_state.get("hardware_expires_at"))
+                    should_refresh_hardware = self.battery_system != "tesla"
+                    if self.battery_system == "tesla":
+                        # Tesla force modes are implemented as uploaded TOU
+                        # tariffs. The software timer can be extended cheaply,
+                        # but the already-uploaded tariff only covers its
+                        # original 30-minute-aligned window. Refresh when the
+                        # desired expiry reaches beyond that hardware window.
+                        should_refresh_hardware = (
+                            hardware_expiry is None
+                            or new_expiry > hardware_expiry - timedelta(minutes=1)
+                        )
+
+                    # Re-issue hardware writes when the hardware-side window is
+                    # shorter than the extended optimizer-owned force state.
+                    if battery and hasattr(battery, "force_charge") and should_refresh_hardware:
                         try:
-                            # Pass _extend_hardware flag so the service handler
-                            # only re-issues Modbus writes without setting a new
-                            # expiry timer (we manage the timer here).
+                            # For Modbus-backed systems, _extend_hardware
+                            # re-issues the inverter countdown. For Tesla, the
+                            # service falls through to the full tariff uploader
+                            # so the TOU force window is rolled forward too.
                             if force_type == "charge":
                                 await battery.force_charge(
                                     duration_minutes=extend_mins,
@@ -1633,11 +1658,11 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                                     _extend_hardware=True,
                                 )
                             _LOGGER.debug(
-                                "Optimizer: re-issued Modbus %s command for hardware timer extension (%dmin)",
+                                "Optimizer: re-issued %s command for hardware timer extension (%dmin)",
                                 force_type, extend_mins,
                             )
                         except Exception as ext_err:
-                            _LOGGER.warning("Optimizer: failed to re-issue Modbus %s for extension: %s", force_type, ext_err)
+                            _LOGGER.warning("Optimizer: failed to re-issue %s for extension: %s", force_type, ext_err)
 
                     async def _auto_restore_extended(_now):
                         if _ext_state.get("active"):
