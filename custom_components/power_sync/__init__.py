@@ -27026,17 +27026,6 @@ class OptimizationSettingsView(HomeAssistantView):
                 "battery_specs_source": opt_coordinator._battery_specs_source,
                 "interval_minutes": opt_coordinator._config.interval_minutes,
                 "horizon_hours": opt_coordinator._config.horizon_hours,
-            }
-        })
-
-    async def post(self, request: web.Request) -> web.Response:
-        """Handle POST request to update optimization settings."""
-        try:
-            settings = await request.json()
-            changes = []
-
-            # Find the config entry and optimization coordinator
-            opt_coordinator = None
                 "profit_max_target_time": (
                     config_entry.options.get(
                         CONF_PROFIT_MAX_TARGET_TIME,
@@ -27048,6 +27037,17 @@ class OptimizationSettingsView(HomeAssistantView):
                     if config_entry
                     else DEFAULT_PROFIT_MAX_TARGET_TIME
                 ),
+            }
+        })
+
+    async def post(self, request: web.Request) -> web.Response:
+        """Handle POST request to update optimization settings."""
+        try:
+            settings = await request.json()
+            changes = []
+
+            # Find the config entry and optimization coordinator
+            opt_coordinator = None
             config_entry = None
             entry_id = None
 
@@ -27104,12 +27104,12 @@ class OptimizationSettingsView(HomeAssistantView):
                 new_options[CONF_PROFIT_MAX_ENABLED] = bool(settings["profit_max_enabled"])
                 changes.append(f"Set profit maximisation mode to {settings['profit_max_enabled']}")
 
-            if "allow_grid_charge" in settings:
             if "profit_max_target_time" in settings:
                 new_data[CONF_PROFIT_MAX_TARGET_TIME] = str(settings["profit_max_target_time"])
                 new_options[CONF_PROFIT_MAX_TARGET_TIME] = str(settings["profit_max_target_time"])
                 changes.append(f"Set Profit Max full by time to {settings['profit_max_target_time']}")
 
+            if "allow_grid_charge" in settings:
                 new_options[CONF_OPTIMIZATION_ALLOW_GRID_CHARGE] = bool(settings["allow_grid_charge"])
                 changes.append(f"Set grid charging to {settings['allow_grid_charge']}")
 

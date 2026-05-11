@@ -1885,13 +1885,13 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     CONF_OPTIMIZATION_ALLOW_GRID_CHARGE,
                     True,
                 ),
-            }
-            # Proceed to battery connection setup
-            return await self._route_to_battery_setup()
                 CONF_PROFIT_MAX_TARGET_TIME: user_input.get(
                     CONF_PROFIT_MAX_TARGET_TIME,
                     DEFAULT_PROFIT_MAX_TARGET_TIME,
                 ),
+            }
+            # Proceed to battery connection setup
+            return await self._route_to_battery_setup()
 
         return self.async_show_form(
             step_id="ml_options",
@@ -1953,13 +1953,13 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         CONF_OPTIMIZATION_ALLOW_GRID_CHARGE,
                         default=True,
                     ): BooleanSelector(),
-                }
-            ),
-            description_placeholders={},
                     vol.Required(
                         CONF_PROFIT_MAX_TARGET_TIME,
                         default=DEFAULT_PROFIT_MAX_TARGET_TIME,
                     ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
+                }
+            ),
+            description_placeholders={},
         )
 
     async def async_step_sigenergy_credentials(
@@ -5664,14 +5664,14 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     CONF_OPTIMIZATION_ALLOW_GRID_CHARGE,
                     True,
                 )
-                new_data[CONF_OPTIMIZATION_COST_FUNCTION] = COST_FUNCTION_COST
-                new_options[CONF_OPTIMIZATION_COST_FUNCTION] = COST_FUNCTION_COST
-                new_data[CONF_OPTIMIZATION_BACKUP_RESERVE] = backup_reserve
-                new_options[CONF_OPTIMIZATION_BACKUP_RESERVE] = backup_reserve
                 profit_max_target_time = user_input.get(
                     CONF_PROFIT_MAX_TARGET_TIME,
                     DEFAULT_PROFIT_MAX_TARGET_TIME,
                 )
+                new_data[CONF_OPTIMIZATION_COST_FUNCTION] = COST_FUNCTION_COST
+                new_options[CONF_OPTIMIZATION_COST_FUNCTION] = COST_FUNCTION_COST
+                new_data[CONF_OPTIMIZATION_BACKUP_RESERVE] = backup_reserve
+                new_options[CONF_OPTIMIZATION_BACKUP_RESERVE] = backup_reserve
                 new_data[CONF_OPTIMIZATION_BATTERY_CAPACITY_WH] = capacity_wh
                 new_options[CONF_OPTIMIZATION_BATTERY_CAPACITY_WH] = capacity_wh
                 new_data[CONF_OPTIMIZATION_MAX_CHARGE_W] = charge_w
@@ -5680,12 +5680,12 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 new_options[CONF_OPTIMIZATION_MAX_DISCHARGE_W] = discharge_w
                 new_data[CONF_OPTIMIZATION_ALLOW_GRID_CHARGE] = allow_grid_charge
                 new_options[CONF_OPTIMIZATION_ALLOW_GRID_CHARGE] = allow_grid_charge
+                new_data[CONF_PROFIT_MAX_TARGET_TIME] = profit_max_target_time
+                new_options[CONF_PROFIT_MAX_TARGET_TIME] = profit_max_target_time
 
             self.hass.config_entries.async_update_entry(
                 self.config_entry, data=new_data, options=new_options
             )
-                new_data[CONF_PROFIT_MAX_TARGET_TIME] = profit_max_target_time
-                new_options[CONF_PROFIT_MAX_TARGET_TIME] = profit_max_target_time
             return self.async_create_entry(
                 title="", data=dict(self.config_entry.options)
             )
@@ -5744,10 +5744,6 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             CONF_OPTIMIZATION_ALLOW_GRID_CHARGE,
             self.config_entry.data.get(CONF_OPTIMIZATION_ALLOW_GRID_CHARGE, True),
         )
-
-        # Build native label based on battery system
-        native_labels = {
-            BATTERY_SYSTEM_TESLA: "Tesla Powerwall built-in optimization",
         current_profit_max_target_time = self._get_option(
             CONF_PROFIT_MAX_TARGET_TIME,
             self.config_entry.data.get(
@@ -5755,6 +5751,10 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 DEFAULT_PROFIT_MAX_TARGET_TIME,
             ),
         )
+
+        # Build native label based on battery system
+        native_labels = {
+            BATTERY_SYSTEM_TESLA: "Tesla Powerwall built-in optimization",
             BATTERY_SYSTEM_SIGENERGY: "Sigenergy built-in optimization",
             BATTERY_SYSTEM_SUNGROW: "Sungrow built-in optimization",
             BATTERY_SYSTEM_FOXESS: "FoxESS built-in optimization",
@@ -5820,15 +5820,15 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                         CONF_OPTIMIZATION_ALLOW_GRID_CHARGE,
                         default=bool(current_allow_grid_charge),
                     ): BooleanSelector(),
+                    vol.Required(
+                        CONF_PROFIT_MAX_TARGET_TIME,
+                        default=current_profit_max_target_time,
+                    ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
                 }
             ),
         )
 
     async def async_step_inverter(
-                    vol.Required(
-                        CONF_PROFIT_MAX_TARGET_TIME,
-                        default=current_profit_max_target_time,
-                    ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         """Menu handler: configure AC-coupled inverter for curtailment."""
