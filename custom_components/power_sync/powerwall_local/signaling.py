@@ -30,6 +30,7 @@ fails.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import struct
@@ -202,6 +203,33 @@ class SignalingState(str, Enum):
     RECONNECTING = "reconnecting"
 
 
+def _decode_jwt_scopes(token: str) -> list[str]:
+    """Best-effort decode of the unverified JWT ``scp`` claim for diagnostics."""
+    try:
+        parts = token.split(".")
+        if len(parts) < 2:
+            return []
+        payload = parts[1]
+        payload += "=" * (-len(payload) % 4)
+        data = json.loads(base64.urlsafe_b64decode(payload.encode()).decode())
+        scopes = data.get("scp")
+        if isinstance(scopes, list):
+            return [str(scope) for scope in scopes]
+        if isinstance(scopes, str):
+            return [scope for scope in scopes.split() if scope]
+    except Exception:
+        return []
+    return []
+
+
+def _is_missing_scope_response(status: int, body: str) -> bool:
+    """Return True when Tesla says the token is valid but lacks endpoint scope."""
+    if status != 403:
+        return False
+    body_l = body.lower()
+    return "unauthorized missing scopes" in body_l or "missing scopes" in body_l
+
+
 # Type alias: async callable that returns the Tesla access token.
 # Called before each connection to get a fresh token for the hermes
 # JWT exchange.
@@ -244,7 +272,9 @@ class TeslaSignalingClient:
         self._hermes_jwt_is_fallback = False  # True when using raw token, not a real JWT
         self._working_jwt_url: str | None = None
         self._auth_denied = False
-        self._fallback_rejection_count = 0  # Stop retrying after repeated exchange+fallback failures
+        # Stop retrying after repeated exchange+fallback failures.
+        self._fallback_rejection_count = 0
+        self._missing_scope_rejection = False
 
         # Metrics
         self._connected_since: float | None = None
@@ -336,6 +366,7 @@ class TeslaSignalingClient:
         if not access_token:
             _LOGGER.warning("signaling: access token provider returned None")
             return None
+        self._missing_scope_rejection = False
 
         # Also try using the access token directly as X-Jwt — some
         # community reports suggest this may work without the exchange.
@@ -364,14 +395,26 @@ class TeslaSignalingClient:
                     ) as resp:
                         if resp.status in (401, 403):
                             body = await resp.text()
-                            _LOGGER.info(
-                                "signaling: hermes JWT exchange at %s "
-                                "returned %d — trying next endpoint. "
-                                "Response: %s",
-                                url,
-                                resp.status,
-                                body[:200],
-                            )
+                            if _is_missing_scope_response(resp.status, body):
+                                self._missing_scope_rejection = True
+                                scopes = _decode_jwt_scopes(access_token)
+                                _LOGGER.warning(
+                                    "signaling: hermes JWT exchange at %s "
+                                    "rejected the access token for missing scopes. "
+                                    "Token scopes=%s Response: %s",
+                                    url,
+                                    scopes if scopes else "?",
+                                    body[:300],
+                                )
+                            else:
+                                _LOGGER.info(
+                                    "signaling: hermes JWT exchange at %s "
+                                    "returned %d — trying next endpoint. "
+                                    "Response: %s",
+                                    url,
+                                    resp.status,
+                                    body[:200],
+                                )
                             continue
                         if resp.status != 200:
                             body = await resp.text()
@@ -429,6 +472,21 @@ class TeslaSignalingClient:
                     "signaling: hermes JWT exchange error at %s: %s", url, err
                 )
                 continue
+
+        if self._missing_scope_rejection:
+            scopes = _decode_jwt_scopes(access_token)
+            self._auth_denied = True
+            self._stop_event.set()
+            _LOGGER.error(
+                "signaling: Tesla rejected the access token for Hermes JWT "
+                "exchange because it is missing required scopes. Normal Tesla "
+                "Fleet API telemetry may still work with this token, but Hermes "
+                "signaling cannot use it. Re-authorize the Tesla provider if "
+                "its granted scopes are stale; otherwise Hermes signaling is "
+                "unavailable for this token. Token scopes=%s",
+                scopes if scopes else "?",
+            )
+            return None
 
         # All exchange endpoints failed — try using the access token
         # directly as the JWT. This is a last resort; the WebSocket
@@ -622,10 +680,10 @@ class TeslaSignalingClient:
                 if self._fallback_rejection_count >= 3:
                     _LOGGER.error(
                         "signaling: hermes JWT exchange repeatedly failed and raw "
-                        "token fallback also rejected — a real Tesla JWT with hermes "
-                        "scope is required (psync_ proxy tokens are not accepted). "
-                        "Signaling will stop retrying. Install the tesla_fleet HA "
-                        "integration alongside PowerSync to enable signaling."
+                        "token fallback also rejected. Normal Tesla Fleet API "
+                        "telemetry can still work while Hermes signaling is "
+                        "unavailable if Tesla rejects the token for the private "
+                        "Hermes channel. Signaling will stop retrying."
                     )
                     self._auth_denied = True
                     self._stop_event.set()
