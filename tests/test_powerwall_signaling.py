@@ -101,3 +101,4 @@ def test_missing_scope_response_stops_before_raw_websocket_fallback(monkeypatch,
     assert _FakeSession.post_calls == 1
     assert "missing required scopes" in caplog.text
     assert "Fleet API telemetry may still work" in caplog.text
+    assert "Likely missing scope(s): user_data" in caplog.text

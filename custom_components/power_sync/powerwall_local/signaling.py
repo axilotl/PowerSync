@@ -65,6 +65,8 @@ RECONNECT_MAX_S = 60
 # Default lifetime assumed ~300s; refresh at 240s.
 JWT_REFRESH_MARGIN_S = 60
 
+HERMES_LIKELY_REQUIRED_SCOPES = ("user_data",)
+
 
 # -----------------------------------------------------------------------
 # Lightweight protobuf helpers (no generated code / no protoc dependency)
@@ -220,6 +222,24 @@ def _decode_jwt_scopes(token: str) -> list[str]:
     except Exception:
         return []
     return []
+
+
+def _missing_scope_hint(scopes: list[str]) -> str:
+    """Return a short operator hint for known Hermes scope failures."""
+    if not scopes:
+        return ""
+
+    missing = [
+        scope for scope in HERMES_LIKELY_REQUIRED_SCOPES if scope not in scopes
+    ]
+    if not missing:
+        return ""
+
+    return (
+        " Likely missing scope(s): "
+        f"{', '.join(missing)}. Re-authorize Tesla with Profile Information "
+        "enabled."
+    )
 
 
 def _is_missing_scope_response(status: int, body: str) -> bool:
@@ -475,6 +495,7 @@ class TeslaSignalingClient:
 
         if self._missing_scope_rejection:
             scopes = _decode_jwt_scopes(access_token)
+            hint = _missing_scope_hint(scopes)
             self._auth_denied = True
             self._stop_event.set()
             _LOGGER.error(
@@ -483,8 +504,9 @@ class TeslaSignalingClient:
                 "Fleet API telemetry may still work with this token, but Hermes "
                 "signaling cannot use it. Re-authorize the Tesla provider if "
                 "its granted scopes are stale; otherwise Hermes signaling is "
-                "unavailable for this token. Token scopes=%s",
+                "unavailable for this token. Token scopes=%s%s",
                 scopes if scopes else "?",
+                hint,
             )
             return None
 

@@ -182,14 +182,12 @@ async def _build_client(
 
         async def _access_token_provider() -> str | None:
             token, _base, _site = _get_fleet_api_context(hass, entry)
-            # psync_ tokens are proxy credentials, not real JWTs — the hermes
-            # signaling endpoint needs a real Tesla JWT with the right scopes.
-            # Prefer the tesla_fleet HA integration token when available; it
-            # holds a real access token that the hermes exchange accepts.
             if token and token.startswith("psync_"):
-                fleet_ha_token = _get_tesla_fleet_ha_token(hass)
-                if fleet_ha_token:
-                    return fleet_ha_token
+                # The PowerSync proxy endpoint accepts psync_ credentials and
+                # performs the Hermes exchange server-side. Prefer that token
+                # for PowerSync-provider entries so a stale tesla_fleet HA token
+                # cannot block signaling with missing-scope errors.
+                return token
             return token or _get_tesla_fleet_ha_token(hass)
 
         signaling = TeslaSignalingClient(
