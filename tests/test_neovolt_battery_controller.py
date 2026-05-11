@@ -1328,6 +1328,53 @@ def test_fleet_surplus_balancer_disabled_mode_reports_without_writes():
     assert hass.services.calls == []
 
 
+def test_fleet_balancer_reasserts_normal_when_cutoff_stack_leaves_site_importing():
+    entry_1_states = _combined_states_for(
+        1,
+        battery_power="0",
+        battery_soc="10.5",
+        battery_capacity="20.1",
+        house_load="900",
+        pv_power="0",
+        grid_power="900",
+    ) + _control_states_for(1, mode="Normal")
+    entry_2_states = _combined_states_for(
+        2,
+        battery_power="0",
+        battery_soc="72.0",
+        battery_capacity="30.2",
+        house_load="0",
+        pv_power="0",
+        grid_power="0",
+    ) + _control_states_for(2, mode="Normal")
+    hass = _FakeHass(
+        entry_1_states + entry_2_states,
+        {
+            "neovolt-1": [state.entity_id for state in entry_1_states],
+            "neovolt-2": [state.entity_id for state in entry_2_states],
+        },
+    )
+    controller = NeovoltFleetBatteryController(
+        hass,
+        ["neovolt-1", "neovolt-2"],
+        max_charge_kw=5.0,
+        max_discharge_kw=5.0,
+        min_soc_pct=10.0,
+    )
+    assert asyncio.run(controller.connect())
+
+    balancer = asyncio.run(controller.balance_solar_surplus(controller.get_status()))
+
+    assert balancer["status"] == "reasserted_normal_handover"
+    assert balancer["lowest_soc_index"] == 0
+    assert balancer["highest_soc_index"] == 1
+    assert balancer["target_index"] == 1
+    assert hass.services.calls == [
+        ("select", "select_option", {"entity_id": "select.neovolt_2_dispatch_mode", "option": "Idle (No Dispatch)"}),
+        ("select", "select_option", {"entity_id": "select.neovolt_2_dispatch_mode", "option": "Normal"}),
+    ]
+
+
 def test_fleet_surplus_balancer_restores_base_mode_and_dispatch_settings_on_import():
     entry_1_states = _combined_states_for(
         1,

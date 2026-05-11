@@ -103,6 +103,10 @@ _SURPLUS_BALANCE_POWER_STEP_W = 100.0
 _SURPLUS_BALANCE_ADJUST_THRESHOLD_W = 200.0
 _SURPLUS_BALANCE_MAX_SOURCE_DISCHARGE_W = 250.0
 _BATTERY_FIGHTING_POWER_W = 250.0
+_NORMAL_REASSERT_MIN_IMPORT_W = 250.0
+_NORMAL_REASSERT_IDLE_POWER_W = 250.0
+_NORMAL_REASSERT_SOC_MARGIN_PCT = 1.0
+_NORMAL_REASSERT_COOLDOWN_S = 300.0
 _SOC_FULL_PCT = 99.5
 _SOC_CATCHUP_DONE_PCT = 99.0
 _DUPLICATE_GRID_RELATIVE_TOLERANCE = 0.20
@@ -295,6 +299,30 @@ class NeovoltBatteryController:
             if mode in options:
                 return await self.set_dispatch_mode(mode)
         return await self.set_dispatch_mode("Idle (No Dispatch)")
+
+    async def reassert_normal_dispatch(self) -> bool:
+        """Force a Normal mode edge for inverters that do not engage from stale Normal."""
+        await self._ensure_connected()
+        options = self._dispatch_mode_options()
+        edge_mode = None
+        for mode in ("Idle (No Dispatch)", "No Battery Charge"):
+            if mode in options:
+                edge_mode = mode
+                break
+
+        try:
+            if edge_mode:
+                await self._set_select("dispatch_mode", edge_mode)
+            await self._set_select("dispatch_mode", _NORMAL_DISPATCH_MODE)
+        except Exception:
+            _LOGGER.exception("Neovolt reassert_normal_dispatch failed")
+            return False
+
+        _LOGGER.info(
+            "Neovolt Normal dispatch reasserted%s",
+            f" via {edge_mode}" if edge_mode else "",
+        )
+        return True
 
     async def set_backup_reserve(self, percent: int) -> bool:
         """Set the default discharging cutoff SOC in the Neovolt integration."""
@@ -544,6 +572,7 @@ class NeovoltFleetBatteryController:
             "settings": None,
             "last_power_w": 0.0,
             "last_command_ts": 0.0,
+            "last_normal_reassert_ts": 0.0,
             "status": "idle",
             "mode": self._surplus_balancer_mode,
             "enabled": False,
@@ -641,6 +670,10 @@ class NeovoltFleetBatteryController:
         soc_action = await self._manage_soc_balance_modes(statuses, modes)
         if soc_action is not None:
             return soc_action
+
+        normal_action = await self._reassert_normal_for_cutoff_handover(statuses, modes)
+        if normal_action is not None:
+            return normal_action
 
         target_index, target_status = self._select_surplus_balance_target(statuses, modes)
         if target_index is None:
@@ -863,6 +896,73 @@ class NeovoltFleetBatteryController:
             )
 
         return None
+
+    async def _reassert_normal_for_cutoff_handover(
+        self,
+        statuses: list[dict[str, Any]],
+        modes: list[str | None],
+    ) -> dict[str, Any] | None:
+        """Nudge a higher-SOC Normal stack when a cutoff stack leaves the site importing."""
+        if len(self._controllers) < 2:
+            return None
+
+        grid_w = self._fleet_grid_w(statuses)
+        if grid_w < _NORMAL_REASSERT_MIN_IMPORT_W:
+            return None
+
+        now = time.monotonic()
+        last_ts = float(self._surplus_balance.get("last_normal_reassert_ts") or 0.0)
+        if last_ts and now - last_ts < _NORMAL_REASSERT_COOLDOWN_S:
+            return None
+
+        lowest_index, highest_index, delta = self._soc_balance(statuses)
+        if (
+            lowest_index is None
+            or highest_index is None
+            or lowest_index == highest_index
+            or delta <= self._soc_balance_tolerance_pct
+        ):
+            return None
+
+        low_soc = float(statuses[lowest_index].get("battery_level", 0.0) or 0.0)
+        low_floor = float(self._controllers[lowest_index]._min_soc_pct)
+        if low_soc > low_floor + _NORMAL_REASSERT_SOC_MARGIN_PCT:
+            return None
+
+        high_mode = modes[highest_index]
+        if high_mode != _NORMAL_DISPATCH_MODE:
+            return None
+
+        high_w = float(statuses[highest_index].get("battery_power", 0.0) or 0.0) * 1000.0
+        if high_w > _NORMAL_REASSERT_IDLE_POWER_W:
+            return None
+
+        if await self._controllers[highest_index].reassert_normal_dispatch():
+            self._surplus_balance["last_normal_reassert_ts"] = now
+            modes = [controller.get_dispatch_mode() for controller in self._controllers]
+            _LOGGER.info(
+                "Neovolt SOC balancer reasserted Normal on stack %d after stack %d reached cutoff "
+                "(grid import %.0fW, SOC %.1f%% vs %.1f%%)",
+                highest_index + 1,
+                lowest_index + 1,
+                grid_w,
+                low_soc,
+                float(statuses[highest_index].get("battery_level", 0.0) or 0.0),
+            )
+            return self._set_surplus_status(
+                "reasserted_normal_handover",
+                statuses,
+                modes,
+                highest_index,
+            )
+
+        self._surplus_balance["last_normal_reassert_ts"] = now
+        return self._set_surplus_status(
+            "reassert_normal_failed",
+            statuses,
+            modes,
+            highest_index,
+        )
 
     async def _force_charge_low_soc_stack(
         self,
