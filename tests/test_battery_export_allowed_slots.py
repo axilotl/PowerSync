@@ -630,7 +630,7 @@ def test_self_consumption_reapplies_tesla_reserve_floor_when_mode_matches(opt_mo
     assert coordinator._last_executed_action == "self_consumption"
 
 
-def test_self_consumption_uses_optimizer_floor_when_startup_reserve_is_lower(opt_module):
+def test_self_consumption_uses_hardware_reserve_when_startup_reserve_is_lower(opt_module):
     battery = _FakeBattery(hardware_mode="self_consumption", backup_reserve=0)
     coordinator = _execution_coordinator(opt_module, battery, soc=0.50)
     coordinator._startup_backup_reserve = 0
@@ -641,7 +641,7 @@ def test_self_consumption_uses_optimizer_floor_when_startup_reserve_is_lower(opt
         )
     )
 
-    assert battery.backup_reserve_calls == [20]
+    assert battery.backup_reserve_calls == []
 
 
 def test_self_consumption_does_not_raise_tesla_reserve_above_current_soc(opt_module):
@@ -727,6 +727,24 @@ def test_idle_at_reserve_floor_is_not_overridden_to_self_consumption(opt_module)
 
     assert battery.self_consumption_calls == 1
     assert battery.backup_reserve_calls == [20]
+    assert coordinator._last_executed_action == "idle"
+
+
+def test_tesla_idle_holds_current_soc_when_below_optimizer_floor(opt_module):
+    battery = _FakeBattery()
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.32)
+    coordinator._config.backup_reserve = 0.50
+    coordinator._startup_backup_reserve = 0
+
+    asyncio.run(
+        coordinator._execute_optimizer_action(
+            SimpleNamespace(action="idle", power_w=0)
+        )
+    )
+
+    assert battery.self_consumption_calls == 1
+    assert battery.backup_reserve_calls == [32]
+    assert coordinator._pre_idle_backup_reserve == 0
     assert coordinator._last_executed_action == "idle"
 
 

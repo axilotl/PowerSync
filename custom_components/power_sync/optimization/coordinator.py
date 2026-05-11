@@ -1941,7 +1941,10 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 # and the battery should hold charge for an upcoming spike.
                 soc, _ = await self._get_battery_state()
                 soc_pct = int(soc * 100)
-                # Never hold below the configured optimizer backup reserve
+                # Non-Tesla hardware can use its native reserve/floor as the
+                # hold point. Tesla must not raise backup_reserve above current
+                # SOC here because that can trigger grid charging up to the
+                # optimizer floor.
                 configured_idle_floor = int(self._config.backup_reserve * 100)
 
                 # Use the startup-captured backup reserve as the restore value.
@@ -1967,7 +1970,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         if saved is not None:
                             self._pre_idle_backup_reserve = saved
                             _LOGGER.debug("Optimizer: Saved pre-IDLE backup reserve (fallback): %d%%", saved)
-                soc_pct = max(soc_pct, configured_idle_floor)
+                non_tesla_hold_pct = max(soc_pct, configured_idle_floor)
 
                 # FoxESS/Sungrow: Use a hold mode for IDLE. In normal
                 # self-consumption mode, min_soc/backup_reserve is only a
@@ -1986,31 +1989,32 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     if hasattr(battery, "set_backup_reserve") and self.battery_system != "sigenergy":
                         self._idle_reserve_adjustment = True
                         try:
-                            await battery.set_backup_reserve(soc_pct)
+                            await battery.set_backup_reserve(non_tesla_hold_pct)
                         finally:
                             self._idle_reserve_adjustment = False
                     _LOGGER.info(
                         "Optimizer: IDLE — holding SOC at %d%% (hold mode)",
-                        soc_pct,
+                        non_tesla_hold_pct,
                     )
                 elif hasattr(battery, "set_backup_reserve"):
                     configured_reserve_pct = int(self._config.backup_reserve * 100)
                     if hasattr(battery, "set_self_consumption_mode"):
                         # Tesla IDLE: self_consumption mode prevents TOU-based
                         # grid charging (autonomous+TOU charges independently).
-                        # Tesla API constraint: backup_reserve accepts 0-80% or
-                        # 100%; values 81-99% are clamped to 80%.
-                        reserve = min(max(soc_pct, configured_reserve_pct), 80)
+                        # Set reserve to current SOC only. Using the optimizer
+                        # floor here can raise the Tesla hardware reserve above
+                        # current SOC and make the Powerwall charge from grid.
+                        reserve = min(max(soc_pct, 0), 80)
                         await battery.set_self_consumption_mode()
                     elif hasattr(battery, "restore_normal"):
                         # GoodWe (and similar): must exit ECO_CHARGE/ECO_DISCHARGE
                         # before setting the DOD floor, otherwise the inverter
                         # ignores the floor and continues the forced mode.
                         # No 80% cap — GoodWe DOD range goes up to 89%.
-                        reserve = max(soc_pct, configured_reserve_pct)
+                        reserve = non_tesla_hold_pct
                         await battery.restore_normal()
                     else:
-                        reserve = max(soc_pct, configured_reserve_pct)
+                        reserve = non_tesla_hold_pct
                     self._idle_reserve_adjustment = True
                     try:
                         await battery.set_backup_reserve(reserve)
@@ -2078,18 +2082,11 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             else:
                 # self_consumption or consume — let battery operate naturally.
                 #
-                # For Tesla: also set backup_reserve = LP floor when entering
-                # self_consumption. Without this, if the hardware backup_reserve
-                # was previously restored to the user's configured value (e.g. 80%)
-                # by restore_normal after force_discharge, the Powerwall will charge
-                # from the grid to reach that reserve level even in self_consumption
-                # mode — backup reserve enforcement is independent of TOU mode.
-                #
-                # Setting backup_reserve = LP floor (e.g. 20%) on entry:
-                #   • prevents unwanted grid charging when SOC > LP floor
-                #   • allows natural self-consumption discharge to LP floor
-                #   • LP already won't plan below its configured floor, so the
-                #     hardware floor matches the software floor
+                # For Tesla: keep the hardware backup_reserve aligned with the
+                # user's hardware reserve, not the optimizer floor. The LP floor
+                # is a software scheduling boundary; temporarily raising Tesla's
+                # hardware reserve to that floor can show up in the Tesla app and
+                # can trigger grid charging when SOC is below the floor.
                 #
                 # Off-grid exit is handled by the reconnect transition
                 # block at the top of this method — no additional holdoff
@@ -2119,14 +2116,18 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         ):
                             soc_now, _ = await self._get_battery_state()
                             soc_pct = max(0, min(100, int(soc_now * 100)))
-                            reserve_pct = configured_reserve_pct
+                            reserve_pct = (
+                                self._startup_backup_reserve
+                                if self._startup_backup_reserve is not None
+                                else configured_reserve_pct
+                            )
+                            reserve_pct = max(0, min(100, reserve_pct))
+                            if 81 <= reserve_pct <= 99:
+                                reserve_pct = 80
                             if soc_pct < reserve_pct:
-                                if self._startup_backup_reserve is not None:
-                                    reserve_pct = min(
-                                        reserve_pct,
-                                        self._startup_backup_reserve,
-                                    )
                                 reserve_pct = min(reserve_pct, soc_pct)
+                                if 81 <= reserve_pct <= 99:
+                                    reserve_pct = 80
                             current_reserve = await battery.get_backup_reserve()
                             if (
                                 current_reserve is not None
@@ -2165,14 +2166,18 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                             if reserve_pct is None:
                                 soc_now, _ = await self._get_battery_state()
                                 soc_pct = max(0, min(100, int(soc_now * 100)))
-                                reserve_pct = configured_reserve_pct
+                                reserve_pct = (
+                                    self._startup_backup_reserve
+                                    if self._startup_backup_reserve is not None
+                                    else configured_reserve_pct
+                                )
+                                reserve_pct = max(0, min(100, reserve_pct))
+                                if 81 <= reserve_pct <= 99:
+                                    reserve_pct = 80
                                 if soc_pct < reserve_pct:
-                                    if self._startup_backup_reserve is not None:
-                                        reserve_pct = min(
-                                            reserve_pct,
-                                            self._startup_backup_reserve,
-                                        )
                                     reserve_pct = min(reserve_pct, soc_pct)
+                                    if 81 <= reserve_pct <= 99:
+                                        reserve_pct = 80
                             await battery.set_backup_reserve(reserve_pct)
                             _LOGGER.info(
                                 "Optimizer: self_consumption — set backup_reserve=%d%% "
