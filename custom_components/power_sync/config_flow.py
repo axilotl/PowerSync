@@ -5168,7 +5168,25 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 new_data[CONF_NEOVOLT_SURPLUS_BALANCER_MODE] = str(surplus_balancer_mode)
                 new_data[CONF_NEOVOLT_SOC_BALANCE_TOLERANCE] = float(soc_balance_tolerance)
                 self.hass.config_entries.async_update_entry(self.config_entry, data=new_data)
-                return self.async_create_entry(title="", data=dict(self.config_entry.options))
+                new_options = dict(self.config_entry.options)
+                new_options[CONF_NEOVOLT_CONFIG_ENTRY_ID] = selected_entry_ids[0]
+                new_options[CONF_NEOVOLT_CONFIG_ENTRY_IDS] = selected_entry_ids
+                new_options[CONF_NEOVOLT_MAX_CHARGE_KW] = float(max_charge_kw)
+                new_options[CONF_NEOVOLT_MAX_DISCHARGE_KW] = float(max_discharge_kw)
+                new_options[CONF_NEOVOLT_BATTERY_CAPACITIES_KWH] = battery_capacities_kwh
+                if battery_capacities_text:
+                    new_options[CONF_NEOVOLT_BATTERY_CAPACITIES_KWH_RAW] = (
+                        battery_capacities_text
+                    )
+                else:
+                    new_options.pop(CONF_NEOVOLT_BATTERY_CAPACITIES_KWH_RAW, None)
+                new_options[CONF_NEOVOLT_SURPLUS_BALANCER_MODE] = str(
+                    surplus_balancer_mode
+                )
+                new_options[CONF_NEOVOLT_SOC_BALANCE_TOLERANCE] = float(
+                    soc_balance_tolerance
+                )
+                return self.async_create_entry(title="", data=new_options)
             except ValueError as exc:
                 if "capacity_" in str(exc):
                     errors["base"] = "neovolt_capacity_invalid"

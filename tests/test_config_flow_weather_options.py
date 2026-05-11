@@ -123,6 +123,20 @@ def test_neovolt_options_flow_prefers_preserved_capacity_text():
     )
 
 
+def test_neovolt_options_flow_returns_updated_options_to_reload_runtime():
+    source = CONFIG_FLOW_PATH.read_text()
+    method = _options_flow_method("async_step_neovolt_connection")
+    method_source = ast.get_source_segment(source, method)
+
+    assert method_source is not None
+    assert "new_options = dict(self.config_entry.options)" in method_source
+    assert (
+        "new_options[CONF_NEOVOLT_SURPLUS_BALANCER_MODE] = str("
+        in method_source
+    )
+    assert "return self.async_create_entry(title=\"\", data=new_options)" in method_source
+
+
 def test_neovolt_surplus_balancer_help_explains_disabled_single_entry_status():
     for path in (STRINGS_PATH, TRANSLATIONS_PATH):
         data = json.loads(path.read_text())
