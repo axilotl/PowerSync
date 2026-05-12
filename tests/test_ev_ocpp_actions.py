@@ -142,6 +142,16 @@ class _SessionManager:
         self.updates.append(kwargs)
 
 
+class _OcppCentralSystem:
+    def __init__(self, accepted: bool) -> None:
+        self.accepted = accepted
+        self.calls: list[tuple[str, float]] = []
+
+    async def set_max_charge_rate_amps(self, charger_id: str, amps: float):
+        self.calls.append((charger_id, amps))
+        return self.accepted
+
+
 def _zaptec_entry(installation_id: str = ""):
     return SimpleNamespace(
         entry_id="entry-1",
@@ -274,6 +284,32 @@ def test_ocpp_amps_falls_back_to_hacs_number_entity():
     assert hass.services.calls == [
         ("number", "set_value", {"entity_id": entity_id, "value": 32})
     ]
+
+
+def test_ocpp_amps_uses_hacs_api_when_available():
+    central = _OcppCentralSystem(accepted=True)
+    hass = _Hass([
+        _State("number.evse_1_maximum_current", "16", {"min": 6, "max": 32}),
+    ])
+    hass.data["ocpp"] = {"ocpp-entry": central}
+
+    assert asyncio.run(actions._set_ocpp_charging_amps(hass, "evse_1", 16)) is True
+
+    assert central.calls == [("evse_1", 16.0)]
+    assert hass.services.calls == []
+
+
+def test_ocpp_amps_reports_hacs_api_rejection_without_optimistic_number_fallback():
+    central = _OcppCentralSystem(accepted=False)
+    hass = _Hass([
+        _State("number.evse_1_maximum_current", "16", {"min": 6, "max": 32}),
+    ])
+    hass.data["ocpp"] = {"ocpp-entry": central}
+
+    assert asyncio.run(actions._set_ocpp_charging_amps(hass, "evse_1", 16)) is False
+
+    assert central.calls == [("evse_1", 16.0)]
+    assert hass.services.calls == []
 
 
 def test_ocpp_amps_rejects_hacs_number_entity_capped_below_evse_minimum():

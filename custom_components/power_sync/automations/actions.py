@@ -3811,6 +3811,26 @@ async def _set_ocpp_charging_amps(hass: HomeAssistant, charger_id: int, amps: in
 
     charger_id = str(charger_id)
     server_found = False
+    hacs_server_found = False
+
+    for central_system in (hass.data.get("ocpp") or {}).values():
+        if not hasattr(central_system, "set_max_charge_rate_amps"):
+            continue
+        hacs_server_found = True
+        try:
+            success = await central_system.set_max_charge_rate_amps(charger_id, float(amps))
+            if success:
+                _LOGGER.info("Set OCPP charger %s to %dA via HACS OCPP API", charger_id, amps)
+                return True
+        except Exception as e:
+            _LOGGER.error("Failed to set OCPP charging amps through HACS OCPP API: %s", e)
+
+    if hacs_server_found:
+        _LOGGER.warning(
+            "OCPP charger %s current limit rejected by HACS OCPP/charge point",
+            charger_id,
+        )
+        return False
 
     try:
         # Find the OCPP charger controller in hass.data
