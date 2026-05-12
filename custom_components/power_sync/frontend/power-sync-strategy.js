@@ -723,11 +723,38 @@ class PowerSyncChart extends HTMLElement {
     return (config.series || []).map(s => {
       const stateObj = s.entity ? hass.states[s.entity] : null;
       const cached = this._historyCache.get(s.entity) || [];
-      const data = cached.length
+      const rawData = cached.length
         ? cached
         : this._statePoint(stateObj, now);
+      const data = this._projectHistoryToNow(rawData, stateObj, now, start, end);
       return { name: s.name, color: s.color, fill: !!s.fill, strokeWidth: s.strokeWidth, data: data.filter(([t]) => t >= start && t <= end) };
     });
+  }
+
+  _projectHistoryToNow(data, stateObj, now, start, end) {
+    const points = (Array.isArray(data) ? data : [])
+      .map(([t, v]) => [Number(t), Number(v)])
+      .filter(([t, v]) => Number.isFinite(t) && Number.isFinite(v))
+      .sort((a, b) => a[0] - b[0]);
+    const value = Number(stateObj?.state);
+    if (!Number.isFinite(value) || now < start || now > end) return points;
+
+    if (points.length === 0) {
+      return [[Math.max(start, now - 3600000), value], [now, value]];
+    }
+
+    const projected = points.filter(([t]) => t <= now);
+    if (projected.length === 0) {
+      return [[start, value], [now, value]];
+    }
+
+    const last = projected[projected.length - 1];
+    if (last[0] < now) {
+      projected.push([now, value]);
+    } else {
+      projected[projected.length - 1] = [last[0], value];
+    }
+    return projected;
   }
 
   _statePoint(stateObj, now) {

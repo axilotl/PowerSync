@@ -102,6 +102,15 @@ def test_dashboard_chart_applies_price_multiplier_at_render_boundaries():
     assert "_formatValue(point[1] * yMultiplier" in source
 
 
+def test_dashboard_history_chart_projects_series_to_now():
+    dashboard = COMPONENT_ROOT / "frontend" / "power-sync-strategy.js"
+    source = dashboard.read_text()
+
+    assert "const data = this._projectHistoryToNow(rawData, stateObj, now, start, end)" in source
+    assert "projected.push([now, value])" in source
+    assert "const marker = mode === 'tou'" in source
+
+
 def test_dashboard_prefers_backend_matched_ev_label():
     dashboard = COMPONENT_ROOT / "frontend" / "power-sync-strategy.js"
     source = dashboard.read_text()
