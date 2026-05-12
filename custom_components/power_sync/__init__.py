@@ -501,9 +501,12 @@ from .const import (
     CONF_OPTIMIZATION_ALLOW_GRID_CHARGE,
     CONF_OPTIMIZATION_MAX_CHARGE_W,
     CONF_OPTIMIZATION_MAX_DISCHARGE_W,
+    CONF_PROFIT_MAX_ENABLED,
     CONF_PROFIT_MAX_TARGET_TIME,
+    CONF_PROFIT_MAX_TARGET_SOC,
     DEFAULT_OPTIMIZATION_BACKUP_RESERVE,
     DEFAULT_PROFIT_MAX_TARGET_TIME,
+    DEFAULT_PROFIT_MAX_TARGET_SOC,
     BATTERY_CAPACITY_DEFAULTS,
     BATTERY_POWER_DEFAULTS,
 )
@@ -26966,6 +26969,21 @@ class OptimizationSettingsView(HomeAssistantView):
                     return default
                 return parsed if parsed > 0 else default
 
+            def _entry_percent_setting(key: str, default_ratio: float) -> int:
+                if not config_entry:
+                    return int(round(default_ratio * 100))
+                value = config_entry.options.get(
+                    key,
+                    config_entry.data.get(key, default_ratio),
+                )
+                try:
+                    parsed = float(value)
+                except (TypeError, ValueError):
+                    parsed = default_ratio
+                if parsed <= 1:
+                    parsed *= 100
+                return max(0, min(100, int(round(parsed))))
+
             backup_reserve = DEFAULT_OPTIMIZATION_BACKUP_RESERVE
             hardware_reserve = 0
             if config_entry:
@@ -27002,6 +27020,13 @@ class OptimizationSettingsView(HomeAssistantView):
                 "cost_function": "cost",
                 "backup_reserve": round(backup_reserve * 100),
                 "ev_integration": False,
+                "profit_max_enabled": bool(
+                    config_entry
+                    and config_entry.options.get(
+                        CONF_PROFIT_MAX_ENABLED,
+                        config_entry.data.get(CONF_PROFIT_MAX_ENABLED, False),
+                    )
+                ),
                 "config": {
                     "battery_capacity_wh": _entry_int_setting(
                         CONF_OPTIMIZATION_BATTERY_CAPACITY_WH,
@@ -27033,6 +27058,10 @@ class OptimizationSettingsView(HomeAssistantView):
                         )
                         if config_entry
                         else DEFAULT_PROFIT_MAX_TARGET_TIME
+                    ),
+                    "profit_max_target_soc": _entry_percent_setting(
+                        CONF_PROFIT_MAX_TARGET_SOC,
+                        DEFAULT_PROFIT_MAX_TARGET_SOC,
                     ),
                     "backup_reserve": round(backup_reserve * 100),
                     "hardware_backup_reserve": round(hardware_reserve),
@@ -27077,6 +27106,11 @@ class OptimizationSettingsView(HomeAssistantView):
                     )
                     if config_entry
                     else DEFAULT_PROFIT_MAX_TARGET_TIME
+                ),
+                "profit_max_target_soc": (
+                    max(0, min(100, int(round(opt_coordinator._profit_max_target_soc() * 100))))
+                    if hasattr(opt_coordinator, "_profit_max_target_soc")
+                    else int(round(DEFAULT_PROFIT_MAX_TARGET_SOC * 100))
                 ),
             }
         })
@@ -27149,6 +27183,19 @@ class OptimizationSettingsView(HomeAssistantView):
                 new_data[CONF_PROFIT_MAX_TARGET_TIME] = str(settings["profit_max_target_time"])
                 new_options[CONF_PROFIT_MAX_TARGET_TIME] = str(settings["profit_max_target_time"])
                 changes.append(f"Set Profit Max full by time to {settings['profit_max_target_time']}")
+
+            if "profit_max_target_soc" in settings:
+                target_soc = settings["profit_max_target_soc"]
+                try:
+                    target_soc = float(target_soc)
+                except (TypeError, ValueError):
+                    target_soc = DEFAULT_PROFIT_MAX_TARGET_SOC
+                if target_soc > 1:
+                    target_soc = target_soc / 100.0
+                target_soc = max(0.0, min(1.0, target_soc))
+                new_data[CONF_PROFIT_MAX_TARGET_SOC] = target_soc
+                new_options[CONF_PROFIT_MAX_TARGET_SOC] = target_soc
+                changes.append(f"Set Profit Max target SOC to {int(round(target_soc * 100))}%")
 
             if "allow_grid_charge" in settings:
                 new_options[CONF_OPTIMIZATION_ALLOW_GRID_CHARGE] = bool(settings["allow_grid_charge"])

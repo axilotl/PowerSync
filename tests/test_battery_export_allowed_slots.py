@@ -115,7 +115,9 @@ def _install_power_sync_stubs() -> None:
     const_module.CONF_OPTIMIZATION_MAX_CHARGE_W = "max_charge_w"
     const_module.CONF_OPTIMIZATION_MAX_DISCHARGE_W = "max_discharge_w"
     const_module.CONF_PROFIT_MAX_TARGET_TIME = "profit_max_target_time"
+    const_module.CONF_PROFIT_MAX_TARGET_SOC = "profit_max_target_soc"
     const_module.DEFAULT_PROFIT_MAX_TARGET_TIME = "17:15"
+    const_module.DEFAULT_PROFIT_MAX_TARGET_SOC = 1.0
     const_module.FLOW_POWER_EXPORT_RATES = {"NSW1": 0.45}
     const_module.CONF_EXPORT_BOOST_ENABLED = "export_boost_enabled"
     const_module.CONF_EXPORT_PRICE_OFFSET = "export_price_offset"
@@ -513,6 +515,42 @@ def test_flow_power_profit_max_uses_configured_full_soc_target(opt_module):
     )
 
     assert coordinator._next_profit_max_target_slot() == 90
+
+
+def test_profit_max_uses_default_soc_target(opt_module):
+    coordinator = _coordinator(
+        opt_module,
+        "flow_power",
+        profit_max=True,
+        flow_power_state="NSW1",
+    )
+
+    assert coordinator._profit_max_target_soc() == 1.0
+
+
+def test_profit_max_uses_configured_soc_target(opt_module):
+    coordinator = _coordinator(
+        opt_module,
+        "flow_power",
+        profit_max=True,
+        flow_power_state="NSW1",
+        profit_max_target_soc=0.8,
+    )
+
+    assert coordinator._profit_max_target_soc() == 0.8
+    assert coordinator._next_profit_max_target_slot() == 105
+
+
+def test_profit_max_accepts_percent_soc_target(opt_module):
+    coordinator = _coordinator(
+        opt_module,
+        "flow_power",
+        profit_max=True,
+        flow_power_state="NSW1",
+        profit_max_target_soc=80,
+    )
+
+    assert coordinator._profit_max_target_soc() == 0.8
 
 
 def test_flow_power_profit_max_rejects_target_after_happy_hour_start(opt_module):

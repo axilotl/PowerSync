@@ -76,6 +76,7 @@ class OptimizationConfig:
     horizon_hours: int = 48
     cost_function: str = "cost"
     profit_max_enabled: bool = False
+    profit_max_target_soc: float = 1.0
 
 
 # Update interval for the coordinator
@@ -370,6 +371,17 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             reserve *= 100
         return max(0, min(100, int(reserve)))
 
+    @staticmethod
+    def _soc_ratio(value: Any, default: float = 1.0) -> float:
+        """Normalize SOC values stored as either 0-1 decimals or 0-100 percents."""
+        try:
+            soc = float(value)
+        except (TypeError, ValueError):
+            soc = default
+        if soc > 1:
+            soc = soc / 100.0
+        return max(0.0, min(1.0, soc))
+
     def _configured_startup_backup_reserve(self) -> tuple[int | None, str]:
         """Return the persisted user reserve target used after temporary IDLE holds."""
         if not self._entry:
@@ -577,6 +589,8 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             from ..const import (
                 CONF_OPTIMIZATION_ALLOW_GRID_CHARGE,
                 CONF_PROFIT_MAX_ENABLED,
+                CONF_PROFIT_MAX_TARGET_SOC,
+                DEFAULT_PROFIT_MAX_TARGET_SOC,
             )
             allow_grid_charge = self._entry.options.get(
                 CONF_OPTIMIZATION_ALLOW_GRID_CHARGE,
@@ -591,6 +605,16 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._entry.data.get(CONF_PROFIT_MAX_ENABLED, False),
             )
             self._config.profit_max_enabled = bool(profit_max)
+            self._config.profit_max_target_soc = self._soc_ratio(
+                self._entry.options.get(
+                    CONF_PROFIT_MAX_TARGET_SOC,
+                    self._entry.data.get(
+                        CONF_PROFIT_MAX_TARGET_SOC,
+                        DEFAULT_PROFIT_MAX_TARGET_SOC,
+                    ),
+                ),
+                DEFAULT_PROFIT_MAX_TARGET_SOC,
+            )
             if self._optimizer:
                 self._optimizer.terminal_weight = self._profit_max_terminal_weight()
             if profit_max:
@@ -1300,7 +1324,9 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
             self._optimizer.pre_window_slot = _target_slot
             self._optimizer.pre_window_soc_target = (
-                1.0 if self._optimizer.pre_window_slot is not None else 0.0
+                self._profit_max_target_soc()
+                if self._optimizer.pre_window_slot is not None
+                else 0.0
             )
             battery_export_allowed = self._battery_export_allowed_slots(
                 len(import_prices),
@@ -2748,6 +2774,27 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     continue
                 return t
         return None
+
+    def _profit_max_target_soc(self) -> float:
+        """Return the configured Profit Max target SOC as a 0-1 ratio."""
+        if not self._entry:
+            return self._soc_ratio(self._config.profit_max_target_soc, 1.0)
+
+        from ..const import (
+            CONF_PROFIT_MAX_TARGET_SOC,
+            DEFAULT_PROFIT_MAX_TARGET_SOC,
+        )
+
+        return self._soc_ratio(
+            self._entry.options.get(
+                CONF_PROFIT_MAX_TARGET_SOC,
+                self._entry.data.get(
+                    CONF_PROFIT_MAX_TARGET_SOC,
+                    DEFAULT_PROFIT_MAX_TARGET_SOC,
+                ),
+            ),
+            DEFAULT_PROFIT_MAX_TARGET_SOC,
+        )
 
     def _apply_flow_power_export(
         self, export_prices: list[float]
@@ -5113,6 +5160,24 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 options=new_options,
             )
             response["changes"].append(f"profit_max_target_time: {target_time}")
+
+        if "profit_max_target_soc" in settings:
+            target_soc = self._soc_ratio(settings["profit_max_target_soc"], 1.0)
+            self._config.profit_max_target_soc = target_soc
+            if self._entry:
+                from ..const import CONF_PROFIT_MAX_TARGET_SOC
+                new_data = dict(self._entry.data)
+                new_options = dict(self._entry.options)
+                new_data[CONF_PROFIT_MAX_TARGET_SOC] = target_soc
+                new_options[CONF_PROFIT_MAX_TARGET_SOC] = target_soc
+                from ..const import DOMAIN as _SKIP_DOM
+                self.hass.data.get(_SKIP_DOM, {}).get(self.entry_id, {})["_skip_reload"] = True
+                self.hass.config_entries.async_update_entry(
+                    self._entry,
+                    data=new_data,
+                    options=new_options,
+                )
+            response["changes"].append(f"profit_max_target_soc: {int(round(target_soc * 100))}%")
 
         # Handle EV integration toggle
         if "ev_integration" in settings:

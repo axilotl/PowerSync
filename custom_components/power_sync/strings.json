@@ -332,7 +332,8 @@
           "optimization_max_charge_w": "Maximum charge power",
           "optimization_max_discharge_w": "Maximum discharge power",
           "optimization_allow_grid_charge": "Allow grid charging",
-          "profit_max_target_time": "Profit Max full by time"
+          "profit_max_target_time": "Profit Max target time",
+          "profit_max_target_soc": "Profit Max target SOC"
         },
         "data_description": {
           "optimization_enabled": "Turn the LP optimizer on or off without changing the saved Smart Optimization settings.",
@@ -341,7 +342,8 @@
           "optimization_max_charge_w": "Maximum grid charge power in kW that the LP optimizer may request.",
           "optimization_max_discharge_w": "Maximum discharge/export power in kW that the LP optimizer may request.",
           "optimization_allow_grid_charge": "When disabled, Smart Optimization can still charge from solar surplus but will not plan forced battery charging from grid import.",
-          "profit_max_target_time": "HH:MM time for Profit Max to target 100% SOC before the export window. Default 17:15."
+          "profit_max_target_time": "HH:MM time for Profit Max to reach the configured target SOC before the export window. Default 17:15.",
+          "profit_max_target_soc": "Battery SOC Profit Max should target before the export window. Default 100%."
         },
         "submit": "Next"
       },
@@ -1090,7 +1092,8 @@
           "optimization_max_charge_w": "Maximum charge power",
           "optimization_max_discharge_w": "Maximum discharge power",
           "optimization_allow_grid_charge": "Allow grid charging",
-          "profit_max_target_time": "Profit Max full by time"
+          "profit_max_target_time": "Profit Max target time",
+          "profit_max_target_soc": "Profit Max target SOC"
         },
         "data_description": {
           "optimization_provider": "Smart Optimization uses an LP solver to minimise costs. Native mode uses your battery's built-in TOU scheduler.",
@@ -1100,7 +1103,8 @@
           "optimization_max_charge_w": "Maximum grid charge power in kW that the LP optimizer may request.",
           "optimization_max_discharge_w": "Maximum discharge/export power in kW that the LP optimizer may request.",
           "optimization_allow_grid_charge": "When disabled, Smart Optimization can still charge from solar surplus but will not plan forced battery charging from grid import.",
-          "profit_max_target_time": "HH:MM time for Profit Max to target 100% SOC before the export window. Default 17:15."
+          "profit_max_target_time": "HH:MM time for Profit Max to reach the configured target SOC before the export window. Default 17:15.",
+          "profit_max_target_soc": "Battery SOC Profit Max should target before the export window. Default 100%."
         },
         "submit": "Save"
       },

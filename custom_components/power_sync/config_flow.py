@@ -340,9 +340,11 @@ from .const import (
     CONF_OPTIMIZATION_MAX_CHARGE_W,
     CONF_OPTIMIZATION_MAX_DISCHARGE_W,
     CONF_PROFIT_MAX_TARGET_TIME,
+    CONF_PROFIT_MAX_TARGET_SOC,
     COST_FUNCTION_COST,
     DEFAULT_OPTIMIZATION_BACKUP_RESERVE,
     DEFAULT_PROFIT_MAX_TARGET_TIME,
+    DEFAULT_PROFIT_MAX_TARGET_SOC,
     BATTERY_CAPACITY_DEFAULTS,
     BATTERY_POWER_DEFAULTS,
     # Optimization provider selection
@@ -495,6 +497,17 @@ def _stored_w_to_kw(value: Any, default_w: int) -> float:
     return amount / 1000.0 if amount > 100 else amount
 
 
+def _stored_ratio_to_percent(value: Any, default_ratio: float) -> int:
+    """Convert a stored 0-1 ratio or 0-100 percent to a clamped whole percent."""
+    try:
+        amount = float(value)
+    except (TypeError, ValueError):
+        amount = float(default_ratio)
+    if amount <= 1:
+        amount *= 100
+    return max(0, min(100, int(round(amount))))
+
+
 def _normalize_optional_entity(value: Any) -> str | None:
     """Return a usable entity id, or None for unset optional entity fields."""
     if not isinstance(value, str):
@@ -522,6 +535,15 @@ def _form_kw_to_w(value: Any, default_kw: float) -> int:
     except (TypeError, ValueError):
         amount = default_kw
     return int(round(amount * 1000))
+
+
+def _form_percent_to_ratio(value: Any, default_ratio: float) -> float:
+    """Convert a config flow percent field to a stored 0-1 ratio."""
+    try:
+        amount = float(value)
+    except (TypeError, ValueError):
+        amount = default_ratio * 100
+    return max(0.0, min(1.0, amount / 100.0))
 
 
 def _default_optimizer_specs_for(battery_system: str) -> tuple[int, int, int]:
@@ -1889,6 +1911,10 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     CONF_PROFIT_MAX_TARGET_TIME,
                     DEFAULT_PROFIT_MAX_TARGET_TIME,
                 ),
+                CONF_PROFIT_MAX_TARGET_SOC: _form_percent_to_ratio(
+                    user_input.get(CONF_PROFIT_MAX_TARGET_SOC),
+                    DEFAULT_PROFIT_MAX_TARGET_SOC,
+                ),
             }
             # Proceed to battery connection setup
             return await self._route_to_battery_setup()
@@ -1957,6 +1983,18 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         CONF_PROFIT_MAX_TARGET_TIME,
                         default=DEFAULT_PROFIT_MAX_TARGET_TIME,
                     ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
+                    vol.Required(
+                        CONF_PROFIT_MAX_TARGET_SOC,
+                        default=int(DEFAULT_PROFIT_MAX_TARGET_SOC * 100),
+                    ): NumberSelector(
+                        NumberSelectorConfig(
+                            min=0,
+                            max=100,
+                            step=1,
+                            unit_of_measurement="%",
+                            mode=NumberSelectorMode.SLIDER,
+                        )
+                    ),
                 }
             ),
             description_placeholders={},
@@ -5668,6 +5706,10 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     CONF_PROFIT_MAX_TARGET_TIME,
                     DEFAULT_PROFIT_MAX_TARGET_TIME,
                 )
+                profit_max_target_soc = _form_percent_to_ratio(
+                    user_input.get(CONF_PROFIT_MAX_TARGET_SOC),
+                    DEFAULT_PROFIT_MAX_TARGET_SOC,
+                )
                 new_data[CONF_OPTIMIZATION_COST_FUNCTION] = COST_FUNCTION_COST
                 new_options[CONF_OPTIMIZATION_COST_FUNCTION] = COST_FUNCTION_COST
                 new_data[CONF_OPTIMIZATION_BACKUP_RESERVE] = backup_reserve
@@ -5682,6 +5724,8 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 new_options[CONF_OPTIMIZATION_ALLOW_GRID_CHARGE] = allow_grid_charge
                 new_data[CONF_PROFIT_MAX_TARGET_TIME] = profit_max_target_time
                 new_options[CONF_PROFIT_MAX_TARGET_TIME] = profit_max_target_time
+                new_data[CONF_PROFIT_MAX_TARGET_SOC] = profit_max_target_soc
+                new_options[CONF_PROFIT_MAX_TARGET_SOC] = profit_max_target_soc
 
             self.hass.config_entries.async_update_entry(
                 self.config_entry, data=new_data, options=new_options
@@ -5750,6 +5794,16 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 CONF_PROFIT_MAX_TARGET_TIME,
                 DEFAULT_PROFIT_MAX_TARGET_TIME,
             ),
+        )
+        current_profit_max_target_soc = _stored_ratio_to_percent(
+            self._get_option(
+                CONF_PROFIT_MAX_TARGET_SOC,
+                self.config_entry.data.get(
+                    CONF_PROFIT_MAX_TARGET_SOC,
+                    DEFAULT_PROFIT_MAX_TARGET_SOC,
+                ),
+            ),
+            DEFAULT_PROFIT_MAX_TARGET_SOC,
         )
 
         # Build native label based on battery system
@@ -5824,6 +5878,13 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                         CONF_PROFIT_MAX_TARGET_TIME,
                         default=current_profit_max_target_time,
                     ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
+                    vol.Required(
+                        CONF_PROFIT_MAX_TARGET_SOC,
+                        default=current_profit_max_target_soc,
+                    ): NumberSelector(NumberSelectorConfig(
+                        min=0, max=100, step=1, unit_of_measurement="%",
+                        mode=NumberSelectorMode.SLIDER,
+                    )),
                 }
             ),
         )

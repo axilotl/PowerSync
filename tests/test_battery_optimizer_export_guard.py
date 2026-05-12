@@ -453,6 +453,29 @@ def test_disallow_grid_charge_ignores_pre_export_fill_target(
     assert all(action.action != "charge" for action in result.schedule.actions)
 
 
+def test_pre_export_fill_target_respects_configured_soc(
+    battery_optimizer_module,
+):
+    optimizer = _optimizer(battery_optimizer_module)
+    optimizer.pre_window_slot = 6
+    optimizer.pre_window_soc_target = 0.2
+
+    result = optimizer.optimize(
+        import_prices=[0.05] * 12,
+        export_prices=[0.0] * 12,
+        solar_forecast=[0.0] * 12,
+        load_forecast=[0.0] * 12,
+        current_soc=0.05,
+        acquisition_cost_kwh=0.0,
+        allow_battery_export=[False] * 12,
+        allow_grid_charge=True,
+    )
+
+    assert result.feasible is True
+    assert result.schedule.actions[5].soc >= 0.195
+    assert result.schedule.actions[5].soc < 0.5
+
+
 def test_disallow_grid_charge_still_allows_solar_surplus_charging(
     battery_optimizer_module,
 ):
