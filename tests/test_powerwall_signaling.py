@@ -96,9 +96,15 @@ def test_missing_scope_response_stops_before_raw_websocket_fallback(monkeypatch,
     assert result is None
     assert client._auth_denied is True
     assert client._stop_event.is_set() is True
+    assert client.state == signaling.SignalingState.UNAVAILABLE
     assert client._hermes_jwt is None
     assert client._hermes_jwt_is_fallback is False
+    assert client.health_status()["unavailable_reason"] == (
+        "Tesla rejected the access token for Hermes JWT exchange "
+        "because it is missing required scopes"
+    )
     assert _FakeSession.post_calls == 1
     assert "missing required scopes" in caplog.text
     assert "Fleet API telemetry may still work" in caplog.text
     assert "Likely missing scope(s): user_data" in caplog.text
+    assert not [record for record in caplog.records if record.levelname == "ERROR"]

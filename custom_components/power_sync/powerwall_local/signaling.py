@@ -203,6 +203,7 @@ class SignalingState(str, Enum):
     CONNECTING = "connecting"
     CONNECTED = "connected"
     RECONNECTING = "reconnecting"
+    UNAVAILABLE = "unavailable"
 
 
 def _decode_jwt_scopes(token: str) -> list[str]:
@@ -292,6 +293,7 @@ class TeslaSignalingClient:
         self._hermes_jwt_is_fallback = False  # True when using raw token, not a real JWT
         self._working_jwt_url: str | None = None
         self._auth_denied = False
+        self._unavailable_reason: str | None = None
         # Stop retrying after repeated exchange+fallback failures.
         self._fallback_rejection_count = 0
         self._missing_scope_rejection = False
@@ -331,15 +333,27 @@ class TeslaSignalingClient:
             "total_connects": self._total_connects,
             "consecutive_failures": self._consecutive_failures,
             "last_error": self._last_error,
+            "unavailable_reason": self._unavailable_reason,
             "last_pong_ts": self._last_pong_ts,
             "messages_received": self._messages_received,
             "acks_sent": self._acks_sent,
         }
 
+    def _mark_unavailable(self, reason: str) -> None:
+        """Stop signaling attempts after a known permanent Tesla rejection."""
+        self._auth_denied = True
+        self._unavailable_reason = reason
+        self._last_error = reason
+        self._state = SignalingState.UNAVAILABLE
+        self._stop_event.set()
+
     async def start(self) -> None:
         """Start the persistent connection loop as a background task."""
         if self._auth_denied:
-            _LOGGER.debug("signaling: skipping — previously got auth denied")
+            _LOGGER.info(
+                "signaling: unavailable — %s",
+                self._unavailable_reason or "previously got auth denied",
+            )
             return
         if self._task is not None and not self._task.done():
             _LOGGER.debug("signaling: already running")
@@ -496,15 +510,18 @@ class TeslaSignalingClient:
         if self._missing_scope_rejection:
             scopes = _decode_jwt_scopes(access_token)
             hint = _missing_scope_hint(scopes)
-            self._auth_denied = True
-            self._stop_event.set()
-            _LOGGER.error(
+            reason = (
+                "Tesla rejected the access token for Hermes JWT exchange "
+                "because it is missing required scopes"
+            )
+            self._mark_unavailable(reason)
+            _LOGGER.warning(
                 "signaling: Tesla rejected the access token for Hermes JWT "
                 "exchange because it is missing required scopes. Normal Tesla "
                 "Fleet API telemetry may still work with this token, but Hermes "
                 "signaling cannot use it. Re-authorize the Tesla provider if "
                 "its granted scopes are stale; otherwise Hermes signaling is "
-                "unavailable for this token. Token scopes=%s%s",
+                "marked unavailable for this token. Token scopes=%s%s",
                 scopes if scopes else "?",
                 hint,
             )
@@ -546,6 +563,8 @@ class TeslaSignalingClient:
                 )
 
             await self._close_ws()
+            if self._stop_event.is_set() and self._auth_denied:
+                return
             self._state = SignalingState.RECONNECTING
             self._connected_since = None
 
@@ -571,8 +590,9 @@ class TeslaSignalingClient:
 
         jwt = await self._get_hermes_jwt()
         if not jwt:
-            self._last_error = "Failed to obtain hermes JWT"
-            self._consecutive_failures += 1
+            if not self._auth_denied:
+                self._last_error = "Failed to obtain hermes JWT"
+                self._consecutive_failures += 1
             return
 
         connection_id = str(uuid.uuid4())
@@ -700,15 +720,18 @@ class TeslaSignalingClient:
             if self._hermes_jwt_is_fallback:
                 self._fallback_rejection_count += 1
                 if self._fallback_rejection_count >= 3:
-                    _LOGGER.error(
+                    reason = (
+                        "Hermes JWT exchange failed and raw token fallback was "
+                        "rejected"
+                    )
+                    _LOGGER.warning(
                         "signaling: hermes JWT exchange repeatedly failed and raw "
                         "token fallback also rejected. Normal Tesla Fleet API "
                         "telemetry can still work while Hermes signaling is "
                         "unavailable if Tesla rejects the token for the private "
                         "Hermes channel. Signaling will stop retrying."
                     )
-                    self._auth_denied = True
-                    self._stop_event.set()
+                    self._mark_unavailable(reason)
                     return
                 _LOGGER.warning(
                     "signaling: HermesServer rejected raw token fallback — "
@@ -719,14 +742,16 @@ class TeslaSignalingClient:
                 self._hermes_jwt_obtained_at = 0
                 self._hermes_jwt_is_fallback = False
             else:
-                self._auth_denied = True
-                _LOGGER.error(
+                reason = (
+                    "HermesServer returned authorization denied for the access token"
+                )
+                _LOGGER.warning(
                     "signaling: HermesServer returned 'authorization denied' — "
                     "the access token is not valid for hermes signaling. "
                     "An owner-api token (client_id='ownerapi') may be required. "
                     "Signaling will stop retrying."
                 )
-                self._stop_event.set()
+                self._mark_unavailable(reason)
             return
 
         cmd_name = "unknown"
