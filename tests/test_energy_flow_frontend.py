@@ -34,3 +34,13 @@ def test_energy_flow_avoids_svg_filter_repaint_hotspots():
     assert "drop-shadow" not in source
     assert "paint-order: stroke fill" in source
     assert "el.textContent !== value" in source
+
+
+def test_energy_flow_caps_dash_gap_for_short_active_paths():
+    source = ENERGY_FLOW_PATH.read_text()
+
+    assert "_syncFlowLineMetrics" in source
+    assert "getTotalLength()" in source
+    assert "Short SVG paths can fall entirely inside a long dash gap" in source
+    assert "el.style.setProperty('--flow-seg'" in source
+    assert "el.style.setProperty('--flow-gap'" in source

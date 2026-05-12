@@ -1336,6 +1336,45 @@ import {
       if (el && el.textContent !== value) el.textContent = value;
     }
 
+    _syncFlowLineMetrics(el, classes = []) {
+      if (!el) return;
+      const flowClass = classes.includes('flow-broken')
+        ? 'flow-broken'
+        : classes.includes('flow-solar')
+          ? 'flow-solar'
+          : 'flow-green';
+      const defaults = {
+        'flow-solar': { seg: 64, gap: 80 },
+        'flow-green': { seg: 62, gap: 82 },
+        'flow-broken': { seg: 40, gap: 96 },
+      }[flowClass];
+      if (!defaults || typeof el.getTotalLength !== 'function') return;
+
+      let length = 0;
+      try {
+        length = el.getTotalLength();
+      } catch (_err) {
+        return;
+      }
+      if (!Number.isFinite(length) || length <= 0) return;
+
+      // Short SVG paths can fall entirely inside a long dash gap and appear to blink.
+      const seg = Math.max(8, Math.min(defaults.seg, Math.max(8, length * 0.45)));
+      const gap = Math.max(6, Math.min(defaults.gap, Math.max(6, length * 0.55)));
+      const signature = `${flowClass}|${Math.round(length)}|${seg.toFixed(1)}|${gap.toFixed(1)}`;
+      if (el.dataset.flowMetrics === signature) return;
+      el.style.setProperty('--flow-seg', seg.toFixed(1));
+      el.style.setProperty('--flow-gap', gap.toFixed(1));
+      el.dataset.flowMetrics = signature;
+    }
+
+    _clearFlowLineMetrics(el) {
+      if (!el) return;
+      el.style.removeProperty('--flow-seg');
+      el.style.removeProperty('--flow-gap');
+      delete el.dataset.flowMetrics;
+    }
+
     _toggleNode(id, active) {
       const el = this.shadowRoot.querySelector(id);
       if (!el) return;
@@ -1365,6 +1404,11 @@ import {
       const signature = desiredClasses.length
         ? `${desiredClasses.join('|')}|${reverse ? 'reverse' : 'forward'}`
         : '';
+      if (desiredClasses.length) {
+        this._syncFlowLineMetrics(el, desiredClasses);
+      } else {
+        this._clearFlowLineMetrics(el);
+      }
       if ((el.dataset.flowState || '') === signature) return;
 
       if (!desiredClasses.length) {
