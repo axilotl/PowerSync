@@ -134,6 +134,14 @@ class _ZaptecClient:
         self.calls.append(("stop_charging", charger_id))
 
 
+class _SessionManager:
+    def __init__(self) -> None:
+        self.updates: list[dict] = []
+
+    async def update_session(self, **kwargs):
+        self.updates.append(kwargs)
+
+
 def _zaptec_entry(installation_id: str = ""):
     return SimpleNamespace(
         entry_id="entry-1",
@@ -206,6 +214,49 @@ def _solar_surplus_state(current_amps: int = 8) -> dict:
             "pause_below_soc": 10,
         },
     }
+
+
+def test_dynamic_ocpp_update_leaves_energy_to_ocpp_session_poll(monkeypatch):
+    manager = _SessionManager()
+    ev_session = types.ModuleType("power_sync.automations.ev_charging_session")
+    ev_session.get_session_manager = lambda: manager
+    monkeypatch.setitem(sys.modules, "power_sync.automations.ev_charging_session", ev_session)
+
+    async def not_unplugged(*args, **kwargs):
+        return False
+
+    async def fake_live_status(*args, **kwargs):
+        return {
+            "battery_power": 0,
+            "grid_power": 1500,
+            "battery_soc": 50,
+        }
+
+    monkeypatch.setattr(actions, "_clear_ble_dynamic_session_if_unplugged", not_unplugged)
+    monkeypatch.setattr(actions, "_get_tesla_live_status", fake_live_status)
+
+    actions._dynamic_ev_state.clear()
+    actions._dynamic_ev_state["entry-1"] = {
+        "ocpp_charger": {
+            "active": True,
+            "current_amps": 32,
+            "target_amps": 32,
+            "params": {
+                "dynamic_mode": "battery_target",
+                "charger_type": "ocpp",
+                "target_battery_charge_kw": 10.5,
+                "max_grid_import_kw": 12.5,
+                "min_charge_amps": 6,
+                "max_charge_amps": 32,
+                "voltage": 230,
+                "phases": 1,
+            },
+        }
+    }
+
+    asyncio.run(actions._dynamic_ev_update(_Hass([]), _Entry(), "entry-1", "ocpp_charger"))
+
+    assert manager.updates == []
 
 
 def test_ocpp_amps_falls_back_to_hacs_number_entity():

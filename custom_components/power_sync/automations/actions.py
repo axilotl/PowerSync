@@ -940,6 +940,11 @@ def _ev_action_loadpoint_id(params: Dict[str, Any]) -> str:
     return DEFAULT_VEHICLE_ID
 
 
+def _session_energy_tracked_by_charger_poll(params: Dict[str, Any]) -> bool:
+    """Return true when a charger poll provides authoritative session metering."""
+    return str(params.get("charger_type") or "").lower() == "ocpp"
+
+
 
 
 async def _execute_single_action(
@@ -4388,7 +4393,7 @@ async def _dynamic_ev_update_surplus(
     )
 
     # Update charging session with current power reading
-    if current_amps > 0:
+    if current_amps > 0 and not _session_energy_tracked_by_charger_poll(params):
         try:
             from .ev_charging_session import get_session_manager
             session_manager = get_session_manager()
@@ -4747,7 +4752,7 @@ async def _dynamic_ev_update(
         from ..const import DOMAIN
         from .ev_charging_session import get_session_manager
         session_manager = get_session_manager()
-        if session_manager:
+        if session_manager and not _session_energy_tracked_by_charger_poll(params):
             if current_amps > 0 and new_amps > 0:
                 # Session update - still charging
                 is_solar = _is_ev_charging_from_solar(grid_power_kw, current_ev_power_kw)
