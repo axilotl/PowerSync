@@ -207,6 +207,56 @@ def test_neovolt_surplus_balancer_sensor_exposes_status_and_attributes():
     assert entity.extra_state_attributes["lowest_soc_index"] == 0
 
 
+def test_optimizer_force_discharge_windows_include_discharge_and_export():
+    sensor = _sensor_module()
+    desc = next(
+        d
+        for d in sensor.OPTIMIZER_ACTION_SENSORS
+        if d.key == "optimization_force_discharge_windows"
+    )
+    payload = {
+        "next_actions": [
+            {
+                "action": "discharge",
+                "timestamp": "2026-05-03T10:00:00+00:00",
+                "end_time": "2026-05-03T10:30:00+00:00",
+                "power_w": 3200,
+                "soc": 0.76,
+            },
+            {
+                "action": "charge",
+                "timestamp": "2026-05-03T12:30:00+00:00",
+                "end_time": "2026-05-03T13:00:00+00:00",
+                "power_w": 5000,
+                "soc": 0.78,
+            },
+            {
+                "action": "export",
+                "timestamp": "2026-05-03T17:00:00+00:00",
+                "end_time": "2026-05-03T18:30:00+00:00",
+                "power_w": 4200,
+                "soc": 0.82,
+            },
+            {
+                "action": "discharge",
+                "timestamp": "2026-05-03T19:00:00+00:00",
+                "end_time": "2026-05-03T19:30:00+00:00",
+                "power_w": 2500,
+                "soc": 0.55,
+            },
+        ],
+    }
+    entity = sensor.OptimizerActionSensor(SimpleNamespace(data=payload), desc, _entry("amber"))
+
+    assert entity.native_value == "17:00-18:30, 19:00-19:30"
+    attrs = entity.extra_state_attributes
+    assert attrs["actions"] == ["discharge", "export"]
+    assert attrs["count"] == 2
+    assert attrs["total_minutes"] == 120
+    assert [w["action"] for w in attrs["windows"]] == ["export", "discharge"]
+    assert attrs["next_power_w"] == 4200
+
+
 def test_eur_price_forecast_uses_major_rate_and_ct_minor_attributes():
     sensor = _sensor_module()
     desc = next(d for d in sensor.LP_FORECAST_SENSORS if d.key == "lp_import_price_forecast")

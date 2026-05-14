@@ -294,6 +294,16 @@ from .const import (
     CONF_GENERIC_CHARGER_AMPS_ENTITY,
     CONF_GENERIC_CHARGER_STATUS_ENTITY,
     CONF_GENERIC_CHARGER_SOC_ENTITY,
+    # Sigenergy EV charger configuration
+    CONF_SIGENERGY_CHARGER_ENABLED,
+    CONF_SIGENERGY_CHARGER_TYPE,
+    CONF_SIGENERGY_CHARGER_HOST,
+    CONF_SIGENERGY_CHARGER_PORT,
+    CONF_SIGENERGY_CHARGER_SLAVE_ID,
+    DEFAULT_SIGENERGY_CHARGER_PORT,
+    DEFAULT_SIGENERGY_CHARGER_SLAVE_ID,
+    SIGENERGY_CHARGER_TYPES,
+    SIGENERGY_CHARGER_EVAC,
     # Solcast Solar Forecast configuration
     CONF_SOLCAST_ENABLED,
     CONF_SOLCAST_API_KEY,
@@ -8056,6 +8066,46 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 CONF_GENERIC_CHARGER_SOC_ENTITY,
                 default=self._get_option(CONF_GENERIC_CHARGER_SOC_ENTITY, ""),
             ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
+            # Sigenergy EVAC/EVDC charger direct Modbus control
+            vol.Optional(
+                CONF_SIGENERGY_CHARGER_ENABLED,
+                default=self._get_option(CONF_SIGENERGY_CHARGER_ENABLED, False),
+            ): BooleanSelector(),
+            vol.Optional(
+                CONF_SIGENERGY_CHARGER_TYPE,
+                default=self._get_option(CONF_SIGENERGY_CHARGER_TYPE, SIGENERGY_CHARGER_EVAC),
+            ): SelectSelector(SelectSelectorConfig(
+                options=[
+                    SelectOptionDict(value=k, label=v)
+                    for k, v in SIGENERGY_CHARGER_TYPES.items()
+                ],
+                mode=SelectSelectorMode.DROPDOWN,
+            )),
+            vol.Optional(
+                CONF_SIGENERGY_CHARGER_HOST,
+                default=self._get_option(
+                    CONF_SIGENERGY_CHARGER_HOST,
+                    self._get_option(CONF_SIGENERGY_MODBUS_HOST, ""),
+                ),
+            ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
+            vol.Optional(
+                CONF_SIGENERGY_CHARGER_PORT,
+                default=self._get_option(
+                    CONF_SIGENERGY_CHARGER_PORT,
+                    DEFAULT_SIGENERGY_CHARGER_PORT,
+                ),
+            ): NumberSelector(NumberSelectorConfig(
+                min=1, max=65535, step=1, mode=NumberSelectorMode.BOX,
+            )),
+            vol.Optional(
+                CONF_SIGENERGY_CHARGER_SLAVE_ID,
+                default=self._get_option(
+                    CONF_SIGENERGY_CHARGER_SLAVE_ID,
+                    DEFAULT_SIGENERGY_CHARGER_SLAVE_ID,
+                ),
+            ): NumberSelector(NumberSelectorConfig(
+                min=1, max=246, step=1, mode=NumberSelectorMode.BOX,
+            )),
         }
 
         return self.async_show_form(
@@ -8124,6 +8174,23 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
         generic_soc = ev_input.get(CONF_GENERIC_CHARGER_SOC_ENTITY, "")
         if generic_soc:
             final_data[CONF_GENERIC_CHARGER_SOC_ENTITY] = generic_soc
+
+        # Add Sigenergy EV charger settings
+        final_data[CONF_SIGENERGY_CHARGER_ENABLED] = ev_input.get(
+            CONF_SIGENERGY_CHARGER_ENABLED, False
+        )
+        final_data[CONF_SIGENERGY_CHARGER_TYPE] = ev_input.get(
+            CONF_SIGENERGY_CHARGER_TYPE, SIGENERGY_CHARGER_EVAC
+        )
+        sigenergy_charger_host = ev_input.get(CONF_SIGENERGY_CHARGER_HOST, "").strip()
+        if sigenergy_charger_host:
+            final_data[CONF_SIGENERGY_CHARGER_HOST] = sigenergy_charger_host
+        final_data[CONF_SIGENERGY_CHARGER_PORT] = ev_input.get(
+            CONF_SIGENERGY_CHARGER_PORT, DEFAULT_SIGENERGY_CHARGER_PORT
+        )
+        final_data[CONF_SIGENERGY_CHARGER_SLAVE_ID] = ev_input.get(
+            CONF_SIGENERGY_CHARGER_SLAVE_ID, DEFAULT_SIGENERGY_CHARGER_SLAVE_ID
+        )
 
         self._apply_legacy_data_key_removals()
         return self.async_create_entry(title="", data=final_data)

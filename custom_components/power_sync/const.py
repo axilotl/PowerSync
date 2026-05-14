@@ -121,6 +121,21 @@ CONF_GENERIC_CHARGER_AMPS_ENTITY = "generic_charger_amps_entity"
 CONF_GENERIC_CHARGER_STATUS_ENTITY = "generic_charger_status_entity"
 CONF_GENERIC_CHARGER_SOC_ENTITY = "generic_charger_soc_entity"
 
+# Sigenergy EV Charger configuration
+CONF_SIGENERGY_CHARGER_ENABLED = "sigenergy_charger_enabled"
+CONF_SIGENERGY_CHARGER_TYPE = "sigenergy_charger_type"
+CONF_SIGENERGY_CHARGER_HOST = "sigenergy_charger_host"
+CONF_SIGENERGY_CHARGER_PORT = "sigenergy_charger_port"
+CONF_SIGENERGY_CHARGER_SLAVE_ID = "sigenergy_charger_slave_id"
+SIGENERGY_CHARGER_EVAC = "evac"
+SIGENERGY_CHARGER_EVDC = "evdc"
+SIGENERGY_CHARGER_TYPES = {
+    SIGENERGY_CHARGER_EVAC: "Sigenergy EVAC (AC charger)",
+    SIGENERGY_CHARGER_EVDC: "Sigenergy EVDC (DC charger)",
+}
+DEFAULT_SIGENERGY_CHARGER_PORT = 502
+DEFAULT_SIGENERGY_CHARGER_SLAVE_ID = 1
+
 # Battery System Selection
 CONF_BATTERY_SYSTEM = "battery_system"
 BATTERY_SYSTEM_TESLA = "tesla"
@@ -1649,6 +1664,7 @@ SENSOR_TYPE_OPTIMIZATION_STATUS = "optimization_status"
 SENSOR_TYPE_OPTIMIZATION_SAVINGS = "optimization_savings"
 SENSOR_TYPE_OPTIMIZATION_NEXT_ACTION = "optimization_next_action"
 SENSOR_TYPE_OPTIMIZATION_FORCE_CHARGE_WINDOWS = "optimization_force_charge_windows"
+SENSOR_TYPE_OPTIMIZATION_FORCE_DISCHARGE_WINDOWS = "optimization_force_discharge_windows"
 SENSOR_TYPE_NEOVOLT_SURPLUS_BALANCER = "neovolt_surplus_balancer"
 
 # LP forecast sensors (populated from built-in optimizer data each cycle)
@@ -1755,6 +1771,7 @@ SENSOR_KEY_TO_FAMILY: dict[str, str] = {
     "optimization_status": SENSOR_FAMILY_LP_OPTIMIZER,
     "optimization_next_action": SENSOR_FAMILY_LP_OPTIMIZER,
     "optimization_force_charge_windows": SENSOR_FAMILY_LP_OPTIMIZER,
+    "optimization_force_discharge_windows": SENSOR_FAMILY_LP_OPTIMIZER,
     "optimization_savings": SENSOR_FAMILY_LP_OPTIMIZER,
     "lp_solar_forecast": SENSOR_FAMILY_LP_OPTIMIZER,
     "lp_load_forecast": SENSOR_FAMILY_LP_OPTIMIZER,

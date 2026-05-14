@@ -5237,12 +5237,15 @@ def _configured_charger_type(opts: Mapping[str, Any]) -> str:
     from ..const import (
         CONF_GENERIC_CHARGER_ENABLED,
         CONF_OCPP_ENABLED,
+        CONF_SIGENERGY_CHARGER_ENABLED,
         CONF_ZAPTEC_STANDALONE_ENABLED,
         CONF_ZAPTEC_USERNAME,
     )
 
     if opts.get(CONF_ZAPTEC_STANDALONE_ENABLED) and opts.get(CONF_ZAPTEC_USERNAME):
         return "zaptec"
+    if opts.get(CONF_SIGENERGY_CHARGER_ENABLED):
+        return "sigenergy"
     if opts.get(CONF_GENERIC_CHARGER_ENABLED):
         return "generic"
     if opts.get(CONF_OCPP_ENABLED):
@@ -5263,6 +5266,8 @@ def _resolve_dynamic_loadpoint_id(
         return "zaptec_standalone"
     if charger_type == "generic":
         return configured_vehicle_id or "generic_ev"
+    if charger_type == "sigenergy":
+        return configured_vehicle_id or "sigenergy_charger"
     if charger_type == "ocpp":
         charger_id = str(params.get("ocpp_charger_id") or "ocpp_charger")
         return charger_id if charger_id.startswith("ocpp_") else f"ocpp_{charger_id}"
@@ -5352,6 +5357,28 @@ def _with_configured_charger_entities(
         params["ocpp_charger_id"] = _resolve_ocpp_charger_id(
             hass,
             params.get("ocpp_charger_id") or opts.get("ocpp_charger_id"),
+        )
+    elif charger_type == "sigenergy":
+        from ..const import (
+            CONF_SIGENERGY_CHARGER_HOST,
+            CONF_SIGENERGY_CHARGER_PORT,
+            CONF_SIGENERGY_CHARGER_SLAVE_ID,
+            CONF_SIGENERGY_CHARGER_TYPE,
+            CONF_SIGENERGY_MODBUS_HOST,
+        )
+
+        params["sigenergy_charger_host"] = params.get("sigenergy_charger_host") or opts.get(
+            CONF_SIGENERGY_CHARGER_HOST,
+            opts.get(CONF_SIGENERGY_MODBUS_HOST, ""),
+        )
+        params["sigenergy_charger_port"] = params.get("sigenergy_charger_port") or opts.get(
+            CONF_SIGENERGY_CHARGER_PORT
+        )
+        params["sigenergy_charger_slave_id"] = params.get("sigenergy_charger_slave_id") or opts.get(
+            CONF_SIGENERGY_CHARGER_SLAVE_ID
+        )
+        params["sigenergy_charger_type"] = params.get("sigenergy_charger_type") or opts.get(
+            CONF_SIGENERGY_CHARGER_TYPE
         )
     return params
 
@@ -6357,7 +6384,11 @@ class PriceLevelChargingExecutor:
                 return results
 
             # Also check OCPP
-            from ..const import CONF_OCPP_ENABLED, CONF_GENERIC_CHARGER_ENABLED
+            from ..const import (
+                CONF_GENERIC_CHARGER_ENABLED,
+                CONF_OCPP_ENABLED,
+                CONF_SIGENERGY_CHARGER_ENABLED,
+            )
             if opts.get(CONF_OCPP_ENABLED):
                 decision = await self.get_charging_decision(current_price_cents)
                 should_charge, reason, mode = decision
@@ -6375,6 +6406,27 @@ class PriceLevelChargingExecutor:
                 vehicle_state = self._get_or_create_vehicle_state(pseudo_vin)
                 _LOGGER.debug(
                     f"OCPP charger decision: should_charge={should_charge}, reason={reason}"
+                )
+
+                if should_charge and not vehicle_state.is_charging:
+                    await self._start_charging(mode, reason, vehicle_vin=pseudo_vin)
+                elif not should_charge and vehicle_state.is_charging:
+                    await self._stop_charging(reason, vehicle_vin=pseudo_vin)
+                else:
+                    vehicle_state.last_decision = "charging" if vehicle_state.is_charging else "waiting"
+                    vehicle_state.last_decision_reason = reason
+
+                return results
+
+            if opts.get(CONF_SIGENERGY_CHARGER_ENABLED):
+                decision = await self.get_charging_decision(current_price_cents)
+                should_charge, reason, mode = decision
+                pseudo_vin = "sigenergy_charger"
+                results[pseudo_vin] = decision
+
+                vehicle_state = self._get_or_create_vehicle_state(pseudo_vin)
+                _LOGGER.debug(
+                    f"Sigenergy charger decision: should_charge={should_charge}, reason={reason}"
                 )
 
                 if should_charge and not vehicle_state.is_charging:

@@ -1423,3 +1423,188 @@ def test_zaptec_idle_stop_is_passive_success():
 
     assert result is True
     assert client.calls == []
+
+
+def test_sigenergy_charger_set_vehicle_amps_sets_limit_then_starts(monkeypatch):
+    calls: list[tuple] = []
+
+    class _SigenergyController:
+        def __init__(self, **config):
+            calls.append(("init", config))
+
+        async def set_charging_amps(self, amps: int):
+            calls.append(("set_charging_amps", amps))
+            return True
+
+        async def start_charging(self, amps=None):
+            calls.append(("start_charging", amps))
+            return True
+
+        async def disconnect(self):
+            calls.append(("disconnect",))
+
+    monkeypatch.setattr(
+        actions,
+        "_new_sigenergy_charger",
+        lambda config: _SigenergyController(**config),
+    )
+    hass = _Hass([])
+    entry = SimpleNamespace(
+        entry_id="entry-1",
+        data={},
+        options={
+            "sigenergy_charger_host": "192.0.2.10",
+            "sigenergy_charger_port": 502,
+            "sigenergy_charger_slave_id": 1,
+            "sigenergy_charger_type": "evac",
+        },
+    )
+
+    result = asyncio.run(
+        actions._set_vehicle_amps(
+            hass,
+            entry,
+            "sigenergy_charger",
+            16,
+            {"charger_type": "sigenergy"},
+        )
+    )
+
+    assert result is True
+    assert calls == [
+        (
+            "init",
+            {
+                "host": "192.0.2.10",
+                "port": 502,
+                "slave_id": 1,
+                "charger_type": "evac",
+            },
+        ),
+        ("set_charging_amps", 16),
+        ("disconnect",),
+        (
+            "init",
+            {
+                "host": "192.0.2.10",
+                "port": 502,
+                "slave_id": 1,
+                "charger_type": "evac",
+            },
+        ),
+        ("start_charging", None),
+        ("disconnect",),
+    ]
+
+
+def test_sigenergy_charger_stop_routes_to_modbus_controller(monkeypatch):
+    calls: list[tuple] = []
+
+    class _SigenergyController:
+        def __init__(self, **config):
+            calls.append(("init", config))
+
+        async def stop_charging(self):
+            calls.append(("stop_charging",))
+            return True
+
+        async def disconnect(self):
+            calls.append(("disconnect",))
+
+    monkeypatch.setattr(
+        actions,
+        "_new_sigenergy_charger",
+        lambda config: _SigenergyController(**config),
+    )
+    hass = _Hass([])
+    entry = SimpleNamespace(
+        entry_id="entry-1",
+        data={"sigenergy_modbus_host": "192.0.2.20"},
+        options={
+            "sigenergy_charger_slave_id": 2,
+            "sigenergy_charger_type": "evdc",
+        },
+    )
+
+    result = asyncio.run(
+        actions._action_stop_ev_charging(
+            hass,
+            entry,
+            {"charger_type": "sigenergy"},
+        )
+    )
+
+    assert result is True
+    assert calls == [
+        (
+            "init",
+            {
+                "host": "192.0.2.20",
+                "port": 502,
+                "slave_id": 2,
+                "charger_type": "evdc",
+            },
+        ),
+        ("stop_charging",),
+        ("disconnect",),
+    ]
+
+
+def test_sigenergy_evdc_dynamic_start_skips_unsupported_current_limit(monkeypatch):
+    calls: list[tuple] = []
+
+    class _SigenergyController:
+        def __init__(self, **config):
+            calls.append(("init", config))
+
+        async def set_charging_amps(self, amps: int):
+            calls.append(("set_charging_amps", amps))
+            return False
+
+        async def start_charging(self, amps=None):
+            calls.append(("start_charging", amps))
+            return True
+
+        async def disconnect(self):
+            calls.append(("disconnect",))
+
+    monkeypatch.setattr(
+        actions,
+        "_new_sigenergy_charger",
+        lambda config: _SigenergyController(**config),
+    )
+    hass = _Hass([])
+    entry = SimpleNamespace(
+        entry_id="entry-1",
+        data={},
+        options={
+            "sigenergy_charger_host": "192.0.2.30",
+            "sigenergy_charger_slave_id": 2,
+            "sigenergy_charger_type": "evdc",
+        },
+    )
+
+    result = asyncio.run(
+        actions._set_vehicle_amps(
+            hass,
+            entry,
+            "sigenergy_charger",
+            24,
+            {"charger_type": "sigenergy"},
+        )
+    )
+
+    assert result is True
+    assert calls == [
+        (
+            "init",
+            {
+                "host": "192.0.2.30",
+                "port": 502,
+                "slave_id": 2,
+                "charger_type": "evdc",
+            },
+        ),
+        ("start_charging", None),
+        ("disconnect",),
+    ]

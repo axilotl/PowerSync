@@ -23,3 +23,14 @@ def test_button_card_resource_fallback_accepts_dashed_hacs_url():
     assert "c.element.replace(/-/g, '')" in source
     assert "c.hacs?.replace(/-/g, '')" in source
     assert "url.includes(name)" in source
+
+
+def test_optimizer_windows_use_combined_visual_card():
+    """Charge and discharge windows should render as one dashboard schedule card."""
+    source = STRATEGY_PATH.read_text()
+
+    assert "optimization_force_charge_windows" in source
+    assert "optimization_force_discharge_windows" in source
+    assert "Planned Battery Windows" in source
+    assert "ps-window-row" in source
+    assert "Future Force Charge" not in source

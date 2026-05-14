@@ -936,6 +936,8 @@ def _ev_action_loadpoint_id(params: Dict[str, Any]) -> str:
         return charger_id if charger_id.startswith("ocpp_") else f"ocpp_{charger_id}"
     if charger_type == "zaptec":
         return "zaptec_standalone"
+    if charger_type == "sigenergy":
+        return "sigenergy_charger"
 
     return DEFAULT_VEHICLE_ID
 
@@ -943,6 +945,100 @@ def _ev_action_loadpoint_id(params: Dict[str, Any]) -> str:
 def _session_energy_tracked_by_charger_poll(params: Dict[str, Any]) -> bool:
     """Return true when a charger poll provides authoritative session metering."""
     return str(params.get("charger_type") or "").lower() == "ocpp"
+
+
+def _sigenergy_charger_config(config_entry: ConfigEntry, params: Dict[str, Any]) -> dict:
+    """Resolve Sigenergy EV charger Modbus connection details."""
+    from ..const import (
+        CONF_SIGENERGY_CHARGER_HOST,
+        CONF_SIGENERGY_CHARGER_PORT,
+        CONF_SIGENERGY_CHARGER_SLAVE_ID,
+        CONF_SIGENERGY_CHARGER_TYPE,
+        CONF_SIGENERGY_MODBUS_HOST,
+        DEFAULT_SIGENERGY_CHARGER_PORT,
+        DEFAULT_SIGENERGY_CHARGER_SLAVE_ID,
+        SIGENERGY_CHARGER_EVAC,
+    )
+
+    opts = {**getattr(config_entry, "data", {}), **getattr(config_entry, "options", {})}
+    host = (
+        params.get("sigenergy_charger_host")
+        or opts.get(CONF_SIGENERGY_CHARGER_HOST)
+        or opts.get(CONF_SIGENERGY_MODBUS_HOST)
+        or ""
+    )
+    return {
+        "host": str(host).strip(),
+        "port": int(
+            params.get("sigenergy_charger_port")
+            or opts.get(CONF_SIGENERGY_CHARGER_PORT)
+            or DEFAULT_SIGENERGY_CHARGER_PORT
+        ),
+        "slave_id": int(
+            params.get("sigenergy_charger_slave_id")
+            or opts.get(CONF_SIGENERGY_CHARGER_SLAVE_ID)
+            or DEFAULT_SIGENERGY_CHARGER_SLAVE_ID
+        ),
+        "charger_type": str(
+            params.get("sigenergy_charger_type")
+            or opts.get(CONF_SIGENERGY_CHARGER_TYPE)
+            or SIGENERGY_CHARGER_EVAC
+        ).lower(),
+    }
+
+
+def _new_sigenergy_charger(config: dict):
+    """Return a configured Sigenergy EV charger controller."""
+    from ..sigenergy_charger import SigenergyEVChargerController
+
+    return SigenergyEVChargerController(**config)
+
+
+async def _start_sigenergy_charger(
+    config_entry: ConfigEntry,
+    params: Dict[str, Any],
+    amps: int | None = None,
+) -> bool:
+    config = _sigenergy_charger_config(config_entry, params)
+    if not config["host"]:
+        _LOGGER.error("Sigenergy charger start: no Modbus host configured")
+        return False
+
+    controller = _new_sigenergy_charger(config)
+    try:
+        return await controller.start_charging(amps=amps)
+    finally:
+        await controller.disconnect()
+
+
+async def _stop_sigenergy_charger(config_entry: ConfigEntry, params: Dict[str, Any]) -> bool:
+    config = _sigenergy_charger_config(config_entry, params)
+    if not config["host"]:
+        _LOGGER.error("Sigenergy charger stop: no Modbus host configured")
+        return False
+
+    controller = _new_sigenergy_charger(config)
+    try:
+        return await controller.stop_charging()
+    finally:
+        await controller.disconnect()
+
+
+async def _set_sigenergy_charger_amps(
+    config_entry: ConfigEntry,
+    params: Dict[str, Any],
+    amps: int,
+) -> bool:
+    config = _sigenergy_charger_config(config_entry, params)
+    if not config["host"]:
+        _LOGGER.error("Sigenergy charger set amps: no Modbus host configured")
+        return False
+
+    controller = _new_sigenergy_charger(config)
+    try:
+        return await controller.set_charging_amps(amps)
+    finally:
+        await controller.disconnect()
 
 
 
@@ -2485,6 +2581,17 @@ async def _action_start_ev_charging(
             params,
         )
 
+    # Sigenergy EVAC/EVDC direct Modbus charger.
+    if charger_type == "sigenergy":
+        amps = params.get("amps")
+        if amps is None:
+            amps = params.get("charging_amps")
+        return await _start_sigenergy_charger(
+            config_entry,
+            params,
+            int(amps) if amps is not None else None,
+        )
+
     # Generic charger: use configured switch entity
     if charger_type == "generic":
         ready, block_reason = _generic_charger_ready_for_start(hass, params)
@@ -2698,6 +2805,10 @@ async def _action_stop_ev_charging(
     if charger_type == "zaptec":
         return await _stop_zaptec_charging(hass, config_entry)
 
+    # Sigenergy EVAC/EVDC direct Modbus charger
+    if charger_type == "sigenergy":
+        return await _stop_sigenergy_charger(config_entry, params)
+
     # Generic charger
     if charger_type == "generic":
         switch_entity = (params.get("charger_switch_entity") or "").strip()
@@ -2903,6 +3014,10 @@ async def _action_set_ev_charging_amps(
     # Zaptec standalone charger
     if charger_type == "zaptec":
         return await _set_zaptec_charging_amps(hass, config_entry, int(amps))
+
+    # Sigenergy EVAC direct Modbus charger
+    if charger_type == "sigenergy":
+        return await _set_sigenergy_charger_amps(config_entry, params, int(amps))
 
     # HA-native charger integrations
     if _is_ha_native_charger_type(charger_type):
@@ -3802,6 +3917,22 @@ async def _set_vehicle_amps(
             return await _stop_zaptec_charging(hass, config_entry)
         return await _start_zaptec_charging(hass, config_entry, amps, params)
 
+    elif charger_type == "sigenergy":
+        if config_entry is None:
+            _LOGGER.error("Sigenergy charger control requires a config entry")
+            return False
+        if amps == 0:
+            return await _stop_sigenergy_charger(config_entry, params)
+        config = _sigenergy_charger_config(config_entry, params)
+        if config["charger_type"] == "evdc":
+            _LOGGER.debug(
+                "Sigenergy EVDC does not expose writable amps; starting charger without current limit"
+            )
+            return await _start_sigenergy_charger(config_entry, params)
+        if not await _set_sigenergy_charger_amps(config_entry, params, amps):
+            return False
+        return await _start_sigenergy_charger(config_entry, params)
+
     elif _is_ha_native_charger_type(charger_type):
         if amps == 0:
             return await _stop_ha_native_charger(hass, params)
@@ -3883,6 +4014,8 @@ def _effective_min_charge_amps(params: dict) -> int:
         # OCPP AC charging follows the EVSE/J1772 6A floor. Some HACS OCPP
         # entities expose a stale or capability range below that; do not let
         # dynamic control chase invalid 0-5A targets.
+        return max(configured_min, OCPP_MIN_CHARGE_AMPS)
+    if charger_type == "sigenergy":
         return max(configured_min, OCPP_MIN_CHARGE_AMPS)
     return configured_min
 

@@ -1822,7 +1822,11 @@ class PowerSyncStrategy {
 
     // --- Left Column: Optimizer Status (requires button-card) ---
     if (hasButton && hasE('optimization_status')) {
-      left.push(_optimizerStatus(e, hasE('optimization_force_charge_windows')));
+      left.push(_optimizerStatus(
+        e,
+        hasE('optimization_force_charge_windows'),
+        hasE('optimization_force_discharge_windows'),
+      ));
     }
 
     // --- Center Column: Power Flow ---
@@ -2608,10 +2612,11 @@ function _powerwallStatus(e, hasE) {
   return { type: 'vertical-stack', cards };
 }
 
-function _optimizerStatus(e, showForceChargeWindows = false) {
+function _optimizerStatus(e, showForceChargeWindows = false, showForceDischargeWindows = false) {
   const statusEntity = e('optimization_status');
   const nextEntity = e('optimization_next_action');
   const forceChargeWindowsEntity = e('optimization_force_charge_windows');
+  const forceDischargeWindowsEntity = e('optimization_force_discharge_windows');
   const cards = [{
     type: 'custom:button-card',
     entity: statusEntity,
@@ -2696,15 +2701,144 @@ function _optimizerStatus(e, showForceChargeWindows = false) {
     tap_action: { action: 'more-info' },
   }];
 
-  if (showForceChargeWindows) {
+  if (showForceChargeWindows || showForceDischargeWindows) {
     cards.push({
-      type: 'entities',
-      show_header_toggle: false,
-      entities: [{
-        entity: forceChargeWindowsEntity,
-        name: 'Future Force Charge',
-        icon: 'mdi:battery-clock',
-      }],
+      type: 'custom:button-card',
+      name: 'Planned Battery Windows',
+      icon: 'mdi:calendar-clock',
+      show_icon: true,
+      show_name: true,
+      show_label: true,
+      triggers_update: [
+        ...(showForceChargeWindows ? [forceChargeWindowsEntity] : []),
+        ...(showForceDischargeWindows ? [forceDischargeWindowsEntity] : []),
+      ],
+      label: `[[[
+        const sensors = [
+          ${showForceChargeWindows ? `'${forceChargeWindowsEntity}'` : 'null'},
+          ${showForceDischargeWindows ? `'${forceDischargeWindowsEntity}'` : 'null'},
+        ].filter(Boolean);
+        const count = sensors.reduce((sum, entityId) => {
+          const n = Number(states[entityId]?.attributes?.count ?? 0);
+          return sum + (Number.isFinite(n) ? n : 0);
+        }, 0);
+        if (!count) return 'No forced charge or discharge windows in the next 24h';
+        return count + ' upcoming window' + (count === 1 ? '' : 's');
+      ]]]`,
+      custom_fields: {
+        windows: `[[[
+          const inputs = [
+            ${showForceChargeWindows ? `{entityId: '${forceChargeWindowsEntity}', kind: 'charge'}` : 'null'},
+            ${showForceDischargeWindows ? `{entityId: '${forceDischargeWindowsEntity}', kind: 'discharge'}` : 'null'},
+          ].filter(Boolean);
+          const fmtTime = (value) => {
+            if (!value) return '--:--';
+            const d = new Date(value);
+            if (Number.isNaN(d.getTime())) return '--:--';
+            return d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+          };
+          const fmtDuration = (minutes) => {
+            const mins = Number(minutes || 0);
+            if (!Number.isFinite(mins) || mins <= 0) return '';
+            if (mins < 60) return Math.round(mins) + ' min';
+            const hours = Math.floor(mins / 60);
+            const rem = Math.round(mins % 60);
+            return hours + 'h' + (rem ? ' ' + rem + 'm' : '');
+          };
+          const fmtPower = (watts) => {
+            const value = Number(watts || 0);
+            if (!Number.isFinite(value) || Math.abs(value) < 1) return '';
+            return Math.abs(value) >= 1000
+              ? (Math.abs(value) / 1000).toFixed(1) + ' kW'
+              : Math.round(Math.abs(value)) + ' W';
+          };
+          const labelFor = (entry) => {
+            if (entry.kind === 'charge') return 'Charge';
+            return entry.action === 'export' ? 'Export' : 'Discharge';
+          };
+          const entries = inputs.flatMap(({entityId, kind}) => {
+            const windows = states[entityId]?.attributes?.windows;
+            if (!Array.isArray(windows)) return [];
+            return windows.map((window) => ({...window, entityId, kind}));
+          }).filter((entry) => entry.start_time && entry.end_time)
+            .sort((a, b) => new Date(a.start_time) - new Date(b.start_time));
+
+          const style = '<style>' +
+            '.ps-window-list{display:grid;gap:8px;margin-top:10px;}' +
+            '.ps-window-row{display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:center;padding:9px 10px;border-radius:10px;background:var(--ha-card-background,var(--card-background-color,#fff));border:1px solid var(--divider-color);}' +
+            '.ps-window-row.charge{border-left:4px solid var(--blue-color,#2196f3);}' +
+            '.ps-window-row.discharge{border-left:4px solid var(--orange-color,#ff9800);}' +
+            '.ps-pill{font-size:11px;font-weight:800;letter-spacing:0;text-transform:uppercase;line-height:1;padding:6px 7px;border-radius:999px;}' +
+            '.ps-window-row.charge .ps-pill{color:var(--blue-color,#2196f3);background:rgba(33,150,243,.12);}' +
+            '.ps-window-row.discharge .ps-pill{color:var(--orange-color,#ff9800);background:rgba(255,152,0,.14);}' +
+            '.ps-times{font-size:14px;font-weight:700;color:var(--primary-text-color);line-height:1.25;}' +
+            '.ps-meta{font-size:12px;color:var(--secondary-text-color);line-height:1.25;margin-top:2px;}' +
+            '.ps-power{font-size:13px;font-weight:800;color:var(--primary-text-color);white-space:nowrap;}' +
+            '.ps-empty{margin-top:10px;padding:10px;border-radius:10px;background:rgba(127,127,127,.08);color:var(--secondary-text-color);font-size:13px;text-align:left;}' +
+            '</style>';
+
+          if (!entries.length) {
+            return style + '<div class="ps-empty">Optimizer has no forced charge, discharge, or export windows scheduled.</div>';
+          }
+
+          return style + '<div class="ps-window-list">' + entries.slice(0, 6).map((entry) => {
+            const cssKind = entry.kind === 'charge' ? 'charge' : 'discharge';
+            const duration = fmtDuration(entry.duration_minutes);
+            const power = fmtPower(entry.power_w);
+            const soc = Number.isFinite(Number(entry.soc)) ? Math.round(Number(entry.soc) * 100) + '% SoC' : '';
+            const meta = [duration, soc].filter(Boolean).join(' - ');
+            return '<div class="ps-window-row ' + cssKind + '">' +
+              '<div class="ps-pill">' + labelFor(entry) + '</div>' +
+              '<div><div class="ps-times">' + fmtTime(entry.start_time) + ' - ' + fmtTime(entry.end_time) + '</div>' +
+              '<div class="ps-meta">' + (meta || 'Scheduled window') + '</div></div>' +
+              '<div class="ps-power">' + power + '</div>' +
+              '</div>';
+          }).join('') + (entries.length > 6
+            ? '<div class="ps-empty">+' + (entries.length - 6) + ' more window' + (entries.length - 6 === 1 ? '' : 's') + '</div>'
+            : '') + '</div>';
+        ]]]`,
+      },
+      styles: {
+        card: [
+          { 'border-radius': '16px' },
+          { padding: '12px' },
+          { background: 'linear-gradient(135deg, rgba(33, 150, 243, 0.08) 0%, rgba(255, 152, 0, 0.08) 100%)' },
+        ],
+        grid: [
+          { 'grid-template-areas': '"i n" "i l" "windows windows"' },
+          { 'grid-template-columns': 'min-content 1fr' },
+          { 'column-gap': '10px' },
+          { 'row-gap': '2px' },
+          { 'align-items': 'center' },
+        ],
+        img_cell: [
+          { width: '32px' },
+          { height: '32px' },
+          { 'align-self': 'start' },
+        ],
+        icon: [
+          { width: '28px' },
+          { color: 'var(--primary-color)' },
+        ],
+        name: [
+          { 'justify-self': 'start' },
+          { 'font-weight': '700' },
+          { 'font-size': '16px' },
+        ],
+        label: [
+          { 'justify-self': 'start' },
+          { opacity: '0.85' },
+          { 'font-size': '13px' },
+          { 'text-align': 'left' },
+        ],
+        custom_fields: {
+          windows: [
+            { 'grid-area': 'windows' },
+            { width: '100%' },
+          ],
+        },
+      },
+      tap_action: { action: 'none' },
     });
   }
 

@@ -10308,6 +10308,30 @@ class EVVehicleCommandView(HomeAssistantView):
                         "charger_status_entity": opts.get(CONF_GENERIC_CHARGER_STATUS_ENTITY, ""),
                     }
 
+        if vehicle_vin in (None, "sigenergy_charger"):
+            from .const import (
+                CONF_SIGENERGY_CHARGER_ENABLED,
+                CONF_SIGENERGY_CHARGER_HOST,
+                CONF_SIGENERGY_CHARGER_PORT,
+                CONF_SIGENERGY_CHARGER_SLAVE_ID,
+                CONF_SIGENERGY_CHARGER_TYPE,
+                CONF_SIGENERGY_MODBUS_HOST,
+            )
+
+            for entry in self._hass.config_entries.async_entries(DOMAIN):
+                opts = {**entry.data, **entry.options}
+                if opts.get(CONF_SIGENERGY_CHARGER_ENABLED):
+                    return "sigenergy_charger", {
+                        "charger_type": "sigenergy",
+                        "sigenergy_charger_host": opts.get(
+                            CONF_SIGENERGY_CHARGER_HOST,
+                            opts.get(CONF_SIGENERGY_MODBUS_HOST, ""),
+                        ),
+                        "sigenergy_charger_port": opts.get(CONF_SIGENERGY_CHARGER_PORT),
+                        "sigenergy_charger_slave_id": opts.get(CONF_SIGENERGY_CHARGER_SLAVE_ID),
+                        "sigenergy_charger_type": opts.get(CONF_SIGENERGY_CHARGER_TYPE),
+                    }
+
         return vehicle_vin, {"charger_type": "tesla"}
 
     def _ocpp_charger_id_from_loadpoint(self, loadpoint_id: str) -> str:
@@ -10343,6 +10367,10 @@ class EVVehicleCommandView(HomeAssistantView):
                 "charger_amps_entity",
                 "charger_status_entity",
                 "ocpp_charger_id",
+                "sigenergy_charger_host",
+                "sigenergy_charger_port",
+                "sigenergy_charger_slave_id",
+                "sigenergy_charger_type",
                 "pre_charge_wake_entity",
                 "pre_charge_wake_duration_seconds",
                 "pre_charge_wake_on_service",
@@ -10562,6 +10590,8 @@ class EVVehicleCommandView(HomeAssistantView):
                 _LOGGER.info("Quick EV charge for %s expires at %s", self._manual_loadpoint_id(vehicle_vin), expires_at)
             if charger_type == "zaptec":
                 return True, f"Charging started via Zaptec{duration_text}"
+            if charger_type == "sigenergy":
+                return True, f"Charging started via Sigenergy charger{duration_text}"
             return True, f"Charging started{duration_text}"
 
         return False, "Failed to start charging"
@@ -10578,6 +10608,8 @@ class EVVehicleCommandView(HomeAssistantView):
         if success:
             if charger_type == "zaptec":
                 return True, "Charging stopped via Zaptec"
+            if charger_type == "sigenergy":
+                return True, "Charging stopped via Sigenergy charger"
             return True, "Charging stopped"
 
         return False, "Failed to stop charging"
@@ -10595,7 +10627,7 @@ class EVVehicleCommandView(HomeAssistantView):
             "Manual charge limit from mobile",
         )
         if success:
-            if charger_type in ("generic", "ocpp", "zaptec"):
+            if charger_type in ("generic", "ocpp", "zaptec", "sigenergy"):
                 return True, "Charge limit is not supported for this charger"
             return True, f"Charge limit set to {percent}%"
 
