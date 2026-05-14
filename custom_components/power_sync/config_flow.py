@@ -4305,7 +4305,28 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
         """Save a single section's data merged with existing options and finish."""
         final = dict(self.config_entry.options)
         final.update(section_data)
+        self._apply_legacy_data_key_removals()
         return self.async_create_entry(title="", data=final)
+
+    def _remove_legacy_data_keys(self, keys: tuple[str, ...]) -> None:
+        """Mark option-owned keys for removal from legacy config entry data."""
+        pending = set(getattr(self, "_legacy_data_keys_to_remove", ()))
+        pending.update(keys)
+        self._legacy_data_keys_to_remove = tuple(sorted(pending))
+
+    def _apply_legacy_data_key_removals(self) -> None:
+        """Remove pending option-owned keys from legacy config entry data."""
+        keys = getattr(self, "_legacy_data_keys_to_remove", ())
+        if not keys:
+            return
+        new_data = dict(self.config_entry.data)
+        for key in keys:
+            new_data.pop(key, None)
+        if new_data != self.config_entry.data:
+            self.hass.config_entries.async_update_entry(
+                self.config_entry,
+                data=new_data,
+            )
 
     def _has_weather_entities(self) -> bool:
         """Return whether HA currently exposes any weather entities."""
@@ -7583,9 +7604,20 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     user_input.get(CONF_WEATHER_ENTITY)
                 ),
                 CONF_SOLCAST_ENABLED: user_input.get(CONF_SOLCAST_ENABLED, False),
-                CONF_SOLCAST_API_KEY: user_input.get(CONF_SOLCAST_API_KEY, ""),
-                CONF_SOLCAST_RESOURCE_ID: user_input.get(CONF_SOLCAST_RESOURCE_ID, ""),
+                CONF_SOLCAST_API_KEY: (
+                    user_input.get(CONF_SOLCAST_API_KEY) or ""
+                ).strip(),
+                CONF_SOLCAST_RESOURCE_ID: (
+                    user_input.get(CONF_SOLCAST_RESOURCE_ID) or ""
+                ).strip(),
             }
+            self._remove_legacy_data_keys(
+                (
+                    CONF_SOLCAST_ENABLED,
+                    CONF_SOLCAST_API_KEY,
+                    CONF_SOLCAST_RESOURCE_ID,
+                )
+            )
 
             # If entered from menu, save weather settings only and finish
             if getattr(self, "_from_menu", False):
@@ -8093,6 +8125,7 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
         if generic_soc:
             final_data[CONF_GENERIC_CHARGER_SOC_ENTITY] = generic_soc
 
+        self._apply_legacy_data_key_removals()
         return self.async_create_entry(title="", data=final_data)
 
     async def async_step_zaptec_cloud_options(

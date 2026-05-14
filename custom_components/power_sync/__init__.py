@@ -8670,6 +8670,42 @@ class CurrentWeatherView(HomeAssistantView):
             }, status=500)
 
 
+_SOLCAST_SETTINGS_KEYS = (
+    CONF_SOLCAST_ENABLED,
+    CONF_SOLCAST_API_KEY,
+    CONF_SOLCAST_RESOURCE_ID,
+)
+
+_SOLCAST_EXTERNAL_SENSOR_PATTERNS = (
+    "sensor.solcast_pv_forecast_forecast_today",
+    "sensor.solcast_forecast_today",
+    "sensor.solcast_pv_forecast_today",
+)
+
+
+def _has_external_solcast_integration(hass: HomeAssistant) -> bool:
+    """Return whether the external Solcast integration exposes usable sensors."""
+    components = getattr(getattr(hass, "config", None), "components", set())
+    if "solcast_solar" in components:
+        return True
+    return any(
+        state is not None and state.state not in ("unavailable", "unknown", None, "")
+        for state in (
+            hass.states.get(entity_id)
+            for entity_id in _SOLCAST_EXTERNAL_SENSOR_PATTERNS
+        )
+    )
+
+
+def _solcast_builtin_configured(config: dict[str, Any]) -> bool:
+    """Return whether PowerSync's own Solcast API polling is configured."""
+    return bool(
+        config.get(CONF_SOLCAST_ENABLED)
+        and str(config.get(CONF_SOLCAST_API_KEY) or "").strip()
+        and str(config.get(CONF_SOLCAST_RESOURCE_ID) or "").strip()
+    )
+
+
 class WeatherSolcastSettingsView(HomeAssistantView):
     """HTTP view to get/set weather and Solcast settings from mobile app."""
 
@@ -8692,15 +8728,15 @@ class WeatherSolcastSettingsView(HomeAssistantView):
             return web.json_response({"success": False, "error": "Not configured"}, status=503)
 
         opts = {**entry.data, **entry.options}
-        builtin_enabled = opts.get(CONF_SOLCAST_ENABLED, False)
+        builtin_configured = _solcast_builtin_configured(opts)
 
         # Detect external Solcast HA integration (solcast_solar)
-        external_solcast = bool(self._hass.states.get("sensor.solcast_pv_forecast_forecast_today"))
+        external_solcast = _has_external_solcast_integration(self._hass)
         solcast_source = "none"
-        if builtin_enabled:
-            solcast_source = "builtin"
-        elif external_solcast:
+        if external_solcast:
             solcast_source = "integration"
+        elif builtin_configured:
+            solcast_source = "builtin"
 
         # Pick up any init error the coordinator cached at setup so the app
         # can display the real failure reason (e.g. "API key does not match
@@ -8712,8 +8748,8 @@ class WeatherSolcastSettingsView(HomeAssistantView):
         solcast_active = bool(solcast_coord is not None or external_solcast)
 
         _LOGGER.info(
-            "Weather/Solcast GET: source=%s, builtin_enabled=%s, external_detected=%s, api_key=%s, active=%s, init_error=%s",
-            solcast_source, builtin_enabled, external_solcast,
+            "Weather/Solcast GET: source=%s, builtin_configured=%s, external_detected=%s, api_key=%s, active=%s, init_error=%s",
+            solcast_source, builtin_configured, external_solcast,
             "set" if opts.get(CONF_SOLCAST_API_KEY) else "empty",
             solcast_active, bool(solcast_init_error),
         )
@@ -8721,7 +8757,7 @@ class WeatherSolcastSettingsView(HomeAssistantView):
             "success": True,
             "weather_location": opts.get(CONF_WEATHER_LOCATION, ""),
             "openweathermap_api_key": opts.get(CONF_OPENWEATHERMAP_API_KEY, ""),
-            "solcast_enabled": builtin_enabled or external_solcast,
+            "solcast_enabled": builtin_configured or external_solcast,
             "solcast_source": solcast_source,
             "solcast_api_key": opts.get(CONF_SOLCAST_API_KEY, ""),
             "solcast_resource_id": opts.get(CONF_SOLCAST_RESOURCE_ID, ""),
@@ -8743,6 +8779,8 @@ class WeatherSolcastSettingsView(HomeAssistantView):
         try:
             data = await request.json()
             new_options = dict(entry.options)
+            new_data = dict(entry.data)
+            old_effective = {**entry.data, **entry.options}
 
             if "weather_location" in data:
                 new_options[CONF_WEATHER_LOCATION] = data["weather_location"]
@@ -8750,30 +8788,36 @@ class WeatherSolcastSettingsView(HomeAssistantView):
                 new_options[CONF_OPENWEATHERMAP_API_KEY] = data["openweathermap_api_key"]
             if "solcast_enabled" in data:
                 new_options[CONF_SOLCAST_ENABLED] = bool(data["solcast_enabled"])
+                new_data.pop(CONF_SOLCAST_ENABLED, None)
             if "solcast_api_key" in data:
                 new_options[CONF_SOLCAST_API_KEY] = (data["solcast_api_key"] or "").strip()
+                new_data.pop(CONF_SOLCAST_API_KEY, None)
             if "solcast_resource_id" in data:
                 new_options[CONF_SOLCAST_RESOURCE_ID] = (data["solcast_resource_id"] or "").strip()
+                new_data.pop(CONF_SOLCAST_RESOURCE_ID, None)
 
             # Determine whether any solcast-related setting changed OR whether the
             # coordinator is missing despite valid config. Either case requires a
             # reload to (re)initialize SolcastForecastCoordinator, which is only
             # created inside async_setup_entry.
-            solcast_keys = (CONF_SOLCAST_ENABLED, CONF_SOLCAST_API_KEY, CONF_SOLCAST_RESOURCE_ID)
+            new_effective = {**new_data, **new_options}
             solcast_changed = any(
-                entry.options.get(k) != new_options.get(k) for k in solcast_keys
+                old_effective.get(k) != new_effective.get(k)
+                or entry.data.get(k) != new_data.get(k)
+                for k in _SOLCAST_SETTINGS_KEYS
             )
 
             entry_data = self._hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
             coordinator_missing = (
-                bool(new_options.get(CONF_SOLCAST_ENABLED))
-                and bool(new_options.get(CONF_SOLCAST_API_KEY))
-                and bool(new_options.get(CONF_SOLCAST_RESOURCE_ID))
+                _solcast_builtin_configured(new_effective)
                 and entry_data.get("solcast_coordinator") is None
-                and "solcast_solar" not in self._hass.config.components
+                and "solcast_solar" not in getattr(self._hass.config, "components", set())
             )
 
-            self._hass.config_entries.async_update_entry(entry, options=new_options)
+            update_kwargs: dict[str, Any] = {"options": new_options}
+            if new_data != entry.data:
+                update_kwargs["data"] = new_data
+            self._hass.config_entries.async_update_entry(entry, **update_kwargs)
             _LOGGER.info(
                 "Weather/Solcast settings updated from mobile app "
                 "(solcast_changed=%s, coordinator_missing=%s, api_key=%s, resource_id=%s, enabled=%s)",
@@ -15476,7 +15520,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Initialize Solcast Solar Forecast Coordinator if enabled
     # Skip if the Solcast Solar integration is already installed (avoid double-polling API)
     solcast_coordinator = None
-    solcast_integration_installed = "solcast_solar" in hass.config.components
+    solcast_integration_installed = _has_external_solcast_integration(hass)
 
     solcast_enabled = entry.options.get(
         CONF_SOLCAST_ENABLED,
