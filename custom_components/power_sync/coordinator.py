@@ -4932,6 +4932,7 @@ class GoodWeEnergyCoordinator(DataUpdateCoordinator):
         ems_option: str,
         power_w: float,
         fallback_option: str | None = None,
+        reset_power_limit: bool = False,
     ) -> bool:
         """Control via the community GoodWe HA integration's EMS entities.
 
@@ -4946,6 +4947,7 @@ class GoodWeEnergyCoordinator(DataUpdateCoordinator):
         # GoodWe EMS power limit register is 16-bit unsigned, max 32768 W
         GOODWE_EMS_MAX_W = 32768
         try:
+            power_limit_log: int | str = "unchanged"
             if power_w > 0:
                 capped_w = min(int(power_w), GOODWE_EMS_MAX_W)
                 await self.hass.services.async_call(
@@ -4953,6 +4955,21 @@ class GoodWeEnergyCoordinator(DataUpdateCoordinator):
                     {"entity_id": power_entity, "value": capped_w},
                     blocking=True,
                 )
+                power_limit_log = capped_w
+            elif reset_power_limit:
+                try:
+                    await self.hass.services.async_call(
+                        "number", "set_value",
+                        {"entity_id": power_entity, "value": 0},
+                        blocking=True,
+                    )
+                    power_limit_log = 0
+                except Exception as reset_exc:
+                    _LOGGER.warning(
+                        "GoodWe EMS control could not reset %s power limit to 0W: %s",
+                        power_entity,
+                        reset_exc,
+                    )
 
             attempts = self._goodwe_ems_mode_attempts(
                 mode_entity,
@@ -4972,7 +4989,7 @@ class GoodWeEnergyCoordinator(DataUpdateCoordinator):
                         "GoodWe EMS control: set %s=%s power_limit=%sW",
                         mode_entity,
                         option,
-                        min(int(power_w), GOODWE_EMS_MAX_W) if power_w > 0 else "unchanged",
+                        power_limit_log,
                     )
                     return True
                 except Exception as select_exc:
@@ -5022,7 +5039,7 @@ class GoodWeEnergyCoordinator(DataUpdateCoordinator):
     async def restore_normal(self) -> bool:
         """Restore GoodWe to normal operation."""
         if self._ems_prefix:
-            return await self._ems_set_mode("auto", 0)
+            return await self._ems_set_mode("auto", 0, reset_power_limit=True)
         if not self._connected:
             await self._controller.connect()
             self._connected = True
