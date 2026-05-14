@@ -381,6 +381,7 @@ from .const import (
     DEFAULT_FOXESS_SERIAL_BAUDRATE,
     FOXESS_CONNECTION_TCP,
     FOXESS_CONNECTION_SERIAL,
+    FOXESS_CONNECTION_CLOUD,
     FOXESS_MODEL_H3_PRO,
     FOXESS_MODEL_H3_SMART,
     FOXESS_MODEL_FAMILIES,
@@ -3064,13 +3065,18 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_foxess_connection(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Choose FoxESS connection type: TCP or Serial."""
+        """Choose FoxESS connection type: TCP, Serial, or Cloud."""
         if user_input is not None:
             conn_type = user_input.get(
                 CONF_FOXESS_CONNECTION_TYPE, FOXESS_CONNECTION_TCP
             )
             if conn_type == FOXESS_CONNECTION_SERIAL:
                 return await self.async_step_foxess_serial()
+            if conn_type == FOXESS_CONNECTION_CLOUD:
+                self._foxess_data = {
+                    CONF_FOXESS_CONNECTION_TYPE: FOXESS_CONNECTION_CLOUD,
+                }
+                return await self.async_step_foxess_cloud()
             else:
                 return await self.async_step_foxess_tcp()
 
@@ -3085,6 +3091,7 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             options=[
                                 SelectOptionDict(value=FOXESS_CONNECTION_TCP, label="Modbus TCP (LAN/Wi-Fi)"),
                                 SelectOptionDict(value=FOXESS_CONNECTION_SERIAL, label="RS485 Serial"),
+                                SelectOptionDict(value=FOXESS_CONNECTION_CLOUD, label="FoxESS Cloud API"),
                             ],
                             mode=SelectSelectorMode.LIST,
                         )
@@ -3266,52 +3273,109 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_foxess_cloud(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Optional FoxESS Cloud API key (for tariff schedule sync)."""
+        """FoxESS Cloud API key for cloud control or tariff schedule sync."""
         errors = {}
+        cloud_required = (
+            self._foxess_data.get(CONF_FOXESS_CONNECTION_TYPE) == FOXESS_CONNECTION_CLOUD
+        )
 
         if user_input is not None:
-            # Cloud is optional — store if provided, skip if empty
+            # Cloud is optional for Modbus setups, required for cloud-only setups.
             api_key = user_input.get(CONF_FOXESS_CLOUD_API_KEY, "").strip()
             if api_key:
                 device_sn = user_input.get(CONF_FOXESS_CLOUD_DEVICE_SN, "").strip()
                 # Validate connection
                 try:
-                    from .foxess_api import FoxESSCloudClient
+                    from .foxess_api import FoxESSCloudClient, _extract_device_sn
 
                     client = FoxESSCloudClient(api_key=api_key, device_sn=device_sn)
                     try:
-                        success, message = await client.test_connection()
+                        devices = await client.get_device_list()
+                        self._foxess_cloud_devices = devices
+                        if not device_sn and len(devices) == 1:
+                            device_sn = _extract_device_sn(devices[0])
+                        if device_sn and devices and not any(
+                            _extract_device_sn(device) == device_sn
+                            for device in devices
+                        ):
+                            errors["base"] = "foxess_cloud_auth_failed"
+                            return self._show_foxess_cloud_form(
+                                errors,
+                                api_key=api_key,
+                                cloud_required=cloud_required,
+                            )
+                        if cloud_required and not device_sn:
+                            errors["base"] = "foxess_cloud_device_required"
+                            return self._show_foxess_cloud_form(
+                                errors,
+                                api_key=api_key,
+                                cloud_required=cloud_required,
+                            )
                     finally:
                         await client.close()
 
-                    if success:
-                        self._foxess_data[CONF_FOXESS_CLOUD_API_KEY] = api_key
-                        self._foxess_data[CONF_FOXESS_CLOUD_DEVICE_SN] = device_sn
-                        return self._create_final_entry()
-                    else:
-                        _LOGGER.warning(
-                            "FoxESS Cloud connection test failed: %s", message
-                        )
-                        errors["base"] = "foxess_cloud_auth_failed"
+                    self._foxess_data[CONF_FOXESS_CLOUD_API_KEY] = api_key
+                    self._foxess_data[CONF_FOXESS_CLOUD_DEVICE_SN] = device_sn
+                    return self._create_final_entry()
                 except Exception as e:
                     _LOGGER.error("FoxESS Cloud connection error: %s", e)
                     errors["base"] = "foxess_cloud_connection_error"
             else:
+                if cloud_required:
+                    errors["base"] = "foxess_cloud_required"
+                    return self._show_foxess_cloud_form(
+                        errors,
+                        cloud_required=cloud_required,
+                    )
                 # Blank API key — skip cloud setup
                 return self._create_final_entry()
 
+        return self._show_foxess_cloud_form(errors, cloud_required=cloud_required)
+
+    def _show_foxess_cloud_form(
+        self,
+        errors: dict[str, str],
+        *,
+        api_key: str = "",
+        cloud_required: bool = False,
+    ) -> FlowResult:
+        """Show FoxESS Cloud API setup with a selector when devices are known."""
+        device_field = TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT))
+        devices = getattr(self, "_foxess_cloud_devices", []) or []
+        device_options = []
+        if devices:
+            try:
+                from .foxess_api import _extract_device_sn
+
+                for device in devices:
+                    sn = _extract_device_sn(device)
+                    if sn:
+                        label = device.get("stationName") or device.get("deviceName") or sn
+                        device_options.append(SelectOptionDict(value=sn, label=f"{label} ({sn})"))
+            except Exception:
+                device_options = []
+        if device_options:
+            device_field = SelectSelector(
+                SelectSelectorConfig(options=device_options, mode=SelectSelectorMode.DROPDOWN)
+            )
+
+        api_key_marker = vol.Required if cloud_required else vol.Optional
+        device_marker = vol.Required if cloud_required else vol.Optional
+        schema = {
+            api_key_marker(CONF_FOXESS_CLOUD_API_KEY, default=api_key): TextSelector(
+                TextSelectorConfig(type=TextSelectorType.PASSWORD)
+            ),
+        }
+        device_key = (
+            device_marker(CONF_FOXESS_CLOUD_DEVICE_SN)
+            if cloud_required and device_options
+            else device_marker(CONF_FOXESS_CLOUD_DEVICE_SN, default="")
+        )
+        schema[device_key] = device_field
+
         return self.async_show_form(
             step_id="foxess_cloud",
-            data_schema=vol.Schema(
-                {
-                    vol.Optional(CONF_FOXESS_CLOUD_API_KEY, default=""): TextSelector(
-                        TextSelectorConfig(type=TextSelectorType.PASSWORD)
-                    ),
-                    vol.Optional(CONF_FOXESS_CLOUD_DEVICE_SN, default=""): TextSelector(
-                        TextSelectorConfig(type=TextSelectorType.TEXT)
-                    ),
-                }
-            ),
+            data_schema=vol.Schema(schema),
             errors=errors,
         )
 
@@ -4909,11 +4973,15 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             )
             modbus_host = user_input.get(CONF_FOXESS_HOST, "").strip()
             serial_port = user_input.get(CONF_FOXESS_SERIAL_PORT, "").strip()
+            cloud_api_key = user_input.get(CONF_FOXESS_CLOUD_API_KEY, "").strip()
+            cloud_device_sn = user_input.get(CONF_FOXESS_CLOUD_DEVICE_SN, "").strip()
 
             if conn_type == FOXESS_CONNECTION_TCP and not modbus_host:
                 errors["base"] = "foxess_host_required"
             elif conn_type == FOXESS_CONNECTION_SERIAL and not serial_port:
                 errors["base"] = "foxess_serial_required"
+            elif conn_type == FOXESS_CONNECTION_CLOUD and (not cloud_api_key or not cloud_device_sn):
+                errors["base"] = "foxess_cloud_required"
             else:
                 new_data = dict(self.config_entry.data)
                 new_data[CONF_FOXESS_CONNECTION_TYPE] = conn_type
@@ -4922,11 +4990,14 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     new_data[CONF_FOXESS_PORT] = user_input.get(
                         CONF_FOXESS_PORT, DEFAULT_FOXESS_PORT
                     )
-                else:
+                elif conn_type == FOXESS_CONNECTION_SERIAL:
                     new_data[CONF_FOXESS_SERIAL_PORT] = serial_port
                     new_data[CONF_FOXESS_SERIAL_BAUDRATE] = user_input.get(
                         CONF_FOXESS_SERIAL_BAUDRATE, DEFAULT_FOXESS_SERIAL_BAUDRATE
                     )
+                else:
+                    new_data[CONF_FOXESS_CLOUD_API_KEY] = cloud_api_key
+                    new_data[CONF_FOXESS_CLOUD_DEVICE_SN] = cloud_device_sn
                 new_data[CONF_FOXESS_SLAVE_ID] = user_input.get(
                     CONF_FOXESS_SLAVE_ID, DEFAULT_FOXESS_SLAVE_ID
                 )
@@ -4950,10 +5021,13 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
         current_baudrate = self._get_option(
             CONF_FOXESS_SERIAL_BAUDRATE, DEFAULT_FOXESS_SERIAL_BAUDRATE
         )
+        current_cloud_api_key = self._get_option(CONF_FOXESS_CLOUD_API_KEY, "")
+        current_cloud_device_sn = self._get_option(CONF_FOXESS_CLOUD_DEVICE_SN, "")
 
         foxess_conn_types = {
             FOXESS_CONNECTION_TCP: "Modbus TCP",
             FOXESS_CONNECTION_SERIAL: "RS485 Serial",
+            FOXESS_CONNECTION_CLOUD: "FoxESS Cloud API",
         }
 
         return self.async_show_form(
@@ -4996,6 +5070,14 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     ): NumberSelector(NumberSelectorConfig(
                         min=300, max=115200, step=1, mode=NumberSelectorMode.BOX,
                     )),
+                    vol.Optional(
+                        CONF_FOXESS_CLOUD_API_KEY,
+                        default=current_cloud_api_key,
+                    ): TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD)),
+                    vol.Optional(
+                        CONF_FOXESS_CLOUD_DEVICE_SN,
+                        default=current_cloud_device_sn,
+                    ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
                 }
             ),
             errors=errors,
@@ -6645,11 +6727,15 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             )
             modbus_host = user_input.get(CONF_FOXESS_HOST, "").strip()
             serial_port = user_input.get(CONF_FOXESS_SERIAL_PORT, "").strip()
+            cloud_api_key = user_input.get(CONF_FOXESS_CLOUD_API_KEY, "").strip()
+            cloud_device_sn = user_input.get(CONF_FOXESS_CLOUD_DEVICE_SN, "").strip()
 
             if conn_type == FOXESS_CONNECTION_TCP and not modbus_host:
                 errors["base"] = "foxess_host_required"
             elif conn_type == FOXESS_CONNECTION_SERIAL and not serial_port:
                 errors["base"] = "foxess_serial_required"
+            elif conn_type == FOXESS_CONNECTION_CLOUD and (not cloud_api_key or not cloud_device_sn):
+                errors["base"] = "foxess_cloud_required"
             else:
                 self._provider = user_input.get(CONF_ELECTRICITY_PROVIDER, "amber")
 
@@ -6661,11 +6747,14 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     new_data[CONF_FOXESS_PORT] = user_input.get(
                         CONF_FOXESS_PORT, DEFAULT_FOXESS_PORT
                     )
-                else:
+                elif conn_type == FOXESS_CONNECTION_SERIAL:
                     new_data[CONF_FOXESS_SERIAL_PORT] = serial_port
                     new_data[CONF_FOXESS_SERIAL_BAUDRATE] = user_input.get(
                         CONF_FOXESS_SERIAL_BAUDRATE, DEFAULT_FOXESS_SERIAL_BAUDRATE
                     )
+                else:
+                    new_data[CONF_FOXESS_CLOUD_API_KEY] = cloud_api_key
+                    new_data[CONF_FOXESS_CLOUD_DEVICE_SN] = cloud_device_sn
                 new_data[CONF_FOXESS_SLAVE_ID] = user_input.get(
                     CONF_FOXESS_SLAVE_ID, DEFAULT_FOXESS_SLAVE_ID
                 )
@@ -6716,6 +6805,8 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
         current_baudrate = self._get_option(
             CONF_FOXESS_SERIAL_BAUDRATE, DEFAULT_FOXESS_SERIAL_BAUDRATE
         )
+        current_cloud_api_key = self._get_option(CONF_FOXESS_CLOUD_API_KEY, "")
+        current_cloud_device_sn = self._get_option(CONF_FOXESS_CLOUD_DEVICE_SN, "")
         current_opt_provider = self.config_entry.data.get(
             CONF_OPTIMIZATION_PROVIDER, OPT_PROVIDER_NATIVE
         )
@@ -6731,6 +6822,7 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
         foxess_conn_types_legacy = {
             FOXESS_CONNECTION_TCP: "Modbus TCP",
             FOXESS_CONNECTION_SERIAL: "RS485 Serial",
+            FOXESS_CONNECTION_CLOUD: "FoxESS Cloud API",
         }
 
         return self.async_show_form(
@@ -6802,6 +6894,14 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     ): NumberSelector(NumberSelectorConfig(
                         min=300, max=115200, step=1, mode=NumberSelectorMode.BOX,
                     )),
+                    vol.Optional(
+                        CONF_FOXESS_CLOUD_API_KEY,
+                        default=current_cloud_api_key,
+                    ): TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD)),
+                    vol.Optional(
+                        CONF_FOXESS_CLOUD_DEVICE_SN,
+                        default=current_cloud_device_sn,
+                    ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
                 }
             ),
             errors=errors,

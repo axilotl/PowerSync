@@ -103,6 +103,7 @@ def test_configured_generic_entities_preserve_vehicle_overrides():
     }
 
     result = ev_planner._with_configured_charger_entities(
+        None,
         params,
         {
             "generic_charger_switch_entity": "switch.global_ev",

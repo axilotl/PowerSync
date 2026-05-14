@@ -10,9 +10,11 @@ Auth uses signature-based headers:
   - lang: "en"
 """
 
+import asyncio
 import hashlib
 import logging
 import time
+from datetime import datetime, timedelta
 from typing import Optional
 
 import aiohttp
@@ -26,6 +28,49 @@ _LOGGER = logging.getLogger(__name__)
 
 # FoxESS Open API rate limit: 1440 calls/day, min 1s between queries
 _MIN_REQUEST_INTERVAL = 1.0
+_MIN_WRITE_INTERVAL = 2.0
+
+
+def _extract_device_sn(device: dict) -> str:
+    """Return a FoxESS serial number from known Open API response keys."""
+    return str(
+        device.get("deviceSN")
+        or device.get("sn")
+        or device.get("deviceSn")
+        or device.get("serialNumber")
+        or ""
+    ).strip()
+
+
+def _parse_time_range(start: datetime, end: datetime) -> tuple[int, int, int, int]:
+    """Convert datetimes to FoxESS scheduler hour/minute fields."""
+    if end <= start:
+        end = start + timedelta(minutes=1)
+    return start.hour, start.minute, end.hour, end.minute
+
+
+def _schedule_extra_params(
+    *,
+    min_soc: float = 10,
+    fd_soc: float = 100,
+    fd_pwr: float = 0,
+    max_soc: float = 100,
+    import_limit: float = 30000,
+    export_limit: float = 30000,
+    pv_limit: float = 30000,
+    reactive_power: float = 0,
+) -> dict:
+    """Return Scheduler V3 extraParam with conservative defaults."""
+    return {
+        "minSocOnGrid": float(min_soc),
+        "fdSoc": float(fd_soc),
+        "fdPwr": float(fd_pwr),
+        "maxSoc": float(max_soc),
+        "importLimit": float(import_limit),
+        "exportLimit": float(export_limit),
+        "pvLimit": float(pv_limit),
+        "reactivePower": float(reactive_power),
+    }
 
 
 class FoxESSCloudClient:
@@ -84,14 +129,24 @@ class FoxESSCloudClient:
             "Content-Type": "application/json",
         }
 
-    async def _post(self, path: str, payload: dict) -> dict:
-        """Make authenticated POST request to FoxESS API.
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        payload: dict | None = None,
+        *,
+        params: dict | None = None,
+        write: bool = False,
+    ) -> dict:
+        """Make authenticated request to FoxESS API.
 
         Handles rate limiting (1 req/sec) and error checking.
 
         Args:
             path: API path (e.g., /op/v0/device/list)
-            payload: JSON request body
+            payload: JSON request body for POST requests
+            params: Query parameters for GET requests
+            write: Apply the write endpoint rate limit
 
         Returns:
             Response dict with 'result' key on success
@@ -102,19 +157,28 @@ class FoxESSCloudClient:
         # Rate limiting — wait if needed
         now = time.time()
         elapsed = now - self._last_request_time
-        if elapsed < _MIN_REQUEST_INTERVAL:
-            import asyncio
-            await asyncio.sleep(_MIN_REQUEST_INTERVAL - elapsed)
+        min_interval = _MIN_WRITE_INTERVAL if write else _MIN_REQUEST_INTERVAL
+        if elapsed < min_interval:
+            await asyncio.sleep(min_interval - elapsed)
 
         url = f"{FOXESS_CLOUD_BASE_URL}{path}"
         headers = self._generate_signature(path)
+        headers["User-Agent"] = "PowerSync Home Assistant"
 
         session = await self._get_session()
         self._last_request_time = time.time()
 
-        async with session.post(
-            url, headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=30)
-        ) as response:
+        request_method = method.upper()
+        kwargs = {
+            "headers": headers,
+            "timeout": aiohttp.ClientTimeout(total=30),
+        }
+        if request_method == "GET":
+            kwargs["params"] = params or payload or {}
+        else:
+            kwargs["json"] = payload or {}
+
+        async with session.request(request_method, url, **kwargs) as response:
             if response.status != 200:
                 text = await response.text()
                 raise Exception(f"FoxESS API HTTP {response.status}: {text}")
@@ -129,6 +193,14 @@ class FoxESSCloudClient:
 
             return data.get("result", data)
 
+    async def _post(self, path: str, payload: dict, *, write: bool = False) -> dict:
+        """Make authenticated POST request to FoxESS API."""
+        return await self._request("POST", path, payload, write=write)
+
+    async def _get(self, path: str, params: dict) -> dict:
+        """Make authenticated GET request to FoxESS API."""
+        return await self._request("GET", path, params=params)
+
     async def get_device_list(self) -> list[dict]:
         """Get list of devices for this account.
 
@@ -138,7 +210,15 @@ class FoxESSCloudClient:
         path = "/op/v0/device/list"
         payload = {"currentPage": 1, "pageSize": 10}
         result = await self._post(path, payload)
-        devices = result.get("devices", []) if isinstance(result, dict) else []
+        if isinstance(result, dict):
+            devices = (
+                result.get("devices")
+                or result.get("data")
+                or result.get("list")
+                or []
+            )
+        else:
+            devices = result if isinstance(result, list) else []
         _LOGGER.info("FoxESS Cloud: found %d device(s)", len(devices))
         return devices
 
@@ -151,11 +231,24 @@ class FoxESSCloudClient:
         Returns:
             Dict with real-time device data
         """
-        path = "/op/v0/device/real/query"
+        path = "/op/v1/device/real/query"
         device_sn = sn or self.device_sn
         payload = {
-            "sn": device_sn,
-            "variables": ["pvPower", "gridConsumptionPower", "loadsPower", "batPower", "SoC"],
+            "sns": [device_sn],
+            "variables": [
+                "pvPower",
+                "gridConsumptionPower",
+                "feedinPower",
+                "loadsPower",
+                "batPower",
+                "SoC",
+                "workMode",
+                "generationPower",
+                "chargePower",
+                "dischargePower",
+                "chargeEnergyToTal",
+                "dischargeEnergyToTal",
+            ],
         }
         return await self._post(path, payload)
 
@@ -180,10 +273,127 @@ class FoxESSCloudClient:
             )
             groups = groups[:FOXESS_MAX_SCHEDULE_PERIODS]
 
-        path = "/op/v0/device/scheduler/set"
-        payload = {"sn": sn, "groups": groups}
+        path = "/op/v3/device/scheduler/enable"
+        payload = {"deviceSN": sn, "groups": [to_scheduler_v3_group(g) for g in groups]}
         _LOGGER.info("FoxESS Cloud: setting scheduler with %d groups for %s", len(groups), sn)
-        return await self._post(path, payload)
+        return await self._post(path, payload, write=True)
+
+    async def get_scheduler(self, sn: str = "") -> dict:
+        """Get Scheduler V3 time segment information."""
+        path = "/op/v3/device/scheduler/get"
+        return await self._post(path, {"deviceSN": sn or self.device_sn})
+
+    async def set_scheduler_v3(self, groups: list[dict], sn: str = "") -> dict:
+        """Set Scheduler V3 time segment information."""
+        return await self.set_scheduler(sn or self.device_sn, groups)
+
+    async def get_device_setting(self, key: str, sn: str = "") -> dict:
+        """Get a cloud device setting by key."""
+        path = "/op/v0/device/setting/get"
+        return await self._post(path, {"sn": sn or self.device_sn, "key": key})
+
+    async def set_device_setting(self, key: str, value, sn: str = "") -> dict:
+        """Set a cloud device setting by key."""
+        path = "/op/v0/device/setting/set"
+        return await self._post(
+            path,
+            {"sn": sn or self.device_sn, "key": key, "value": value},
+            write=True,
+        )
+
+    async def get_battery_soc(self, sn: str = "") -> dict:
+        """Get min SOC settings for the device battery."""
+        path = "/op/v0/device/battery/soc/get"
+        return await self._get(path, {"sn": sn or self.device_sn})
+
+    async def set_battery_soc(
+        self,
+        min_soc: int,
+        min_soc_on_grid: int | None = None,
+        sn: str = "",
+    ) -> dict:
+        """Set min SOC settings for the device battery."""
+        path = "/op/v0/device/battery/soc/set"
+        value = int(max(0, min(100, min_soc)))
+        payload = {
+            "sn": sn or self.device_sn,
+            "minSoc": value,
+            "minSocOnGrid": int(max(0, min(100, min_soc_on_grid if min_soc_on_grid is not None else value))),
+        }
+        return await self._post(path, payload, write=True)
+
+    async def get_module_list(self) -> list[dict]:
+        """Get datalogger modules for this account."""
+        path = "/op/v0/module/list"
+        result = await self._post(path, {"currentPage": 1, "pageSize": 100})
+        if isinstance(result, dict):
+            return result.get("data") or result.get("list") or []
+        return result if isinstance(result, list) else []
+
+    async def send_modbus_command(
+        self,
+        module_sn: str,
+        data: str,
+        timeout: int = 10,
+    ) -> dict:
+        """Send a base64-encoded Modbus command through a FoxESS datalogger."""
+        path = "/op/v0/module/modbus/commands"
+        return await self._post(
+            path,
+            {"sn": module_sn, "timeout": timeout, "data": data},
+            write=True,
+        )
+
+    async def force_charge(
+        self,
+        duration_minutes: int = 30,
+        power_w: float = 0,
+        target_soc: int = 100,
+        min_soc: int = 10,
+    ) -> dict:
+        """Create an immediate ForceCharge Scheduler V3 group."""
+        now = datetime.now()
+        end = now + timedelta(minutes=max(1, duration_minutes))
+        sh, sm, eh, em = _parse_time_range(now, end)
+        group = {
+            "startHour": sh,
+            "startMinute": sm,
+            "endHour": eh,
+            "endMinute": em,
+            "workMode": "ForceCharge",
+            "extraParam": _schedule_extra_params(
+                min_soc=min_soc,
+                fd_soc=target_soc,
+                fd_pwr=max(0, power_w),
+                max_soc=target_soc,
+            ),
+        }
+        return await self.set_scheduler_v3([group])
+
+    async def force_discharge(
+        self,
+        duration_minutes: int = 30,
+        power_w: float = 0,
+        target_soc: int = 10,
+        min_soc: int = 10,
+    ) -> dict:
+        """Create an immediate ForceDischarge Scheduler V3 group."""
+        now = datetime.now()
+        end = now + timedelta(minutes=max(1, duration_minutes))
+        sh, sm, eh, em = _parse_time_range(now, end)
+        group = {
+            "startHour": sh,
+            "startMinute": sm,
+            "endHour": eh,
+            "endMinute": em,
+            "workMode": "ForceDischarge",
+            "extraParam": _schedule_extra_params(
+                min_soc=min_soc,
+                fd_soc=max(target_soc, min_soc),
+                fd_pwr=max(0, power_w),
+            ),
+        }
+        return await self.set_scheduler_v3([group])
 
     async def test_connection(self) -> tuple[bool, str]:
         """Test the connection to FoxESS Cloud API.
@@ -198,9 +408,9 @@ class FoxESSCloudClient:
 
             # If device_sn is specified, check it exists
             if self.device_sn:
-                found = any(d.get("deviceSN") == self.device_sn for d in devices)
+                found = any(_extract_device_sn(d) == self.device_sn for d in devices)
                 if not found:
-                    device_sns = [d.get("deviceSN", "?") for d in devices]
+                    device_sns = [_extract_device_sn(d) or "?" for d in devices]
                     return False, (
                         f"Device '{self.device_sn}' not found. "
                         f"Available devices: {', '.join(device_sns)}"
@@ -210,6 +420,49 @@ class FoxESSCloudClient:
 
         except Exception as e:
             return False, str(e)
+
+
+def to_scheduler_v3_group(group: dict) -> dict:
+    """Normalize legacy/internal scheduler groups to Scheduler V3 shape."""
+    extra = group.get("extraParam")
+    if not isinstance(extra, dict):
+        extra = _schedule_extra_params(
+            min_soc=group.get("minSocOnGrid", group.get("minsocongrid", 10)),
+            fd_soc=group.get("fdSoc", group.get("fdsoc", 100)),
+            fd_pwr=group.get("fdPwr", group.get("fdpwr", 0)),
+            max_soc=group.get("maxSoc", group.get("maxsoc", 100)),
+            import_limit=group.get("importLimit", 30000),
+            export_limit=group.get("exportLimit", 30000),
+            pv_limit=group.get("pvLimit", 30000),
+            reactive_power=group.get("reactivePower", 0),
+        )
+
+    return {
+        "startHour": int(group.get("startHour", 0)),
+        "startMinute": int(group.get("startMinute", 0)),
+        "endHour": int(group.get("endHour", 23)),
+        "endMinute": int(group.get("endMinute", 59)),
+        "workMode": group.get("workMode", "SelfUse"),
+        "extraParam": extra,
+    }
+
+
+def filter_public_scheduler_groups(groups: list[dict]) -> list[dict]:
+    """Drop FoxCloud hidden full-day remaining-mode groups before reposting."""
+    filtered = []
+    for group in groups or []:
+        if group.get("isRemainMode"):
+            continue
+        if (
+            group.get("startHour") == 0
+            and group.get("startMinute") == 0
+            and group.get("endHour") == 23
+            and group.get("endMinute") == 59
+            and group.get("workMode") == "SelfUse"
+        ):
+            continue
+        filtered.append(to_scheduler_v3_group(group))
+    return filtered
 
 
 def convert_prices_to_foxess_schedule(
@@ -339,19 +592,18 @@ def convert_prices_to_foxess_schedule(
 
         mode = group["mode"]
 
-        # Map mode to FoxESS workMode values
-        # workMode: "SelfUse" | "ForceCharge" | "ForceDischarge" | "Backup" | "FeedIn"
         foxess_group = {
-            "enable": True,
             "startHour": sh,
             "startMinute": sm,
             "endHour": eh,
             "endMinute": em,
             "workMode": mode,
-            "minSocOnGrid": min_soc,
-            "fdSoc": charge_soc if mode == "ForceCharge" else min_soc,
-            "fdPwr": 0,  # 0 = use inverter max
-            "maxSoc": charge_soc if mode == "ForceCharge" else 100,
+            "extraParam": _schedule_extra_params(
+                min_soc=min_soc,
+                fd_soc=charge_soc if mode == "ForceCharge" else min_soc,
+                fd_pwr=0,
+                max_soc=charge_soc if mode == "ForceCharge" else 100,
+            ),
         }
 
         groups.append(foxess_group)

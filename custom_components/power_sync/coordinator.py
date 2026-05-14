@@ -4782,6 +4782,296 @@ class FoxESSEnergyCoordinator(DataUpdateCoordinator):
         await self._controller.disconnect()
 
 
+class FoxESSCloudEnergyCoordinator(DataUpdateCoordinator):
+    """Coordinator to fetch and control FoxESS systems through FoxESS Cloud."""
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        api_key: str,
+        device_sn: str,
+        entry_id: str = "",
+    ) -> None:
+        """Initialize the cloud coordinator."""
+        from .foxess_api import FoxESSCloudClient
+
+        self._entry_id = entry_id
+        self.device_sn = device_sn
+        self._client = FoxESSCloudClient(
+            api_key=api_key,
+            device_sn=device_sn,
+            session=async_get_clientsession(hass),
+        )
+        # Keep compatibility with older curtailment code paths that reached for
+        # foxess_coordinator._controller.curtail()/restore().
+        self._controller = self
+        self._energy_acc = EnergyAccumulator(hass, "foxess_cloud")
+        self._store = Store(hass, 1, f"{DOMAIN}.foxess_cloud.{entry_id}") if entry_id else None
+        self._stored_scheduler_groups: list[dict] | None = None
+        self._last_backup_reserve = 10
+        self._last_export_enabled: float | None = None
+        self._last_export_limit: float | None = None
+        self._last_active_power_limit: float | None = None
+
+        super().__init__(
+            hass,
+            _LOGGER,
+            name="FoxESS Cloud Energy",
+            update_interval=timedelta(seconds=60),
+        )
+
+    @staticmethod
+    def _to_float(value: Any, default: float = 0.0) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _real_data_map(payload: Any) -> dict[str, Any]:
+        """Flatten FoxESS realtime response variants into variable -> value."""
+        if isinstance(payload, dict) and isinstance(payload.get("datas"), list):
+            rows = payload["datas"]
+        elif isinstance(payload, list) and payload:
+            first = payload[0]
+            rows = first.get("datas", []) if isinstance(first, dict) else []
+        elif isinstance(payload, dict):
+            result = payload.get("data") or payload.get("result")
+            if isinstance(result, list) and result:
+                rows = result[0].get("datas", []) if isinstance(result[0], dict) else []
+            else:
+                rows = []
+        else:
+            rows = []
+
+        data = {}
+        for item in rows:
+            if not isinstance(item, dict):
+                continue
+            key = item.get("variable") or item.get("key") or item.get("name")
+            if key:
+                data[str(key)] = item.get("value")
+        return data
+
+    async def _load_stored_scheduler(self) -> None:
+        if self._stored_scheduler_groups is not None or not self._store:
+            return
+        try:
+            stored = await self._store.async_load()
+        except Exception as err:
+            _LOGGER.debug("FoxESS Cloud: failed to load stored scheduler state: %s", err)
+            stored = None
+        self._stored_scheduler_groups = (stored or {}).get("scheduler_groups")
+
+    async def _save_current_scheduler(self) -> None:
+        """Persist current non-hidden scheduler groups before a temporary action."""
+        if self._stored_scheduler_groups:
+            return
+        try:
+            from .foxess_api import filter_public_scheduler_groups
+
+            result = await self._client.get_scheduler()
+            groups = []
+            if isinstance(result, dict):
+                groups = result.get("groups") or result.get("schedulerList") or []
+            self._stored_scheduler_groups = filter_public_scheduler_groups(groups)
+            if self._store:
+                await self._store.async_save({"scheduler_groups": self._stored_scheduler_groups})
+        except Exception as err:
+            _LOGGER.warning("FoxESS Cloud: failed to snapshot scheduler before control action: %s", err)
+            self._stored_scheduler_groups = []
+
+    async def _restore_stored_scheduler(self) -> bool:
+        await self._load_stored_scheduler()
+        if self._stored_scheduler_groups is not None:
+            await self._client.set_scheduler_v3(self._stored_scheduler_groups)
+        if self._store:
+            await self._store.async_save({"scheduler_groups": []})
+        self._stored_scheduler_groups = []
+        return True
+
+    async def _async_update_data(self) -> dict[str, Any]:
+        """Fetch FoxESS Cloud realtime data."""
+        if not self._energy_acc._last_update:
+            await self._energy_acc.async_restore()
+
+        try:
+            raw = await self._client.get_real_data()
+            values = self._real_data_map(raw)
+
+            solar_kw = self._to_float(values.get("pvPower") or values.get("generationPower")) / 1000.0
+            load_kw = self._to_float(values.get("loadsPower")) / 1000.0
+            battery_kw = self._to_float(values.get("batPower")) / 1000.0
+            import_kw = self._to_float(values.get("gridConsumptionPower")) / 1000.0
+            export_kw = self._to_float(values.get("feedinPower")) / 1000.0
+            grid_kw = import_kw - export_kw
+            soc = self._to_float(values.get("SoC") or values.get("soc"))
+
+            buy, sell = _get_current_prices(self.hass, self._entry_id)
+            self._energy_acc.update(solar_kw, grid_kw, battery_kw, load_kw, buy, sell)
+            acc = self._energy_acc.as_dict()
+
+            charge_total = self._to_float(values.get("chargeEnergyToTal"), acc["charge_today_kwh"])
+            discharge_total = self._to_float(values.get("dischargeEnergyToTal"), acc["discharge_today_kwh"])
+            acc["charge_today_kwh"] = charge_total
+            acc["discharge_today_kwh"] = discharge_total
+
+            data = {
+                "solar_power": max(0, solar_kw),
+                "grid_power": grid_kw,
+                "battery_power": battery_kw,
+                "load_power": load_kw,
+                "battery_level": soc,
+                "last_update": dt_util.utcnow(),
+                "work_mode": values.get("workMode"),
+                "work_mode_name": values.get("workMode"),
+                "energy_summary": acc,
+                "cloud_backend": True,
+            }
+            _LOGGER.debug(
+                "FoxESS Cloud data: solar=%.2f kW, grid=%.2f kW, battery=%.2f kW, load=%.2f kW, soc=%.0f%%",
+                data["solar_power"], data["grid_power"], data["battery_power"],
+                data["load_power"], data["battery_level"],
+            )
+            return data
+        except Exception as err:
+            raise UpdateFailed(f"Error fetching FoxESS Cloud energy data: {err}") from err
+
+    async def force_charge(
+        self,
+        duration_minutes: int = 30,
+        power_w: float = 0,
+        min_timeout_seconds: int = 600,
+    ) -> bool:
+        """Set FoxESS to force charge mode through Scheduler V3."""
+        await self._save_current_scheduler()
+        await self._client.force_charge(
+            duration_minutes,
+            power_w=power_w,
+            target_soc=100,
+            min_soc=self._last_backup_reserve,
+        )
+        return True
+
+    async def force_discharge(
+        self,
+        duration_minutes: int = 30,
+        power_w: float = 0,
+        min_timeout_seconds: int = 600,
+    ) -> bool:
+        """Set FoxESS to force discharge mode through Scheduler V3."""
+        await self._save_current_scheduler()
+        await self._client.force_discharge(
+            duration_minutes,
+            power_w=power_w,
+            target_soc=self._last_backup_reserve,
+            min_soc=self._last_backup_reserve,
+        )
+        return True
+
+    async def restore_normal(self) -> bool:
+        """Restore scheduler state and set SelfUse mode."""
+        await self._restore_stored_scheduler()
+        await self._client.set_device_setting("WorkMode", "SelfUse")
+        return True
+
+    async def set_backup_reserve(self, percent: int) -> bool:
+        """Set minimum SOC through FoxESS Cloud."""
+        value = int(max(0, min(100, percent)))
+        self._last_backup_reserve = value
+        await self._client.set_battery_soc(value, value)
+        return True
+
+    async def set_backup_mode(self) -> bool:
+        """Set FoxESS Backup mode through cloud settings."""
+        await self._client.set_device_setting("WorkMode", "Backup")
+        return True
+
+    async def restore_work_mode_from_idle(self) -> bool:
+        """Restore work mode to SelfUse after idle hold."""
+        return await self.restore_normal()
+
+    async def set_work_mode(self, mode: int | str) -> bool:
+        """Set FoxESS work mode through cloud settings."""
+        mode_map = {0: "SelfUse", 1: "FeedIn", 2: "Backup"}
+        cloud_mode = mode_map.get(mode, mode)
+        await self._client.set_device_setting("WorkMode", cloud_mode)
+        return True
+
+    async def set_charge_rate_limit(self, amps: float) -> bool:
+        """Set maximum charge current in amps."""
+        await self._client.set_device_setting("MaxSetChargeCurrent", float(amps))
+        return True
+
+    async def set_discharge_rate_limit(self, amps: float) -> bool:
+        """Set maximum discharge current in amps."""
+        await self._client.set_device_setting("MaxSetDischargeCurrent", float(amps))
+        return True
+
+    async def curtail(self, home_load_w: int | None = None) -> bool:
+        """Curtail export through FoxESS Cloud export limit settings."""
+        await self._save_current_scheduler()
+        for attr, key, default in (
+            ("_last_export_enabled", "ExportLimit", 1),
+            ("_last_export_limit", "ExportLimitPower", 30000),
+            ("_last_active_power_limit", "ActivePowerLimit", 30000),
+        ):
+            if getattr(self, attr) is not None:
+                continue
+            try:
+                current = await self._client.get_device_setting(key)
+                value = current.get("value") if isinstance(current, dict) else None
+                setattr(self, attr, self._to_float(value, default))
+            except Exception:
+                setattr(self, attr, default)
+        limit = max(0, float(home_load_w or 0))
+        await self._client.set_device_setting("ExportLimit", 1)
+        await self._client.set_device_setting("ExportLimitPower", limit)
+        await self._client.set_device_setting("ActivePowerLimit", limit)
+        await self._client.set_scheduler_v3(
+            [
+                {
+                    "startHour": 0,
+                    "startMinute": 0,
+                    "endHour": 23,
+                    "endMinute": 59,
+                    "workMode": "SelfUse",
+                    "exportLimit": limit,
+                    "pvLimit": limit,
+                    "minSocOnGrid": self._last_backup_reserve,
+                }
+            ]
+        )
+        return True
+
+    async def restore(self) -> bool:
+        """Compatibility alias for curtailment restore."""
+        return await self.restore_curtailment()
+
+    async def restore_curtailment(self) -> bool:
+        """Restore export limit after cloud curtailment."""
+        await self._restore_stored_scheduler()
+        restore_limit = self._last_export_limit if self._last_export_limit is not None else 30000
+        restore_active_limit = (
+            self._last_active_power_limit
+            if self._last_active_power_limit is not None
+            else 30000
+        )
+        await self._client.set_device_setting("ExportLimitPower", restore_limit)
+        await self._client.set_device_setting("ActivePowerLimit", restore_active_limit)
+        if self._last_export_enabled is not None:
+            await self._client.set_device_setting("ExportLimit", self._last_export_enabled)
+        self._last_export_enabled = None
+        self._last_export_limit = None
+        self._last_active_power_limit = None
+        return True
+
+    async def async_shutdown(self) -> None:
+        """Shutdown cloud coordinator."""
+        await self._energy_acc.async_flush()
+        await self._client.close()
+
+
 class GoodWeEnergyCoordinator(DataUpdateCoordinator):
     """Coordinator to fetch GoodWe battery system data via goodwe library.
 

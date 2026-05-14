@@ -307,6 +307,40 @@ def test_initial_setup_routes_to_combined_optimization_options_page():
     assert "return await self.async_step_optimization_provider()" not in method_source
 
 
+def test_foxess_initial_flow_offers_cloud_only_backend():
+    source = CONFIG_FLOW_PATH.read_text()
+    method = _config_flow_method("async_step_foxess_connection")
+    method_source = ast.get_source_segment(source, method)
+
+    assert method_source is not None
+    assert "FOXESS_CONNECTION_CLOUD" in method_source
+    assert "FoxESS Cloud API" in method_source
+    assert "return await self.async_step_foxess_cloud()" in method_source
+
+
+def test_foxess_cloud_initial_flow_requires_api_key_for_cloud_only():
+    source = CONFIG_FLOW_PATH.read_text()
+    method = _config_flow_method("async_step_foxess_cloud")
+    method_source = ast.get_source_segment(source, method)
+
+    assert method_source is not None
+    assert "cloud_required" in method_source
+    assert "FOXESS_CONNECTION_CLOUD" in method_source
+    assert "client.get_device_list()" in method_source
+    assert "len(devices) == 1" in method_source
+    assert '"foxess_cloud_device_required"' in method_source
+    assert '"foxess_cloud_required"' in method_source
+
+
+def test_foxess_cloud_runtime_uses_battery_system_and_cloud_coordinator():
+    init_source = (ROOT / "custom_components" / "power_sync" / "__init__.py").read_text()
+
+    assert "CONF_BATTERY_SYSTEM) == BATTERY_SYSTEM_FOXESS" in init_source
+    assert "FOXESS_CONNECTION_CLOUD" in init_source
+    assert "FoxESSCloudEnergyCoordinator" in init_source
+    assert "Initializing FoxESS Cloud coordinator" in init_source
+
+
 def test_smart_optimization_setup_and_options_text_match():
     for path in (STRINGS_PATH, TRANSLATIONS_PATH):
         data = json.loads(path.read_text())

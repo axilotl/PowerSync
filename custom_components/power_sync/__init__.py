@@ -409,6 +409,7 @@ from .const import (
     DEFAULT_FOXESS_SERIAL_BAUDRATE,
     FOXESS_CONNECTION_TCP,
     FOXESS_CONNECTION_SERIAL,
+    FOXESS_CONNECTION_CLOUD,
     FOXESS_WORK_MODES,
     # GoodWe battery system configuration
     BATTERY_SYSTEM_GOODWE,
@@ -526,6 +527,7 @@ from .coordinator import (
     SungrowEnergyCoordinator,
     DualSungrowCoordinator,
     FoxESSEnergyCoordinator,
+    FoxESSCloudEnergyCoordinator,
     GoodWeEnergyCoordinator,
     AlphaESSEnergyCoordinator,
     ESYSunhomeEnergyCoordinator,
@@ -3844,7 +3846,7 @@ class PowerwallSettingsView(HomeAssistantView):
         # Check if this is a non-Tesla setup - Powerwall settings may not apply.
         is_sigenergy = bool(entry.data.get(CONF_SIGENERGY_STATION_ID))
         is_sungrow = bool(entry.data.get(CONF_SUNGROW_HOST))
-        is_foxess = bool(entry.data.get(CONF_FOXESS_HOST) or entry.data.get(CONF_FOXESS_SERIAL_PORT))
+        is_foxess = bool(entry.data.get(CONF_BATTERY_SYSTEM) == BATTERY_SYSTEM_FOXESS or entry.data.get(CONF_FOXESS_HOST) or entry.data.get(CONF_FOXESS_SERIAL_PORT))
         is_neovolt_pw = bool(_get_neovolt_entry_ids(entry.data, self._hass))
         is_alphaess_pw = bool(entry.data.get(CONF_ALPHAESS_MODBUS_HOST))
         if is_alphaess_pw:
@@ -5817,7 +5819,7 @@ class FoxESSSettingsView(HomeAssistantView):
                 status=503
             )
 
-        is_foxess = bool(entry.data.get(CONF_FOXESS_HOST) or entry.data.get(CONF_FOXESS_SERIAL_PORT))
+        is_foxess = bool(entry.data.get(CONF_BATTERY_SYSTEM) == BATTERY_SYSTEM_FOXESS or entry.data.get(CONF_FOXESS_HOST) or entry.data.get(CONF_FOXESS_SERIAL_PORT))
         if not is_foxess:
             return web.json_response(
                 {"success": False, "error": "Not a FoxESS battery system", "reason": "not_foxess"},
@@ -5900,7 +5902,7 @@ class FoxESSSettingsView(HomeAssistantView):
                 status=503
             )
 
-        is_foxess = bool(entry.data.get(CONF_FOXESS_HOST) or entry.data.get(CONF_FOXESS_SERIAL_PORT))
+        is_foxess = bool(entry.data.get(CONF_BATTERY_SYSTEM) == BATTERY_SYSTEM_FOXESS or entry.data.get(CONF_FOXESS_HOST) or entry.data.get(CONF_FOXESS_SERIAL_PORT))
         if not is_foxess:
             return web.json_response(
                 {"success": False, "error": "Not a FoxESS battery system"},
@@ -14693,7 +14695,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Check if this is a Sigenergy, Sungrow, FoxESS, GoodWe, AlphaESS, or ESY Sunhome setup (no Tesla needed)
     is_sigenergy = bool(entry.data.get(CONF_SIGENERGY_STATION_ID))
     is_sungrow = bool(entry.data.get(CONF_SUNGROW_HOST))
-    is_foxess = bool(entry.data.get(CONF_FOXESS_HOST) or entry.data.get(CONF_FOXESS_SERIAL_PORT))
+    is_foxess = bool(
+        entry.data.get(CONF_BATTERY_SYSTEM) == BATTERY_SYSTEM_FOXESS
+        or entry.data.get(CONF_FOXESS_HOST)
+        or entry.data.get(CONF_FOXESS_SERIAL_PORT)
+    )
     is_goodwe = bool(entry.data.get(CONF_GOODWE_HOST))
     is_alphaess = bool(entry.data.get(CONF_ALPHAESS_MODBUS_HOST))
     is_esy_sunhome = bool(entry.data.get(CONF_ESY_CONFIG_ENTRY_ID))
@@ -14806,32 +14812,48 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     elif is_foxess:
         _LOGGER.info("Running in FoxESS mode - Tesla credentials not required")
 
-        # Initialize FoxESS Modbus coordinator
+        # Initialize selected FoxESS backend.
         foxess_conn_type = entry.data.get(CONF_FOXESS_CONNECTION_TYPE, FOXESS_CONNECTION_TCP)
-        foxess_host = entry.options.get(CONF_FOXESS_HOST, entry.data.get(CONF_FOXESS_HOST, ""))
-        foxess_port = entry.options.get(CONF_FOXESS_PORT, entry.data.get(CONF_FOXESS_PORT, DEFAULT_FOXESS_PORT))
-        foxess_slave_id = entry.options.get(CONF_FOXESS_SLAVE_ID, entry.data.get(CONF_FOXESS_SLAVE_ID, DEFAULT_FOXESS_SLAVE_ID))
-        foxess_serial_port = entry.data.get(CONF_FOXESS_SERIAL_PORT)
-        foxess_baudrate = entry.data.get(CONF_FOXESS_SERIAL_BAUDRATE, DEFAULT_FOXESS_SERIAL_BAUDRATE)
-        foxess_model_family = entry.data.get(CONF_FOXESS_MODEL_FAMILY)
+        if foxess_conn_type == FOXESS_CONNECTION_CLOUD:
+            foxess_api_key = entry.data.get(CONF_FOXESS_CLOUD_API_KEY, "")
+            foxess_device_sn = entry.data.get(CONF_FOXESS_CLOUD_DEVICE_SN, "")
+            if foxess_api_key and foxess_device_sn:
+                _LOGGER.info("Initializing FoxESS Cloud coordinator: device=%s", foxess_device_sn)
+                foxess_coordinator = FoxESSCloudEnergyCoordinator(
+                    hass,
+                    api_key=foxess_api_key,
+                    device_sn=foxess_device_sn,
+                    entry_id=entry.entry_id,
+                )
+            else:
+                _LOGGER.warning(
+                    "FoxESS Cloud mode enabled but API key or device serial is missing"
+                )
+        else:
+            foxess_host = entry.options.get(CONF_FOXESS_HOST, entry.data.get(CONF_FOXESS_HOST, ""))
+            foxess_port = entry.options.get(CONF_FOXESS_PORT, entry.data.get(CONF_FOXESS_PORT, DEFAULT_FOXESS_PORT))
+            foxess_slave_id = entry.options.get(CONF_FOXESS_SLAVE_ID, entry.data.get(CONF_FOXESS_SLAVE_ID, DEFAULT_FOXESS_SLAVE_ID))
+            foxess_serial_port = entry.data.get(CONF_FOXESS_SERIAL_PORT)
+            foxess_baudrate = entry.data.get(CONF_FOXESS_SERIAL_BAUDRATE, DEFAULT_FOXESS_SERIAL_BAUDRATE)
+            foxess_model_family = entry.data.get(CONF_FOXESS_MODEL_FAMILY)
 
-        _LOGGER.info(
-            "Initializing FoxESS Modbus coordinator: %s (%s, model=%s)",
-            foxess_host if foxess_conn_type == FOXESS_CONNECTION_TCP else foxess_serial_port,
-            foxess_conn_type,
-            foxess_model_family,
-        )
-        foxess_coordinator = FoxESSEnergyCoordinator(
-            hass,
-            foxess_host,
-            port=foxess_port,
-            slave_id=foxess_slave_id,
-            connection_type=foxess_conn_type,
-            serial_port=foxess_serial_port,
-            baudrate=foxess_baudrate,
-            model_family=foxess_model_family,
-            entry_id=entry.entry_id,
-        )
+            _LOGGER.info(
+                "Initializing FoxESS Modbus coordinator: %s (%s, model=%s)",
+                foxess_host if foxess_conn_type == FOXESS_CONNECTION_TCP else foxess_serial_port,
+                foxess_conn_type,
+                foxess_model_family,
+            )
+            foxess_coordinator = FoxESSEnergyCoordinator(
+                hass,
+                foxess_host,
+                port=foxess_port,
+                slave_id=foxess_slave_id,
+                connection_type=foxess_conn_type,
+                serial_port=foxess_serial_port,
+                baudrate=foxess_baudrate,
+                model_family=foxess_model_family,
+                entry_id=entry.entry_id,
+            )
     elif is_goodwe:
         _LOGGER.info("Running in GoodWe mode - Tesla credentials not required")
 
@@ -15126,9 +15148,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if foxess_coordinator:
         try:
             await foxess_coordinator.async_config_entry_first_refresh()
-            _LOGGER.info("FoxESS Modbus coordinator initialized successfully")
+            _LOGGER.info("FoxESS coordinator initialized successfully")
         except Exception as e:
-            _LOGGER.warning("FoxESS Modbus coordinator failed to initialize: %s", e)
+            _LOGGER.warning("FoxESS coordinator failed to initialize: %s", e)
             # Don't fail the entire setup - allow other features to work
             foxess_coordinator = None
     if goodwe_coordinator:
@@ -17175,7 +17197,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 CONF_OPTIMIZATION_PROVIDER,
                 entry.data.get(CONF_OPTIMIZATION_PROVIDER, OPT_PROVIDER_NATIVE)
             )
-            if optimization_provider == OPT_PROVIDER_POWERSYNC:
+            foxess_conn_type = entry.data.get(CONF_FOXESS_CONNECTION_TYPE, FOXESS_CONNECTION_TCP)
+            if (
+                optimization_provider == OPT_PROVIDER_POWERSYNC
+                and foxess_conn_type != FOXESS_CONNECTION_CLOUD
+            ):
                 _LOGGER.debug("FoxESS Cloud schedule sync skipped — LP optimizer controls via Modbus")
                 return
 
@@ -18467,20 +18493,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             export_earnings, import_price or 0, current_state,
         )
 
-        # Get FoxESS controller from coordinator
+        # Get FoxESS backend from coordinator (Modbus or Cloud)
         fc = entry_data.get("foxess_coordinator")
-        if not fc or not hasattr(fc, '_controller') or not fc._controller:
-            _LOGGER.debug("FoxESS curtailment: no controller available")
+        if not fc:
+            _LOGGER.debug("FoxESS curtailment: no backend available")
             return
 
-        controller = fc._controller
+        controller = getattr(fc, "_controller", fc)
 
         try:
             if export_earnings < 1:
                 # Negative or near-zero export earnings → curtail
                 if current_state != "curtailed":
                     _LOGGER.info("FoxESS curtailment TRIGGERED: export_earnings=%.2fc (<1c) → zero export", export_earnings)
-                    success = await controller.curtail()
+                    if hasattr(fc, "curtail"):
+                        success = await fc.curtail()
+                    else:
+                        success = await controller.curtail()
                     if success:
                         hass.data[DOMAIN][entry.entry_id]["foxess_curtailment_state"] = "curtailed"
                     else:
@@ -18491,7 +18520,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 # Positive export earnings → restore
                 if current_state != "normal":
                     _LOGGER.info("FoxESS curtailment RESTORED: export_earnings=%.2fc (>=1c) → normal export", export_earnings)
-                    success = await controller.restore()
+                    if hasattr(fc, "restore_curtailment"):
+                        success = await fc.restore_curtailment()
+                    else:
+                        success = await controller.restore()
                     if success:
                         hass.data[DOMAIN][entry.entry_id]["foxess_curtailment_state"] = "normal"
                     else:
@@ -20104,7 +20136,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 return
 
         # Check if this is a FoxESS system
-        is_foxess = bool(entry.data.get(CONF_FOXESS_HOST) or entry.data.get(CONF_FOXESS_SERIAL_PORT))
+        is_foxess = bool(entry.data.get(CONF_BATTERY_SYSTEM) == BATTERY_SYSTEM_FOXESS or entry.data.get(CONF_FOXESS_HOST) or entry.data.get(CONF_FOXESS_SERIAL_PORT))
         if is_foxess:
             try:
                 entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
@@ -21290,7 +21322,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 return
 
         # Check if this is a FoxESS system
-        is_foxess = bool(entry.data.get(CONF_FOXESS_HOST) or entry.data.get(CONF_FOXESS_SERIAL_PORT))
+        is_foxess = bool(entry.data.get(CONF_BATTERY_SYSTEM) == BATTERY_SYSTEM_FOXESS or entry.data.get(CONF_FOXESS_HOST) or entry.data.get(CONF_FOXESS_SERIAL_PORT))
         if is_foxess:
             try:
                 entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
@@ -22437,7 +22469,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 return
 
         # Check if this is a FoxESS system
-        is_foxess = bool(entry.data.get(CONF_FOXESS_HOST) or entry.data.get(CONF_FOXESS_SERIAL_PORT))
+        is_foxess = bool(entry.data.get(CONF_BATTERY_SYSTEM) == BATTERY_SYSTEM_FOXESS or entry.data.get(CONF_FOXESS_HOST) or entry.data.get(CONF_FOXESS_SERIAL_PORT))
         if is_foxess:
             try:
                 entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
@@ -23301,7 +23333,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             })
 
         # Check if this is a FoxESS system
-        is_foxess = bool(entry.data.get(CONF_FOXESS_HOST) or entry.data.get(CONF_FOXESS_SERIAL_PORT))
+        is_foxess = bool(entry.data.get(CONF_BATTERY_SYSTEM) == BATTERY_SYSTEM_FOXESS or entry.data.get(CONF_FOXESS_HOST) or entry.data.get(CONF_FOXESS_SERIAL_PORT))
         if is_foxess:
             try:
                 entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
@@ -23544,7 +23576,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.info("Optimizer: Setting autonomous (TOU) mode")
 
         # Non-Tesla systems: autonomous is the default, nothing to do
-        is_foxess = bool(entry.data.get(CONF_FOXESS_HOST) or entry.data.get(CONF_FOXESS_SERIAL_PORT))
+        is_foxess = bool(entry.data.get(CONF_BATTERY_SYSTEM) == BATTERY_SYSTEM_FOXESS or entry.data.get(CONF_FOXESS_HOST) or entry.data.get(CONF_FOXESS_SERIAL_PORT))
         is_sungrow = bool(entry.data.get(CONF_SUNGROW_HOST))
         is_sigenergy = bool(entry.data.get(CONF_SIGENERGY_STATION_ID))
         is_goodwe = bool(entry.data.get(CONF_GOODWE_HOST))
@@ -23631,7 +23663,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         is_sigenergy = bool(entry.data.get(CONF_SIGENERGY_STATION_ID))
 
         # Check if this is a FoxESS system
-        is_foxess = bool(entry.data.get(CONF_FOXESS_HOST) or entry.data.get(CONF_FOXESS_SERIAL_PORT))
+        is_foxess = bool(entry.data.get(CONF_BATTERY_SYSTEM) == BATTERY_SYSTEM_FOXESS or entry.data.get(CONF_FOXESS_HOST) or entry.data.get(CONF_FOXESS_SERIAL_PORT))
         # Check if this is a Sungrow system
         is_sungrow = bool(entry.data.get(CONF_SUNGROW_HOST))
         # Check if this is a GoodWe system

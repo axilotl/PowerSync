@@ -155,7 +155,7 @@ BATTERY_SYSTEMS = {
     BATTERY_SYSTEM_TESLA: "Tesla Powerwall — Fleet API or Teslemetry",
     BATTERY_SYSTEM_SIGENERGY: "Sigenergy — Cloud API + optional Modbus",
     BATTERY_SYSTEM_SUNGROW: "Sungrow SH-series — Modbus TCP",
-    BATTERY_SYSTEM_FOXESS: "FoxESS — Modbus TCP or RS485 serial",
+    BATTERY_SYSTEM_FOXESS: "FoxESS — Modbus TCP, RS485 serial, or Cloud API",
     BATTERY_SYSTEM_GOODWE: "GoodWe ET/EH/ES/EM — UDP or TCP",
     BATTERY_SYSTEM_ALPHAESS: "AlphaESS SMILE/Storion — Modbus TCP + optional Cloud API",
     BATTERY_SYSTEM_ESY_SUNHOME: "ESY Sunhome — via esy_sunhome companion integration",
@@ -211,7 +211,7 @@ SUNGROW_REG_EXPORT_LIMIT = 13074         # 1W
 SUNGROW_REG_EXPORT_LIMIT_ENABLED = 13087 # 0=Disabled, 1=Enabled
 SUNGROW_REG_BACKUP_RESERVE = 13100       # 0.1% scale
 
-# FoxESS Battery System Configuration (Modbus TCP / RS485 Serial)
+# FoxESS Battery System Configuration (Modbus TCP / RS485 Serial / Cloud API)
 # Hybrid inverters with integrated battery control
 # Reference: https://github.com/nathanmarlor/foxess_modbus
 CONF_FOXESS_HOST = "foxess_host"
@@ -236,6 +236,7 @@ DEFAULT_FOXESS_SERIAL_BAUDRATE = 9600
 # FoxESS connection types
 FOXESS_CONNECTION_TCP = "tcp"
 FOXESS_CONNECTION_SERIAL = "serial"
+FOXESS_CONNECTION_CLOUD = "cloud"
 
 # FoxESS model families
 FOXESS_MODEL_H1 = "H1"

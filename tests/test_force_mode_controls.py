@@ -285,6 +285,71 @@ def test_foxess_force_charge_accepts_optimizer_min_timeout():
     assert "min_timeout_seconds=min_timeout_seconds" in method_source
 
 
+def test_foxess_cloud_coordinator_exposes_modbus_control_surface():
+    tree = ast.parse(COORDINATOR_PATH.read_text())
+    expected_methods = {
+        "_async_update_data",
+        "force_charge",
+        "force_discharge",
+        "restore_normal",
+        "set_backup_mode",
+        "restore_work_mode_from_idle",
+        "set_backup_reserve",
+        "set_work_mode",
+        "set_charge_rate_limit",
+        "set_discharge_rate_limit",
+        "curtail",
+        "restore_curtailment",
+    }
+
+    for method_name in expected_methods:
+        _find_class_method(tree, "FoxESSCloudEnergyCoordinator", method_name)
+
+
+def test_foxess_cloud_force_modes_snapshot_and_restore_scheduler():
+    source = COORDINATOR_PATH.read_text()
+    tree = ast.parse(source)
+    force_charge = _find_class_method(tree, "FoxESSCloudEnergyCoordinator", "force_charge")
+    force_discharge = _find_class_method(tree, "FoxESSCloudEnergyCoordinator", "force_discharge")
+    restore = _find_class_method(tree, "FoxESSCloudEnergyCoordinator", "restore_normal")
+
+    force_charge_source = ast.get_source_segment(source, force_charge)
+    force_discharge_source = ast.get_source_segment(source, force_discharge)
+    restore_source = ast.get_source_segment(source, restore)
+
+    assert force_charge_source is not None
+    assert force_discharge_source is not None
+    assert restore_source is not None
+    assert "_save_current_scheduler()" in force_charge_source
+    assert "_client.force_charge" in force_charge_source
+    assert "_save_current_scheduler()" in force_discharge_source
+    assert "_client.force_discharge" in force_discharge_source
+    assert "_restore_stored_scheduler()" in restore_source
+    assert '"WorkMode", "SelfUse"' in restore_source
+
+
+def test_foxess_cloud_curtailment_uses_export_active_power_and_scheduler_limits():
+    source = COORDINATOR_PATH.read_text()
+    tree = ast.parse(source)
+    curtail = _find_class_method(tree, "FoxESSCloudEnergyCoordinator", "curtail")
+    restore = _find_class_method(tree, "FoxESSCloudEnergyCoordinator", "restore_curtailment")
+
+    curtail_source = ast.get_source_segment(source, curtail)
+    restore_source = ast.get_source_segment(source, restore)
+
+    assert curtail_source is not None
+    assert restore_source is not None
+    assert '"ExportLimit"' in curtail_source
+    assert '"ExportLimitPower"' in curtail_source
+    assert '"ActivePowerLimit"' in curtail_source
+    assert '"exportLimit": limit' in curtail_source
+    assert '"pvLimit": limit' in curtail_source
+    assert "set_scheduler_v3" in curtail_source
+    assert "_restore_stored_scheduler()" in restore_source
+    assert '"ActivePowerLimit"' in restore_source
+    assert '"ExportLimit"' in restore_source
+
+
 def test_goodwe_entity_mode_prefers_solar_first_charge_and_export_discharge_modes():
     source = COORDINATOR_PATH.read_text()
     tree = ast.parse(source)

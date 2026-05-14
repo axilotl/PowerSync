@@ -19,6 +19,7 @@ from .const import (
     CONF_TESLA_ENERGY_SITE_ID,
     CONF_FOXESS_HOST,
     CONF_FOXESS_SERIAL_PORT,
+    CONF_FOXESS_CLOUD_API_KEY,
     CONF_GOODWE_HOST,
     CONF_SIGENERGY_STATION_ID,
     CONF_SUNGROW_HOST,
@@ -79,6 +80,7 @@ async def async_setup_entry(
         for k in (
             CONF_FOXESS_HOST,
             CONF_FOXESS_SERIAL_PORT,
+            CONF_FOXESS_CLOUD_API_KEY,
             CONF_GOODWE_HOST,
             CONF_SIGENERGY_STATION_ID,
             CONF_SUNGROW_HOST,
