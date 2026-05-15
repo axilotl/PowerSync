@@ -282,6 +282,77 @@ def test_solar_surplus_parallel_reserve_allows_excess_above_battery_rate():
     assert surplus_kw == 2.0
 
 
+def test_observed_wall_connector_power_is_counted_for_solar_surplus_stop(monkeypatch):
+    async def not_unplugged(*args, **kwargs):
+        return False
+
+    async def fake_live_status(*args, **kwargs):
+        return {
+            "battery_soc": 55,
+            "grid_power": 700,
+            "battery_power": -700,
+            "solar_power": 9200,
+            "load_power": 9100,
+        }
+
+    stop_calls = []
+
+    async def fake_set_amps(hass, config_entry, vehicle_id, amps, params):
+        stop_calls.append((vehicle_id, amps))
+        return True
+
+    monkeypatch.setattr(actions, "_clear_ble_dynamic_session_if_unplugged", not_unplugged)
+    monkeypatch.setattr(actions, "_get_tesla_live_status", fake_live_status)
+    monkeypatch.setattr(actions, "_set_vehicle_amps", fake_set_amps)
+
+    ev_planner = importlib.import_module("power_sync.automations.ev_charging_planner")
+
+    async def home_location(*args, **kwargs):
+        return "home"
+
+    monkeypatch.setattr(ev_planner, "get_ev_location", home_location)
+
+    actions._dynamic_ev_state.clear()
+    actions._dynamic_ev_state["entry-1"] = {
+        "LRW3F7FS1NC484342": {
+            "active": True,
+            "current_amps": 0,
+            "target_amps": 0,
+            "low_surplus_start": datetime.now() - timedelta(minutes=10),
+            "params": {
+                "dynamic_mode": "solar_surplus",
+                "charger_type": "tesla",
+                "min_charge_amps": 5,
+                "max_charge_amps": 32,
+                "voltage": 240,
+                "phases": 1,
+                "household_buffer_kw": 2.0,
+                "surplus_calculation": "grid_based",
+                "allow_parallel_charging": True,
+                "max_battery_charge_rate_kw": 5.0,
+                "min_battery_soc": 20,
+                "stop_delay_minutes": 5,
+            },
+        }
+    }
+
+    hass = _Hass([
+        _State("sensor.tesla_wall_connector_power", "5.4", {"unit_of_measurement": "kW"}),
+    ])
+
+    asyncio.run(
+        actions._dynamic_ev_update(
+            hass,
+            _Entry(),
+            "entry-1",
+            "LRW3F7FS1NC484342",
+        )
+    )
+
+    assert stop_calls == [("LRW3F7FS1NC484342", 0)]
+    assert actions._dynamic_ev_state["entry-1"]["LRW3F7FS1NC484342"]["current_amps"] == 0
+
+
 def test_solar_surplus_direct_parallel_reserve_tops_up_existing_battery_charge():
     surplus_kw = actions._calculate_solar_surplus(
         {

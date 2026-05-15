@@ -10456,6 +10456,7 @@ class EVVehicleCommandView(HomeAssistantView):
                 "charger_switch_entity",
                 "charger_amps_entity",
                 "charger_status_entity",
+                "charger_power_entity",
                 "ocpp_charger_id",
                 "sigenergy_charger_host",
                 "sigenergy_charger_port",
@@ -11026,7 +11027,13 @@ class VehicleChargingConfigView(HomeAssistantView):
         params = state.get("params", {}) or {}
         if config.get("charger_type") and params.get("charger_type") != config.get("charger_type"):
             return False
-        for key in ("charger_switch_entity", "charger_amps_entity", "charger_status_entity", "ocpp_charger_id"):
+        for key in (
+            "charger_switch_entity",
+            "charger_amps_entity",
+            "charger_status_entity",
+            "charger_power_entity",
+            "ocpp_charger_id",
+        ):
             if config.get(key) and params.get(key) == config.get(key):
                 return True
         return False
@@ -11166,6 +11173,7 @@ class VehicleChargingConfigView(HomeAssistantView):
                     "charger_switch_entity": data.get("charger_switch_entity"),
                     "charger_amps_entity": data.get("charger_amps_entity"),
                     "charger_status_entity": data.get("charger_status_entity"),
+                    "charger_power_entity": data.get("charger_power_entity"),
                     "ocpp_charger_id": data.get("ocpp_charger_id"),
                     "pre_charge_wake_entity": data.get("pre_charge_wake_entity"),
                     "pre_charge_wake_duration_seconds": data.get("pre_charge_wake_duration_seconds", 5),
@@ -11215,6 +11223,8 @@ class VehicleChargingConfigView(HomeAssistantView):
                                 settings.charger_amps_entity = saved_config["charger_amps_entity"]
                             if "charger_status_entity" in saved_config:
                                 settings.charger_status_entity = saved_config["charger_status_entity"]
+                            if "charger_power_entity" in saved_config:
+                                settings.charger_power_entity = saved_config["charger_power_entity"]
                             if "ocpp_charger_id" in saved_config:
                                 settings.ocpp_charger_id = saved_config["ocpp_charger_id"]
                             if "pre_charge_wake_entity" in saved_config:
@@ -26512,6 +26522,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                                 "charger_switch_entity": vc.get("charger_switch_entity"),
                                 "charger_amps_entity": vc.get("charger_amps_entity"),
                                 "charger_status_entity": vc.get("charger_status_entity"),
+                                "charger_power_entity": vc.get("charger_power_entity"),
                                 "ocpp_charger_id": vc.get("ocpp_charger_id"),
                                 "pre_charge_wake_entity": vc.get("pre_charge_wake_entity"),
                                 "pre_charge_wake_duration_seconds": vc.get("pre_charge_wake_duration_seconds"),

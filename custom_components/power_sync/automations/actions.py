@@ -145,6 +145,23 @@ def _coerce_positive_int(value: Any, default: Optional[int] = None) -> Optional[
     return result if result > 0 else default
 
 
+def _kw_from_power_state(state: Any) -> float:
+    """Return a power state as kW, accepting W or kW entities."""
+    if not state or state.state in ("unknown", "unavailable", ""):
+        return 0.0
+    try:
+        power = float(state.state or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+    unit = str((getattr(state, "attributes", {}) or {}).get("unit_of_measurement", "")).strip().lower()
+    if unit in ("w", "watt", "watts"):
+        return max(0.0, power / 1000.0)
+    if unit in ("kw", "kilowatt", "kilowatts"):
+        return max(0.0, power)
+    return max(0.0, power / 1000.0 if abs(power) > 100 else power)
+
+
 def _is_sigenergy(config_entry: ConfigEntry) -> bool:
     """Check if this is a Sigenergy system."""
     from ..const import CONF_SIGENERGY_STATION_ID
@@ -316,6 +333,59 @@ def _is_vehicle_charge_complete(hass: HomeAssistant, vehicle_vin: str) -> bool:
                 if state.state and state.state.lower() in ("complete", "stopped"):
                     return True
     return False
+
+
+async def _get_observed_ev_power_kw(
+    hass: HomeAssistant,
+    vehicle_id: str,
+    params: dict,
+    *,
+    allow_wall_connector_fallback: bool = False,
+) -> float:
+    """Return measured EV charging power for dynamic surplus control."""
+    power_entity_keys = (
+        "charger_power_entity",
+        "charger_power_sensor",
+        "charger_power_sensor_entity",
+        "ev_power_entity",
+        "ev_power_sensor",
+        "power_entity",
+    )
+    for key in power_entity_keys:
+        entity_id = params.get(key)
+        if entity_id:
+            power_kw = _kw_from_power_state(hass.states.get(str(entity_id)))
+            if power_kw > 0.05:
+                return power_kw
+
+    charger_type = params.get("charger_type", "tesla")
+    if charger_type == "tesla" and vehicle_id != DEFAULT_VEHICLE_ID:
+        try:
+            entity = await _get_tesla_ev_entity(
+                hass,
+                r"sensor\..*(charger_power|charging_power|charge_power)$",
+                vehicle_id,
+            )
+            if entity:
+                power_kw = _kw_from_power_state(hass.states.get(entity))
+                if power_kw > 0.05:
+                    return power_kw
+        except Exception as err:
+            _LOGGER.debug("Solar surplus EV: could not read Tesla EV power entity: %s", err)
+
+        if allow_wall_connector_fallback:
+            wall_power_kw = 0.0
+            for state in hass.states.async_all("sensor"):
+                entity_id = state.entity_id.lower()
+                if "wall_connector" not in entity_id or "power" not in entity_id:
+                    continue
+                if any(token in entity_id for token in ("voltage", "current", "energy", "frequency")):
+                    continue
+                wall_power_kw = max(wall_power_kw, _kw_from_power_state(state))
+            if wall_power_kw > 0.05:
+                return wall_power_kw
+
+    return 0.0
 
 
 async def _wake_tesla_ev(
@@ -4428,12 +4498,29 @@ async def _dynamic_ev_update_surplus(
     # Calculate TOTAL EV power from ALL active vehicles
     total_ev_power_kw = 0.0
     all_vehicles = _dynamic_ev_state.get(entry_id, {})
+    active_vehicles = [
+        (vid, v_state)
+        for vid, v_state in all_vehicles.items()
+        if v_state.get("active") and not v_state.get("paused")
+    ]
+    observed_current_power_kw = 0.0
     for vid, v_state in all_vehicles.items():
-        if v_state.get("active") and not v_state.get("paused"):
-            v_amps = v_state.get("current_amps", 0)
-            v_voltage = v_state.get("params", {}).get("voltage", 240)
-            v_phases = v_state.get("params", {}).get("phases", 1)
-            total_ev_power_kw += (v_amps * v_voltage * v_phases) / 1000
+        if not v_state.get("active") or v_state.get("paused"):
+            continue
+        v_params = v_state.get("params", {})
+        v_amps = v_state.get("current_amps", 0)
+        v_voltage = v_params.get("voltage", 240)
+        v_phases = v_params.get("phases", 1)
+        commanded_power_kw = (v_amps * v_voltage * v_phases) / 1000
+        observed_power_kw = await _get_observed_ev_power_kw(
+            hass,
+            vid,
+            v_params,
+            allow_wall_connector_fallback=len(active_vehicles) == 1,
+        )
+        if vid == vehicle_id:
+            observed_current_power_kw = observed_power_kw
+        total_ev_power_kw += max(commanded_power_kw, observed_power_kw)
 
     # Calculate available surplus after the household buffer and any configured
     # parallel battery reserve.
@@ -4565,8 +4652,15 @@ async def _dynamic_ev_update_surplus(
                     except Exception as e:
                         _LOGGER.debug(f"Could not send resume notification: {e}")
 
-    # Calculate current EV power for THIS vehicle (for logging)
-    current_ev_kw = (current_amps * voltage * phases) / 1000
+    # Calculate current EV power for THIS vehicle. Prefer measured charger
+    # power so an already-active charge is treated as controllable load.
+    current_ev_kw = max(
+        (current_amps * voltage * phases) / 1000,
+        observed_current_power_kw,
+    )
+    effective_current_amps = current_amps
+    if current_amps <= 0 and observed_current_power_kw > 0.05:
+        effective_current_amps = max(1, int(round((observed_current_power_kw * 1000) / (voltage * phases))))
 
     # Determine available surplus for EV. _calculate_solar_surplus already
     # applies the household buffer and any configured parallel battery reserve.
@@ -4596,26 +4690,26 @@ async def _dynamic_ev_update_surplus(
 
     if new_amps < min_amps:
         # Not enough surplus
-        if current_amps > 0:
+        if effective_current_amps > 0:
             # Track how long we've been below threshold
             low_surplus_start = state.get("low_surplus_start")
             if low_surplus_start is None:
                 state["low_surplus_start"] = datetime.now()
-                new_amps = current_amps
+                new_amps = effective_current_amps
             elif (datetime.now() - low_surplus_start).total_seconds() >= stop_delay_minutes * 60:
                 # Stop charging after delay
                 _LOGGER.info(f"⚡ Solar surplus EV: Stopping - insufficient surplus for {stop_delay_minutes} min")
                 new_amps = 0
             else:
                 # Keep current amps during grace period
-                new_amps = current_amps
+                new_amps = effective_current_amps
         else:
             new_amps = 0
     else:
         # Sufficient surplus - reset low surplus timer
         state["low_surplus_start"] = None
 
-        if current_amps == 0:
+        if effective_current_amps == 0:
             # Track how long we've had surplus before starting
             high_surplus_start = state.get("high_surplus_start")
             if high_surplus_start is None:
@@ -4684,7 +4778,7 @@ async def _dynamic_ev_update_surplus(
     )
 
     # Update charging session with current power reading
-    if current_amps > 0 and not _session_energy_tracked_by_charger_poll(params):
+    if effective_current_amps > 0 and not _session_energy_tracked_by_charger_poll(params):
         try:
             from .ev_charging_session import get_session_manager
             session_manager = get_session_manager()
@@ -4698,7 +4792,7 @@ async def _dynamic_ev_update_surplus(
                 await session_manager.update_session(
                     vehicle_id=vehicle_id,
                     power_kw=current_ev_kw,
-                    amps=current_amps,
+                    amps=effective_current_amps,
                     is_solar=is_solar,
                     import_price_cents=import_price,
                     export_price_cents=export_price,
@@ -4708,9 +4802,9 @@ async def _dynamic_ev_update_surplus(
             _LOGGER.debug(f"Could not update session: {e}")
 
     # Only update if change is significant (>= 1 amp)
-    if abs(new_amps - current_amps) >= 1:
+    if abs(new_amps - effective_current_amps) >= 1:
         _LOGGER.info(
-            f"⚡ Solar surplus EV: {current_amps}A -> {new_amps}A "
+            f"⚡ Solar surplus EV: {effective_current_amps}A -> {new_amps}A "
             f"(surplus={my_surplus_kw:.1f}kW, battery={battery_soc:.0f}%)"
         )
         success = await _set_vehicle_amps(hass, config_entry, vehicle_id, new_amps, params)
@@ -4719,7 +4813,7 @@ async def _dynamic_ev_update_surplus(
             state["target_amps"] = new_amps
 
             # End session when transitioning to 0 amps (stopping charging)
-            if new_amps == 0 and current_amps > 0:
+            if new_amps == 0 and effective_current_amps > 0:
                 try:
                     from .ev_charging_session import get_session_manager
                     session_manager = get_session_manager()
@@ -5449,6 +5543,7 @@ async def _action_start_ev_charging_dynamic_locked(
         "charger_switch_entity": params.get("charger_switch_entity"),
         "charger_amps_entity": params.get("charger_amps_entity"),
         "charger_status_entity": params.get("charger_status_entity"),
+        "charger_power_entity": params.get("charger_power_entity"),
         "ocpp_charger_id": params.get("ocpp_charger_id"),
     }
 

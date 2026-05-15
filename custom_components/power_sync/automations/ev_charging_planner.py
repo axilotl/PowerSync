@@ -2972,6 +2972,7 @@ class AutoScheduleSettings:
     charger_switch_entity: Optional[str] = None
     charger_amps_entity: Optional[str] = None
     charger_status_entity: Optional[str] = None
+    charger_power_entity: Optional[str] = None
     ocpp_charger_id: Optional[int] = None
     pre_charge_wake_entity: Optional[str] = None
     pre_charge_wake_duration_seconds: Optional[int] = None
@@ -2991,6 +2992,7 @@ class AutoScheduleSettings:
             "charger_switch_entity": "charger_switch_entity",
             "charger_amps_entity": "charger_amps_entity",
             "charger_status_entity": "charger_status_entity",
+            "charger_power_entity": "charger_power_entity",
             "ocpp_charger_id": "ocpp_charger_id",
             "pre_charge_wake_entity": "pre_charge_wake_entity",
             "pre_charge_wake_duration_seconds": "pre_charge_wake_duration_seconds",
@@ -3043,6 +3045,7 @@ class AutoScheduleSettings:
             "charger_switch_entity": self.charger_switch_entity,
             "charger_amps_entity": self.charger_amps_entity,
             "charger_status_entity": self.charger_status_entity,
+            "charger_power_entity": self.charger_power_entity,
             "ocpp_charger_id": self.ocpp_charger_id,
             "pre_charge_wake_entity": self.pre_charge_wake_entity,
             "pre_charge_wake_duration_seconds": self.pre_charge_wake_duration_seconds,
@@ -5637,6 +5640,7 @@ def _get_vehicle_charger_params(
                         "charger_switch_entity",
                         "charger_amps_entity",
                         "charger_status_entity",
+                        "charger_power_entity",
                         "ocpp_charger_id",
                         "pre_charge_wake_entity",
                         "pre_charge_wake_duration_seconds",
@@ -5663,6 +5667,7 @@ def _get_vehicle_charger_params(
                     "charger_switch_entity",
                     "charger_amps_entity",
                     "charger_status_entity",
+                    "charger_power_entity",
                     "ocpp_charger_id",
                     "pre_charge_wake_entity",
                     "pre_charge_wake_duration_seconds",
