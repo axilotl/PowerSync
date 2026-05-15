@@ -5,6 +5,8 @@ connected via internal LAN port or WiNet-S dongle.
 
 Reference: https://github.com/mkaiser/Sungrow-SHx-Inverter-Modbus-Home-Assistant
 """
+from __future__ import annotations
+
 import asyncio
 import logging
 from typing import Optional
@@ -647,13 +649,14 @@ class SungrowSHController(InverterController):
 
     # ===== Battery Control Methods (for use as battery system) =====
 
-    async def _write_forced_mode(self, cmd: int, label: str, power_w: int = 5000) -> bool:
+    async def _write_forced_mode(self, cmd: int, label: str, power_w: float = 5000) -> bool:
         """Set EMS to forced mode with a charge/discharge command and verify.
 
         Writes charge/discharge power first (required on some models like SH10RS
         to avoid exception code 4), then EMS mode and command. Retries once on
         verification failure (covers silent Modbus collisions).
         """
+        target_power_w = max(0, int(round(power_w)))
         max_attempts = 2
         for attempt in range(1, max_attempts + 1):
             try:
@@ -672,7 +675,7 @@ class SungrowSHController(InverterController):
                         _LOGGER.info("Sungrow EMS mode read failed — assuming self-consumption (SH-RS model?)")
 
                 # Set charge/discharge power first (required on SH-RS / SBH models)
-                power_ok = await self._write_register(self.REG_CHARGE_DISCHARGE_POWER, power_w)
+                power_ok = await self._write_register(self.REG_CHARGE_DISCHARGE_POWER, target_power_w)
                 if not power_ok:
                     _LOGGER.debug("Sungrow %s: charge power write to 13051 failed, trying without", label)
 
@@ -730,17 +733,17 @@ class SungrowSHController(InverterController):
 
         return False
 
-    async def force_charge(self) -> bool:
+    async def force_charge(self, power_w: float = 5000) -> bool:
         """Set EMS to forced charge mode."""
         self._in_forced_stop = False
         _LOGGER.info("Setting Sungrow SH at %s to forced charge mode", self.host)
-        return await self._write_forced_mode(self.CMD_CHARGE, "force charge")
+        return await self._write_forced_mode(self.CMD_CHARGE, "force charge", power_w=power_w)
 
-    async def force_discharge(self) -> bool:
+    async def force_discharge(self, power_w: float = 5000) -> bool:
         """Set EMS to forced discharge mode."""
         self._in_forced_stop = False
         _LOGGER.info("Setting Sungrow SH at %s to forced discharge mode", self.host)
-        return await self._write_forced_mode(self.CMD_DISCHARGE, "force discharge")
+        return await self._write_forced_mode(self.CMD_DISCHARGE, "force discharge", power_w=power_w)
 
     async def restore_normal(self) -> bool:
         """Restore to the EMS mode that was active before force charge/discharge.

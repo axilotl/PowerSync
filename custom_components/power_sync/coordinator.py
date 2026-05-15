@@ -4108,9 +4108,10 @@ class SungrowEnergyCoordinator(DataUpdateCoordinator):
             True if successful
         """
         async with self._controller:
+            target_power_w = power_w if power_w > 0 else 5000
             if power_w > 0:
                 await self._controller.set_charge_rate_limit(power_w / 1000)
-            return await self._controller.force_charge()
+            return await self._controller.force_charge(power_w=target_power_w)
 
     async def force_discharge(self, duration_minutes: int = 30, power_w: float = 0) -> bool:
         """Set Sungrow to forced discharge mode.
@@ -4123,9 +4124,10 @@ class SungrowEnergyCoordinator(DataUpdateCoordinator):
             True if successful
         """
         async with self._controller:
+            target_power_w = power_w if power_w > 0 else 5000
             if power_w > 0:
                 await self._controller.set_discharge_rate_limit(power_w / 1000)
-            return await self._controller.force_discharge()
+            return await self._controller.force_discharge(power_w=target_power_w)
 
     async def restore_normal(self) -> bool:
         """Restore Sungrow to self-consumption mode.
