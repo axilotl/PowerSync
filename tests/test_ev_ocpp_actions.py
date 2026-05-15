@@ -238,6 +238,72 @@ def _solar_surplus_state(current_amps: int = 8) -> dict:
     }
 
 
+def test_solar_surplus_parallel_reserve_blocks_sigenergy_battery_charge_surplus():
+    surplus_kw = actions._calculate_solar_surplus(
+        {
+            "battery_soc": 38,
+            "grid_power": 30,
+            "battery_power": -4530,
+            "solar_power": 0,
+            "load_power": 0,
+        },
+        current_ev_power_kw=1.68,
+        config={
+            "surplus_calculation": "grid_based",
+            "household_buffer_kw": 2.0,
+            "allow_parallel_charging": True,
+            "max_battery_charge_rate_kw": 5.0,
+            "min_battery_soc": 20,
+        },
+    )
+
+    assert surplus_kw == 0
+
+
+def test_solar_surplus_parallel_reserve_allows_excess_above_battery_rate():
+    surplus_kw = actions._calculate_solar_surplus(
+        {
+            "battery_soc": 38,
+            "grid_power": -3000,
+            "battery_power": -5000,
+            "solar_power": 0,
+            "load_power": 0,
+        },
+        current_ev_power_kw=0,
+        config={
+            "surplus_calculation": "grid_based",
+            "household_buffer_kw": 1.0,
+            "allow_parallel_charging": True,
+            "max_battery_charge_rate_kw": 5.0,
+            "min_battery_soc": 20,
+        },
+    )
+
+    assert surplus_kw == 2.0
+
+
+def test_solar_surplus_direct_parallel_reserve_tops_up_existing_battery_charge():
+    surplus_kw = actions._calculate_solar_surplus(
+        {
+            "battery_soc": 38,
+            "grid_power": 0,
+            "battery_power": -4000,
+            "solar_power": 12000,
+            "load_power": 1000,
+        },
+        current_ev_power_kw=0,
+        config={
+            "surplus_calculation": "direct",
+            "household_buffer_kw": 2.0,
+            "allow_parallel_charging": True,
+            "max_battery_charge_rate_kw": 5.0,
+            "min_battery_soc": 20,
+        },
+    )
+
+    assert surplus_kw == 4.0
+
+
 def test_dynamic_ocpp_update_leaves_energy_to_ocpp_session_poll(monkeypatch):
     manager = _SessionManager()
     ev_session = types.ModuleType("power_sync.automations.ev_charging_session")
@@ -1285,6 +1351,42 @@ def test_solar_surplus_stop_delay_holds_current_amps_on_first_low_sample(monkeyp
     state = actions._dynamic_ev_state["entry-1"][vehicle_id]
     assert state["current_amps"] == 8
     assert state["target_amps"] == 8
+    assert state["low_surplus_start"] is not None
+    assert set_amps_calls == []
+
+
+def test_solar_surplus_parallel_reserve_prevents_ramp_while_battery_charging(monkeypatch):
+    hass = _Hass([])
+    vehicle_id = "VIN123"
+    actions._dynamic_ev_state.clear()
+    state = _solar_surplus_state(current_amps=7)
+    state["params"].update(
+        {
+            "household_buffer_kw": 2.0,
+            "allow_parallel_charging": True,
+            "max_battery_charge_rate_kw": 5.0,
+            "min_battery_soc": 20,
+            "pause_below_soc": 10,
+        }
+    )
+    actions._dynamic_ev_state["entry-1"] = {vehicle_id: state}
+    set_amps_calls = _install_solar_surplus_runtime_stubs(
+        monkeypatch,
+        {
+            "battery_soc": 38,
+            "grid_power": 30,
+            "battery_power": -4530,
+            "solar_power": 0,
+            "load_power": 0,
+        },
+    )
+
+    asyncio.run(
+        actions._dynamic_ev_update_surplus(hass, _Entry(), "entry-1", vehicle_id)
+    )
+
+    state = actions._dynamic_ev_state["entry-1"][vehicle_id]
+    assert state["current_amps"] == 7
     assert state["low_surplus_start"] is not None
     assert set_amps_calls == []
 

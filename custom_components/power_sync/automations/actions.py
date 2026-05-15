@@ -3487,6 +3487,40 @@ async def clear_tracked_ev_charging_session(
     )
 
 
+def _parallel_battery_reserve_kw(
+    live_status: dict,
+    config: dict,
+    method: str,
+    battery_charge_kw: float,
+) -> float:
+    """Return the extra battery charge reserve to withhold from EV surplus."""
+    if not config.get("allow_parallel_charging", False):
+        return 0.0
+
+    try:
+        max_charge_kw = max(0.0, float(config.get("max_battery_charge_rate_kw", 5.0) or 0.0))
+    except (TypeError, ValueError):
+        max_charge_kw = 5.0
+    if max_charge_kw <= 0:
+        return 0.0
+
+    battery_soc = live_status.get("battery_soc")
+    try:
+        battery_soc = float(battery_soc) if battery_soc is not None else None
+    except (TypeError, ValueError):
+        battery_soc = None
+
+    min_soc = get_solar_surplus_min_battery_soc(config)
+    battery_below_min = battery_soc is not None and battery_soc < min_soc
+    battery_currently_charging = battery_charge_kw > 0.05
+    if not battery_below_min and not battery_currently_charging:
+        return 0.0
+
+    if method == "direct":
+        return max(0.0, max_charge_kw - battery_charge_kw)
+    return max_charge_kw
+
+
 def _calculate_solar_surplus(live_status: dict, current_ev_power_kw: float, config: dict) -> float:
     """
     Calculate available solar surplus for EV charging.
@@ -3494,6 +3528,8 @@ def _calculate_solar_surplus(live_status: dict, current_ev_power_kw: float, conf
     Two methods are supported:
     - direct: surplus = solar - load - battery_charge - buffer
     - grid_based (AmpPilot style): surplus = -grid + current_ev + battery_charge
+    When parallel charging is enabled, the configured battery charge rate is
+    reserved before EV amps are calculated.
 
     Args:
         live_status: Dict with solar_power, grid_power, battery_power, load_power (all in W)
@@ -3521,10 +3557,15 @@ def _calculate_solar_surplus(live_status: dict, current_ev_power_kw: float, conf
         battery_discharge_kw = max(0, battery_kw)  # Positive = discharging
         # Subtract battery discharge: grid export from battery isn't solar surplus
         surplus = -grid_kw + current_ev_power_kw + battery_charge_kw - battery_discharge_kw
+        battery_reserve_kw = _parallel_battery_reserve_kw(
+            live_status, config, method, battery_charge_kw
+        )
+        available_kw = max(0, surplus - buffer_kw - battery_reserve_kw)
         _LOGGER.debug(
             f"Surplus calc (grid_based): grid={grid_kw:.2f}kW, ev={current_ev_power_kw:.2f}kW, "
             f"bat_charge={battery_charge_kw:.2f}kW, bat_discharge={battery_discharge_kw:.2f}kW → "
-            f"raw={surplus:.2f}kW, after_buffer={max(0, surplus - buffer_kw):.2f}kW"
+            f"raw={surplus:.2f}kW, buffer={buffer_kw:.2f}kW, "
+            f"battery_reserve={battery_reserve_kw:.2f}kW, available={available_kw:.2f}kW"
         )
     else:  # direct method
         # Direct calculation: what solar is producing minus what's being used
@@ -3533,13 +3574,19 @@ def _calculate_solar_surplus(live_status: dict, current_ev_power_kw: float, conf
         battery_charge_kw = max(0, -battery_kw)
         real_household_load_kw = load_kw - current_ev_power_kw  # Remove EV from house load
         surplus = solar_kw - real_household_load_kw - battery_charge_kw
+        battery_reserve_kw = _parallel_battery_reserve_kw(
+            live_status, config, method, battery_charge_kw
+        )
+        available_kw = max(0, surplus - buffer_kw - battery_reserve_kw)
         _LOGGER.debug(
             f"Surplus calc (direct): solar={solar_kw:.2f}kW, load={load_kw:.2f}kW (real={real_household_load_kw:.2f}kW), "
-            f"bat_charge={battery_charge_kw:.2f}kW → raw={surplus:.2f}kW, after_buffer={max(0, surplus - buffer_kw):.2f}kW"
+            f"bat_charge={battery_charge_kw:.2f}kW → raw={surplus:.2f}kW, "
+            f"buffer={buffer_kw:.2f}kW, battery_reserve={battery_reserve_kw:.2f}kW, "
+            f"available={available_kw:.2f}kW"
         )
 
     # Apply buffer and ensure non-negative
-    return max(0, surplus - buffer_kw)
+    return available_kw
 
 
 def _is_ev_charging_from_solar(grid_power_kw: float, ev_power_kw: float) -> bool:
@@ -4388,34 +4435,38 @@ async def _dynamic_ev_update_surplus(
             v_phases = v_state.get("params", {}).get("phases", 1)
             total_ev_power_kw += (v_amps * v_voltage * v_phases) / 1000
 
-    # Calculate raw surplus (before any parallel charging adjustments)
+    # Calculate available surplus after the household buffer and any configured
+    # parallel battery reserve.
     raw_surplus_kw = _calculate_solar_surplus(live_status, total_ev_power_kw, params)
 
-    # Check if parallel charging is possible (surplus exceeds what battery can absorb)
+    # Check if parallel charging is possible below the battery floor. At this
+    # point raw_surplus_kw is already the amount left for EV charging after
+    # reserving max_battery_charge_kw for the battery.
     parallel_charging_available = (
         allow_parallel and
         battery_soc < min_soc and
-        raw_surplus_kw > max_battery_charge_kw
+        raw_surplus_kw > 0
     )
 
     # Don't start charging until battery reaches min_soc (unless parallel charging is available)
     if not state.get("charging_started"):
         if battery_soc < min_soc:
             if parallel_charging_available:
-                # Parallel charging: solar exceeds battery's max charge rate
                 state["paused"] = False
                 state["paused_reason"] = None
                 state["parallel_charging_mode"] = True
                 _LOGGER.info(
-                    f"⚡ Solar surplus EV: Parallel charging enabled - surplus {raw_surplus_kw:.1f}kW > "
-                    f"battery max {max_battery_charge_kw}kW (battery at {battery_soc:.0f}%)"
+                    f"⚡ Solar surplus EV: Parallel charging enabled - "
+                    f"{raw_surplus_kw:.1f}kW remains after reserving "
+                    f"{max_battery_charge_kw}kW for the battery (battery at {battery_soc:.0f}%)"
                 )
             else:
                 state["paused"] = True
                 if allow_parallel:
                     state["paused_reason"] = (
-                        f"Waiting for battery to reach {min_soc}% or surplus > {max_battery_charge_kw}kW "
-                        f"(currently {battery_soc:.0f}%, surplus {raw_surplus_kw:.1f}kW)"
+                        f"Waiting for battery to reach {min_soc}% or surplus to remain after "
+                        f"the {max_battery_charge_kw}kW battery reserve "
+                        f"(currently {battery_soc:.0f}%, available {raw_surplus_kw:.1f}kW)"
                     )
                 else:
                     state["paused_reason"] = f"Waiting for battery to reach {min_soc}% (currently {battery_soc:.0f}%)"
@@ -4428,14 +4479,14 @@ async def _dynamic_ev_update_surplus(
 
     # Pause if battery drops below pause threshold (only in normal mode, not parallel)
     if state.get("charging_started") and battery_soc < pause_soc:
-        # In parallel mode, we pause if surplus drops below battery max charge rate
+        # In parallel mode, pause once no EV surplus remains after battery reserve.
         if state.get("parallel_charging_mode"):
-            if raw_surplus_kw <= max_battery_charge_kw:
+            if raw_surplus_kw <= 0:
                 if not state.get("paused"):
                     state["paused"] = True
                     state["paused_reason"] = (
-                        f"Parallel charging paused - surplus {raw_surplus_kw:.1f}kW <= "
-                        f"battery max {max_battery_charge_kw}kW"
+                        f"Parallel charging paused - no surplus remains after "
+                        f"reserving {max_battery_charge_kw}kW for the battery"
                     )
                     _LOGGER.info(f"⚡ Solar surplus EV: {state['paused_reason']}")
                     await _set_vehicle_amps(hass, config_entry, vehicle_id, 0, params)
@@ -4483,12 +4534,12 @@ async def _dynamic_ev_update_surplus(
                 f"Solar surplus EV: Not resuming - stop_at_floor=True, "
                 f"battery {battery_soc:.0f}% < floor {pause_soc}%"
             )
-        elif state.get("parallel_charging_mode") and raw_surplus_kw > max_battery_charge_kw:
+        elif state.get("parallel_charging_mode") and raw_surplus_kw > 0:
             # Parallel mode: surplus recovered
             can_resume = True
             _LOGGER.info(
-                f"⚡ Solar surplus EV: Resuming parallel charging - surplus {raw_surplus_kw:.1f}kW > "
-                f"battery max {max_battery_charge_kw}kW"
+                f"⚡ Solar surplus EV: Resuming parallel charging - "
+                f"{raw_surplus_kw:.1f}kW remains after battery reserve"
             )
 
         if can_resume:
@@ -4517,17 +4568,14 @@ async def _dynamic_ev_update_surplus(
     # Calculate current EV power for THIS vehicle (for logging)
     current_ev_kw = (current_amps * voltage * phases) / 1000
 
-    # Determine available surplus for EV
-    # In parallel charging mode, reserve max_battery_charge_kw for the battery
+    # Determine available surplus for EV. _calculate_solar_surplus already
+    # applies the household buffer and any configured parallel battery reserve.
     if state.get("parallel_charging_mode") and battery_soc < min_soc:
-        # Parallel mode: only use surplus beyond what battery can absorb
-        surplus_kw = max(0, raw_surplus_kw - max_battery_charge_kw)
+        surplus_kw = raw_surplus_kw
         _LOGGER.debug(
-            f"Solar surplus EV (parallel mode): raw_surplus={raw_surplus_kw:.2f}kW, "
-            f"battery_reserve={max_battery_charge_kw}kW, available_for_ev={surplus_kw:.2f}kW"
+            f"Solar surplus EV (parallel mode): available_after_battery_reserve={surplus_kw:.2f}kW"
         )
     else:
-        # Normal mode: use full surplus
         surplus_kw = raw_surplus_kw
 
     # Apply dual vehicle distribution strategy

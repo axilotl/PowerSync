@@ -16907,7 +16907,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             pass_enc = entry.data.get(CONF_SIGENERGY_PASS_ENC)
             device_id = entry.data.get(CONF_SIGENERGY_DEVICE_ID)
 
-            if not all([station_id, username, pass_enc, device_id]):
+            if not all([station_id, username, pass_enc]):
                 _LOGGER.error("Missing Sigenergy Cloud credentials for tariff sync")
                 return
 

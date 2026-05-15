@@ -284,3 +284,17 @@ def test_sigenergy_sync_resolves_demand_settings_inside_helper():
     canonical_call_pos = helper_source.index("canonical_tariff = convert_amber_to_tesla_tariff")
 
     assert demand_lookup_pos < canonical_call_pos
+
+
+def test_sigenergy_tariff_sync_does_not_require_optional_device_id():
+    init_source = (COMPONENT_ROOT / "__init__.py").read_text()
+    helper_source = init_source[
+        init_source.index("async def _sync_tariff_to_sigenergy"):
+        init_source.index("async def _sync_tariff_to_foxess")
+    ]
+
+    credentials_guard = "if not all([station_id, username, pass_enc]):"
+
+    assert credentials_guard in helper_source
+    assert "if not all([station_id, username, pass_enc, device_id]):" not in helper_source
+    assert "device_id=device_id" in helper_source
