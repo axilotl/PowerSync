@@ -5223,6 +5223,7 @@ class GoodWeEnergyCoordinator(DataUpdateCoordinator):
         power_w: float,
         fallback_option: str | None = None,
         reset_power_limit: bool = False,
+        restore_operation_mode: bool = False,
     ) -> bool:
         """Control via the community GoodWe HA integration's EMS entities.
 
@@ -5281,6 +5282,8 @@ class GoodWeEnergyCoordinator(DataUpdateCoordinator):
                         option,
                         power_limit_log,
                     )
+                    if restore_operation_mode:
+                        await self._ems_restore_operation_mode()
                     return True
                 except Exception as select_exc:
                     last_exc = select_exc
@@ -5299,6 +5302,45 @@ class GoodWeEnergyCoordinator(DataUpdateCoordinator):
         except Exception as exc:
             _LOGGER.error("GoodWe EMS control failed (%s=%s): %s", mode_entity, ems_option, exc)
             return False
+
+    async def _ems_restore_operation_mode(self) -> None:
+        """Best-effort restore of the companion GoodWe operation-mode select."""
+        p = self._ems_prefix
+        operation_entity = f"select.{p}_inverter_operation_mode"
+        state = self.hass.states.get(operation_entity)
+        if state is None:
+            return
+
+        raw_options = state.attributes.get("options")
+        options = raw_options if isinstance(raw_options, (list, tuple, set)) else []
+        option_lookup = {
+            str(option).strip().lower().replace(" ", "_"): str(option)
+            for option in options
+        }
+        selected_option = (
+            option_lookup.get("general")
+            or option_lookup.get("general_mode")
+            or "general"
+        )
+
+        try:
+            await self.hass.services.async_call(
+                "select",
+                "select_option",
+                {"entity_id": operation_entity, "option": selected_option},
+                blocking=True,
+            )
+            _LOGGER.info(
+                "GoodWe EMS control: restored %s=%s",
+                operation_entity,
+                selected_option,
+            )
+        except Exception as exc:
+            _LOGGER.warning(
+                "GoodWe EMS control could not restore %s to general mode: %s",
+                operation_entity,
+                exc,
+            )
 
     async def force_charge(self, duration_minutes: int = 30, power_w: float = 0) -> bool:
         """Set GoodWe to force charge mode."""
@@ -5329,7 +5371,12 @@ class GoodWeEnergyCoordinator(DataUpdateCoordinator):
     async def restore_normal(self) -> bool:
         """Restore GoodWe to normal operation."""
         if self._ems_prefix:
-            return await self._ems_set_mode("auto", 0, reset_power_limit=True)
+            return await self._ems_set_mode(
+                "auto",
+                0,
+                reset_power_limit=True,
+                restore_operation_mode=True,
+            )
         if not self._connected:
             await self._controller.connect()
             self._connected = True

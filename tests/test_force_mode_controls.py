@@ -358,24 +358,33 @@ def test_goodwe_entity_mode_prefers_solar_first_charge_and_export_discharge_mode
     discharge = _find_class_method(tree, "GoodWeEnergyCoordinator", "force_discharge")
     restore = _find_class_method(tree, "GoodWeEnergyCoordinator", "restore_normal")
     ems_set_mode = _find_class_method(tree, "GoodWeEnergyCoordinator", "_ems_set_mode")
+    ems_restore_operation = _find_class_method(
+        tree, "GoodWeEnergyCoordinator", "_ems_restore_operation_mode"
+    )
     mode_attempts = _find_class_method(tree, "GoodWeEnergyCoordinator", "_goodwe_ems_mode_attempts")
 
     charge_source = ast.get_source_segment(source, charge)
     discharge_source = ast.get_source_segment(source, discharge)
     restore_source = ast.get_source_segment(source, restore)
     ems_source = ast.get_source_segment(source, ems_set_mode)
+    ems_restore_source = ast.get_source_segment(source, ems_restore_operation)
     attempts_source = ast.get_source_segment(source, mode_attempts)
 
     assert charge_source is not None
     assert discharge_source is not None
     assert restore_source is not None
     assert ems_source is not None
+    assert ems_restore_source is not None
     assert attempts_source is not None
 
     assert '"charge_battery", power_w, fallback_option="buy_power"' in charge_source
     assert '"sell_power", power_w, fallback_option="discharge_battery"' in discharge_source
-    assert '"auto", 0, reset_power_limit=True' in restore_source
+    assert '"auto",' in restore_source
+    assert "reset_power_limit=True" in restore_source
+    assert "restore_operation_mode=True" in restore_source
     assert '"value": 0' in ems_source
+    assert "select.{p}_inverter_operation_mode" in ems_restore_source
+    assert "general_mode" in ems_restore_source
     assert '"options"' in attempts_source
     assert "fallback_option" in ems_source
 
