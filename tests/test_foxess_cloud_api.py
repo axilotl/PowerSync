@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import importlib
 import sys
 import types
@@ -36,6 +37,23 @@ def foxess_api_module():
                 sys.modules.pop(name, None)
             else:
                 sys.modules[name] = module
+
+
+def test_signature_uses_literal_crlf_separator(foxess_api_module, monkeypatch):
+    monkeypatch.setattr(foxess_api_module.time, "time", lambda: 1712345678.901)
+
+    client = foxess_api_module.FoxESSCloudClient("api-key", "INV123")
+    headers = client._generate_signature("/op/v0/device/list")
+
+    expected = hashlib.md5(
+        b"/op/v0/device/list\\r\\napi-key\\r\\n1712345678901"
+    ).hexdigest()
+    crlf_signature = hashlib.md5(
+        b"/op/v0/device/list\r\napi-key\r\n1712345678901"
+    ).hexdigest()
+    assert headers["timestamp"] == "1712345678901"
+    assert headers["signature"] == expected
+    assert headers["signature"] != crlf_signature
 
 
 def test_real_data_query_uses_v1_sns_shape(foxess_api_module, monkeypatch):

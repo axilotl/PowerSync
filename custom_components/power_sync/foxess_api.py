@@ -6,7 +6,7 @@ via the FoxESS Open API (https://www.foxesscloud.com).
 Auth uses signature-based headers:
   - token: API key
   - timestamp: milliseconds since epoch
-  - signature: MD5(path\\r\\n + api_key\\r\\n + timestamp)
+  - signature: MD5(path + literal "\\r\\n" + api_key + literal "\\r\\n" + timestamp)
   - lang: "en"
 """
 
@@ -110,7 +110,7 @@ class FoxESSCloudClient:
     def _generate_signature(self, path: str) -> dict[str, str]:
         """Generate FoxESS Open API auth headers.
 
-        Signature = MD5(path\\r\\n + api_key\\r\\n + timestamp)
+        Signature = MD5(path + literal "\\r\\n" + api_key + literal "\\r\\n" + timestamp)
 
         Args:
             path: API path (e.g., /op/v0/device/list)
@@ -119,7 +119,7 @@ class FoxESSCloudClient:
             Dict of auth headers: token, timestamp, signature, lang
         """
         timestamp = str(int(time.time() * 1000))
-        sign_text = f"{path}\r\n{self.api_key}\r\n{timestamp}"
+        sign_text = f"{path}\\r\\n{self.api_key}\\r\\n{timestamp}"
         signature = hashlib.md5(sign_text.encode("utf-8")).hexdigest()
         return {
             "token": self.api_key,
