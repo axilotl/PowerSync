@@ -118,6 +118,37 @@ def test_explicit_battery_export_true_allows_export_when_profitable(
     assert any(action.action == "export" for action in result.schedule.actions)
 
 
+def test_grid_export_cap_limits_lp_export_plan_and_api_series(
+    battery_optimizer_module,
+):
+    optimizer = battery_optimizer_module.BatteryOptimizer(
+        capacity_wh=48000,
+        max_charge_w=15000,
+        max_discharge_w=15000,
+        max_grid_export_w=5000,
+        backup_reserve=0.05,
+        interval_minutes=5,
+        horizon_hours=1,
+    )
+
+    result = optimizer.optimize(
+        import_prices=[0.05] * 12,
+        export_prices=[0.50] * 12,
+        solar_forecast=[0.0] * 12,
+        load_forecast=[0.4] * 12,
+        current_soc=0.80,
+        acquisition_cost_kwh=0.0,
+        allow_battery_export=True,
+    )
+
+    assert result.feasible is True
+    assert max(result.grid_export_w) <= 5000.1
+    export_actions = [action for action in result.schedule.actions if action.action == "export"]
+    assert export_actions
+    assert max(action.power_w for action in export_actions) <= 5000.1
+    assert max(result.schedule.to_api_response()["battery_export_w"]) <= 5000.1
+
+
 def test_solar_surplus_export_still_works_when_battery_export_blocked(
     battery_optimizer_module,
 ):

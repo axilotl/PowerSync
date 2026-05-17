@@ -68,7 +68,7 @@ class OptimizationSchedule:
     def battery_export_w(self) -> list[float]:
         """Get battery-to-grid export power schedule."""
         return [
-            a.battery_discharge_w
+            a.power_w
             if a.action in ("export", "discharge")
             else 0.0
             for a in self.actions
@@ -95,4 +95,3 @@ class OptimizationSchedule:
             "grid_import_w": [],
             "grid_export_w": [],
         }
-

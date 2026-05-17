@@ -77,6 +77,7 @@ class OptimizationConfig:
     battery_capacity_wh: int = 13500
     max_charge_w: int = 5000
     max_discharge_w: int = 5000
+    max_grid_export_w: int | None = None
     allow_grid_charge: bool = True
     backup_reserve: float = 0.2
     interval_minutes: int = 5
@@ -429,6 +430,47 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             soc = soc / 100.0
         return max(0.0, min(1.0, soc))
 
+    @staticmethod
+    def _kw_to_w(value: Any) -> int | None:
+        """Normalize a kW-like value to watts."""
+        if value is None:
+            return None
+        try:
+            kw = float(value)
+        except (TypeError, ValueError):
+            return None
+        if kw < 0:
+            return None
+        return int(round(kw * 1000))
+
+    def _resolve_max_grid_export_w(self) -> int | None:
+        """Return the configured or reported grid export cap for optimizer planning."""
+        if self._entry:
+            from ..const import (
+                CONF_ALPHAESS_EXPORT_LIMIT_KW,
+                CONF_SIGENERGY_EXPORT_LIMIT_KW,
+            )
+
+            for key in (CONF_SIGENERGY_EXPORT_LIMIT_KW, CONF_ALPHAESS_EXPORT_LIMIT_KW):
+                value = self._entry.options.get(key, self._entry.data.get(key))
+                watts = self._kw_to_w(value)
+                if watts is not None:
+                    return watts
+
+        data = getattr(self.energy_coordinator, "data", None)
+        if isinstance(data, dict):
+            export_limit = data.get("export_limit_kw")
+            if export_limit != "unlimited":
+                return self._kw_to_w(export_limit)
+
+        return None
+
+    def _sync_grid_export_cap_to_optimizer(self) -> None:
+        """Keep the LP grid export cap aligned with current site settings."""
+        self._config.max_grid_export_w = self._resolve_max_grid_export_w()
+        if self._optimizer:
+            self._optimizer.max_grid_export_w = self._config.max_grid_export_w
+
     def _configured_startup_backup_reserve(self) -> tuple[int | None, str]:
         """Return the persisted user reserve target used after temporary IDLE holds."""
         if not self._entry:
@@ -461,6 +503,55 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return optimizer_reserve, "optimizer floor config"
 
         return self._reserve_percent(self._config.backup_reserve), "optimizer floor"
+
+    async def _resolve_startup_backup_reserve(
+        self,
+        battery: Any,
+        startup_reserve: int | None,
+        reserve_source: str,
+    ) -> tuple[int | None, str]:
+        """Self-heal stale legacy Tesla user reserves using the lower live reserve."""
+        if (
+            startup_reserve is None
+            or reserve_source != "persisted user backup reserve"
+            or self.battery_system != "tesla"
+            or not hasattr(battery, "get_backup_reserve")
+        ):
+            return startup_reserve, reserve_source
+
+        try:
+            live_reserve = self._reserve_percent(await battery.get_backup_reserve())
+        except Exception as exc:
+            _LOGGER.debug("Could not verify live Tesla backup reserve: %s", exc)
+            return startup_reserve, reserve_source
+
+        if live_reserve is None or live_reserve >= startup_reserve:
+            return startup_reserve, reserve_source
+
+        _LOGGER.info(
+            "Optimizer startup: replacing stale persisted user backup reserve "
+            "%d%% with live Tesla reserve %d%%",
+            startup_reserve,
+            live_reserve,
+        )
+        if self._entry:
+            try:
+                from ..const import DOMAIN as _DOMAIN
+
+                entry_data = self.hass.data.get(_DOMAIN, {}).get(self.entry_id, {})
+                entry_data["_skip_reload"] = True
+                new_options = {
+                    **self._entry.options,
+                    "_user_backup_reserve": live_reserve,
+                }
+                self.hass.config_entries.async_update_entry(
+                    self._entry,
+                    options=new_options,
+                )
+            except Exception as exc:
+                _LOGGER.debug("Could not update persisted backup reserve: %s", exc)
+
+        return live_reserve, "live Tesla backup reserve"
 
     def _provider_key(self) -> str:
         """Return the configured electricity provider key."""
@@ -580,6 +671,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         # Auto-detect battery specs from Tesla site_info if available
         await self._auto_detect_battery_specs()
+        self._config.max_grid_export_w = self._resolve_max_grid_export_w()
 
         # Initialize built-in optimizer
         # Hardware reserve: captured at startup from the battery's actual setting.
@@ -589,6 +681,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             capacity_wh=self._config.battery_capacity_wh,
             max_charge_w=self._config.max_charge_w,
             max_discharge_w=self._config.max_discharge_w,
+            max_grid_export_w=self._config.max_grid_export_w,
             efficiency=0.92,
             backup_reserve=self._config.backup_reserve,
             hardware_reserve=hw_reserve_pct,
@@ -1072,6 +1165,11 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # reserve to hold SOC; after an HA restart or update that live value
             # can still be elevated and must not become the restore target.
             startup_reserve, reserve_source = self._configured_startup_backup_reserve()
+            startup_reserve, reserve_source = await self._resolve_startup_backup_reserve(
+                battery,
+                startup_reserve,
+                reserve_source,
+            )
             if startup_reserve is not None:
                 self._startup_backup_reserve = startup_reserve
                 if self._optimizer:
@@ -1401,6 +1499,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             battery_charge_blocked = self._battery_charge_blocked_slots(
                 len(import_prices),
             )
+            self._sync_grid_export_cap_to_optimizer()
 
             # Run LP in executor thread to avoid blocking event loop
             result: OptimizerResult = await self.hass.async_add_executor_job(
@@ -1615,14 +1714,17 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     def _export_command_power_w(self, action: Any) -> float:
         """Return the hardware export command power for an optimizer action."""
+        command_w = float(self._config.max_discharge_w)
         if self._should_spread_export_schedule():
             try:
                 requested_w = float(getattr(action, "power_w", 0.0) or 0.0)
             except (TypeError, ValueError):
                 requested_w = 0.0
             if requested_w > 0:
-                return min(float(self._config.max_discharge_w), requested_w)
-        return float(self._config.max_discharge_w)
+                command_w = min(command_w, requested_w)
+        if self._config.max_grid_export_w is not None:
+            command_w = min(command_w, float(self._config.max_grid_export_w))
+        return command_w
 
     async def _execute_optimizer_action(self, action: Any) -> None:
         """Execute an optimizer action on the battery."""
@@ -4809,6 +4911,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 max_discharge_w=self._config.max_discharge_w,
                 backup_reserve=self._config.backup_reserve,
             )
+            self._optimizer.max_grid_export_w = self._config.max_grid_export_w
             self._optimizer.terminal_weight = self._profit_max_terminal_weight()
         if (
             "backup_reserve" in kwargs
@@ -4991,6 +5094,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "battery_capacity_wh": self._config.battery_capacity_wh,
                 "max_charge_w": self._config.max_charge_w,
                 "max_discharge_w": self._config.max_discharge_w,
+                "max_grid_export_w": self._config.max_grid_export_w,
                 "allow_grid_charge": self._config.allow_grid_charge,
                 "spread_export_enabled": self._config.spread_export_enabled,
                 "battery_specs_source": self._battery_specs_source,
@@ -5295,6 +5399,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 new_options = dict(self._entry.options)
                 new_data[CONF_HARDWARE_BACKUP_RESERVE] = hw_reserve
                 new_options[CONF_HARDWARE_BACKUP_RESERVE] = hw_reserve
+                new_options.pop("_user_backup_reserve", None)
                 # Prevent reload from API-driven options update
                 from ..const import DOMAIN as _SKIP_DOM
                 self.hass.data.get(_SKIP_DOM, {}).get(self.entry_id, {})["_skip_reload"] = True

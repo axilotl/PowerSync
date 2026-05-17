@@ -27688,6 +27688,7 @@ class OptimizationSettingsView(HomeAssistantView):
                     hw_reserve = hw_reserve / 100.0
                 new_data[CONF_HARDWARE_BACKUP_RESERVE] = hw_reserve
                 new_options[CONF_HARDWARE_BACKUP_RESERVE] = hw_reserve
+                new_options.pop("_user_backup_reserve", None)
                 changes.append(f"Set hardware backup reserve to {int(hw_reserve * 100)}%")
                 # Also update the optimizer's startup reserve so force mode
                 # restores to this value instead of the Tesla API value

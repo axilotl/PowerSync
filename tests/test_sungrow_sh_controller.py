@@ -37,6 +37,10 @@ def _install_const_stub() -> None:
     const.TESLA_PROVIDER_FLEET_API = "fleet_api"
     const.TESLA_PROVIDER_POWERSYNC = "powersync"
     const.POWER_SYNC_USER_AGENT = "PowerSync/test"
+    const.DEFAULT_SOLCAST_ESTIMATE_TYPE = "estimate"
+    const.SOLCAST_ESTIMATE = "estimate"
+    const.SOLCAST_ESTIMATE10 = "estimate10"
+    const.SOLCAST_ESTIMATE90 = "estimate90"
     const.DEFAULT_TWAP_WINDOW_DAYS = 7
     const.MIN_TWAP_SAMPLES = 1
     const.FLOW_POWER_MARKET_AVG = "market_avg"

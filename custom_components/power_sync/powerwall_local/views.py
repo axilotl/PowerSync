@@ -52,7 +52,6 @@ from .coordinator import PowerwallLocalCoordinator
 from .curtailment_fallback import get_fallback as _get_curtailment_fallback
 from .exceptions import PowerwallLocalError, PowerwallPairingError
 from .pairing import PowerwallPairingManager
-from .signaling import TeslaSignalingClient
 
 if TYPE_CHECKING:
     pass
@@ -76,30 +75,6 @@ def _runtime(hass: HomeAssistant, entry: ConfigEntry) -> dict[str, Any]:
         _RUNTIME_KEY,
         {"client": None, "coordinator": None, "pairing_manager": None},
     )
-
-
-def _get_tesla_fleet_ha_token(hass: HomeAssistant) -> str | None:
-    """Try to get a real Tesla token from the tesla_fleet HA integration.
-
-    When the primary PowerSync provider is the proxy (psync_* token),
-    the user may also have the tesla_fleet HA integration installed
-    which holds a real Tesla JWT token with the scopes needed for
-    hermes signaling.
-    """
-    from homeassistant.const import CONF_ACCESS_TOKEN, CONF_TOKEN
-
-    for entry in hass.config_entries.async_entries("tesla_fleet"):
-        try:
-            token_data = entry.data.get(CONF_TOKEN, {})
-            token = token_data.get(CONF_ACCESS_TOKEN)
-            if token and token.startswith("eyJ"):  # JWT format
-                _LOGGER.debug(
-                    "Found tesla_fleet HA integration token for signaling"
-                )
-                return token
-        except Exception:
-            pass
-    return None
 
 
 def _get_fleet_api_context(
@@ -172,28 +147,12 @@ async def _build_client(
     # Fleet API context for the device_command cloud path (off-grid/reconnect).
     fleet_token, fleet_base, fleet_site_id = _get_fleet_api_context(hass, entry)
 
-    # Build the signaling client for installs with a known DIN.
-    # The signaling WebSocket establishes a cloud session with the
-    # gateway — required for device_command delivery on both PW2 and PW3.
-    # Without it, device_command reaches Tesla's cloud but has no path
-    # to relay to the gateway.
-    signaling: TeslaSignalingClient | None = None
-    if din:
-
-        async def _access_token_provider() -> str | None:
-            token, _base, _site = _get_fleet_api_context(hass, entry)
-            if token and token.startswith("psync_"):
-                # The PowerSync proxy endpoint accepts psync_ credentials and
-                # performs the Hermes exchange server-side. Prefer that token
-                # for PowerSync-provider entries so a stale tesla_fleet HA token
-                # cannot block signaling with missing-scope errors.
-                return token
-            return token or _get_tesla_fleet_ha_token(hass)
-
-        signaling = TeslaSignalingClient(
-            access_token_provider=_access_token_provider,
-            din=din,
-        )
+    # Hermes signaling used to be started here as a best-effort helper for
+    # cloud device_command delivery. Normal Fleet telemetry and the current
+    # signed device_command path do not require it, and starting it with
+    # standard Fleet tokens produces noisy missing-scope warnings for otherwise
+    # healthy installs. Leave the signaling module available for diagnostics,
+    # but do not attach a background WebSocket to every paired entry.
 
     return PowerwallLocalClient(
         host,
@@ -203,7 +162,6 @@ async def _build_client(
         fleet_api_base=fleet_base,
         fleet_api_token=fleet_token,
         energy_site_id=fleet_site_id,
-        signaling=signaling,
     )
 
 
@@ -242,12 +200,6 @@ async def ensure_coordinator(
         await coordinator.async_config_entry_first_refresh()
     except Exception as err:
         _LOGGER.warning("Initial Powerwall local refresh failed: %s", err)
-
-    # Start the signaling WebSocket for reliable device_command delivery.
-    if client.signaling is not None:
-        runtime["signaling"] = client.signaling
-        await client.signaling.start()
-        _LOGGER.info("Tesla signaling WebSocket started for %s", client.din)
 
     return coordinator
 

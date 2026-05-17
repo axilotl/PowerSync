@@ -77,6 +77,7 @@ class BatteryOptimizer:
         capacity_wh: float = 13500,
         max_charge_w: float = 5000,
         max_discharge_w: float = 5000,
+        max_grid_export_w: float | None = None,
         efficiency: float = DEFAULT_EFFICIENCY,
         backup_reserve: float = 0.20,
         hardware_reserve: float = 0.0,
@@ -87,6 +88,7 @@ class BatteryOptimizer:
         self.capacity_wh = capacity_wh
         self.max_charge_w = max_charge_w
         self.max_discharge_w = max_discharge_w
+        self.max_grid_export_w = max_grid_export_w
         self.efficiency = efficiency
         self.backup_reserve = backup_reserve
         self.hardware_reserve = hardware_reserve
@@ -132,6 +134,7 @@ class BatteryOptimizer:
         capacity_wh: float | None = None,
         max_charge_w: float | None = None,
         max_discharge_w: float | None = None,
+        max_grid_export_w: float | None = None,
         efficiency: float | None = None,
         backup_reserve: float | None = None,
     ) -> None:
@@ -145,6 +148,8 @@ class BatteryOptimizer:
         if max_discharge_w is not None:
             self.max_discharge_w = max_discharge_w
             self.max_discharge_kw = max_discharge_w / 1000.0
+        if max_grid_export_w is not None:
+            self.max_grid_export_w = max_grid_export_w
         if efficiency is not None:
             self.efficiency = efficiency
         if backup_reserve is not None:
@@ -616,9 +621,14 @@ class BatteryOptimizer:
                 )
 
         # === Variable bounds ===
-        # Cap grid at 100 kW (generous safety limit; prevents unbounded LP
-        # if a price accidentally goes negative or zero).
+        # Cap grid at 100 kW by default (generous safety limit; prevents
+        # unbounded LP if a price accidentally goes negative or zero). Sites
+        # with a known DNSP/export limit override the export side so the LP
+        # models the same physical cap the runtime controller will enforce.
         max_grid_kw = 100.0
+        max_grid_export_kw = max_grid_kw
+        if self.max_grid_export_w is not None:
+            max_grid_export_kw = max(0.0, self.max_grid_export_w / 1000.0)
         bounds = []
         for t in range(n):
             bounds.append((0, max_grid_kw))  # grid_import
@@ -628,10 +638,10 @@ class BatteryOptimizer:
         # grid-import -> grid-export or battery -> grid arbitrage.
         for t in range(n):
             if allow_battery_export[t]:
-                bounds.append((0, max_grid_kw))  # grid_export
+                bounds.append((0, max_grid_export_kw))  # grid_export
             else:
                 solar_surplus_kw = max(0.0, solar[t] - load[t])
-                bounds.append((0, min(max_grid_kw, solar_surplus_kw)))
+                bounds.append((0, min(max_grid_export_kw, solar_surplus_kw)))
 
         for t in range(n):
             export_profitable_slot = (
@@ -809,6 +819,11 @@ class BatteryOptimizer:
         allow_battery_export = allow_battery_export or [True] * n
         block_battery_charge = block_battery_charge or [False] * n
         allow_grid_charge = bool(allow_grid_charge)
+        max_grid_export_kw = (
+            max(0.0, self.max_grid_export_w / 1000.0)
+            if self.max_grid_export_w is not None
+            else None
+        )
 
         grid_import = [0.0] * n
         grid_export = [0.0] * n
@@ -837,6 +852,11 @@ class BatteryOptimizer:
                 # Profitable to discharge; cap to home load when battery export
                 # is not explicitly permitted or export is below acquisition cost.
                 discharge_limit = self.max_discharge_kw
+                if max_grid_export_kw is not None:
+                    discharge_limit = min(
+                        discharge_limit,
+                        max(0.0, net_load + max_grid_export_kw),
+                    )
                 if (
                     not allow_battery_export[t]
                     or (
@@ -880,7 +900,10 @@ class BatteryOptimizer:
             if net_grid > 0:
                 grid_import[t] = net_grid
             else:
-                grid_export[t] = -net_grid
+                export_kw = -net_grid
+                if self.max_grid_export_w is not None:
+                    export_kw = min(export_kw, max(0.0, self.max_grid_export_w / 1000.0))
+                grid_export[t] = export_kw
 
             soc += (charge_kw * eff - discharge_kw / eff) * dt / cap
             soc = max(self.backup_reserve, min(1.0, soc))
@@ -994,7 +1017,7 @@ class BatteryOptimizer:
             elif export_kw > threshold_kw and discharge_kw > threshold_kw:
                 # Battery discharging AND power going to grid → exporting
                 action = "export"
-                power_w = discharge_kw * 1000
+                power_w = export_kw * 1000
             elif (
                 charge_kw < threshold_kw
                 and discharge_kw < threshold_kw

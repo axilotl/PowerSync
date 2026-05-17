@@ -114,6 +114,10 @@ def _install_power_sync_stubs() -> None:
     const_module.CONF_DEMAND_CHARGE_DAYS = "demand_charge_days"
     const_module.HAFO_DOMAIN = "hafo"
     const_module.HAFO_LOAD_SENSOR_PREFIX = "hafo_"
+    const_module.DEFAULT_SOLCAST_ESTIMATE_TYPE = "estimate"
+    const_module.SOLCAST_ESTIMATE = "estimate"
+    const_module.SOLCAST_ESTIMATE10 = "estimate10"
+    const_module.SOLCAST_ESTIMATE90 = "estimate90"
     sys.modules["power_sync.const"] = const_module
 
     ev_module = types.ModuleType("power_sync.optimization.ev_coordinator")

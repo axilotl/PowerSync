@@ -116,6 +116,8 @@ def _install_power_sync_stubs() -> None:
     const_module.CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED = "optimization_spread_export_enabled"
     const_module.CONF_OPTIMIZATION_MAX_CHARGE_W = "max_charge_w"
     const_module.CONF_OPTIMIZATION_MAX_DISCHARGE_W = "max_discharge_w"
+    const_module.CONF_SIGENERGY_EXPORT_LIMIT_KW = "sigenergy_export_limit_kw"
+    const_module.CONF_ALPHAESS_EXPORT_LIMIT_KW = "alphaess_export_limit_kw"
     const_module.CONF_PROFIT_MAX_TARGET_TIME = "profit_max_target_time"
     const_module.CONF_PROFIT_MAX_TARGET_SOC = "profit_max_target_soc"
     const_module.DEFAULT_PROFIT_MAX_TARGET_TIME = "17:15"
@@ -229,6 +231,14 @@ class _FakeMinSocCoordinator:
         self.min_soc_calls.append(min_soc_pct)
 
 
+class _FakeTeslaBattery:
+    def __init__(self, reserve: int) -> None:
+        self.reserve = reserve
+
+    async def get_backup_reserve(self) -> int:
+        return self.reserve
+
+
 def test_update_config_propagates_backup_reserve_to_software_floor(opt_module):
     coordinator = _coordinator(opt_module, "octopus")
     energy = _FakeMinSocCoordinator()
@@ -293,11 +303,61 @@ def test_startup_restore_target_does_not_treat_live_idle_reserve_as_persisted(op
     )
 
 
+def test_tesla_startup_replaces_stale_persisted_reserve_with_lower_live_reserve(opt_module):
+    coordinator = _coordinator(
+        opt_module,
+        "amber",
+        _user_backup_reserve=52,
+    )
+    coordinator.battery_system = "tesla"
+    coordinator.entry_id = "entry-1"
+    updates = []
+
+    class _ConfigEntries:
+        def async_update_entry(self, entry, **kwargs):
+            updates.append(kwargs)
+            if "options" in kwargs:
+                entry.options = kwargs["options"]
+
+    coordinator.hass = SimpleNamespace(
+        data={"power_sync": {"entry-1": {}}},
+        config_entries=_ConfigEntries(),
+    )
+
+    assert asyncio.run(
+        coordinator._resolve_startup_backup_reserve(
+            _FakeTeslaBattery(30),
+            52,
+            "persisted user backup reserve",
+        )
+    ) == (30, "live Tesla backup reserve")
+    assert coordinator._entry.options["_user_backup_reserve"] == 30
+    assert updates[-1]["options"]["_user_backup_reserve"] == 30
+
+
+def test_tesla_startup_keeps_persisted_reserve_when_live_reserve_is_higher(opt_module):
+    coordinator = _coordinator(
+        opt_module,
+        "amber",
+        _user_backup_reserve=30,
+    )
+    coordinator.battery_system = "tesla"
+
+    assert asyncio.run(
+        coordinator._resolve_startup_backup_reserve(
+            _FakeTeslaBattery(80),
+            30,
+            "persisted user backup reserve",
+        )
+    ) == (30, "persisted user backup reserve")
+
+
 def test_set_settings_persists_hardware_reserve_to_data_and_options(opt_module):
     coordinator = _coordinator(
         opt_module,
         "amber",
         hardware_backup_reserve=0.45,
+        _user_backup_reserve=52,
     )
     coordinator.entry_id = "entry-1"
     coordinator._startup_backup_reserve = 45
@@ -324,8 +384,10 @@ def test_set_settings_persists_hardware_reserve_to_data_and_options(opt_module):
     assert coordinator._startup_backup_reserve == 20
     assert coordinator._entry.data["hardware_backup_reserve"] == 0.2
     assert coordinator._entry.options["hardware_backup_reserve"] == 0.2
+    assert "_user_backup_reserve" not in coordinator._entry.options
     assert updates[-1]["data"]["hardware_backup_reserve"] == 0.2
     assert updates[-1]["options"]["hardware_backup_reserve"] == 0.2
+    assert "_user_backup_reserve" not in updates[-1]["options"]
 
 
 def test_set_settings_persists_optimizer_reserve_to_data_and_options(opt_module):
@@ -1003,6 +1065,45 @@ def test_tesla_export_uses_contiguous_export_window_duration(opt_module):
 
     assert battery.force_discharge_calls == [(40, 5000, False)]
     assert coordinator._last_executed_action == "export"
+
+
+def test_export_command_power_respects_grid_export_cap(opt_module):
+    battery = _FakeBattery()
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.80)
+    coordinator.battery_system = "sigenergy"
+    coordinator._config.max_discharge_w = 15000
+    coordinator._config.max_grid_export_w = 5000
+    start = datetime(2026, 5, 3, 18, 30, tzinfo=timezone.utc)
+    actions = [
+        SimpleNamespace(
+            action="export",
+            power_w=14000,
+            timestamp=start + idx * timedelta(minutes=5),
+        )
+        for idx in range(3)
+    ]
+    coordinator._current_schedule = SimpleNamespace(actions=actions)
+
+    asyncio.run(coordinator._execute_optimizer_action(actions[0]))
+
+    assert battery.force_discharge_calls == [(15, 5000, False)]
+
+
+def test_grid_export_cap_resolves_from_sigenergy_config(opt_module):
+    coordinator = _coordinator(
+        opt_module,
+        "amber",
+        sigenergy_export_limit_kw=5,
+    )
+
+    assert coordinator._resolve_max_grid_export_w() == 5000
+
+
+def test_grid_export_cap_resolves_from_energy_data(opt_module):
+    coordinator = _coordinator(opt_module, "amber")
+    coordinator.energy_coordinator = SimpleNamespace(data={"export_limit_kw": 4.6})
+
+    assert coordinator._resolve_max_grid_export_w() == 4600
 
 
 def test_spread_export_schedule_flattens_planned_energy_across_allowed_window(opt_module):
