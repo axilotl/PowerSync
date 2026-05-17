@@ -19,6 +19,95 @@ except ImportError:
 _LOGGER = logging.getLogger(__name__)
 
 
+def parse_spike_alert_datetime(
+    spike_time: str,
+    now: datetime | None = None,
+) -> datetime | None:
+    """Parse an Amber spike timestamp and align it to the local timezone."""
+    if not spike_time:
+        return None
+
+    spike_time = str(spike_time).strip()
+    if not spike_time:
+        return None
+
+    try:
+        parsed = datetime.fromisoformat(spike_time.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+    if now is None:
+        now = dt_util.now()
+
+    if parsed.tzinfo is not None and now.tzinfo is not None:
+        return parsed.astimezone(now.tzinfo)
+    if parsed.tzinfo is not None and now.tzinfo is None:
+        return parsed.replace(tzinfo=None)
+    if parsed.tzinfo is None and now.tzinfo is not None:
+        return parsed.replace(tzinfo=now.tzinfo)
+    return parsed
+
+
+def format_spike_alert_time(
+    spike_time: str,
+    now: datetime | None = None,
+) -> str:
+    """Format a spike timestamp with enough date context for push alerts."""
+    parsed = parse_spike_alert_datetime(spike_time, now=now)
+    if parsed is None:
+        if "T" in str(spike_time):
+            return str(spike_time).split("T", 1)[1][:5]
+        return str(spike_time)
+
+    if now is None:
+        now = dt_util.now()
+    if parsed.tzinfo is not None and now.tzinfo is not None:
+        now = now.astimezone(parsed.tzinfo)
+    elif parsed.tzinfo is None and now.tzinfo is not None:
+        now = now.replace(tzinfo=None)
+
+    if parsed.date() == now.date():
+        date_label = "Today"
+    elif parsed.date() == (now + timedelta(days=1)).date():
+        date_label = "Tomorrow"
+    elif parsed.year == now.year:
+        date_label = f"{parsed.day} {parsed:%b}"
+    else:
+        date_label = f"{parsed.day} {parsed:%b} {parsed.year}"
+
+    hour = parsed.strftime("%I").lstrip("0") or "0"
+    time_label = f"{hour}:{parsed:%M} {parsed:%p}".lower()
+    return f"{date_label} {time_label}"
+
+
+def spike_alert_key_time(spike_time: str) -> str:
+    """Return a stable key component that distinguishes same-time future days."""
+    spike_time = str(spike_time).strip()
+    try:
+        return datetime.fromisoformat(spike_time.replace("Z", "+00:00")).isoformat()
+    except ValueError:
+        return spike_time
+
+
+def spike_is_imminent(spike_time: str, now: datetime | None = None) -> bool:
+    """Return True when the spike is current or starts within 60 minutes."""
+    parsed = parse_spike_alert_datetime(spike_time, now=now)
+    if parsed is None:
+        return False
+
+    if now is None:
+        now = dt_util.now()
+    if parsed.tzinfo is not None and now.tzinfo is not None:
+        now = now.astimezone(parsed.tzinfo)
+    elif parsed.tzinfo is None and now.tzinfo is not None:
+        now = now.replace(tzinfo=None)
+    elif parsed.tzinfo is not None and now.tzinfo is None:
+        parsed = parsed.replace(tzinfo=None)
+
+    delta = (parsed - now).total_seconds()
+    return -300 <= delta <= 3600
+
+
 def _round_price(price: float) -> float:
     """
     Round price to 4 decimal places, removing trailing zeros.

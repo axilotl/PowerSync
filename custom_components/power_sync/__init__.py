@@ -17604,6 +17604,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             extract_most_recent_actual_interval,
             compare_forecast_types,
             detect_price_spikes,
+            format_spike_alert_time,
+            spike_alert_key_time,
+            spike_is_imminent,
         )
 
         # Determine price source: AEMO API, Octopus, or Amber
@@ -17879,21 +17882,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 notified_spikes.clear()
                 entry_data["_spike_notif_date"] = today_str
 
-            from datetime import datetime as _spike_dt
-
-            def _spike_is_imminent(spike_time_str: str) -> bool:
-                """Check if spike is within 60 minutes of now."""
-                try:
-                    spike_dt = _spike_dt.fromisoformat(
-                        spike_time_str.replace("Z", "+00:00")
-                    )
-                    from homeassistant.util import dt as _dt_util
-                    now_dt = _dt_util.now()
-                    delta = (spike_dt - now_dt).total_seconds()
-                    return -300 <= delta <= 3600  # -5min (current) to +60min
-                except (ValueError, TypeError):
-                    return False
-
             # Send notifications for import spikes
             import_spikes = spike_result.get("import_spikes", {})
             if import_spikes.get("has_spike"):
@@ -17905,10 +17893,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     if spike_details:
                         first_spike = spike_details[0]
                         spike_time_raw = first_spike.get("time", "")
-                        spike_time = spike_time_raw.split("T")[1][:5] if "T" in spike_time_raw else ""
-                        notif_key = f"import_{spike_time}"
+                        spike_time = format_spike_alert_time(spike_time_raw)
+                        notif_key = f"import_{spike_alert_key_time(spike_time_raw)}"
                         if notif_key not in notified_spikes:
-                            if _spike_is_imminent(spike_time_raw):
+                            if spike_is_imminent(spike_time_raw):
                                 body = f"${max_price/100:.2f}/kWh at {spike_time} - avoid importing!"
                             else:
                                 body = f"${max_price/100:.2f}/kWh upcoming at {spike_time}"
@@ -17932,10 +17920,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     if spike_details:
                         first_spike = spike_details[0]
                         spike_time_raw = first_spike.get("time", "")
-                        spike_time = spike_time_raw.split("T")[1][:5] if "T" in spike_time_raw else ""
-                        notif_key = f"export_{spike_time}"
+                        spike_time = format_spike_alert_time(spike_time_raw)
+                        notif_key = f"export_{spike_alert_key_time(spike_time_raw)}"
                         if notif_key not in notified_spikes:
-                            if _spike_is_imminent(spike_time_raw):
+                            if spike_is_imminent(spike_time_raw):
                                 body = f"${max_price/100:.2f}/kWh at {spike_time} - export now!"
                             else:
                                 body = f"${max_price/100:.2f}/kWh upcoming at {spike_time}"
