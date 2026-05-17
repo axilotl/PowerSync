@@ -74,7 +74,7 @@ class _Services:
         self.calls.append((domain, service, data, blocking))
 
 
-def test_tesla_status_reads_current_ha_entities_before_cache():
+def test_tesla_mode_reads_current_ha_entity_but_backup_reserve_prefers_cache():
     module, restore = _load_controller_module()
     try:
         hass = SimpleNamespace(
@@ -98,7 +98,7 @@ def test_tesla_status_reads_current_ha_entities_before_cache():
         controller = module.BatteryControllerWrapper(hass, "tesla")
 
         assert asyncio.run(controller.get_tesla_operation_mode()) == "autonomous"
-        assert asyncio.run(controller.get_backup_reserve()) == 0
+        assert asyncio.run(controller.get_backup_reserve()) == 20
     finally:
         restore()
 
