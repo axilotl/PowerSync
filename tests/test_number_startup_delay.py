@@ -141,7 +141,6 @@ def test_force_power_slider_covers_power_capable_batteries():
         "CONF_GOODWE_HOST",
         "CONF_SIGENERGY_STATION_ID",
         "CONF_SUNGROW_HOST",
-        "CONF_SUNGROW_HOST_2",
         "CONF_ALPHAESS_MODBUS_HOST",
         "CONF_ESY_CONFIG_ENTRY_ID",
         "CONF_SOLAX_CONFIG_ENTRY_ID",

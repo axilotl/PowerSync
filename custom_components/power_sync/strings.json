@@ -366,21 +366,6 @@
         },
         "submit": "Connect"
       },
-      "sungrow_secondary": {
-        "title": "Secondary Sungrow inverter",
-        "description": "If you have a second Sungrow SH inverter, enter its connection details. Leave the IP blank to skip.",
-        "data": {
-          "sungrow_host_2": "Secondary inverter IP",
-          "sungrow_port_2": "Modbus port",
-          "sungrow_slave_id_2": "Modbus slave ID"
-        },
-        "data_description": {
-          "sungrow_host_2": "Local IP of your second Sungrow inverter or WiNet-S dongle. Leave blank to skip.",
-          "sungrow_port_2": "Default Modbus TCP port is 502.",
-          "sungrow_slave_id_2": "Default is 1. Only change if customised."
-        },
-        "submit": "Next"
-      },
       "foxess_connection": {
         "title": "FoxESS connection type",
         "description": "Choose how to connect to your FoxESS inverter.",
@@ -971,22 +956,12 @@
         "data": {
           "sungrow_host": "Inverter IP address",
           "sungrow_port": "Modbus port",
-          "sungrow_slave_id": "Modbus slave ID",
-          "sungrow_host_2": "Secondary inverter IP",
-          "sungrow_port_2": "Modbus port",
-          "sungrow_slave_id_2": "Modbus slave ID",
-          "sungrow_grid_inverter_soc_cap": "Grid inverter SOC cap",
-          "sungrow_battery_capacity_1": "Primary battery capacity",
-          "sungrow_battery_capacity_2": "Secondary battery capacity"
+          "sungrow_slave_id": "Modbus slave ID"
         },
         "data_description": {
           "sungrow_host": "Local IP of your Sungrow inverter or WiNet-S dongle (e.g. 192.168.1.100).",
           "sungrow_port": "Default Modbus TCP port is 502. Only change if customised on the inverter.",
-          "sungrow_slave_id": "Default is 1. Only change if you have multiple devices on the same bus.",
-          "sungrow_host_2": "Local IP of your second Sungrow inverter or WiNet-S dongle. Leave blank to skip.",
-          "sungrow_grid_inverter_soc_cap": "Maximum SOC percentage for grid-connected inverter in dual setups. Default 100 (disabled).",
-          "sungrow_battery_capacity_1": "Battery capacity in kWh for the primary inverter. Used for weighted SOC calculation in dual setups.",
-          "sungrow_battery_capacity_2": "Battery capacity in kWh for the secondary inverter."
+          "sungrow_slave_id": "Default is 1. Only change if you have multiple devices on the same bus."
         },
         "submit": "Save"
       },
@@ -1175,26 +1150,14 @@
           "optimization_backup_reserve": "Minimum discharge level (%)",
           "sungrow_host": "Inverter IP address",
           "sungrow_port": "Modbus port",
-          "sungrow_slave_id": "Modbus slave ID",
-          "sungrow_host_2": "Secondary inverter IP",
-          "sungrow_port_2": "Modbus port",
-          "sungrow_slave_id_2": "Modbus slave ID",
-          "sungrow_grid_inverter_soc_cap": "Grid inverter max SOC (%)",
-          "sungrow_battery_capacity_1": "Primary battery capacity (kWh)",
-          "sungrow_battery_capacity_2": "Secondary battery capacity (kWh)"
+          "sungrow_slave_id": "Modbus slave ID"
         },
         "data_description": {
           "optimization_provider": "Choose between Sungrow's built-in scheduling or Smart Optimization (LP solver).",
           "optimization_backup_reserve": "The optimizer will not discharge below this level. Separate from your battery's hardware backup reserve.",
           "sungrow_host": "Local IP of your Sungrow inverter or WiNet-S dongle (e.g. 192.168.1.100).",
           "sungrow_port": "Default Modbus TCP port is 502. Only change if customised on the inverter.",
-          "sungrow_slave_id": "Default is 1. Only change if you have multiple devices on the same bus.",
-          "sungrow_host_2": "Local IP of your second Sungrow inverter or WiNet-S dongle. Leave blank to skip.",
-          "sungrow_port_2": "Default Modbus TCP port is 502.",
-          "sungrow_slave_id_2": "Default is 1. Only change if customised.",
-          "sungrow_grid_inverter_soc_cap": "Maximum charge level for the grid-forming inverter. Set below 100% to reserve headroom for off-grid buffering (dual inverter setups only).",
-          "sungrow_battery_capacity_1": "Total battery capacity connected to the primary inverter in kWh. Used for weighted SOC averaging and power splitting.",
-          "sungrow_battery_capacity_2": "Total battery capacity connected to the secondary inverter in kWh."
+          "sungrow_slave_id": "Default is 1. Only change if you have multiple devices on the same bus."
         },
         "submit": "Save"
       },

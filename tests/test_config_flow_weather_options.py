@@ -16,9 +16,7 @@ CONFIG_OPTION_TEXT_STEP_PAIRS = (
     ("provider_selection", "pricing"),
     ("ml_options", "optimization"),
     ("sungrow", "sungrow_connection"),
-    ("sungrow_secondary", "sungrow_connection"),
     ("sungrow", "init_sungrow"),
-    ("sungrow_secondary", "init_sungrow"),
     ("foxess_connection", "init_foxess"),
     ("foxess_tcp", "foxess_connection_options"),
     ("foxess_serial", "foxess_connection_options"),
@@ -392,6 +390,33 @@ def test_goodwe_runtime_uses_entity_prefix_only_for_entity_control_mode():
     assert "GOODWE_EMS_CONTROL_ENTITY" in init_source
     assert "configured_ems_prefix" in init_source
     assert "goodwe_ems_control_mode is None" in init_source
+
+
+def test_sungrow_options_flow_removes_retired_dual_config():
+    source = CONFIG_FLOW_PATH.read_text()
+    method = _options_flow_method("async_step_sungrow_connection")
+    method_source = ast.get_source_segment(source, method)
+
+    assert method_source is not None
+    assert "new_options = dict(self.config_entry.options)" in method_source
+    assert "self._remove_legacy_sungrow_dual_options(new_data, new_options)" in method_source
+    assert "return self.async_create_entry(title=\"\", data=new_options)" in method_source
+    assert "CONF_SUNGROW_HOST_2" not in method_source
+    assert "CONF_SUNGROW_BATTERY_CAPACITY_2" not in method_source
+
+
+def test_sungrow_dual_setup_is_not_used_at_runtime():
+    source = CONFIG_FLOW_PATH.read_text()
+    init_method = _options_flow_method("async_step_init_sungrow")
+    init_source = ast.get_source_segment(source, init_method)
+    runtime_source = (
+        ROOT / "custom_components" / "power_sync" / "__init__.py"
+    ).read_text()
+
+    assert init_source is not None
+    assert "CONF_SUNGROW_HOST_2" not in init_source
+    assert "DualSungrowCoordinator" not in runtime_source
+    assert "sungrow_coordinator_2" not in runtime_source
 
 
 def test_smart_optimization_setup_and_options_text_match():

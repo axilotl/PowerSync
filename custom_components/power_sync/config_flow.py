@@ -147,10 +147,8 @@ from .const import (
     CONF_SUNGROW_PORT_2,
     CONF_SUNGROW_SLAVE_ID_2,
     CONF_SUNGROW_GRID_INVERTER_SOC_CAP,
-    DEFAULT_SUNGROW_GRID_INVERTER_SOC_CAP,
     CONF_SUNGROW_BATTERY_CAPACITY_1,
     CONF_SUNGROW_BATTERY_CAPACITY_2,
-    DEFAULT_SUNGROW_BATTERY_CAPACITY,
     # Sigenergy configuration
     CONF_SIGENERGY_USERNAME,
     CONF_SIGENERGY_PASSWORD,
@@ -423,6 +421,15 @@ CONF_NETWORK_TARIFF_COMBINED = "network_tariff_combined"
 CUSTOM_TOU_PROVIDER_OPTIONS = ("globird", "aemo_vpp", "other", "tou_only")
 
 _LOGGER = logging.getLogger(__name__)
+
+SUNGROW_LEGACY_DUAL_KEYS = (
+    CONF_SUNGROW_HOST_2,
+    CONF_SUNGROW_PORT_2,
+    CONF_SUNGROW_SLAVE_ID_2,
+    CONF_SUNGROW_GRID_INVERTER_SOC_CAP,
+    CONF_SUNGROW_BATTERY_CAPACITY_1,
+    CONF_SUNGROW_BATTERY_CAPACITY_2,
+)
 
 
 def _normalize_neovolt_entry_ids(
@@ -4483,6 +4490,16 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 data=new_data,
             )
 
+    def _remove_legacy_sungrow_dual_options(
+        self,
+        data: dict[str, Any],
+        options: dict[str, Any],
+    ) -> None:
+        """Remove retired dual-Sungrow configuration keys."""
+        for key in SUNGROW_LEGACY_DUAL_KEYS:
+            data.pop(key, None)
+            options.pop(key, None)
+
     def _has_weather_entities(self) -> bool:
         """Return whether HA currently exposes any weather entities."""
         try:
@@ -4920,64 +4937,30 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 errors["base"] = "sungrow_host_required"
             else:
                 new_data = dict(self.config_entry.data)
-                new_data[CONF_SUNGROW_HOST] = modbus_host
-                new_data[CONF_SUNGROW_PORT] = user_input.get(
+                new_options = dict(self.config_entry.options)
+                sungrow_port = user_input.get(
                     CONF_SUNGROW_PORT, DEFAULT_SUNGROW_PORT
                 )
-                new_data[CONF_SUNGROW_SLAVE_ID] = user_input.get(
+                sungrow_slave_id = user_input.get(
                     CONF_SUNGROW_SLAVE_ID, DEFAULT_SUNGROW_SLAVE_ID
                 )
-
-                host2 = user_input.get(CONF_SUNGROW_HOST_2, "").strip()
-                if host2:
-                    new_data[CONF_SUNGROW_HOST_2] = host2
-                    new_data[CONF_SUNGROW_PORT_2] = user_input.get(
-                        CONF_SUNGROW_PORT_2, DEFAULT_SUNGROW_PORT
-                    )
-                    new_data[CONF_SUNGROW_SLAVE_ID_2] = user_input.get(
-                        CONF_SUNGROW_SLAVE_ID_2, DEFAULT_SUNGROW_SLAVE_ID
-                    )
-                else:
-                    new_data.pop(CONF_SUNGROW_HOST_2, None)
-                    new_data.pop(CONF_SUNGROW_PORT_2, None)
-                    new_data.pop(CONF_SUNGROW_SLAVE_ID_2, None)
-
-                new_data[CONF_SUNGROW_GRID_INVERTER_SOC_CAP] = user_input.get(
-                    CONF_SUNGROW_GRID_INVERTER_SOC_CAP,
-                    DEFAULT_SUNGROW_GRID_INVERTER_SOC_CAP,
-                )
-                new_data[CONF_SUNGROW_BATTERY_CAPACITY_1] = user_input.get(
-                    CONF_SUNGROW_BATTERY_CAPACITY_1, DEFAULT_SUNGROW_BATTERY_CAPACITY
-                )
-                new_data[CONF_SUNGROW_BATTERY_CAPACITY_2] = user_input.get(
-                    CONF_SUNGROW_BATTERY_CAPACITY_2, DEFAULT_SUNGROW_BATTERY_CAPACITY
-                )
+                new_data[CONF_SUNGROW_HOST] = modbus_host
+                new_data[CONF_SUNGROW_PORT] = sungrow_port
+                new_data[CONF_SUNGROW_SLAVE_ID] = sungrow_slave_id
+                new_options[CONF_SUNGROW_HOST] = modbus_host
+                new_options[CONF_SUNGROW_PORT] = sungrow_port
+                new_options[CONF_SUNGROW_SLAVE_ID] = sungrow_slave_id
+                self._remove_legacy_sungrow_dual_options(new_data, new_options)
 
                 self.hass.config_entries.async_update_entry(
                     self.config_entry, data=new_data
                 )
-                return self.async_create_entry(
-                    title="", data=dict(self.config_entry.options)
-                )
+                return self.async_create_entry(title="", data=new_options)
 
         current_host = self._get_option(CONF_SUNGROW_HOST, "")
         current_port = self._get_option(CONF_SUNGROW_PORT, DEFAULT_SUNGROW_PORT)
         current_slave_id = self._get_option(
             CONF_SUNGROW_SLAVE_ID, DEFAULT_SUNGROW_SLAVE_ID
-        )
-        current_host_2 = self._get_option(CONF_SUNGROW_HOST_2, "")
-        current_port_2 = self._get_option(CONF_SUNGROW_PORT_2, DEFAULT_SUNGROW_PORT)
-        current_slave_id_2 = self._get_option(
-            CONF_SUNGROW_SLAVE_ID_2, DEFAULT_SUNGROW_SLAVE_ID
-        )
-        current_soc_cap = self._get_option(
-            CONF_SUNGROW_GRID_INVERTER_SOC_CAP, DEFAULT_SUNGROW_GRID_INVERTER_SOC_CAP
-        )
-        current_cap1 = self._get_option(
-            CONF_SUNGROW_BATTERY_CAPACITY_1, DEFAULT_SUNGROW_BATTERY_CAPACITY
-        )
-        current_cap2 = self._get_option(
-            CONF_SUNGROW_BATTERY_CAPACITY_2, DEFAULT_SUNGROW_BATTERY_CAPACITY
         )
 
         return self.async_show_form(
@@ -4999,43 +4982,6 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                         default=current_slave_id,
                     ): NumberSelector(NumberSelectorConfig(
                         min=1, max=247, step=1, mode=NumberSelectorMode.BOX,
-                    )),
-                    vol.Optional(
-                        CONF_SUNGROW_HOST_2,
-                        default=current_host_2,
-                    ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
-                    vol.Optional(
-                        CONF_SUNGROW_PORT_2,
-                        default=current_port_2,
-                    ): NumberSelector(NumberSelectorConfig(
-                        min=1, max=65535, step=1, mode=NumberSelectorMode.BOX,
-                    )),
-                    vol.Optional(
-                        CONF_SUNGROW_SLAVE_ID_2,
-                        default=current_slave_id_2,
-                    ): NumberSelector(NumberSelectorConfig(
-                        min=1, max=247, step=1, mode=NumberSelectorMode.BOX,
-                    )),
-                    vol.Optional(
-                        CONF_SUNGROW_GRID_INVERTER_SOC_CAP,
-                        default=current_soc_cap,
-                    ): NumberSelector(NumberSelectorConfig(
-                        min=50, max=100, step=1, unit_of_measurement="%",
-                        mode=NumberSelectorMode.SLIDER,
-                    )),
-                    vol.Optional(
-                        CONF_SUNGROW_BATTERY_CAPACITY_1,
-                        default=current_cap1,
-                    ): NumberSelector(NumberSelectorConfig(
-                        min=1.0, max=500.0, step=0.1, unit_of_measurement="kWh",
-                        mode=NumberSelectorMode.BOX,
-                    )),
-                    vol.Optional(
-                        CONF_SUNGROW_BATTERY_CAPACITY_2,
-                        default=current_cap2,
-                    ): NumberSelector(NumberSelectorConfig(
-                        min=1.0, max=500.0, step=0.1, unit_of_measurement="kWh",
-                        mode=NumberSelectorMode.BOX,
                     )),
                 }
             ),
@@ -6672,96 +6618,60 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
 
                 # Update config entry data with Sungrow Modbus settings
                 new_data = dict(self.config_entry.data)
-                new_data[CONF_SUNGROW_HOST] = modbus_host
-                new_data[CONF_SUNGROW_PORT] = user_input.get(
+                new_options = dict(self.config_entry.options)
+                sungrow_port = user_input.get(
                     CONF_SUNGROW_PORT, DEFAULT_SUNGROW_PORT
                 )
-                new_data[CONF_SUNGROW_SLAVE_ID] = user_input.get(
+                sungrow_slave_id = user_input.get(
                     CONF_SUNGROW_SLAVE_ID, DEFAULT_SUNGROW_SLAVE_ID
                 )
+                new_data[CONF_SUNGROW_HOST] = modbus_host
+                new_data[CONF_SUNGROW_PORT] = sungrow_port
+                new_data[CONF_SUNGROW_SLAVE_ID] = sungrow_slave_id
+                new_options[CONF_SUNGROW_HOST] = modbus_host
+                new_options[CONF_SUNGROW_PORT] = sungrow_port
+                new_options[CONF_SUNGROW_SLAVE_ID] = sungrow_slave_id
+                self._remove_legacy_sungrow_dual_options(new_data, new_options)
 
-                # Secondary inverter (optional — blank host means remove)
-                host2 = user_input.get(CONF_SUNGROW_HOST_2, "").strip()
-                if host2:
-                    new_data[CONF_SUNGROW_HOST_2] = host2
-                    new_data[CONF_SUNGROW_PORT_2] = user_input.get(
-                        CONF_SUNGROW_PORT_2, DEFAULT_SUNGROW_PORT
+                if not errors:
+                    # Optimization provider settings
+                    optimization_provider = user_input.get(
+                        CONF_OPTIMIZATION_PROVIDER, OPT_PROVIDER_NATIVE
                     )
-                    new_data[CONF_SUNGROW_SLAVE_ID_2] = user_input.get(
-                        CONF_SUNGROW_SLAVE_ID_2, DEFAULT_SUNGROW_SLAVE_ID
-                    )
-                else:
-                    # Remove secondary if previously configured
-                    new_data.pop(CONF_SUNGROW_HOST_2, None)
-                    new_data.pop(CONF_SUNGROW_PORT_2, None)
-                    new_data.pop(CONF_SUNGROW_SLAVE_ID_2, None)
-
-                # Grid-forming inverter SOC cap (dual setups)
-                new_data[CONF_SUNGROW_GRID_INVERTER_SOC_CAP] = user_input.get(
-                    CONF_SUNGROW_GRID_INVERTER_SOC_CAP,
-                    DEFAULT_SUNGROW_GRID_INVERTER_SOC_CAP,
-                )
-
-                # Battery capacity weights (dual setups)
-                new_data[CONF_SUNGROW_BATTERY_CAPACITY_1] = user_input.get(
-                    CONF_SUNGROW_BATTERY_CAPACITY_1, DEFAULT_SUNGROW_BATTERY_CAPACITY
-                )
-                new_data[CONF_SUNGROW_BATTERY_CAPACITY_2] = user_input.get(
-                    CONF_SUNGROW_BATTERY_CAPACITY_2, DEFAULT_SUNGROW_BATTERY_CAPACITY
-                )
-
-                # Optimization provider settings
-                optimization_provider = user_input.get(
-                    CONF_OPTIMIZATION_PROVIDER, OPT_PROVIDER_NATIVE
-                )
-                new_data[CONF_OPTIMIZATION_PROVIDER] = optimization_provider
-                if optimization_provider == OPT_PROVIDER_POWERSYNC:
-                    new_data[CONF_OPTIMIZATION_COST_FUNCTION] = COST_FUNCTION_COST
-                    new_data[CONF_OPTIMIZATION_BACKUP_RESERVE] = (
-                        user_input.get(
-                            CONF_OPTIMIZATION_BACKUP_RESERVE,
-                            int(DEFAULT_OPTIMIZATION_BACKUP_RESERVE * 100),
+                    new_data[CONF_OPTIMIZATION_PROVIDER] = optimization_provider
+                    if optimization_provider == OPT_PROVIDER_POWERSYNC:
+                        new_data[CONF_OPTIMIZATION_COST_FUNCTION] = COST_FUNCTION_COST
+                        new_data[CONF_OPTIMIZATION_BACKUP_RESERVE] = (
+                            user_input.get(
+                                CONF_OPTIMIZATION_BACKUP_RESERVE,
+                                int(DEFAULT_OPTIMIZATION_BACKUP_RESERVE * 100),
+                            )
+                            / 100.0
                         )
-                        / 100.0
+
+                    self.hass.config_entries.async_update_entry(
+                        self.config_entry, data=new_data, options=new_options
                     )
 
-                self.hass.config_entries.async_update_entry(
-                    self.config_entry, data=new_data
-                )
-
-                # Route to provider-specific step
-                if self._provider == "amber":
-                    return await self.async_step_amber_options()
-                elif self._provider == "flow_power":
-                    return await self.async_step_flow_power_options()
-                elif self._provider in CUSTOM_TOU_PROVIDER_OPTIONS:
-                    return await self.async_step_globird_options()
-                elif self._provider == "octopus":
-                    return await self.async_step_octopus_options()
-                elif self._provider == "epex":
-                    return await self.async_step_epex_options()
-                elif self._provider == "nz":
-                    return await self.async_step_nz_options()
+                    # Route to provider-specific step
+                    if self._provider == "amber":
+                        return await self.async_step_amber_options()
+                    elif self._provider == "flow_power":
+                        return await self.async_step_flow_power_options()
+                    elif self._provider in CUSTOM_TOU_PROVIDER_OPTIONS:
+                        return await self.async_step_globird_options()
+                    elif self._provider == "octopus":
+                        return await self.async_step_octopus_options()
+                    elif self._provider == "epex":
+                        return await self.async_step_epex_options()
+                    elif self._provider == "nz":
+                        return await self.async_step_nz_options()
 
         current_provider = self._get_option(CONF_ELECTRICITY_PROVIDER, "amber")
         current_host = self._get_option(CONF_SUNGROW_HOST, "")
         current_port = self._get_option(CONF_SUNGROW_PORT, DEFAULT_SUNGROW_PORT)
         current_slave_id = self._get_option(
             CONF_SUNGROW_SLAVE_ID, DEFAULT_SUNGROW_SLAVE_ID
-        )
-        current_host_2 = self._get_option(CONF_SUNGROW_HOST_2, "")
-        current_port_2 = self._get_option(CONF_SUNGROW_PORT_2, DEFAULT_SUNGROW_PORT)
-        current_slave_id_2 = self._get_option(
-            CONF_SUNGROW_SLAVE_ID_2, DEFAULT_SUNGROW_SLAVE_ID
-        )
-        current_soc_cap = self._get_option(
-            CONF_SUNGROW_GRID_INVERTER_SOC_CAP, DEFAULT_SUNGROW_GRID_INVERTER_SOC_CAP
-        )
-        current_cap1 = self._get_option(
-            CONF_SUNGROW_BATTERY_CAPACITY_1, DEFAULT_SUNGROW_BATTERY_CAPACITY
-        )
-        current_cap2 = self._get_option(
-            CONF_SUNGROW_BATTERY_CAPACITY_2, DEFAULT_SUNGROW_BATTERY_CAPACITY
         )
         current_opt_provider = self.config_entry.data.get(
             CONF_OPTIMIZATION_PROVIDER, OPT_PROVIDER_NATIVE
@@ -6824,43 +6734,6 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                         default=current_slave_id,
                     ): NumberSelector(NumberSelectorConfig(
                         min=1, max=247, step=1, mode=NumberSelectorMode.BOX,
-                    )),
-                    vol.Optional(
-                        CONF_SUNGROW_HOST_2,
-                        default=current_host_2,
-                    ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
-                    vol.Optional(
-                        CONF_SUNGROW_PORT_2,
-                        default=current_port_2,
-                    ): NumberSelector(NumberSelectorConfig(
-                        min=1, max=65535, step=1, mode=NumberSelectorMode.BOX,
-                    )),
-                    vol.Optional(
-                        CONF_SUNGROW_SLAVE_ID_2,
-                        default=current_slave_id_2,
-                    ): NumberSelector(NumberSelectorConfig(
-                        min=1, max=247, step=1, mode=NumberSelectorMode.BOX,
-                    )),
-                    vol.Optional(
-                        CONF_SUNGROW_GRID_INVERTER_SOC_CAP,
-                        default=current_soc_cap,
-                    ): NumberSelector(NumberSelectorConfig(
-                        min=50, max=100, step=1, unit_of_measurement="%",
-                        mode=NumberSelectorMode.SLIDER,
-                    )),
-                    vol.Optional(
-                        CONF_SUNGROW_BATTERY_CAPACITY_1,
-                        default=current_cap1,
-                    ): NumberSelector(NumberSelectorConfig(
-                        min=1.0, max=500.0, step=0.1, unit_of_measurement="kWh",
-                        mode=NumberSelectorMode.BOX,
-                    )),
-                    vol.Optional(
-                        CONF_SUNGROW_BATTERY_CAPACITY_2,
-                        default=current_cap2,
-                    ): NumberSelector(NumberSelectorConfig(
-                        min=1.0, max=500.0, step=0.1, unit_of_measurement="kWh",
-                        mode=NumberSelectorMode.BOX,
                     )),
                 }
             ),

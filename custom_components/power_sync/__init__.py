@@ -388,14 +388,6 @@ from .const import (
     CONF_SUNGROW_SLAVE_ID,
     DEFAULT_SUNGROW_PORT,
     DEFAULT_SUNGROW_SLAVE_ID,
-    CONF_SUNGROW_HOST_2,
-    CONF_SUNGROW_PORT_2,
-    CONF_SUNGROW_SLAVE_ID_2,
-    CONF_SUNGROW_GRID_INVERTER_SOC_CAP,
-    DEFAULT_SUNGROW_GRID_INVERTER_SOC_CAP,
-    CONF_SUNGROW_BATTERY_CAPACITY_1,
-    CONF_SUNGROW_BATTERY_CAPACITY_2,
-    DEFAULT_SUNGROW_BATTERY_CAPACITY,
     # FoxESS battery system configuration
     BATTERY_SYSTEM_FOXESS,
     CONF_FOXESS_HOST,
@@ -531,7 +523,6 @@ from .coordinator import (
     TeslaEnergyCoordinator,
     SigenergyEnergyCoordinator,
     SungrowEnergyCoordinator,
-    DualSungrowCoordinator,
     FoxESSEnergyCoordinator,
     FoxESSCloudEnergyCoordinator,
     GoodWeEnergyCoordinator,
@@ -14986,7 +14977,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     tesla_coordinator = None
     sigenergy_coordinator = None
     sungrow_coordinator = None
-    sungrow_coordinator_2 = None
     foxess_coordinator = None
     goodwe_coordinator = None
     alphaess_coordinator = None
@@ -15057,31 +15047,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             entry_id=entry.entry_id,
         )
 
-        # Check for secondary Sungrow inverter (dual-inverter setup)
-        sungrow_host_2 = entry.options.get(
-            CONF_SUNGROW_HOST_2,
-            entry.data.get(CONF_SUNGROW_HOST_2)
-        )
-        if sungrow_host_2:
-            sungrow_port_2 = entry.options.get(
-                CONF_SUNGROW_PORT_2,
-                entry.data.get(CONF_SUNGROW_PORT_2, DEFAULT_SUNGROW_PORT)
-            )
-            sungrow_slave_id_2 = entry.options.get(
-                CONF_SUNGROW_SLAVE_ID_2,
-                entry.data.get(CONF_SUNGROW_SLAVE_ID_2, DEFAULT_SUNGROW_SLAVE_ID)
-            )
-            _LOGGER.info(
-                "Initializing secondary Sungrow Modbus coordinator: %s:%s (slave %s)",
-                sungrow_host_2, sungrow_port_2, sungrow_slave_id_2
-            )
-            sungrow_coordinator_2 = SungrowEnergyCoordinator(
-                hass,
-                sungrow_host_2,
-                port=sungrow_port_2,
-                slave_id=sungrow_slave_id_2,
-                entry_id=entry.entry_id,
-            )
     elif is_foxess:
         _LOGGER.info("Running in FoxESS mode - Tesla credentials not required")
 
@@ -15406,30 +15371,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.warning("Sungrow Modbus coordinator failed to initialize: %s", e)
             # Don't fail the entire setup - allow other features to work
             sungrow_coordinator = None
-
-        # Initialize secondary Sungrow and wrap in DualSungrowCoordinator
-        if sungrow_coordinator and sungrow_coordinator_2:
-            try:
-                await sungrow_coordinator_2.async_config_entry_first_refresh()
-                _LOGGER.info("Secondary Sungrow coordinator initialized successfully")
-                soc_cap = entry.data.get(
-                    CONF_SUNGROW_GRID_INVERTER_SOC_CAP,
-                    DEFAULT_SUNGROW_GRID_INVERTER_SOC_CAP,
-                )
-                cap1 = entry.data.get(CONF_SUNGROW_BATTERY_CAPACITY_1, DEFAULT_SUNGROW_BATTERY_CAPACITY)
-                cap2 = entry.data.get(CONF_SUNGROW_BATTERY_CAPACITY_2, DEFAULT_SUNGROW_BATTERY_CAPACITY)
-                sungrow_coordinator = DualSungrowCoordinator(
-                    hass, sungrow_coordinator, sungrow_coordinator_2,
-                    soc_cap=soc_cap, cap1_kwh=cap1, cap2_kwh=cap2,
-                )
-                await sungrow_coordinator.async_config_entry_first_refresh()
-                _LOGGER.info("Dual Sungrow coordinator active")
-            except Exception as e:
-                _LOGGER.warning(
-                    "Secondary Sungrow coordinator failed to initialize: %s — "
-                    "falling back to single-inverter mode", e
-                )
-                # sungrow_coordinator stays as the primary single coordinator
 
     if foxess_coordinator:
         try:
