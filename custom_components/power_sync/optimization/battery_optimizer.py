@@ -646,6 +646,7 @@ class BatteryOptimizer:
         for t in range(n):
             export_profitable_slot = (
                 allow_battery_export[t] and export_prices[t] > import_prices[t]
+                and (acquisition_cost_kwh <= 0 or export_prices[t] >= acquisition_cost_kwh)
             )
             if block_battery_charge[t] or export_profitable_slot:
                 # Do not charge during slots that are already marked for
@@ -830,8 +831,8 @@ class BatteryOptimizer:
         battery_charge = [0.0] * n
         battery_discharge = [0.0] * n
 
-        # Price-based greedy: sort by price spread
-        # Charge during cheapest import, discharge during most profitable export
+        # Price-based greedy: sort export opportunities by spread, then charge
+        # during the cheapest import slots that are not real export windows.
         spreads = []
         for t in range(n):
             net_load = load[t] - solar[t]
@@ -848,7 +849,23 @@ class BatteryOptimizer:
         # Pass 1: assign discharge/export to highest-spread periods
         soc_tracker = soc_0
         for spread, t, net_load in spreads:
-            if spread > 0:
+            export_profitable_slot = (
+                allow_battery_export[t]
+                and export_prices[t] > import_prices[t]
+                and (
+                    acquisition_cost_kwh <= 0
+                    or export_prices[t] >= acquisition_cost_kwh
+                )
+            )
+            self_consumption_value_slot = (
+                not allow_battery_export[t]
+                and import_prices[t] > export_prices[t]
+                and (
+                    acquisition_cost_kwh <= 0
+                    or import_prices[t] >= acquisition_cost_kwh
+                )
+            )
+            if export_profitable_slot or self_consumption_value_slot:
                 # Profitable to discharge; cap to home load when battery export
                 # is not explicitly permitted or export is below acquisition cost.
                 discharge_limit = self.max_discharge_kw
@@ -870,21 +887,32 @@ class BatteryOptimizer:
                 if discharge_kw > 0.01:
                     actions[t] = (0.0, discharge_kw)
                     soc_tracker -= discharge_kw * dt / (eff * cap)
-            else:
-                # Cheap to charge
-                export_profitable_slot = (
-                    allow_battery_export[t] and export_prices[t] > import_prices[t]
+
+        # Pass 2: assign charging to cheapest import periods. Do this
+        # independently from export spread so import<export tariffs (e.g.
+        # Octopus IOG 7p import with 12p export) do not suppress grid charging
+        # when the export price is still below the stored-energy acquisition cost.
+        for _, t, net_load in sorted(spreads, key=lambda item: (import_prices[item[1]], item[1])):
+            if t in actions:
+                continue
+            export_profitable_slot = (
+                allow_battery_export[t]
+                and export_prices[t] > import_prices[t]
+                and (
+                    acquisition_cost_kwh <= 0
+                    or export_prices[t] >= acquisition_cost_kwh
                 )
-                if block_battery_charge[t] or export_profitable_slot:
-                    continue
-                charge_room = (1.0 - soc_tracker) * cap / (eff * dt)
-                charge_limit = self.max_charge_kw
-                if not allow_grid_charge:
-                    charge_limit = min(charge_limit, max(0.0, -net_load))
-                charge_kw = min(charge_limit, max(0, charge_room))
-                if charge_kw > 0.01:
-                    actions[t] = (charge_kw, 0.0)
-                    soc_tracker += charge_kw * eff * dt / cap
+            )
+            if block_battery_charge[t] or export_profitable_slot:
+                continue
+            charge_room = (1.0 - soc_tracker) * cap / (eff * dt)
+            charge_limit = self.max_charge_kw
+            if not allow_grid_charge:
+                charge_limit = min(charge_limit, max(0.0, -net_load))
+            charge_kw = min(charge_limit, max(0, charge_room))
+            if charge_kw > 0.01:
+                actions[t] = (charge_kw, 0.0)
+                soc_tracker += charge_kw * eff * dt / cap
 
         # Now compute grid flows in time order
         soc = soc_0
