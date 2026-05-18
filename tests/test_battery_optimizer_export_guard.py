@@ -498,6 +498,40 @@ def test_cheap_import_charge_not_blocked_by_positive_fit_at_reserve(
     assert result.schedule.actions[-1].soc > 0.20
 
 
+def test_positive_fit_iog_charge_does_not_create_all_day_export_loop(
+    battery_optimizer_module,
+):
+    optimizer = battery_optimizer_module.BatteryOptimizer(
+        capacity_wh=13500,
+        max_charge_w=7000,
+        max_discharge_w=7000,
+        backup_reserve=0.20,
+        interval_minutes=5,
+        horizon_hours=48,
+    )
+
+    cheap_slots = 202
+    n = 576
+    result = optimizer.optimize(
+        import_prices=[0.069] * cheap_slots + [0.2856] * (n - cheap_slots),
+        export_prices=[0.12] * n,
+        solar_forecast=[0.0] * n,
+        load_forecast=[0.7] * n,
+        current_soc=0.19,
+        acquisition_cost_kwh=0.0,
+        allow_battery_export=[True] * n,
+    )
+
+    cheap_window = result.schedule.actions[:cheap_slots]
+    charge_actions = [action for action in cheap_window if action.action == "charge"]
+
+    assert cheap_window[0].action == "charge"
+    assert max(action.battery_charge_w for action in charge_actions) > 1000
+    assert len(charge_actions) < 40
+    assert max(result.grid_export_w[:cheap_slots]) <= 1e-6
+    assert all(action.action != "export" for action in cheap_window)
+
+
 def test_disallow_grid_charge_blocks_forced_grid_charging(
     battery_optimizer_module,
 ):

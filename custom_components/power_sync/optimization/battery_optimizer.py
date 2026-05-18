@@ -314,6 +314,21 @@ class BatteryOptimizer:
             flags.extend([False] * (target_len - len(flags)))
         return flags
 
+    def _has_future_self_consumption_value(
+        self,
+        t: int,
+        n: int,
+        import_prices: list[float],
+        solar: list[float],
+        load: list[float],
+    ) -> bool:
+        """Return True when charging now can avoid later higher-price load."""
+        return any(
+            import_prices[i] > import_prices[t] + 0.001
+            and max(0.0, load[i] - solar[i]) > 0.05
+            for i in range(t + 1, n)
+        )
+
     def _solve_lp(
         self,
         n: int,
@@ -408,17 +423,22 @@ class BatteryOptimizer:
 
         # Deadline mode: when pre_window_soc_target is binding (e.g. must reach
         # 100% before today's Flow Power Happy Hour), flip the import bias so
-        # ties resolve to EARLIER charging.  Otherwise the legacy prefer-later
-        # behavior eats the entire pre-window slack and starts charging right
-        # against the deadline — any Modbus latency, BMS taper, or forecast
-        # jitter then leaves the user below target at window start.
-        # Solar-SC users (no deadline) keep the prefer-later default so grid
-        # imports happen after solar has had a chance to fill the battery.
+        # ties resolve to EARLIER charging. Do the same when the battery is at
+        # the reserve floor: waiting until the end of a flat cheap window leaves
+        # no margin for inverter latency, BMS taper, or forecast jitter.
+        # Solar-SC users with useful SOC and no deadline keep the prefer-later
+        # default so grid imports happen after solar has had a chance to fill
+        # the battery.
         deadline_mode = (
             allow_grid_charge
-            and self.pre_window_slot is not None
-            and self.pre_window_slot > 0
-            and self.pre_window_soc_target > 0.0
+            and (
+                (
+                    self.pre_window_slot is not None
+                    and self.pre_window_slot > 0
+                    and self.pre_window_soc_target > 0.0
+                )
+                or soc_0 <= self.backup_reserve + 0.02
+            )
         )
 
         # Pre-compute free charging bonus: use median non-free import price
@@ -637,7 +657,23 @@ class BatteryOptimizer:
         # disabled, cap export to exogenous surplus so the LP cannot invent
         # grid-import -> grid-export or battery -> grid arbitrage.
         for t in range(n):
-            if allow_battery_export[t]:
+            export_profitable_slot = (
+                allow_battery_export[t]
+                and export_prices[t] > import_prices[t]
+                and (
+                    acquisition_cost_kwh <= 0
+                    or export_prices[t] >= acquisition_cost_kwh
+                )
+            )
+            future_self_consumption_value = self._has_future_self_consumption_value(
+                t, n, import_prices, solar, load
+            )
+            suppress_generic_battery_export = (
+                export_profitable_slot
+                and future_self_consumption_value
+                and not block_battery_charge[t]
+            )
+            if allow_battery_export[t] and not suppress_generic_battery_export:
                 bounds.append((0, max_grid_export_kw))  # grid_export
             else:
                 solar_surplus_kw = max(0.0, solar[t] - load[t])
@@ -652,10 +688,8 @@ class BatteryOptimizer:
                     or export_prices[t] >= acquisition_cost_kwh
                 )
             )
-            future_self_consumption_value = any(
-                import_prices[i] > import_prices[t] + 0.001
-                and max(0.0, load[i] - solar[i]) > 0.05
-                for i in range(t + 1, n)
+            future_self_consumption_value = self._has_future_self_consumption_value(
+                t, n, import_prices, solar, load
             )
             if block_battery_charge[t] or (
                 export_profitable_slot and not future_self_consumption_value
@@ -675,8 +709,25 @@ class BatteryOptimizer:
                 bounds.append((0, self.max_charge_kw))  # battery_charge
 
         for t in range(n):
+            export_profitable_slot = (
+                allow_battery_export[t]
+                and export_prices[t] > import_prices[t]
+                and (
+                    acquisition_cost_kwh <= 0
+                    or export_prices[t] >= acquisition_cost_kwh
+                )
+            )
+            future_self_consumption_value = self._has_future_self_consumption_value(
+                t, n, import_prices, solar, load
+            )
+            suppress_generic_battery_export = (
+                export_profitable_slot
+                and future_self_consumption_value
+                and not block_battery_charge[t]
+            )
             restrict_to_self_consumption = (
-                not allow_battery_export[t]
+                suppress_generic_battery_export
+                or not allow_battery_export[t]
                 or (acquisition_cost_kwh > 0 and export_prices[t] < acquisition_cost_kwh)
             )
             if restrict_to_self_consumption:
@@ -873,6 +924,9 @@ class BatteryOptimizer:
                     or export_prices[t] >= acquisition_cost_kwh
                 )
             )
+            future_self_consumption_value = self._has_future_self_consumption_value(
+                t, n, import_prices, solar, load
+            )
             self_consumption_value_slot = (
                 not allow_battery_export[t]
                 and import_prices[t] > export_prices[t]
@@ -881,7 +935,10 @@ class BatteryOptimizer:
                     or import_prices[t] >= acquisition_cost_kwh
                 )
             )
-            if export_profitable_slot or self_consumption_value_slot:
+            if (
+                (export_profitable_slot and not future_self_consumption_value)
+                or self_consumption_value_slot
+            ):
                 # Profitable to discharge; cap to home load when battery export
                 # is not explicitly permitted or export is below acquisition cost.
                 discharge_limit = self.max_discharge_kw
@@ -919,10 +976,8 @@ class BatteryOptimizer:
                     or export_prices[t] >= acquisition_cost_kwh
                 )
             )
-            future_self_consumption_value = any(
-                import_prices[i] > import_prices[t] + 0.001
-                and max(0.0, load[i] - solar[i]) > 0.05
-                for i in range(t + 1, n)
+            future_self_consumption_value = self._has_future_self_consumption_value(
+                t, n, import_prices, solar, load
             )
             if block_battery_charge[t] or (
                 export_profitable_slot and not future_self_consumption_value
