@@ -640,7 +640,8 @@ def convert_amber_to_tesla_tariff(
             # - Market fees
             # - Renewable energy certificates
             #
-            # User selects: 'predicted' (default), 'low' (conservative), 'high' (optimistic)
+            # User selects: 'predicted' (default), 'low' (lower prices expected),
+            # or 'high' (higher prices expected, more conservative for import cost).
             advanced_price = point.get("advancedPrice")
             interval_type = point.get("type", "unknown")
 

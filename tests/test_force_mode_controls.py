@@ -118,10 +118,36 @@ def test_force_handlers_capture_power_before_persisting_restart_state():
 
     assert discharge_source is not None
     assert charge_source is not None
-    assert 'command_power_w = _coerce_force_power_w(call.data.get("power_w", 0))' in discharge_source
+    assert 'command_power_w = _resolve_force_command_power_w(' in discharge_source
+    assert '"discharge",' in discharge_source
     assert 'force_discharge_state["power_w"] = command_power_w' in discharge_source
-    assert 'command_power_w = _coerce_force_power_w(call.data.get("power_w", 0))' in charge_source
+    assert 'command_power_w = _resolve_force_command_power_w(' in charge_source
+    assert '"charge",' in charge_source
     assert 'force_charge_state["power_w"] = command_power_w' in charge_source
+
+
+def test_force_handlers_use_optimizer_power_when_force_power_is_unset():
+    source = INIT_PATH.read_text()
+    tree = ast.parse(source)
+    resolve = _find_function(tree, "_resolve_force_command_power_w")
+    discharge = _find_function(tree, "handle_force_discharge")
+    charge = _find_function(tree, "handle_force_charge")
+    resolve_source = ast.get_source_segment(source, resolve)
+    discharge_source = ast.get_source_segment(source, discharge)
+    charge_source = ast.get_source_segment(source, charge)
+
+    assert resolve_source is not None
+    assert discharge_source is not None
+    assert charge_source is not None
+    assert "CONF_OPTIMIZATION_MAX_CHARGE_W" in source
+    assert "CONF_OPTIMIZATION_MAX_DISCHARGE_W" in source
+    assert "explicit_power_w > 0" in resolve_source
+    assert "configured_power_w = _configured_force_power_w(direction)" in resolve_source
+    assert "using optimizer max" in resolve_source
+    assert 'power_w = command_power_w' in discharge_source
+    assert 'power_w = command_power_w' in charge_source
+    assert 'power_w = call.data.get("power_w", 0)' not in discharge_source
+    assert 'power_w = call.data.get("power_w", 0)' not in charge_source
 
 
 def test_force_tariff_filter_matches_names_and_codes():

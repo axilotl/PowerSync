@@ -709,6 +709,7 @@ class _FakeBattery:
         self.hardware_mode = hardware_mode
         self.backup_reserve = backup_reserve
         self.self_consumption_calls = 0
+        self.restore_normal_calls = 0
         self.backup_reserve_calls = []
         self.force_charge_calls = []
         self.force_discharge_calls = []
@@ -721,6 +722,9 @@ class _FakeBattery:
 
     async def set_self_consumption_mode(self):
         self.self_consumption_calls += 1
+
+    async def restore_normal(self):
+        self.restore_normal_calls += 1
 
     async def set_backup_reserve(self, percent):
         self.backup_reserve_calls.append(percent)
@@ -962,6 +966,7 @@ def test_tesla_idle_holds_current_soc_when_below_optimizer_floor(opt_module):
 def test_charge_executes_immediately_above_reserve(opt_module):
     battery = _FakeBattery()
     coordinator = _execution_coordinator(opt_module, battery, soc=0.50)
+    coordinator.battery_system = "foxess"
 
     asyncio.run(
         coordinator._execute_optimizer_action(
@@ -971,7 +976,85 @@ def test_charge_executes_immediately_above_reserve(opt_module):
 
     assert battery.force_charge_calls == [(10, 4200, False)]
     assert battery.self_consumption_calls == 0
+    assert coordinator._optimizer_force_state["active"] is True
+    assert coordinator._optimizer_force_state["type"] == "charge"
     assert coordinator._last_executed_action == "charge"
+
+
+def test_optimizer_owned_force_charge_survives_short_lp_slot_shuffle(opt_module):
+    battery = _FakeBattery()
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.50)
+    coordinator.battery_system = "foxess"
+    start = datetime(2026, 5, 3, 8, 30, tzinfo=timezone.utc)
+    initial_actions = [
+        SimpleNamespace(
+            action="charge",
+            power_w=23500,
+            timestamp=start,
+        ),
+        SimpleNamespace(
+            action="charge",
+            power_w=23500,
+            timestamp=start + timedelta(minutes=5),
+        ),
+    ]
+    coordinator._current_schedule = SimpleNamespace(actions=initial_actions)
+
+    asyncio.run(coordinator._execute_optimizer_action(initial_actions[0]))
+
+    shuffled_actions = [
+        SimpleNamespace(
+            action="self_consumption",
+            power_w=0,
+            timestamp=start,
+        ),
+        SimpleNamespace(
+            action="charge",
+            power_w=23500,
+            timestamp=start + timedelta(minutes=5),
+        ),
+    ]
+    coordinator._current_schedule = SimpleNamespace(actions=shuffled_actions)
+
+    asyncio.run(coordinator._execute_optimizer_action(shuffled_actions[0]))
+
+    assert battery.force_charge_calls == [(10, 23500, False)]
+    assert battery.self_consumption_calls == 0
+    assert battery.restore_normal_calls == 0
+    assert coordinator._optimizer_force_state["active"] is True
+    assert coordinator._last_executed_action == "charge"
+
+
+def test_optimizer_owned_force_charge_clears_when_lp_really_stops_charging(opt_module):
+    battery = _FakeBattery()
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.50)
+    coordinator.battery_system = "foxess"
+    start = datetime(2026, 5, 3, 8, 30, tzinfo=timezone.utc)
+    charge_action = SimpleNamespace(action="charge", power_w=23500, timestamp=start)
+    coordinator._current_schedule = SimpleNamespace(actions=[charge_action])
+
+    asyncio.run(coordinator._execute_optimizer_action(charge_action))
+
+    stop_actions = [
+        SimpleNamespace(
+            action="self_consumption",
+            power_w=0,
+            timestamp=start,
+        ),
+        SimpleNamespace(
+            action="self_consumption",
+            power_w=0,
+            timestamp=start + timedelta(minutes=5),
+        ),
+    ]
+    coordinator._current_schedule = SimpleNamespace(actions=stop_actions)
+
+    asyncio.run(coordinator._execute_optimizer_action(stop_actions[0]))
+
+    assert battery.restore_normal_calls == 1
+    assert battery.self_consumption_calls == 1
+    assert coordinator._optimizer_force_state["active"] is False
+    assert coordinator._last_executed_action == "self_consumption"
 
 
 def test_charge_duration_clips_at_next_lp_action_boundary(opt_module):

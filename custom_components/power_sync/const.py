@@ -1227,8 +1227,8 @@ DEFAULT_CHIP_MODE_THRESHOLD = 30.0  # c/kWh (allow export only above this)
 CONF_SPIKE_PROTECTION_ENABLED = "spike_protection_enabled"
 
 # Forecast Discrepancy Alert configuration
-# Compares predicted forecast against conservative/low forecast and alerts if
-# they differ significantly (indicates forecast model may be unreliable)
+# Compares Amber predicted forecast against the high-price forecast and alerts
+# if they differ significantly (indicates the forecast spread is large)
 CONF_FORECAST_DISCREPANCY_ALERT = "forecast_discrepancy_alert"
 CONF_FORECAST_DISCREPANCY_THRESHOLD = "forecast_discrepancy_threshold"
 DEFAULT_FORECAST_DISCREPANCY_THRESHOLD = 10.0  # c/kWh - alert if avg difference > 10c

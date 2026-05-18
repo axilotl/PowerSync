@@ -237,6 +237,19 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         # Track last executed action for mode transitions.
         self._last_executed_action: str | None = None
+        # Optimizer-issued force commands use a hardware-only service path for
+        # non-Tesla systems so automated actions do not appear as manual force
+        # countdowns in the UI. Track that private state here so a later LP
+        # solve can distinguish "no force active" from "optimizer force active".
+        self._optimizer_force_state: dict[str, Any] = {
+            "active": False,
+            "type": None,
+            "expires_at": None,
+            "hardware_expires_at": None,
+            "power_w": 0,
+            "source": "optimizer",
+            "scope": "optimizer",
+        }
         # Physical battery backup reserve saved before IDLE raises it.
         # Restored when exiting IDLE so we don't overwrite the user's
         # hardware reserve with the optimizer's LP floor.
@@ -1747,6 +1760,83 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             tariff_duration += 1
         return max(force_duration, tariff_duration)
 
+    def _as_utc_datetime(self, value: Any) -> datetime | None:
+        """Return a timezone-aware UTC datetime for persisted/runtime values."""
+        if isinstance(value, datetime):
+            parsed = value
+        elif isinstance(value, str):
+            try:
+                parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError:
+                return None
+        else:
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=dt_util.UTC)
+        return parsed.astimezone(dt_util.UTC)
+
+    def _clear_optimizer_force_state(self) -> None:
+        """Clear private optimizer-owned force state."""
+        state = getattr(self, "_optimizer_force_state", None)
+        if not isinstance(state, dict):
+            self._optimizer_force_state = {"active": False}
+            return
+        state.update(
+            {
+                "active": False,
+                "type": None,
+                "expires_at": None,
+                "hardware_expires_at": None,
+                "power_w": 0,
+                "source": "optimizer",
+                "scope": "optimizer",
+            }
+        )
+
+    def _set_optimizer_force_state(
+        self,
+        force_type: str,
+        duration_minutes: int,
+        power_w: float,
+    ) -> None:
+        """Record an optimizer-owned hardware force command."""
+        now = dt_util.utcnow()
+        expires_at = now + timedelta(minutes=max(1, int(duration_minutes)))
+        self._optimizer_force_state = {
+            "active": True,
+            "type": force_type,
+            "expires_at": expires_at,
+            "hardware_expires_at": expires_at,
+            "power_w": power_w,
+            "source": "optimizer",
+            "scope": "optimizer",
+        }
+
+    def _get_active_force_state(self) -> dict[str, Any]:
+        """Return user-visible force state or private optimizer force state."""
+        force_state_getter = getattr(self, "_force_state_getter", None)
+        if force_state_getter:
+            force_state = force_state_getter() or {}
+            if force_state.get("active"):
+                force_state = dict(force_state)
+                force_state.setdefault("scope", "external")
+                return force_state
+
+        state = getattr(self, "_optimizer_force_state", None)
+        if not isinstance(state, dict) or not state.get("active"):
+            return {"active": False}
+
+        expires_at = self._as_utc_datetime(state.get("expires_at"))
+        now = dt_util.utcnow()
+        if expires_at is not None and expires_at <= now:
+            self._clear_optimizer_force_state()
+            return {"active": False}
+
+        active = dict(state)
+        active.setdefault("source", "optimizer")
+        active.setdefault("scope", "optimizer")
+        return active
+
     def _export_command_power_w(self, action: Any) -> float:
         """Return the hardware export command power for an optimizer action."""
         command_w = float(self._config.max_discharge_w)
@@ -1783,9 +1873,8 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # User-triggered force modes own the battery state — don't override.
         # Optimizer-triggered force modes can be overridden if the LP changes
         # its mind (e.g. LP planned 1 export step but now wants self_consumption).
-        if self._force_state_getter:
-            force_state = self._force_state_getter()
-            if force_state and force_state.get("active"):
+        force_state = self._get_active_force_state()
+        if force_state and force_state.get("active"):
                 force_type = force_state.get("type", "unknown")
                 force_source = force_state.get("source", "user")
 
@@ -1835,11 +1924,15 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     # between optimizer cycles (avoids restore→re-issue gap).
                     from ..const import DOMAIN as _EXT_DOMAIN
                     _ext_data = self.hass.data.get(_EXT_DOMAIN, {}).get(self.entry_id, {})
-                    _ext_state = _ext_data.get(
-                        "force_discharge_state" if force_type == "discharge" else "force_charge_state", {}
-                    )
-                    if _ext_state.get("cancel_expiry_timer"):
-                        _ext_state["cancel_expiry_timer"]()  # Cancel old timer
+                    force_scope = force_state.get("scope", "external")
+                    if force_scope == "optimizer":
+                        _ext_state = self._optimizer_force_state
+                    else:
+                        _ext_state = _ext_data.get(
+                            "force_discharge_state" if force_type == "discharge" else "force_charge_state", {}
+                        )
+                        if _ext_state.get("cancel_expiry_timer"):
+                            _ext_state["cancel_expiry_timer"]()  # Cancel old timer
                     matching_actions = (
                         {"charge"}
                         if force_type == "charge"
@@ -1857,24 +1950,23 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         else None
                     )
                     new_expiry = dt_util.utcnow() + timedelta(minutes=extend_mins)
-                    _ext_state["expires_at"] = new_expiry
-
-                    def _as_utc_datetime(value: Any) -> datetime | None:
-                        if isinstance(value, datetime):
-                            parsed = value
-                        elif isinstance(value, str):
-                            try:
-                                parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-                            except ValueError:
-                                return None
-                        else:
-                            return None
-                        if parsed.tzinfo is None:
-                            return parsed.replace(tzinfo=dt_util.UTC)
-                        return parsed.astimezone(dt_util.UTC)
-
-                    hardware_expiry = _as_utc_datetime(_ext_state.get("hardware_expires_at"))
-                    should_refresh_hardware = self.battery_system != "tesla"
+                    hardware_expiry = self._as_utc_datetime(_ext_state.get("hardware_expires_at"))
+                    if force_scope == "optimizer":
+                        now = dt_util.utcnow()
+                        refresh_window = timedelta(
+                            minutes=max(
+                                1,
+                                int(getattr(self._config, "interval_minutes", 5) or 5),
+                            )
+                            + 1
+                        )
+                        should_refresh_hardware = (
+                            hardware_expiry is None
+                            or hardware_expiry <= now + refresh_window
+                        )
+                    else:
+                        _ext_state["expires_at"] = new_expiry
+                        should_refresh_hardware = self.battery_system != "tesla"
                     if self.battery_system == "tesla":
                         # Tesla force modes are implemented as uploaded TOU
                         # tariffs. The software timer can be extended cheaply,
@@ -1911,25 +2003,38 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                                 "Optimizer: re-issued %s command for hardware timer extension (%dmin)",
                                 force_type, extend_mins,
                             )
+                            if force_scope == "optimizer":
+                                self._set_optimizer_force_state(
+                                    force_type,
+                                    extend_mins,
+                                    action.power_w if force_type == "charge" else self._export_command_power_w(action),
+                                )
                         except Exception as ext_err:
                             _LOGGER.warning("Optimizer: failed to re-issue %s for extension: %s", force_type, ext_err)
 
-                    async def _auto_restore_extended(_now):
-                        if _ext_state.get("active"):
-                            _LOGGER.info("⏰ Force %s expired (extended timer), auto-restoring", force_type)
-                            from ..const import DOMAIN as _SVC_DOMAIN
-                            await self.hass.services.async_call(
-                                _SVC_DOMAIN, "restore_normal", {}, blocking=True,
-                            )
+                    if force_scope != "optimizer":
+                        async def _auto_restore_extended(_now):
+                            if _ext_state.get("active"):
+                                _LOGGER.info("⏰ Force %s expired (extended timer), auto-restoring", force_type)
+                                from ..const import DOMAIN as _SVC_DOMAIN
+                                await self.hass.services.async_call(
+                                    _SVC_DOMAIN, "restore_normal", {}, blocking=True,
+                                )
 
-                    from homeassistant.helpers.event import async_track_point_in_utc_time
-                    _ext_state["cancel_expiry_timer"] = async_track_point_in_utc_time(
-                        self.hass, _auto_restore_extended, new_expiry,
-                    )
+                        from homeassistant.helpers.event import async_track_point_in_utc_time
+                        _ext_state["cancel_expiry_timer"] = async_track_point_in_utc_time(
+                            self.hass, _auto_restore_extended, new_expiry,
+                        )
+                    elif not should_refresh_hardware and hardware_expiry is not None:
+                        _ext_state["expires_at"] = hardware_expiry
+                    logged_expiry = self._as_utc_datetime(
+                        _ext_state.get("expires_at")
+                    ) or new_expiry
                     _LOGGER.debug(
                         "Optimizer: force %s active (optimizer) — LP still wants %s, "
                         "extended expiry to %s",
-                        force_type, action.action, new_expiry.isoformat(),
+                        force_type, action.action,
+                        logged_expiry.isoformat(),
                     )
                     return
 
@@ -1942,7 +2047,9 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     "force %s to execute new action",
                     force_type, action.action, force_type,
                 )
-                if self._force_state_clearer:
+                if force_state.get("scope") == "optimizer":
+                    self._clear_optimizer_force_state()
+                elif self._force_state_clearer:
                     self._force_state_clearer()
                 battery = self._executor.battery_controller
                 if hasattr(battery, "restore_normal"):
@@ -2132,20 +2239,32 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                             "(%d min before demand window)",
                             charge_duration, mins_to_demand,
                         )
-                        await battery.force_charge(
+                        force_result = await battery.force_charge(
                             duration_minutes=charge_duration,
                             power_w=action.power_w,
                         )
+                        if force_result is not False and self.battery_system != "tesla":
+                            self._set_optimizer_force_state(
+                                "charge",
+                                charge_duration,
+                                action.power_w,
+                            )
                         _LOGGER.info(
                             "Optimizer: Charging at %.0fW for %dmin "
                             "(auto-restore before demand)",
                             action.power_w, charge_duration,
                         )
                     else:
-                        await battery.force_charge(
+                        force_result = await battery.force_charge(
                             duration_minutes=charge_duration,
                             power_w=action.power_w,
                         )
+                        if force_result is not False and self.battery_system != "tesla":
+                            self._set_optimizer_force_state(
+                                "charge",
+                                charge_duration,
+                                action.power_w,
+                            )
                         _LOGGER.info("Optimizer: Charging at %.0fW", action.power_w)
             elif effective_action in ("discharge", "export"):
                 if hasattr(battery, "force_discharge"):
@@ -2159,11 +2278,17 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     tariff_duration = self._tesla_tariff_duration_for_force_window(
                         discharge_duration
                     )
-                    await battery.force_discharge(
+                    force_result = await battery.force_discharge(
                         duration_minutes=discharge_duration,
                         power_w=discharge_power,
                         _tariff_duration=tariff_duration,
                     )
+                    if force_result is not False and self.battery_system != "tesla":
+                        self._set_optimizer_force_state(
+                            "discharge",
+                            discharge_duration,
+                            discharge_power,
+                        )
                     _LOGGER.info(
                         "Optimizer: Discharging/exporting at %.0fW for %dmin",
                         action.power_w, discharge_duration,
