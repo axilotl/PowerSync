@@ -468,6 +468,36 @@ def test_cheap_import_charge_not_blocked_by_lower_fit_than_acquisition_cost(
     assert result.schedule.actions[-1].soc > 0.20
 
 
+@pytest.mark.parametrize("acquisition_cost", [0.0, 0.069, 0.12])
+def test_cheap_import_charge_not_blocked_by_positive_fit_at_reserve(
+    battery_optimizer_module,
+    acquisition_cost,
+):
+    optimizer = battery_optimizer_module.BatteryOptimizer(
+        capacity_wh=13500,
+        max_charge_w=5000,
+        max_discharge_w=5000,
+        backup_reserve=0.20,
+        interval_minutes=5,
+        horizon_hours=3,
+    )
+
+    result = optimizer.optimize(
+        import_prices=[0.069] * 12 + [0.2856] * 24,
+        export_prices=[0.12] * 36,
+        solar_forecast=[0.0] * 36,
+        load_forecast=[0.5] * 36,
+        current_soc=0.20,
+        acquisition_cost_kwh=acquisition_cost,
+        allow_battery_export=[True] * 36,
+    )
+
+    cheap_window = result.schedule.actions[:12]
+    assert any(action.action == "charge" for action in cheap_window)
+    assert max(action.battery_charge_w for action in cheap_window) > 1000
+    assert result.schedule.actions[-1].soc > 0.20
+
+
 def test_disallow_grid_charge_blocks_forced_grid_charging(
     battery_optimizer_module,
 ):

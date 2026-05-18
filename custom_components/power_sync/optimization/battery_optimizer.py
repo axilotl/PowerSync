@@ -645,12 +645,28 @@ class BatteryOptimizer:
 
         for t in range(n):
             export_profitable_slot = (
-                allow_battery_export[t] and export_prices[t] > import_prices[t]
-                and (acquisition_cost_kwh <= 0 or export_prices[t] >= acquisition_cost_kwh)
+                allow_battery_export[t]
+                and export_prices[t] > import_prices[t]
+                and (
+                    acquisition_cost_kwh <= 0
+                    or export_prices[t] >= acquisition_cost_kwh
+                )
             )
-            if block_battery_charge[t] or export_profitable_slot:
-                # Do not charge during slots that are already marked for
-                # profitable battery export; charge before the export window.
+            future_self_consumption_value = any(
+                import_prices[i] > import_prices[t] + 0.001
+                and max(0.0, load[i] - solar[i]) > 0.05
+                for i in range(t + 1, n)
+            )
+            if block_battery_charge[t] or (
+                export_profitable_slot and not future_self_consumption_value
+            ):
+                # Do not charge during explicitly blocked export windows
+                # (for example fixed Flow Power Happy Hour export windows).
+                # A generic positive FiT is not enough to block charging:
+                # Octopus IOG can have 6.9p import and 12p export across the
+                # whole off-peak window. Permit charging there only when it has
+                # later self-consumption value, not for grid-import->export
+                # passthrough.
                 bounds.append((0, 0.0))
             elif not allow_grid_charge:
                 solar_surplus_kw = max(0.0, solar[t] - load[t])
@@ -903,7 +919,14 @@ class BatteryOptimizer:
                     or export_prices[t] >= acquisition_cost_kwh
                 )
             )
-            if block_battery_charge[t] or export_profitable_slot:
+            future_self_consumption_value = any(
+                import_prices[i] > import_prices[t] + 0.001
+                and max(0.0, load[i] - solar[i]) > 0.05
+                for i in range(t + 1, n)
+            )
+            if block_battery_charge[t] or (
+                export_profitable_slot and not future_self_consumption_value
+            ):
                 continue
             charge_room = (1.0 - soc_tracker) * cap / (eff * dt)
             charge_limit = self.max_charge_kw
