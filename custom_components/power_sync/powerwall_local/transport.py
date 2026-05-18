@@ -13,6 +13,7 @@ are unchanged; the gateway verifies both byte-for-byte.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import math
@@ -208,6 +209,10 @@ class TEDAPIv1rTransport:
                         )
                         return TEDAPIResponse(False, None, http_status=http_status)
                     raw = await resp.read()
+        except asyncio.TimeoutError as err:
+            raise PowerwallUnreachableError(
+                f"Timed out connecting to Powerwall gateway at {self._host}"
+            ) from err
         except aiohttp.ClientError as err:
             raise PowerwallUnreachableError(str(err)) from err
 
@@ -554,4 +559,3 @@ class TEDAPIv1rTransport:
             )
         except Exception:
             return False
-

@@ -284,6 +284,9 @@ CONF_GOODWE_HOST = "goodwe_host"
 CONF_GOODWE_PORT = "goodwe_port"
 CONF_GOODWE_PROTOCOL = "goodwe_protocol"  # "udp" or "tcp"
 CONF_GOODWE_EMS_ENTITY_PREFIX = "goodwe_ems_entity_prefix"  # e.g. "goodwe" → uses select.goodwe_ems_mode etc.
+CONF_GOODWE_EMS_CONTROL_MODE = "goodwe_ems_control_mode"
+GOODWE_EMS_CONTROL_DIRECT = "direct"
+GOODWE_EMS_CONTROL_ENTITY = "entity"
 DEFAULT_GOODWE_PORT_UDP = 8899
 DEFAULT_GOODWE_PORT_TCP = 502
 

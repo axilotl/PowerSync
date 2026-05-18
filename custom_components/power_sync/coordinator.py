@@ -4011,12 +4011,16 @@ class SungrowEnergyCoordinator(DataUpdateCoordinator):
             # Map Sungrow data to standard format
             battery_power_w = data.get("battery_power", 0)  # Signed: positive = discharging
             export_power_w = data.get("export_power", 0)  # Signed: positive = exporting
+            meter_power_w = data.get("meter_power")  # Signed: positive = importing, negative = exporting
             load_power_w = data.get("load_power", 0)
             pv_power_w = data.get("pv_power")  # Direct PV DC power from register 5017-5018
 
             # Convert to kW for consistency with other coordinators
             battery_kw = battery_power_w / 1000
-            grid_kw = -export_power_w / 1000  # Invert: positive = importing, negative = exporting
+            if meter_power_w is not None:
+                grid_kw = meter_power_w / 1000
+            else:
+                grid_kw = -export_power_w / 1000  # Invert: positive = importing, negative = exporting
             load_kw = load_power_w / 1000
 
             # Use direct PV reading if available; otherwise calculate from energy balance
@@ -4068,6 +4072,7 @@ class SungrowEnergyCoordinator(DataUpdateCoordinator):
                 "discharge_rate_limit_kw": data.get("discharge_rate_limit_kw"),
                 "export_limit_w": data.get("export_limit_w"),
                 "export_limit_enabled": data.get("export_limit_enabled"),
+                "meter_power": meter_power_w,
                 # Aliases for the mobile force-mode picker's Max chip.
                 # The *_rate_limit_kw values already reflect BMS-reported
                 # current × voltage, so reuse them rather than duplicate.

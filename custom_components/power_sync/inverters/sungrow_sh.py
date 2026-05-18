@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Optional
 
 from pymodbus.client import AsyncModbusTcpClient
@@ -91,8 +92,14 @@ class SungrowSHController(InverterController):
     REG_INVERTER_TEMP = 5007           # 5008 - Inverter temperature (°C * 0.1, signed)
 
     # Grid
-    REG_GRID_FREQUENCY = 5035          # 5036 - Grid frequency (Hz * 0.1)
+    REG_GRID_FREQUENCY = 5241          # 5242 - Grid frequency (Hz * 0.01)
     REG_PHASE_A_VOLTAGE = 5018         # 5019 - Phase A voltage (V * 0.1)
+
+    # Newer preferred telemetry registers used by mkaiser's reference mapping
+    REG_METER_ACTIVE_POWER = 5600      # 5601-5602 - Meter power, +import / -export (W, S32)
+    REG_BATTERY_CURRENT_PRECISE = 5630 # 5631 - Battery current (A * 0.1, signed)
+    REG_BMS_MAX_CHARGE_CURRENT = 5634  # 5635 - BMS max charge current (A)
+    REG_BMS_MAX_DISCHARGE_CURRENT = 5635  # 5636 - BMS max discharge current (A)
 
     # ===== Battery Control Registers (for SH-series as battery system) =====
     # EMS Mode Control
@@ -120,7 +127,7 @@ class SungrowSHController(InverterController):
     REG_EXPORT_LIMIT_ENABLED = 13086   # 13087 - Export limit (0xAA=enable, 0x55=disable)
 
     # Backup Reserve
-    REG_BACKUP_RESERVE = 13099         # 13100 - Reserved SOC for backup (% * 10)
+    REG_BACKUP_RESERVE = 13099         # 13100 - Reserved SOC for backup (%)
 
     # Forced Charge/Discharge Power
     REG_CHARGE_DISCHARGE_POWER = 13051  # 13052 - Forced charge/discharge power (W)
@@ -134,6 +141,8 @@ class SungrowSHController(InverterController):
 
     # Timeout for Modbus operations
     TIMEOUT_SECONDS = 10.0
+    CONNECT_SETTLE_SECONDS = 0.2
+    MESSAGE_WAIT_SECONDS = 0.05
 
     def __init__(
         self,
@@ -153,6 +162,9 @@ class SungrowSHController(InverterController):
         super().__init__(host, int(port), int(slave_id), model)
         self._client: Optional[AsyncModbusTcpClient] = None
         self._lock = asyncio.Lock()
+        self._request_lock = asyncio.Lock()
+        self._last_connect_at: float = 0.0
+        self._last_request_finished_at: float = 0.0
         self._battery_voltage: float = self.BATTERY_VOLTAGE_FALLBACK
         self._original_ems_mode: Optional[int] = None
         self._in_forced_stop: bool = False
@@ -175,6 +187,7 @@ class SungrowSHController(InverterController):
                 connected = await self._client.connect()
                 if connected:
                     self._connected = True
+                    self._last_connect_at = time.monotonic()
                     _LOGGER.info(f"Connected to Sungrow SH inverter at {self.host}:{self.port}")
                 else:
                     _LOGGER.error(f"Failed to connect to Sungrow SH inverter at {self.host}:{self.port}")
@@ -195,6 +208,27 @@ class SungrowSHController(InverterController):
             self._connected = False
             _LOGGER.debug(f"Disconnected from Sungrow SH inverter at {self.host}")
 
+    async def _wait_for_request_slot(self) -> None:
+        """Pace Modbus requests for WiNet-S/S2 stability.
+
+        mkaiser's reference configuration uses both a connect delay and
+        message_wait_milliseconds because WiNet-S/S2 can silently drop frames
+        when polled too quickly. Keep a small built-in delay here so direct
+        controller reads behave like the reference Modbus hub.
+        """
+        now = time.monotonic()
+        if self._last_connect_at:
+            connect_wait = self.CONNECT_SETTLE_SECONDS - (now - self._last_connect_at)
+            if connect_wait > 0:
+                await asyncio.sleep(connect_wait)
+            self._last_connect_at = 0.0
+            now = time.monotonic()
+
+        if self._last_request_finished_at:
+            request_wait = self.MESSAGE_WAIT_SECONDS - (now - self._last_request_finished_at)
+            if request_wait > 0:
+                await asyncio.sleep(request_wait)
+
     async def _write_register(self, address: int, value: int) -> bool:
         """Write a value to a Modbus register.
 
@@ -205,30 +239,34 @@ class SungrowSHController(InverterController):
         Returns:
             True if write successful, False otherwise
         """
-        if not self._client or not self._client.connected:
-            if not await self.connect():
+        async with self._request_lock:
+            if not self._client or not self._client.connected:
+                if not await self.connect():
+                    return False
+
+            await self._wait_for_request_slot()
+            try:
+                result = await self._client.write_register(
+                    address=address,
+                    value=value,
+                    **{_SLAVE_PARAM: self.slave_id},
+                )
+
+                if result.isError():
+                    _LOGGER.error(f"Modbus write error at register {address}: {result}")
+                    return False
+
+                _LOGGER.debug(f"Successfully wrote {value} (0x{value:02X}) to register {address}")
+                return True
+
+            except ModbusException as e:
+                _LOGGER.error(f"Modbus exception writing to register {address}: {e}")
                 return False
-
-        try:
-            result = await self._client.write_register(
-                address=address,
-                value=value,
-                **{_SLAVE_PARAM: self.slave_id},
-            )
-
-            if result.isError():
-                _LOGGER.error(f"Modbus write error at register {address}: {result}")
+            except Exception as e:
+                _LOGGER.error(f"Error writing to register {address}: {e}")
                 return False
-
-            _LOGGER.debug(f"Successfully wrote {value} (0x{value:02X}) to register {address}")
-            return True
-
-        except ModbusException as e:
-            _LOGGER.error(f"Modbus exception writing to register {address}: {e}")
-            return False
-        except Exception as e:
-            _LOGGER.error(f"Error writing to register {address}: {e}")
-            return False
+            finally:
+                self._last_request_finished_at = time.monotonic()
 
     async def _read_register(self, address: int, count: int = 1) -> Optional[list]:
         """Read values from Modbus registers.
@@ -240,29 +278,33 @@ class SungrowSHController(InverterController):
         Returns:
             List of register values or None on error
         """
-        if not self._client or not self._client.connected:
-            if not await self.connect():
+        async with self._request_lock:
+            if not self._client or not self._client.connected:
+                if not await self.connect():
+                    return None
+
+            await self._wait_for_request_slot()
+            try:
+                result = await self._client.read_holding_registers(
+                    address=address,
+                    count=count,
+                    **{_SLAVE_PARAM: self.slave_id},
+                )
+
+                if result.isError():
+                    _LOGGER.debug(f"Modbus read error at register {address}: {result}")
+                    return None
+
+                return result.registers
+
+            except ModbusException as e:
+                _LOGGER.debug(f"Modbus exception reading register {address}: {e}")
                 return None
-
-        try:
-            result = await self._client.read_holding_registers(
-                address=address,
-                count=count,
-                **{_SLAVE_PARAM: self.slave_id},
-            )
-
-            if result.isError():
-                _LOGGER.debug(f"Modbus read error at register {address}: {result}")
+            except Exception as e:
+                _LOGGER.debug(f"Error reading register {address}: {e}")
                 return None
-
-            return result.registers
-
-        except ModbusException as e:
-            _LOGGER.debug(f"Modbus exception reading register {address}: {e}")
-            return None
-        except Exception as e:
-            _LOGGER.debug(f"Error reading register {address}: {e}")
-            return None
+            finally:
+                self._last_request_finished_at = time.monotonic()
 
     async def _read_input_register(self, address: int, count: int = 1) -> Optional[list]:
         """Read values from Modbus input registers (FC 0x04).
@@ -277,29 +319,33 @@ class SungrowSHController(InverterController):
         Returns:
             List of register values or None on error
         """
-        if not self._client or not self._client.connected:
-            if not await self.connect():
+        async with self._request_lock:
+            if not self._client or not self._client.connected:
+                if not await self.connect():
+                    return None
+
+            await self._wait_for_request_slot()
+            try:
+                result = await self._client.read_input_registers(
+                    address=address,
+                    count=count,
+                    **{_SLAVE_PARAM: self.slave_id},
+                )
+
+                if result.isError():
+                    _LOGGER.debug(f"Modbus input read error at register {address}: {result}")
+                    return None
+
+                return result.registers
+
+            except ModbusException as e:
+                _LOGGER.debug(f"Modbus exception reading input register {address}: {e}")
                 return None
-
-        try:
-            result = await self._client.read_input_registers(
-                address=address,
-                count=count,
-                **{_SLAVE_PARAM: self.slave_id},
-            )
-
-            if result.isError():
-                _LOGGER.debug(f"Modbus input read error at register {address}: {result}")
+            except Exception as e:
+                _LOGGER.debug(f"Error reading input register {address}: {e}")
                 return None
-
-            return result.registers
-
-        except ModbusException as e:
-            _LOGGER.debug(f"Modbus exception reading input register {address}: {e}")
-            return None
-        except Exception as e:
-            _LOGGER.debug(f"Error reading input register {address}: {e}")
-            return None
+            finally:
+                self._last_request_finished_at = time.monotonic()
 
     def _to_signed16(self, value: int) -> int:
         """Convert unsigned 16-bit to signed."""
@@ -325,6 +371,14 @@ class SungrowSHController(InverterController):
         Sungrow SH uses word-swapped format: reg0=low word, reg1=high word.
         """
         return (reg1 << 16) | reg0  # reg1=high, reg0=low (Sungrow word-swap)
+
+    def _valid_u16(self, value: int) -> bool:
+        """Return False for Sungrow's common invalid U16 sentinel."""
+        return value != 0xFFFF
+
+    def _valid_s32(self, value: int) -> bool:
+        """Return False for Sungrow's common invalid S32 sentinel."""
+        return value != 0x7FFFFFFF
 
     # Maximum sane power reading (100 kW) — anything above indicates the S32
     # pair is actually two independent U16 registers (seen on SH10RS firmware)
@@ -393,7 +447,15 @@ class SungrowSHController(InverterController):
             # and is the authoritative signed value used by the reference Sungrow integration.
             batt_power_s32 = await self._read_input_register(self.REG_BATTERY_POWER_S32, 2)
             if batt_power_s32 and len(batt_power_s32) >= 2:
-                attrs["battery_power"] = self._to_signed32(batt_power_s32[0], batt_power_s32[1])
+                battery_power = self._to_signed32(batt_power_s32[0], batt_power_s32[1])
+                if self._valid_s32(battery_power):
+                    attrs["battery_power"] = battery_power
+
+            # mkaiser tracks battery current at 5631 now; Sungrow docs recommend
+            # it over the older 13021 register used in the compact battery block.
+            battery_current = await self._read_input_register(self.REG_BATTERY_CURRENT_PRECISE, 1)
+            if battery_current and self._valid_u16(battery_current[0]):
+                attrs["battery_current"] = round(self._to_signed16(battery_current[0]) * 0.1, 1)
 
             # Read daily PV generation
             daily_pv = await self._read_input_register(self.REG_DAILY_PV, 1)
@@ -418,6 +480,14 @@ class SungrowSHController(InverterController):
                 attrs["export_power"] = self._read_power_s32_with_fallback(
                     export_power, "export_power",
                 )
+
+            # Preferred grid meter reading: +import, -export. This avoids sign
+            # ambiguity in the older export-power register on mixed firmware.
+            meter_power = await self._read_input_register(self.REG_METER_ACTIVE_POWER, 2)
+            if meter_power and len(meter_power) >= 2:
+                meter_active_power = self._to_signed32(meter_power[0], meter_power[1])
+                if self._valid_s32(meter_active_power):
+                    attrs["meter_power"] = meter_active_power
 
             # Read total active power (S32 with U16 fallback)
             active_power = await self._read_input_register(self.REG_TOTAL_ACTIVE_POWER, 2)
@@ -463,7 +533,7 @@ class SungrowSHController(InverterController):
             # Read grid frequency
             grid_freq = await self._read_input_register(self.REG_GRID_FREQUENCY, 1)
             if grid_freq:
-                attrs["grid_frequency"] = round(grid_freq[0] * 0.1, 2)
+                attrs["grid_frequency"] = round(grid_freq[0] * 0.01, 2)
 
             # Read phase A voltage
             voltage = await self._read_input_register(self.REG_PHASE_A_VOLTAGE, 1)
@@ -860,8 +930,8 @@ class SungrowSHController(InverterController):
             if not await self.connect():
                 return False
 
-            # Register value is percentage * 10 (0.1% scale)
-            value = int(percent * 10)
+            # mkaiser maps register 13100 as a whole-percent backup reserve.
+            value = int(percent)
             success = await self._write_register(self.REG_BACKUP_RESERVE, value)
             if not success:
                 _LOGGER.error("Failed to set backup reserve")
@@ -875,13 +945,13 @@ class SungrowSHController(InverterController):
             return False
 
     async def get_backup_reserve(self) -> Optional[int]:
-        """Read current minimum SOC (backup reserve) percentage."""
+        """Read current backup reserve percentage."""
         try:
             if not await self.connect():
                 return None
-            result = await self._read_register(self.REG_MIN_SOC, 1)
+            result = await self._read_register(self.REG_BACKUP_RESERVE, 1)
             if result:
-                return round(result[0] * 0.1)
+                return round(result[0])
             return None
         except Exception as e:
             _LOGGER.debug(f"Error reading min SOC: {e}")
@@ -1060,7 +1130,14 @@ class SungrowSHController(InverterController):
             # and is the authoritative signed value used by the reference Sungrow integration.
             batt_power_s32 = await self._read_input_register(self.REG_BATTERY_POWER_S32, 2)
             if batt_power_s32 and len(batt_power_s32) >= 2:
-                data["battery_power"] = self._to_signed32(batt_power_s32[0], batt_power_s32[1])
+                battery_power = self._to_signed32(batt_power_s32[0], batt_power_s32[1])
+                if self._valid_s32(battery_power):
+                    data["battery_power"] = battery_power
+
+            # Prefer the current register recommended by the mkaiser mapping.
+            battery_current = await self._read_input_register(self.REG_BATTERY_CURRENT_PRECISE, 1)
+            if battery_current and self._valid_u16(battery_current[0]):
+                data["battery_current"] = round(self._to_signed16(battery_current[0]) * 0.1, 1)
 
             # Read daily battery charge
             daily_charge = await self._read_input_register(self.REG_DAILY_BATTERY_CHARGE, 1)
@@ -1104,6 +1181,14 @@ class SungrowSHController(InverterController):
                 data["export_power"] = self._read_power_s32_with_fallback(
                     export_power, "export_power",
                 )
+
+            # mkaiser's source-of-truth mapping recommends meter active power
+            # for direct smart-meter systems: positive import, negative export.
+            meter_power = await self._read_input_register(self.REG_METER_ACTIVE_POWER, 2)
+            if meter_power and len(meter_power) >= 2:
+                meter_active_power = self._to_signed32(meter_power[0], meter_power[1])
+                if self._valid_s32(meter_active_power):
+                    data["meter_power"] = meter_active_power
 
             # Read PV DC power (doc 5017-5018, U32, for direct solar measurement)
             pv_dc = await self._read_input_register(self.REG_TOTAL_DC_POWER, 2)
@@ -1149,27 +1234,31 @@ class SungrowSHController(InverterController):
             if self._ems_registers_supported:
                 backup_reserve = await self._read_register(self.REG_BACKUP_RESERVE, 1)
                 if backup_reserve:
-                    data["backup_reserve"] = round(backup_reserve[0] * 0.1, 1)
+                    data["backup_reserve"] = round(backup_reserve[0])
 
-            # Read charge/discharge current limits and convert to kW using actual voltage
-            max_charge_current = await self._read_register(self.REG_MAX_CHARGE_CURRENT, 1)
-            if max_charge_current:
-                amps = max_charge_current[0] / 1000  # Convert from milliamps
+            # Read charge/discharge current limits and convert to kW using actual voltage.
+            # Prefer read-only BMS limits from the mkaiser mapping. The holding
+            # registers remain as fallback for models that expose writable limits.
+            max_charge_current = await self._read_input_register(self.REG_BMS_MAX_CHARGE_CURRENT, 1)
+            if max_charge_current and self._valid_u16(max_charge_current[0]):
+                amps = max_charge_current[0]
                 data["charge_rate_limit_kw"] = round(amps * self._battery_voltage / 1000, 2)
+            else:
+                max_charge_current = await self._read_register(self.REG_MAX_CHARGE_CURRENT, 1)
+                if max_charge_current and self._valid_u16(max_charge_current[0]):
+                    amps = max_charge_current[0] / 1000  # Convert from milliamps
+                    data["charge_rate_limit_kw"] = round(amps * self._battery_voltage / 1000, 2)
 
-            max_discharge_current = await self._read_register(self.REG_MAX_DISCHARGE_CURRENT, 1)
-            if max_discharge_current:
-                amps = max_discharge_current[0] / 1000  # Convert from milliamps
+            max_discharge_current = await self._read_input_register(self.REG_BMS_MAX_DISCHARGE_CURRENT, 1)
+            if max_discharge_current and self._valid_u16(max_discharge_current[0]):
+                amps = max_discharge_current[0]
                 data["discharge_rate_limit_kw"] = round(amps * self._battery_voltage / 1000, 2)
+            else:
+                max_discharge_current = await self._read_register(self.REG_MAX_DISCHARGE_CURRENT, 1)
+                if max_discharge_current and self._valid_u16(max_discharge_current[0]):
+                    amps = max_discharge_current[0] / 1000  # Convert from milliamps
+                    data["discharge_rate_limit_kw"] = round(amps * self._battery_voltage / 1000, 2)
 
-            # Test writeability once by writing current value back (no-op)
-            if self._rate_limit_writable is None and max_charge_current:
-                test_ok = await self._write_register(self.REG_MAX_CHARGE_CURRENT, max_charge_current[0])
-                self._rate_limit_writable = test_ok
-                if not test_ok:
-                    _LOGGER.info("Sungrow charge/discharge rate limit registers are read-only on this model")
-                else:
-                    _LOGGER.info("Sungrow charge/discharge rate limit registers are writable")
             data["rate_limit_writable"] = self._rate_limit_writable or False
 
             # Read export limit
@@ -1179,7 +1268,7 @@ class SungrowSHController(InverterController):
 
             export_limit_enabled = await self._read_register(self.REG_EXPORT_LIMIT_ENABLED, 1)
             if export_limit_enabled:
-                data["export_limit_enabled"] = export_limit_enabled[0] == 1
+                data["export_limit_enabled"] = export_limit_enabled[0] == self.EXPORT_LIMIT_ENABLE
 
         except Exception as e:
             _LOGGER.error(f"Error reading battery data: {e}")

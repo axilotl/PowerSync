@@ -394,6 +394,9 @@ from .const import (
     CONF_GOODWE_PORT,
     CONF_GOODWE_PROTOCOL,
     CONF_GOODWE_EMS_ENTITY_PREFIX,
+    CONF_GOODWE_EMS_CONTROL_MODE,
+    GOODWE_EMS_CONTROL_DIRECT,
+    GOODWE_EMS_CONTROL_ENTITY,
     DEFAULT_GOODWE_PORT_UDP,
     DEFAULT_GOODWE_PORT_TCP,
     BATTERY_SYSTEM_GOODWE,
@@ -1016,6 +1019,45 @@ def validate_goodwe_ems_entity_prefix(
         return "goodwe_ems_entities_missing"
 
     return None
+
+
+def resolve_goodwe_ems_control_mode(mode: str | None, prefix: str | None) -> str:
+    """Return the GoodWe EMS control mode, preserving legacy prefix configs."""
+    if mode in (GOODWE_EMS_CONTROL_DIRECT, GOODWE_EMS_CONTROL_ENTITY):
+        return mode
+    return (
+        GOODWE_EMS_CONTROL_ENTITY
+        if (prefix or "").strip()
+        else GOODWE_EMS_CONTROL_DIRECT
+    )
+
+
+def validate_goodwe_ems_control_mode(
+    hass: HomeAssistant,
+    mode: str | None,
+    prefix: str | None,
+) -> str | None:
+    """Validate the selected GoodWe EMS command path."""
+    mode = resolve_goodwe_ems_control_mode(mode, prefix)
+    if mode == GOODWE_EMS_CONTROL_DIRECT:
+        return None
+    if not (prefix or "").strip():
+        return "goodwe_ems_prefix_required"
+    return validate_goodwe_ems_entity_prefix(hass, prefix)
+
+
+def goodwe_ems_control_options() -> list[SelectOptionDict]:
+    """Return labels for the GoodWe EMS command-path selector."""
+    return [
+        SelectOptionDict(
+            value=GOODWE_EMS_CONTROL_DIRECT,
+            label="Direct IP control",
+        ),
+        SelectOptionDict(
+            value=GOODWE_EMS_CONTROL_ENTITY,
+            label="Home Assistant entity control",
+        ),
+    ]
 
 
 def resolve_goodwe_port(protocol: str, port: int | None) -> int:
@@ -3403,11 +3445,19 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             protocol = user_input.get(CONF_GOODWE_PROTOCOL, "udp")
             port = resolve_goodwe_port(protocol, user_input.get(CONF_GOODWE_PORT))
             ems_prefix = user_input.get(CONF_GOODWE_EMS_ENTITY_PREFIX, "").strip()
+            ems_control_mode = resolve_goodwe_ems_control_mode(
+                user_input.get(CONF_GOODWE_EMS_CONTROL_MODE),
+                ems_prefix,
+            )
 
             if not host:
                 errors["base"] = "goodwe_connect_failed"
             else:
-                ems_error = validate_goodwe_ems_entity_prefix(self.hass, ems_prefix)
+                ems_error = validate_goodwe_ems_control_mode(
+                    self.hass,
+                    ems_control_mode,
+                    ems_prefix,
+                )
                 if ems_error:
                     errors["base"] = ems_error
                 else:
@@ -3422,9 +3472,12 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                                 CONF_GOODWE_HOST: host,
                                 CONF_GOODWE_PORT: port,
                                 CONF_GOODWE_PROTOCOL: protocol,
+                                CONF_GOODWE_EMS_CONTROL_MODE: ems_control_mode,
                             }
-                            if ems_prefix:
-                                self._goodwe_data[CONF_GOODWE_EMS_ENTITY_PREFIX] = ems_prefix
+                            if ems_control_mode == GOODWE_EMS_CONTROL_ENTITY:
+                                self._goodwe_data[
+                                    CONF_GOODWE_EMS_ENTITY_PREFIX
+                                ] = ems_prefix
                             _LOGGER.info(
                                 "GoodWe connection successful: %s (SN: %s, %sW)",
                                 result.get("model_name"),
@@ -3446,6 +3499,10 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             user_input.get(CONF_GOODWE_EMS_ENTITY_PREFIX, "").strip()
             if user_input
             else ""
+        )
+        current_ems_control_mode = resolve_goodwe_ems_control_mode(
+            user_input.get(CONF_GOODWE_EMS_CONTROL_MODE) if user_input else None,
+            current_ems_prefix,
         )
 
         return self.async_show_form(
@@ -3469,10 +3526,21 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     ): NumberSelector(
                         NumberSelectorConfig(min=1, max=65535, step=1, mode=NumberSelectorMode.BOX)
                     ),
+                    vol.Required(
+                        CONF_GOODWE_EMS_CONTROL_MODE,
+                        default=current_ems_control_mode,
+                    ): SelectSelector(
+                        SelectSelectorConfig(
+                            options=goodwe_ems_control_options(),
+                            mode=SelectSelectorMode.LIST,
+                        )
+                    ),
                     vol.Optional(
                         CONF_GOODWE_EMS_ENTITY_PREFIX,
-                        default=current_ems_prefix,
-                        description={"suggested_value": current_ems_prefix},
+                        default=current_ems_prefix or "goodwe",
+                        description={
+                            "suggested_value": current_ems_prefix or "goodwe"
+                        },
                     ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
                 }
             ),
@@ -5108,7 +5176,15 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 errors["base"] = "goodwe_connect_failed"
             else:
                 ems_prefix = user_input.get(CONF_GOODWE_EMS_ENTITY_PREFIX, "").strip()
-                ems_error = validate_goodwe_ems_entity_prefix(self.hass, ems_prefix)
+                ems_control_mode = resolve_goodwe_ems_control_mode(
+                    user_input.get(CONF_GOODWE_EMS_CONTROL_MODE),
+                    ems_prefix,
+                )
+                ems_error = validate_goodwe_ems_control_mode(
+                    self.hass,
+                    ems_control_mode,
+                    ems_prefix,
+                )
                 if ems_error:
                     errors["base"] = ems_error
                 else:
@@ -5122,10 +5198,11 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                         CONF_GOODWE_HOST: goodwe_host,
                         CONF_GOODWE_PORT: port,
                         CONF_GOODWE_PROTOCOL: protocol,
+                        CONF_GOODWE_EMS_CONTROL_MODE: ems_control_mode,
                     }
                     new_data.update(goodwe_values)
                     new_options.update(goodwe_values)
-                    if ems_prefix:
+                    if ems_control_mode == GOODWE_EMS_CONTROL_ENTITY:
                         new_data[CONF_GOODWE_EMS_ENTITY_PREFIX] = ems_prefix
                         new_options[CONF_GOODWE_EMS_ENTITY_PREFIX] = ems_prefix
                     else:
@@ -5146,6 +5223,10 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             self._get_option(CONF_GOODWE_PORT, DEFAULT_GOODWE_PORT_UDP),
         )
         current_ems_prefix = self._get_option(CONF_GOODWE_EMS_ENTITY_PREFIX, "")
+        current_ems_control_mode = resolve_goodwe_ems_control_mode(
+            self._get_option(CONF_GOODWE_EMS_CONTROL_MODE, None),
+            current_ems_prefix,
+        )
 
         goodwe_protocols = {
             "udp": "UDP direct control (port 8899)",
@@ -5176,10 +5257,19 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     ): NumberSelector(NumberSelectorConfig(
                         min=1, max=65535, step=1, mode=NumberSelectorMode.BOX,
                     )),
+                    vol.Required(
+                        CONF_GOODWE_EMS_CONTROL_MODE,
+                        default=current_ems_control_mode,
+                    ): SelectSelector(SelectSelectorConfig(
+                        options=goodwe_ems_control_options(),
+                        mode=SelectSelectorMode.DROPDOWN,
+                    )),
                     vol.Optional(
                         CONF_GOODWE_EMS_ENTITY_PREFIX,
-                        default=current_ems_prefix,
-                        description={"suggested_value": current_ems_prefix},
+                        default=current_ems_prefix or "goodwe",
+                        description={
+                            "suggested_value": current_ems_prefix or "goodwe"
+                        },
                     ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
                 }
             ),
@@ -6983,7 +7073,15 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 errors["base"] = "goodwe_connect_failed"
             else:
                 ems_prefix = user_input.get(CONF_GOODWE_EMS_ENTITY_PREFIX, "").strip()
-                ems_error = validate_goodwe_ems_entity_prefix(self.hass, ems_prefix)
+                ems_control_mode = resolve_goodwe_ems_control_mode(
+                    user_input.get(CONF_GOODWE_EMS_CONTROL_MODE),
+                    ems_prefix,
+                )
+                ems_error = validate_goodwe_ems_control_mode(
+                    self.hass,
+                    ems_control_mode,
+                    ems_prefix,
+                )
                 if ems_error:
                     errors["base"] = ems_error
                 else:
@@ -6997,7 +7095,8 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                         protocol, user_input.get(CONF_GOODWE_PORT)
                     )
                     new_data[CONF_GOODWE_PROTOCOL] = protocol
-                    if ems_prefix:
+                    new_data[CONF_GOODWE_EMS_CONTROL_MODE] = ems_control_mode
+                    if ems_control_mode == GOODWE_EMS_CONTROL_ENTITY:
                         new_data[CONF_GOODWE_EMS_ENTITY_PREFIX] = ems_prefix
                     else:
                         new_data.pop(CONF_GOODWE_EMS_ENTITY_PREFIX, None)
@@ -7043,6 +7142,10 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             self._get_option(CONF_GOODWE_PORT, DEFAULT_GOODWE_PORT_UDP),
         )
         current_ems_prefix_init = self._get_option(CONF_GOODWE_EMS_ENTITY_PREFIX, "")
+        current_ems_control_mode_init = resolve_goodwe_ems_control_mode(
+            self._get_option(CONF_GOODWE_EMS_CONTROL_MODE, None),
+            current_ems_prefix_init,
+        )
         current_opt_provider = self.config_entry.data.get(
             CONF_OPTIMIZATION_PROVIDER, OPT_PROVIDER_NATIVE
         )
@@ -7113,10 +7216,19 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     ): NumberSelector(NumberSelectorConfig(
                         min=1, max=65535, step=1, mode=NumberSelectorMode.BOX,
                     )),
+                    vol.Required(
+                        CONF_GOODWE_EMS_CONTROL_MODE,
+                        default=current_ems_control_mode_init,
+                    ): SelectSelector(SelectSelectorConfig(
+                        options=goodwe_ems_control_options(),
+                        mode=SelectSelectorMode.DROPDOWN,
+                    )),
                     vol.Optional(
                         CONF_GOODWE_EMS_ENTITY_PREFIX,
-                        default=current_ems_prefix_init,
-                        description={"suggested_value": current_ems_prefix_init},
+                        default=current_ems_prefix_init or "goodwe",
+                        description={
+                            "suggested_value": current_ems_prefix_init or "goodwe"
+                        },
                     ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
                 }
             ),

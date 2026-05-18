@@ -222,6 +222,96 @@ def test_setup_battery_data_reads_only_core_battery_block():
     assert data["battery_temp"] == 20.8
 
 
+def test_battery_data_prefers_mkaiser_telemetry_registers_without_write_probe():
+    async def run_read():
+        controller = SungrowSHController("192.0.2.10")
+        input_reads: list[tuple[int, int]] = []
+        holding_reads: list[tuple[int, int]] = []
+
+        async def connect() -> bool:
+            return True
+
+        async def read_input_register(address: int, count: int = 1):
+            input_reads.append((address, count))
+            values = {
+                controller.REG_BATTERY_VOLTAGE: [5751, 59, 3398, 297, 980, 208, 298],
+                controller.REG_BATTERY_POWER_S32: [3398, 0],
+                controller.REG_BATTERY_CURRENT_PRECISE: [123],
+                controller.REG_METER_ACTIVE_POWER: [1500, 0],
+                controller.REG_BMS_MAX_CHARGE_CURRENT: [40],
+                controller.REG_BMS_MAX_DISCHARGE_CURRENT: [35],
+            }
+            return values.get(address)
+
+        async def read_register(address: int, count: int = 1):
+            holding_reads.append((address, count))
+            if address == controller.REG_EMS_MODE:
+                return [controller.EMS_SELF_CONSUMPTION]
+            if address == controller.REG_EXPORT_LIMIT_ENABLED:
+                return [controller.EXPORT_LIMIT_ENABLE]
+            if address == controller.REG_BACKUP_RESERVE:
+                return [30]
+            return None
+
+        async def write_register(address: int, value: int) -> bool:
+            raise AssertionError("get_battery_data must not write during telemetry reads")
+
+        controller.connect = connect
+        controller._read_input_register = read_input_register
+        controller._read_register = read_register
+        controller._write_register = write_register
+
+        data = await controller.get_battery_data()
+        return data, input_reads, holding_reads, controller
+
+    data, input_reads, holding_reads, controller = asyncio.run(run_read())
+
+    assert data["battery_voltage"] == 575.1
+    assert data["battery_soc"] == 29.7
+    assert data["battery_power"] == 3398
+    assert data["battery_current"] == 12.3
+    assert data["meter_power"] == 1500
+    assert data["charge_rate_limit_kw"] == 23.0
+    assert data["discharge_rate_limit_kw"] == 20.13
+    assert data["export_limit_enabled"] is True
+    assert data["backup_reserve"] == 30
+    assert (controller.REG_BMS_MAX_CHARGE_CURRENT, 1) in input_reads
+    assert (controller.REG_MAX_CHARGE_CURRENT, 1) not in holding_reads
+
+
+def test_backup_reserve_uses_mkaiser_whole_percent_register():
+    async def run_backup_reserve():
+        controller = SungrowSHController("192.0.2.10")
+        writes: list[tuple[int, int]] = []
+        reads: list[tuple[int, int]] = []
+
+        async def connect() -> bool:
+            return True
+
+        async def write_register(address: int, value: int) -> bool:
+            writes.append((address, value))
+            return True
+
+        async def read_register(address: int, count: int = 1):
+            reads.append((address, count))
+            return [45]
+
+        controller.connect = connect
+        controller._write_register = write_register
+        controller._read_register = read_register
+
+        write_ok = await controller.set_backup_reserve(45)
+        current = await controller.get_backup_reserve()
+        return write_ok, current, writes, reads, controller
+
+    write_ok, current, writes, reads, controller = asyncio.run(run_backup_reserve())
+
+    assert write_ok
+    assert current == 45
+    assert writes == [(controller.REG_BACKUP_RESERVE, 45)]
+    assert reads == [(controller.REG_BACKUP_RESERVE, 1)]
+
+
 class _FakeSungrowController:
     def __init__(self):
         self.charge_rate_limits: list[float] = []

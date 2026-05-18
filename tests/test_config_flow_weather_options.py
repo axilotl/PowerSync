@@ -361,6 +361,39 @@ def test_foxess_cloud_runtime_uses_battery_system_and_cloud_coordinator():
     assert "Initializing FoxESS Cloud coordinator" in init_source
 
 
+def test_goodwe_flow_exposes_explicit_ems_control_mode_selector():
+    source = CONFIG_FLOW_PATH.read_text()
+
+    for method_name in (
+        "async_step_goodwe_connection",
+        "async_step_goodwe_connection_options",
+        "async_step_init_goodwe",
+    ):
+        method = (
+            _config_flow_method(method_name)
+            if method_name == "async_step_goodwe_connection"
+            else _options_flow_method(method_name)
+        )
+        method_source = ast.get_source_segment(source, method)
+
+        assert method_source is not None
+        assert "CONF_GOODWE_EMS_CONTROL_MODE" in method_source
+        assert "goodwe_ems_control_options()" in method_source
+        assert "validate_goodwe_ems_control_mode" in method_source
+        assert "GOODWE_EMS_CONTROL_ENTITY" in method_source
+
+
+def test_goodwe_runtime_uses_entity_prefix_only_for_entity_control_mode():
+    init_source = (
+        ROOT / "custom_components" / "power_sync" / "__init__.py"
+    ).read_text()
+
+    assert "CONF_GOODWE_EMS_CONTROL_MODE" in init_source
+    assert "GOODWE_EMS_CONTROL_ENTITY" in init_source
+    assert "configured_ems_prefix" in init_source
+    assert "goodwe_ems_control_mode is None" in init_source
+
+
 def test_smart_optimization_setup_and_options_text_match():
     for path in (STRINGS_PATH, TRANSLATIONS_PATH):
         data = json.loads(path.read_text())

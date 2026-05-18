@@ -420,6 +420,8 @@ from .const import (
     CONF_GOODWE_PORT,
     CONF_GOODWE_PROTOCOL,
     CONF_GOODWE_EMS_ENTITY_PREFIX,
+    CONF_GOODWE_EMS_CONTROL_MODE,
+    GOODWE_EMS_CONTROL_ENTITY,
     DEFAULT_GOODWE_PORT_UDP,
     DEFAULT_GOODWE_PORT_TCP,
     # Octopus Energy UK configuration
@@ -15130,9 +15132,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         goodwe_host = entry.options.get(CONF_GOODWE_HOST, entry.data.get(CONF_GOODWE_HOST))
         goodwe_port = entry.options.get(CONF_GOODWE_PORT, entry.data.get(CONF_GOODWE_PORT, DEFAULT_GOODWE_PORT_UDP))
-        goodwe_ems_prefix = entry.options.get(
+        goodwe_ems_control_mode = entry.options.get(
+            CONF_GOODWE_EMS_CONTROL_MODE,
+            entry.data.get(CONF_GOODWE_EMS_CONTROL_MODE),
+        )
+        configured_ems_prefix = entry.options.get(
             CONF_GOODWE_EMS_ENTITY_PREFIX,
             entry.data.get(CONF_GOODWE_EMS_ENTITY_PREFIX),
+        )
+        goodwe_ems_prefix = (
+            configured_ems_prefix
+            if goodwe_ems_control_mode == GOODWE_EMS_CONTROL_ENTITY
+            or (
+                goodwe_ems_control_mode is None
+                and configured_ems_prefix
+            )
+            else None
         )
 
         _LOGGER.info(
