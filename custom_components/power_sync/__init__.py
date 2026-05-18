@@ -5561,10 +5561,14 @@ class SungrowSettingsView(HomeAssistantView):
             }
 
             _LOGGER.info(
-                "✅ Sungrow settings: SOC=%.1f%%, SOH=%.1f%%, backup_reserve=%.1f%%",
+                "✅ Sungrow settings: SOC=%.1f%%, SOH=%.1f%%, backup_reserve=%s",
                 data.get("battery_level", 0),
                 data.get("battery_soh", 0),
-                data.get("backup_reserve", 0),
+                (
+                    f"{data['backup_reserve']:.1f}%"
+                    if isinstance(data.get("backup_reserve"), (int, float))
+                    else "unknown"
+                ),
             )
             return web.json_response(result)
 

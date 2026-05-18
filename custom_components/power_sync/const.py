@@ -215,8 +215,6 @@ SUNGROW_REG_EMS_MODE = 13050             # 0=Self-consumption, 2=Forced, 3=Exter
 SUNGROW_REG_CHARGE_CMD = 13051           # 0xAA=Charge, 0xBB=Discharge, 0xCC=Stop
 SUNGROW_REG_MAX_SOC = 13058              # 0.1% scale
 SUNGROW_REG_MIN_SOC = 13059              # 0.1% scale (backup reserve)
-SUNGROW_REG_MAX_DISCHARGE_CURRENT = 13066  # 0.001A scale (milliamps)
-SUNGROW_REG_MAX_CHARGE_CURRENT = 13067   # 0.001A scale (milliamps)
 SUNGROW_REG_EXPORT_LIMIT = 13074         # 1W
 SUNGROW_REG_EXPORT_LIMIT_ENABLED = 13087 # 0=Disabled, 1=Enabled
 SUNGROW_REG_BACKUP_RESERVE = 13100       # 0.1% scale

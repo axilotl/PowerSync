@@ -247,6 +247,10 @@ def test_battery_data_prefers_mkaiser_telemetry_registers_without_write_probe():
             holding_reads.append((address, count))
             if address == controller.REG_EMS_MODE:
                 return [controller.EMS_SELF_CONSUMPTION]
+            if address == controller.REG_MAX_CHARGE_POWER:
+                return [1200]
+            if address == controller.REG_MAX_DISCHARGE_POWER:
+                return [1500]
             if address == controller.REG_EXPORT_LIMIT_ENABLED:
                 return [controller.EXPORT_LIMIT_ENABLE]
             if address == controller.REG_BACKUP_RESERVE:
@@ -271,12 +275,44 @@ def test_battery_data_prefers_mkaiser_telemetry_registers_without_write_probe():
     assert data["battery_power"] == 3398
     assert data["battery_current"] == 12.3
     assert data["meter_power"] == 1500
-    assert data["charge_rate_limit_kw"] == 23.0
-    assert data["discharge_rate_limit_kw"] == 20.13
+    assert data["charge_rate_limit_kw"] == 12.0
+    assert data["discharge_rate_limit_kw"] == 15.0
     assert data["export_limit_enabled"] is True
     assert data["backup_reserve"] == 30
-    assert (controller.REG_BMS_MAX_CHARGE_CURRENT, 1) in input_reads
-    assert (controller.REG_MAX_CHARGE_CURRENT, 1) not in holding_reads
+    assert (controller.REG_MAX_CHARGE_POWER, 1) in holding_reads
+    assert (controller.REG_MAX_DISCHARGE_POWER, 1) in holding_reads
+    assert (controller.REG_BMS_MAX_CHARGE_CURRENT, 1) not in input_reads
+    assert (13065, 1) not in holding_reads
+    assert (13066, 1) not in holding_reads
+
+
+def test_sungrow_rate_limits_use_mkaiser_power_registers():
+    async def run_limits():
+        controller = SungrowSHController("192.0.2.10")
+        writes: list[tuple[int, int]] = []
+
+        async def connect() -> bool:
+            return True
+
+        async def write_register(address: int, value: int) -> bool:
+            writes.append((address, value))
+            return True
+
+        controller.connect = connect
+        controller._write_register = write_register
+
+        charge_ok = await controller.set_charge_rate_limit(12.0)
+        discharge_ok = await controller.set_discharge_rate_limit(15.0)
+        return charge_ok, discharge_ok, writes, controller
+
+    charge_ok, discharge_ok, writes, controller = asyncio.run(run_limits())
+
+    assert charge_ok
+    assert discharge_ok
+    assert writes == [
+        (controller.REG_MAX_CHARGE_POWER, 1200),
+        (controller.REG_MAX_DISCHARGE_POWER, 1500),
+    ]
 
 
 def test_backup_reserve_uses_mkaiser_whole_percent_register():

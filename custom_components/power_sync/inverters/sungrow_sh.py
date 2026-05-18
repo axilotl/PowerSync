@@ -118,10 +118,6 @@ class SungrowSHController(InverterController):
     REG_MAX_SOC = 13057                # 13058 - Maximum SOC limit (% * 10)
     REG_MIN_SOC = 13058                # 13059 - Minimum SOC (backup reserve) (% * 10)
 
-    # Current Limits
-    REG_MAX_DISCHARGE_CURRENT = 13065  # 13066 - Max discharge current (A * 1000)
-    REG_MAX_CHARGE_CURRENT = 13066     # 13067 - Max charge current (A * 1000)
-
     # Export Control (holding registers, FC 0x03)
     REG_EXPORT_LIMIT_SETTING = 13073   # 13074 - Export power limit setting (W)
     REG_EXPORT_LIMIT_ENABLED = 13086   # 13087 - Export limit (0xAA=enable, 0x55=disable)
@@ -132,9 +128,9 @@ class SungrowSHController(InverterController):
     # Forced Charge/Discharge Power
     REG_CHARGE_DISCHARGE_POWER = 13051  # 13052 - Forced charge/discharge power (W)
 
-    # Max Battery Charge/Discharge Power (needed on some models before force charge works)
-    REG_MAX_CHARGE_POWER = 33046       # 33047 - Max battery charge power (W)
-    REG_MAX_DISCHARGE_POWER = 33047    # 33048 - Max battery discharge power (W)
+    # Max Battery Charge/Discharge Power (0.01kW / 10W units in mkaiser mapping)
+    REG_MAX_CHARGE_POWER = 33046       # 33047 - Max battery charge power (W / 10)
+    REG_MAX_DISCHARGE_POWER = 33047    # 33048 - Max battery discharge power (W / 10)
 
     # Fallback battery voltage for kW to Amp conversion (used until real voltage is read)
     BATTERY_VOLTAGE_FALLBACK = 48      # Typical LFP battery pack voltage
@@ -988,25 +984,24 @@ class SungrowSHController(InverterController):
     async def set_charge_rate_limit(self, kw: float) -> bool:
         """Set maximum charge rate in kW.
 
-        Converts kW to Amps using the actual battery voltage (read from
-        register 13020), falling back to 48V if not yet available.
+        Sungrow's SH/T mkaiser mapping exposes this as max battery charge
+        power at holding register 33047, scaled in 10W units.
         """
-        voltage = self._battery_voltage
-        _LOGGER.info("Setting Sungrow SH at %s charge rate limit to %s kW (using %.1fV)", self.host, kw, voltage)
+        watts = max(0, int(round(kw * 1000)))
+        value = int(round(watts / 10))
+        _LOGGER.info("Setting Sungrow SH at %s charge rate limit to %.1f kW", self.host, kw)
         try:
             if not await self.connect():
                 return False
 
-            amps = kw * 1000 / voltage
-            value = int(amps * 1000)
-            success = await self._write_register(self.REG_MAX_CHARGE_CURRENT, value)
+            success = await self._write_register(self.REG_MAX_CHARGE_POWER, value)
             if not success:
                 _LOGGER.error("Failed to set charge rate limit")
                 self._rate_limit_writable = False
                 return False
 
             self._rate_limit_writable = True
-            _LOGGER.info("Sungrow SH charge rate limit set to %s kW (%.1f A @ %.1fV)", kw, amps, voltage)
+            _LOGGER.info("Sungrow SH charge rate limit set to %.1f kW (%d W)", kw, watts)
             return True
 
         except Exception as e:
@@ -1017,25 +1012,24 @@ class SungrowSHController(InverterController):
     async def set_discharge_rate_limit(self, kw: float) -> bool:
         """Set maximum discharge rate in kW.
 
-        Converts kW to Amps using the actual battery voltage (read from
-        register 13020), falling back to 48V if not yet available.
+        Sungrow's SH/T mkaiser mapping exposes this as max battery discharge
+        power at holding register 33048, scaled in 10W units.
         """
-        voltage = self._battery_voltage
-        _LOGGER.info("Setting Sungrow SH at %s discharge rate limit to %s kW (using %.1fV)", self.host, kw, voltage)
+        watts = max(0, int(round(kw * 1000)))
+        value = int(round(watts / 10))
+        _LOGGER.info("Setting Sungrow SH at %s discharge rate limit to %.1f kW", self.host, kw)
         try:
             if not await self.connect():
                 return False
 
-            amps = kw * 1000 / voltage
-            value = int(amps * 1000)
-            success = await self._write_register(self.REG_MAX_DISCHARGE_CURRENT, value)
+            success = await self._write_register(self.REG_MAX_DISCHARGE_POWER, value)
             if not success:
                 _LOGGER.error("Failed to set discharge rate limit")
                 self._rate_limit_writable = False
                 return False
 
             self._rate_limit_writable = True
-            _LOGGER.info("Sungrow SH discharge rate limit set to %s kW (%.1f A @ %.1fV)", kw, amps, voltage)
+            _LOGGER.info("Sungrow SH discharge rate limit set to %.1f kW (%d W)", kw, watts)
             return True
 
         except Exception as e:
@@ -1236,27 +1230,25 @@ class SungrowSHController(InverterController):
                 if backup_reserve:
                     data["backup_reserve"] = round(backup_reserve[0])
 
-            # Read charge/discharge current limits and convert to kW using actual voltage.
-            # Prefer read-only BMS limits from the mkaiser mapping. The holding
-            # registers remain as fallback for models that expose writable limits.
-            max_charge_current = await self._read_input_register(self.REG_BMS_MAX_CHARGE_CURRENT, 1)
-            if max_charge_current and self._valid_u16(max_charge_current[0]):
-                amps = max_charge_current[0]
-                data["charge_rate_limit_kw"] = round(amps * self._battery_voltage / 1000, 2)
+            # Read configured max charge/discharge power from mkaiser's SH/T
+            # holding registers. Fall back to BMS current telemetry when these
+            # power registers are not exposed by the inverter/firmware.
+            max_charge_power = await self._read_register(self.REG_MAX_CHARGE_POWER, 1)
+            if max_charge_power and self._valid_u16(max_charge_power[0]):
+                data["charge_rate_limit_kw"] = round(max_charge_power[0] * 10 / 1000, 2)
             else:
-                max_charge_current = await self._read_register(self.REG_MAX_CHARGE_CURRENT, 1)
+                max_charge_current = await self._read_input_register(self.REG_BMS_MAX_CHARGE_CURRENT, 1)
                 if max_charge_current and self._valid_u16(max_charge_current[0]):
-                    amps = max_charge_current[0] / 1000  # Convert from milliamps
+                    amps = max_charge_current[0]
                     data["charge_rate_limit_kw"] = round(amps * self._battery_voltage / 1000, 2)
 
-            max_discharge_current = await self._read_input_register(self.REG_BMS_MAX_DISCHARGE_CURRENT, 1)
-            if max_discharge_current and self._valid_u16(max_discharge_current[0]):
-                amps = max_discharge_current[0]
-                data["discharge_rate_limit_kw"] = round(amps * self._battery_voltage / 1000, 2)
+            max_discharge_power = await self._read_register(self.REG_MAX_DISCHARGE_POWER, 1)
+            if max_discharge_power and self._valid_u16(max_discharge_power[0]):
+                data["discharge_rate_limit_kw"] = round(max_discharge_power[0] * 10 / 1000, 2)
             else:
-                max_discharge_current = await self._read_register(self.REG_MAX_DISCHARGE_CURRENT, 1)
+                max_discharge_current = await self._read_input_register(self.REG_BMS_MAX_DISCHARGE_CURRENT, 1)
                 if max_discharge_current and self._valid_u16(max_discharge_current[0]):
-                    amps = max_discharge_current[0] / 1000  # Convert from milliamps
+                    amps = max_discharge_current[0]
                     data["discharge_rate_limit_kw"] = round(amps * self._battery_voltage / 1000, 2)
 
             data["rate_limit_writable"] = self._rate_limit_writable or False
