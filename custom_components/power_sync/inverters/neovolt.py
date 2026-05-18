@@ -295,17 +295,17 @@ class NeovoltBatteryController:
     async def set_no_battery_charge(self) -> bool:
         """Park charging/discharging on systems that expose an anti-fighting mode."""
         options = self._dispatch_mode_options()
-        for mode in ("Idle (No Dispatch)", "No Battery Charge"):
+        for mode in ("No Battery Charge", "Idle (No Dispatch)"):
             if mode in options:
                 return await self.set_dispatch_mode(mode)
-        return await self.set_dispatch_mode("Idle (No Dispatch)")
+        return await self.set_dispatch_mode("No Battery Charge")
 
     async def reassert_normal_dispatch(self) -> bool:
         """Force a Normal mode edge for inverters that do not engage from stale Normal."""
         await self._ensure_connected()
         options = self._dispatch_mode_options()
         edge_mode = None
-        for mode in ("Idle (No Dispatch)", "No Battery Charge"):
+        for mode in ("No Battery Charge", "Idle (No Dispatch)"):
             if mode in options:
                 edge_mode = mode
                 break

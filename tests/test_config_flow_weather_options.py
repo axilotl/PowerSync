@@ -210,9 +210,9 @@ def test_neovolt_surplus_balancer_help_explains_disabled_single_entry_status():
                 "neovolt_surplus_balancer_mode"
             ]
 
-            assert "multiple Neovolt integrations" in description
-            assert "one selected integration" in description
-            assert "disabled" in description
+            assert "multiple selected Neovolt integrations" in description
+            assert "Smart Optimization switch does not control it" in description
+            assert "Disable" in description
 
 
 def test_weather_entity_selector_is_conditional_and_has_blank_state():
@@ -285,6 +285,22 @@ def test_optimization_options_exposes_enabled_toggle():
     assert "CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED" in method_source
     assert "new_options[CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED] = spread_export_enabled" in method_source
     assert "optimization_provider != OPT_PROVIDER_POWERSYNC" in method_source
+
+
+def test_neovolt_surplus_balancer_selector_is_in_optimization_options():
+    source = CONFIG_FLOW_PATH.read_text()
+    method = _options_flow_method("async_step_optimization")
+    method_source = ast.get_source_segment(source, method)
+
+    assert method_source is not None
+    assert "if battery_system == BATTERY_SYSTEM_NEOVOLT:" in method_source
+    assert "CONF_NEOVOLT_SURPLUS_BALANCER_MODE" in method_source
+    assert "NEOVOLT_SURPLUS_BALANCER_MODES" in method_source
+    assert (
+        method_source.index("CONF_OPTIMIZATION_ENABLED")
+        < method_source.index("CONF_NEOVOLT_SURPLUS_BALANCER_MODE")
+        < method_source.index("CONF_OPTIMIZATION_BACKUP_RESERVE")
+    )
 
 
 def test_initial_smart_optimization_configuration_exposes_enabled_toggle():

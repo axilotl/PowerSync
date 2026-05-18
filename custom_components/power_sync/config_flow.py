@@ -5807,6 +5807,9 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         """Menu handler: optimization provider and backup reserve settings."""
+        battery_system = self.config_entry.data.get(
+            CONF_BATTERY_SYSTEM, BATTERY_SYSTEM_TESLA
+        )
         if user_input is not None:
             optimization_provider = user_input.get(
                 CONF_OPTIMIZATION_PROVIDER, OPT_PROVIDER_NATIVE
@@ -5823,13 +5826,25 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             new_options = dict(self.config_entry.options)
             new_data[CONF_OPTIMIZATION_PROVIDER] = optimization_provider
             new_options[CONF_OPTIMIZATION_ENABLED] = optimization_enabled
+            if battery_system == BATTERY_SYSTEM_NEOVOLT:
+                surplus_balancer_mode = user_input.get(
+                    CONF_NEOVOLT_SURPLUS_BALANCER_MODE,
+                    self._get_option(
+                        CONF_NEOVOLT_SURPLUS_BALANCER_MODE,
+                        self.config_entry.data.get(
+                            CONF_NEOVOLT_SURPLUS_BALANCER_MODE,
+                            DEFAULT_NEOVOLT_SURPLUS_BALANCER_MODE,
+                        ),
+                    ),
+                )
+                new_data[CONF_NEOVOLT_SURPLUS_BALANCER_MODE] = str(surplus_balancer_mode)
+                new_options[CONF_NEOVOLT_SURPLUS_BALANCER_MODE] = str(
+                    surplus_balancer_mode
+                )
             if optimization_provider == OPT_PROVIDER_POWERSYNC:
                 default_capacity_wh, default_charge_w, default_discharge_w = (
                     _default_optimizer_specs_for(
-                        self.config_entry.data.get(
-                            CONF_BATTERY_SYSTEM,
-                            BATTERY_SYSTEM_TESLA,
-                        )
+                        battery_system
                     )
                 )
                 default_capacity_kwh = default_capacity_wh / 1000
@@ -5895,15 +5910,19 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 title="", data=dict(self.config_entry.options)
             )
 
-        battery_system = self.config_entry.data.get(
-            CONF_BATTERY_SYSTEM, BATTERY_SYSTEM_TESLA
-        )
         current_opt_provider = self.config_entry.data.get(
             CONF_OPTIMIZATION_PROVIDER, OPT_PROVIDER_NATIVE
         )
         current_optimization_enabled = self.config_entry.options.get(
             CONF_OPTIMIZATION_ENABLED,
             current_opt_provider == OPT_PROVIDER_POWERSYNC,
+        )
+        current_surplus_balancer_mode = self._get_option(
+            CONF_NEOVOLT_SURPLUS_BALANCER_MODE,
+            self.config_entry.data.get(
+                CONF_NEOVOLT_SURPLUS_BALANCER_MODE,
+                DEFAULT_NEOVOLT_SURPLUS_BALANCER_MODE,
+            ),
         )
         current_backup_reserve = self._get_option(
             CONF_OPTIMIZATION_BACKUP_RESERVE,
@@ -5972,76 +5991,94 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
         )
 
         opt_providers = _optimization_provider_options_for_battery(battery_system)
+        schema_fields: dict[Any, Any] = {
+            vol.Required(
+                CONF_OPTIMIZATION_PROVIDER,
+                default=current_opt_provider,
+            ): SelectSelector(SelectSelectorConfig(
+                options=[
+                    SelectOptionDict(value=k, label=v)
+                    for k, v in opt_providers.items()
+                ],
+                mode=SelectSelectorMode.DROPDOWN,
+            )),
+            vol.Required(
+                CONF_OPTIMIZATION_ENABLED,
+                default=bool(current_optimization_enabled),
+            ): BooleanSelector(),
+        }
+        if battery_system == BATTERY_SYSTEM_NEOVOLT:
+            schema_fields[
+                vol.Required(
+                    CONF_NEOVOLT_SURPLUS_BALANCER_MODE,
+                    default=current_surplus_balancer_mode,
+                )
+            ] = SelectSelector(
+                SelectSelectorConfig(
+                    options=[
+                        SelectOptionDict(value=mode, label=mode.title())
+                        for mode in NEOVOLT_SURPLUS_BALANCER_MODES
+                    ],
+                    mode=SelectSelectorMode.DROPDOWN,
+                )
+            )
+        schema_fields.update(
+            {
+                vol.Required(
+                    CONF_OPTIMIZATION_BACKUP_RESERVE,
+                    default=int(current_backup_reserve * 100)
+                    if current_backup_reserve < 1
+                    else int(current_backup_reserve),
+                ): NumberSelector(NumberSelectorConfig(
+                    min=0, max=100, step=1, unit_of_measurement="%",
+                    mode=NumberSelectorMode.SLIDER,
+                )),
+                vol.Required(
+                    CONF_OPTIMIZATION_BATTERY_CAPACITY_WH,
+                    default=current_capacity_kwh,
+                ): NumberSelector(NumberSelectorConfig(
+                    min=1, max=200, step=0.1, unit_of_measurement="kWh",
+                    mode=NumberSelectorMode.BOX,
+                )),
+                vol.Required(
+                    CONF_OPTIMIZATION_MAX_CHARGE_W,
+                    default=current_charge_kw,
+                ): NumberSelector(NumberSelectorConfig(
+                    min=0.1, max=50, step=0.1, unit_of_measurement="kW",
+                    mode=NumberSelectorMode.BOX,
+                )),
+                vol.Required(
+                    CONF_OPTIMIZATION_MAX_DISCHARGE_W,
+                    default=current_discharge_kw,
+                ): NumberSelector(NumberSelectorConfig(
+                    min=0.1, max=50, step=0.1, unit_of_measurement="kW",
+                    mode=NumberSelectorMode.BOX,
+                )),
+                vol.Required(
+                    CONF_OPTIMIZATION_ALLOW_GRID_CHARGE,
+                    default=bool(current_allow_grid_charge),
+                ): BooleanSelector(),
+                vol.Required(
+                    CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED,
+                    default=bool(current_spread_export_enabled),
+                ): BooleanSelector(),
+                vol.Required(
+                    CONF_PROFIT_MAX_TARGET_TIME,
+                    default=current_profit_max_target_time,
+                ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
+                vol.Required(
+                    CONF_PROFIT_MAX_TARGET_SOC,
+                    default=current_profit_max_target_soc,
+                ): NumberSelector(NumberSelectorConfig(
+                    min=0, max=100, step=1, unit_of_measurement="%",
+                    mode=NumberSelectorMode.SLIDER,
+                )),
+            }
+        )
 
         return self.async_show_form(
             step_id="optimization",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(
-                        CONF_OPTIMIZATION_PROVIDER,
-                        default=current_opt_provider,
-                    ): SelectSelector(SelectSelectorConfig(
-                        options=[
-                            SelectOptionDict(value=k, label=v)
-                            for k, v in opt_providers.items()
-                        ],
-                        mode=SelectSelectorMode.DROPDOWN,
-                    )),
-                    vol.Required(
-                        CONF_OPTIMIZATION_ENABLED,
-                        default=bool(current_optimization_enabled),
-                    ): BooleanSelector(),
-                    vol.Required(
-                        CONF_OPTIMIZATION_BACKUP_RESERVE,
-                        default=int(current_backup_reserve * 100)
-                        if current_backup_reserve < 1
-                        else int(current_backup_reserve),
-                    ): NumberSelector(NumberSelectorConfig(
-                        min=0, max=100, step=1, unit_of_measurement="%",
-                        mode=NumberSelectorMode.SLIDER,
-                    )),
-                    vol.Required(
-                        CONF_OPTIMIZATION_BATTERY_CAPACITY_WH,
-                        default=current_capacity_kwh,
-                    ): NumberSelector(NumberSelectorConfig(
-                        min=1, max=200, step=0.1, unit_of_measurement="kWh",
-                        mode=NumberSelectorMode.BOX,
-                    )),
-                    vol.Required(
-                        CONF_OPTIMIZATION_MAX_CHARGE_W,
-                        default=current_charge_kw,
-                    ): NumberSelector(NumberSelectorConfig(
-                        min=0.1, max=50, step=0.1, unit_of_measurement="kW",
-                        mode=NumberSelectorMode.BOX,
-                    )),
-                    vol.Required(
-                        CONF_OPTIMIZATION_MAX_DISCHARGE_W,
-                        default=current_discharge_kw,
-                    ): NumberSelector(NumberSelectorConfig(
-                        min=0.1, max=50, step=0.1, unit_of_measurement="kW",
-                        mode=NumberSelectorMode.BOX,
-                    )),
-                    vol.Required(
-                        CONF_OPTIMIZATION_ALLOW_GRID_CHARGE,
-                        default=bool(current_allow_grid_charge),
-                    ): BooleanSelector(),
-                    vol.Required(
-                        CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED,
-                        default=bool(current_spread_export_enabled),
-                    ): BooleanSelector(),
-                    vol.Required(
-                        CONF_PROFIT_MAX_TARGET_TIME,
-                        default=current_profit_max_target_time,
-                    ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
-                    vol.Required(
-                        CONF_PROFIT_MAX_TARGET_SOC,
-                        default=current_profit_max_target_soc,
-                    ): NumberSelector(NumberSelectorConfig(
-                        min=0, max=100, step=1, unit_of_measurement="%",
-                        mode=NumberSelectorMode.SLIDER,
-                    )),
-                }
-            ),
+            data_schema=vol.Schema(schema_fields),
         )
 
     async def async_step_inverter(

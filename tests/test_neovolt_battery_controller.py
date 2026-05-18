@@ -693,7 +693,7 @@ def test_fleet_force_charge_prioritises_low_soc_stack_when_unbalanced():
         ("number", "set_value", {"entity_id": "number.neovolt_1_dispatch_duration", "value": 70}),
         ("number", "set_value", {"entity_id": "number.neovolt_1_dispatch_charge_target_soc", "value": 100}),
         ("select", "select_option", {"entity_id": "select.neovolt_1_dispatch_mode", "option": "Force Charge"}),
-        ("select", "select_option", {"entity_id": "select.neovolt_2_dispatch_mode", "option": "Idle (No Dispatch)"}),
+        ("select", "select_option", {"entity_id": "select.neovolt_2_dispatch_mode", "option": "No Battery Charge"}),
     ]
 
 
@@ -1031,7 +1031,7 @@ def test_fleet_surplus_balancer_parks_higher_soc_normal_stack():
     assert balancer["soc_parked_index"] == 1
     assert balancer["soc_parked_base_mode"] == "Normal"
     assert hass.services.calls == [
-        ("select", "select_option", {"entity_id": "select.neovolt_2_dispatch_mode", "option": "Idle (No Dispatch)"}),
+        ("select", "select_option", {"entity_id": "select.neovolt_2_dispatch_mode", "option": "No Battery Charge"}),
     ]
 
 
@@ -1174,7 +1174,7 @@ def test_fleet_surplus_balancer_parks_full_stack_until_lower_stack_catches_up():
     assert balancer["soc_delta_percent"] == 2.4
     assert balancer["soc_parked_index"] == 0
     assert hass.services.calls == [
-        ("select", "select_option", {"entity_id": "select.neovolt_1_dispatch_mode", "option": "Idle (No Dispatch)"}),
+        ("select", "select_option", {"entity_id": "select.neovolt_1_dispatch_mode", "option": "No Battery Charge"}),
     ]
 
     hass.services.calls.clear()
@@ -1232,7 +1232,7 @@ def test_fleet_surplus_balancer_parks_charging_high_stack_when_low_stack_dischar
     assert balancer["soc_parked_index"] == 1
     assert balancer["soc_parked_base_mode"] == "Normal"
     assert hass.services.calls == [
-        ("select", "select_option", {"entity_id": "select.neovolt_2_dispatch_mode", "option": "Idle (No Dispatch)"}),
+        ("select", "select_option", {"entity_id": "select.neovolt_2_dispatch_mode", "option": "No Battery Charge"}),
     ]
 
 
@@ -1370,7 +1370,7 @@ def test_fleet_balancer_reasserts_normal_when_cutoff_stack_leaves_site_importing
     assert balancer["highest_soc_index"] == 1
     assert balancer["target_index"] == 1
     assert hass.services.calls == [
-        ("select", "select_option", {"entity_id": "select.neovolt_2_dispatch_mode", "option": "Idle (No Dispatch)"}),
+        ("select", "select_option", {"entity_id": "select.neovolt_2_dispatch_mode", "option": "No Battery Charge"}),
         ("select", "select_option", {"entity_id": "select.neovolt_2_dispatch_mode", "option": "Normal"}),
     ]
 
