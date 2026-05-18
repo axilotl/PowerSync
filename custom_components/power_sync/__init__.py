@@ -7644,9 +7644,6 @@ class TariffPriceView(HomeAssistantView):
             energy_charges = saved_tariff.get("energy_charges", {})
             season_charges = energy_charges.get(current_season, {})
             buy_rates = season_charges.get("rates", season_charges)
-            buy_rate = 0.0
-            if isinstance(buy_rates, dict):
-                buy_rate = buy_rates.get(current_period, buy_rates.get("ALL", 0.0))
 
             # Sell rates: sell_tariff["energy_charges"][current_season]["rates"][period]
             sell_tariff = saved_tariff.get("sell_tariff", {})
@@ -7660,6 +7657,10 @@ class TariffPriceView(HomeAssistantView):
                 buy_rates=buy_rates if isinstance(buy_rates, dict) else None,
                 sell_rates=sell_rates if isinstance(sell_rates, dict) else None,
             )
+            buy_rate = 0.0
+            if isinstance(buy_rates, dict):
+                buy_rate = buy_rates.get(current_period, buy_rates.get("ALL", 0.0))
+
             sell_rate = 0.0
             if isinstance(sell_rates, dict):
                 sell_rate = sell_rates.get(current_period, sell_rates.get("ALL", 0.0))
@@ -21068,19 +21069,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 }
                 api_base = get_tesla_api_base_url(provider, entry.data.get(CONF_FLEET_API_BASE_URL))
 
-                saved_mode = (force_discharge_state.get("saved_states") or {}).get(site_id, {}).get("saved_operation_mode")
-                if saved_mode != "autonomous":
-                    _LOGGER.info("Switching to autonomous mode for site %s...", site_id)
-                    async with session.post(
-                        f"{api_base}/api/1/energy_sites/{site_id}/operation",
-                        headers=headers,
-                        json={"default_real_mode": "autonomous"},
-                        timeout=aiohttp.ClientTimeout(total=30),
-                    ) as response:
-                        if response.status == 200:
-                            _LOGGER.info("Switched to autonomous mode for site %s", site_id)
-                        else:
-                            _LOGGER.warning("Could not switch operation mode for site %s: %s", site_id, response.status)
+                _LOGGER.info("Switching to autonomous mode for site %s...", site_id)
+                async with session.post(
+                    f"{api_base}/api/1/energy_sites/{site_id}/operation",
+                    headers=headers,
+                    json={"default_real_mode": "autonomous"},
+                    timeout=aiohttp.ClientTimeout(total=30),
+                ) as response:
+                    if response.status == 200:
+                        _LOGGER.info("Switched to autonomous mode for site %s", site_id)
+                    else:
+                        text = await response.text()
+                        _LOGGER.warning(
+                            "Could not switch operation mode for site %s: %s - %s",
+                            site_id,
+                            response.status,
+                            text[:200],
+                        )
 
             # Step 4: Create and upload discharge tariff to all gateways
             discharge_tariff, actual_expiry = _create_discharge_tariff(tariff_duration)
@@ -22346,19 +22351,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 }
                 api_base = get_tesla_api_base_url(provider, entry.data.get(CONF_FLEET_API_BASE_URL))
 
-                saved_mode = (force_charge_state.get("saved_states") or {}).get(site_id, {}).get("saved_operation_mode")
-                if saved_mode != "autonomous":
-                    _LOGGER.info("Switching to autonomous mode for site %s...", site_id)
-                    async with session.post(
-                        f"{api_base}/api/1/energy_sites/{site_id}/operation",
-                        headers=headers,
-                        json={"default_real_mode": "autonomous"},
-                        timeout=aiohttp.ClientTimeout(total=30),
-                    ) as response:
-                        if response.status == 200:
-                            _LOGGER.info("Switched to autonomous mode for site %s", site_id)
-                        else:
-                            _LOGGER.warning("Could not switch operation mode for site %s: %s", site_id, response.status)
+                _LOGGER.info("Switching to autonomous mode for site %s...", site_id)
+                async with session.post(
+                    f"{api_base}/api/1/energy_sites/{site_id}/operation",
+                    headers=headers,
+                    json={"default_real_mode": "autonomous"},
+                    timeout=aiohttp.ClientTimeout(total=30),
+                ) as response:
+                    if response.status == 200:
+                        _LOGGER.info("Switched to autonomous mode for site %s", site_id)
+                    else:
+                        text = await response.text()
+                        _LOGGER.warning(
+                            "Could not switch operation mode for site %s: %s - %s",
+                            site_id,
+                            response.status,
+                            text[:200],
+                        )
 
                 # Set backup reserve to 100% to force charging
                 _LOGGER.info("Setting backup reserve to 100%% for site %s...", site_id)

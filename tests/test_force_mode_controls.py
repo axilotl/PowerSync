@@ -238,6 +238,34 @@ def test_neovolt_force_discharge_hardware_extension_preserves_restore_modes():
     assert "preserve_restore_modes=True" in function_source
 
 
+def test_saved_tariff_prices_calculate_period_before_rate_lookup():
+    source = INIT_PATH.read_text()
+    tree = ast.parse(source)
+    method = _find_class_method(tree, "TariffPriceView", "_calculate_prices_from_saved_tariff")
+    method_source = ast.get_source_segment(source, method)
+
+    assert method_source is not None
+    period_index = method_source.index("current_period = find_matching_tou_period(")
+    buy_lookup_index = method_source.index("buy_rate = buy_rates.get(current_period")
+    assert period_index < buy_lookup_index
+
+
+def test_tesla_force_modes_always_reissue_autonomous_mode():
+    source = INIT_PATH.read_text()
+    tree = ast.parse(source)
+    force_discharge = _find_function(tree, "handle_force_discharge")
+    force_charge = _find_function(tree, "handle_force_charge")
+    force_discharge_source = ast.get_source_segment(source, force_discharge)
+    force_charge_source = ast.get_source_segment(source, force_charge)
+
+    assert force_discharge_source is not None
+    assert force_charge_source is not None
+    assert 'if saved_mode != "autonomous":' not in force_discharge_source
+    assert 'if saved_mode != "autonomous":' not in force_charge_source
+    assert force_discharge_source.count('json={"default_real_mode": "autonomous"}') >= 1
+    assert force_charge_source.count('json={"default_real_mode": "autonomous"}') >= 1
+
+
 def test_neovolt_energy_coordinator_passes_force_discharge_restore_mode_flag():
     source = COORDINATOR_PATH.read_text()
     tree = ast.parse(source)
