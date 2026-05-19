@@ -1464,6 +1464,49 @@ STORAGE_VERSION = 1
 STORAGE_KEY = f"{DOMAIN}.storage"
 
 
+def _goodwe_ems_prefix_candidates(hass: HomeAssistant) -> list[str]:
+    """Return GoodWe EMS prefixes with both required HA entities loaded."""
+    try:
+        mode_entity_ids = hass.states.async_entity_ids("select")
+    except TypeError:
+        mode_entity_ids = [
+            entity_id
+            for entity_id in hass.states.async_entity_ids()
+            if entity_id.startswith("select.")
+        ]
+
+    candidates: list[str] = []
+    for entity_id in mode_entity_ids:
+        if not entity_id.startswith("select.") or not entity_id.endswith("_ems_mode"):
+            continue
+        prefix = entity_id.removeprefix("select.").removesuffix("_ems_mode")
+        if hass.states.get(f"number.{prefix}_ems_power_limit") is not None:
+            candidates.append(prefix)
+
+    return sorted(set(candidates))
+
+
+def _resolve_goodwe_ems_entity_prefix(hass: HomeAssistant, prefix: str | None) -> str:
+    """Resolve a configured GoodWe EMS prefix from the loaded HA entity pair."""
+    typed_prefix = (prefix or "").strip()
+    if (
+        typed_prefix
+        and hass.states.get(f"select.{typed_prefix}_ems_mode") is not None
+        and hass.states.get(f"number.{typed_prefix}_ems_power_limit") is not None
+    ):
+        return typed_prefix
+
+    candidates = _goodwe_ems_prefix_candidates(hass)
+    if typed_prefix in candidates:
+        return typed_prefix
+    if "goodwe" in candidates:
+        return "goodwe"
+    if len(candidates) == 1:
+        return candidates[0]
+
+    return typed_prefix
+
+
 async def fetch_active_amber_site_id(hass: HomeAssistant, api_token: str) -> str | None:
     """
     Fetch the active Amber site ID from the API.
@@ -15102,6 +15145,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         goodwe_host = entry.options.get(CONF_GOODWE_HOST, entry.data.get(CONF_GOODWE_HOST))
         goodwe_port = entry.options.get(CONF_GOODWE_PORT, entry.data.get(CONF_GOODWE_PORT, DEFAULT_GOODWE_PORT_UDP))
+        goodwe_protocol = entry.options.get(
+            CONF_GOODWE_PROTOCOL,
+            entry.data.get(CONF_GOODWE_PROTOCOL, "udp"),
+        )
         goodwe_ems_control_mode = entry.options.get(
             CONF_GOODWE_EMS_CONTROL_MODE,
             entry.data.get(CONF_GOODWE_EMS_CONTROL_MODE),
@@ -15111,7 +15158,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             entry.data.get(CONF_GOODWE_EMS_ENTITY_PREFIX),
         )
         goodwe_ems_prefix = (
-            configured_ems_prefix
+            _resolve_goodwe_ems_entity_prefix(hass, configured_ems_prefix)
             if goodwe_ems_control_mode == GOODWE_EMS_CONTROL_ENTITY
             or (
                 goodwe_ems_control_mode is None
@@ -15119,6 +15166,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
             else None
         )
+        if not goodwe_ems_prefix and (
+            goodwe_protocol == "tcp" or goodwe_port == DEFAULT_GOODWE_PORT_TCP
+        ):
+            detected_ems_prefix = _resolve_goodwe_ems_entity_prefix(
+                hass,
+                configured_ems_prefix,
+            )
+            if detected_ems_prefix:
+                goodwe_ems_prefix = detected_ems_prefix
+                _LOGGER.info(
+                    "GoodWe TCP setup detected EMS entity prefix '%s'; "
+                    "using Home Assistant entity control because direct IP "
+                    "operation-mode writes do not reliably control LAN/Kit-20 systems",
+                    detected_ems_prefix,
+                )
 
         _LOGGER.info(
             "Initializing GoodWe coordinator: %s:%s%s",

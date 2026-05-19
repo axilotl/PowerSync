@@ -3,7 +3,7 @@
 PowerSync supports GoodWe ET/EH/BT/BH and ES/EM/BP hybrid inverter-battery systems through two control paths:
 
 - **Direct GoodWe control** uses the GoodWe local protocol, typically UDP port 8899. This path controls force charge/discharge by writing GoodWe operation modes directly.
-- **Entity mode** uses the GoodWe Experimental Home Assistant integration's EMS entities. This is the recommended path for LAN / WiFiLAN Kit-20 setups that expose Modbus TCP on port 502 but do not support UDP control.
+- **Entity mode** uses the GoodWe Experimental Home Assistant integration's EMS entities. This is the required path for LAN / WiFiLAN Kit-20 setups that expose Modbus TCP on port 502 but do not support UDP control.
 
 ## Supported models
 
@@ -27,7 +27,7 @@ Use this when the inverter or dongle supports GoodWe local UDP control:
 | Port | 8899 |
 | GoodWe entity mode prefix | Leave blank |
 
-If force charge/discharge fails with a message like `expected work_mode=3 but read back 0`, UDP control is not taking effect. For LAN / Kit-20 systems, use entity mode instead of trying to force UDP.
+If force charge/discharge fails with a message like `expected work_mode=3 but read back 0`, UDP control is not taking effect. For LAN / Kit-20 systems, use entity mode instead of trying to force UDP. PowerSync will automatically use a detected EMS entity pair for TCP / LAN Kit-20 setups, even if the control selector was left on Direct IP control.
 
 ### TCP / LAN Kit-20 with entity mode
 

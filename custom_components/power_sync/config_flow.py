@@ -1089,6 +1089,23 @@ def resolve_goodwe_ems_control_mode(mode: str | None, prefix: str | None) -> str
     )
 
 
+def resolve_goodwe_ems_control_mode_for_protocol(
+    hass: HomeAssistant,
+    mode: str | None,
+    prefix: str | None,
+    protocol: str | None,
+) -> str:
+    """Prefer EMS entity control for GoodWe TCP setups when entities exist."""
+    resolved_mode = resolve_goodwe_ems_control_mode(mode, prefix)
+    if (
+        resolved_mode == GOODWE_EMS_CONTROL_DIRECT
+        and protocol == "tcp"
+        and resolve_goodwe_ems_entity_prefix(hass, prefix)
+    ):
+        return GOODWE_EMS_CONTROL_ENTITY
+    return resolved_mode
+
+
 def validate_goodwe_ems_control_mode(
     hass: HomeAssistant,
     mode: str | None,
@@ -3502,9 +3519,11 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             protocol = user_input.get(CONF_GOODWE_PROTOCOL, "udp")
             port = resolve_goodwe_port(protocol, user_input.get(CONF_GOODWE_PORT))
             ems_prefix = user_input.get(CONF_GOODWE_EMS_ENTITY_PREFIX, "").strip()
-            ems_control_mode = resolve_goodwe_ems_control_mode(
+            ems_control_mode = resolve_goodwe_ems_control_mode_for_protocol(
+                self.hass,
                 user_input.get(CONF_GOODWE_EMS_CONTROL_MODE),
                 ems_prefix,
+                protocol,
             )
 
             if not host:
@@ -5177,9 +5196,12 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 errors["base"] = "goodwe_connect_failed"
             else:
                 ems_prefix = user_input.get(CONF_GOODWE_EMS_ENTITY_PREFIX, "").strip()
-                ems_control_mode = resolve_goodwe_ems_control_mode(
+                protocol = user_input.get(CONF_GOODWE_PROTOCOL, "udp")
+                ems_control_mode = resolve_goodwe_ems_control_mode_for_protocol(
+                    self.hass,
                     user_input.get(CONF_GOODWE_EMS_CONTROL_MODE),
                     ems_prefix,
+                    protocol,
                 )
                 resolved_ems_prefix = (
                     resolve_goodwe_ems_entity_prefix(self.hass, ems_prefix)
@@ -5196,7 +5218,6 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 else:
                     new_data = dict(self.config_entry.data)
                     new_options = dict(self.config_entry.options)
-                    protocol = user_input.get(CONF_GOODWE_PROTOCOL, "udp")
                     port = resolve_goodwe_port(
                         protocol, user_input.get(CONF_GOODWE_PORT)
                     )
@@ -7006,9 +7027,12 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 errors["base"] = "goodwe_connect_failed"
             else:
                 ems_prefix = user_input.get(CONF_GOODWE_EMS_ENTITY_PREFIX, "").strip()
-                ems_control_mode = resolve_goodwe_ems_control_mode(
+                protocol = user_input.get(CONF_GOODWE_PROTOCOL, "udp")
+                ems_control_mode = resolve_goodwe_ems_control_mode_for_protocol(
+                    self.hass,
                     user_input.get(CONF_GOODWE_EMS_CONTROL_MODE),
                     ems_prefix,
+                    protocol,
                 )
                 resolved_ems_prefix = (
                     resolve_goodwe_ems_entity_prefix(self.hass, ems_prefix)
@@ -7027,7 +7051,6 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
 
                     # Update config entry data with GoodWe settings
                     new_data = dict(self.config_entry.data)
-                    protocol = user_input.get(CONF_GOODWE_PROTOCOL, "udp")
                     new_data[CONF_GOODWE_HOST] = goodwe_host
                     new_data[CONF_GOODWE_PORT] = resolve_goodwe_port(
                         protocol, user_input.get(CONF_GOODWE_PORT)

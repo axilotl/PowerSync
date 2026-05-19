@@ -382,7 +382,7 @@ def test_goodwe_flow_exposes_explicit_ems_control_mode_selector():
         assert "GOODWE_EMS_CONTROL_ENTITY" in method_source
 
 
-def test_goodwe_runtime_uses_entity_prefix_only_for_entity_control_mode():
+def test_goodwe_runtime_auto_uses_entity_prefix_for_tcp_control():
     init_source = (
         ROOT / "custom_components" / "power_sync" / "__init__.py"
     ).read_text()
@@ -391,6 +391,9 @@ def test_goodwe_runtime_uses_entity_prefix_only_for_entity_control_mode():
     assert "GOODWE_EMS_CONTROL_ENTITY" in init_source
     assert "configured_ems_prefix" in init_source
     assert "goodwe_ems_control_mode is None" in init_source
+    assert "goodwe_protocol == \"tcp\"" in init_source
+    assert "DEFAULT_GOODWE_PORT_TCP" in init_source
+    assert "_resolve_goodwe_ems_entity_prefix" in init_source
 
 
 class _GoodWeStates:
@@ -419,6 +422,8 @@ def _goodwe_prefix_namespace() -> dict[str, object]:
         "_goodwe_ems_prefix_exists",
         "_goodwe_ems_prefix_candidates",
         "resolve_goodwe_ems_entity_prefix",
+        "resolve_goodwe_ems_control_mode",
+        "resolve_goodwe_ems_control_mode_for_protocol",
     }
     functions = [
         node
@@ -434,6 +439,8 @@ def _goodwe_prefix_namespace() -> dict[str, object]:
             (),
             {"warning": staticmethod(lambda *args, **kwargs: None)},
         ),
+        "GOODWE_EMS_CONTROL_DIRECT": "direct",
+        "GOODWE_EMS_CONTROL_ENTITY": "entity",
     }
     exec(compile(module, str(CONFIG_FLOW_PATH), "exec"), namespace)
     return namespace
@@ -469,6 +476,24 @@ def test_goodwe_ems_prefix_keeps_typed_prefix_when_pair_exists():
     )
 
     assert resolve_prefix(hass, "goodwe_esa") == "goodwe_esa"
+
+
+def test_goodwe_tcp_control_mode_prefers_detected_ems_entities():
+    namespace = _goodwe_prefix_namespace()
+    resolve_mode = namespace["resolve_goodwe_ems_control_mode_for_protocol"]
+    resolve_prefix = namespace["resolve_goodwe_ems_entity_prefix"]
+    hass = _GoodWeHass(
+        [
+            "select.goodwe_esa_ems_mode",
+            "number.goodwe_esa_ems_power_limit",
+        ]
+    )
+
+    prefix = resolve_prefix(hass, "")
+
+    assert prefix == "goodwe_esa"
+    assert resolve_mode(hass, "direct", "", "tcp") == "entity"
+    assert resolve_mode(hass, "direct", "", "udp") == "direct"
 
 
 def test_sungrow_options_flow_removes_retired_dual_config():
