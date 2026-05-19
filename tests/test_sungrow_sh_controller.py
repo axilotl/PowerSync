@@ -378,13 +378,19 @@ class _FakeSungrowController:
         return True
 
 
+def _new_sungrow_coordinator(SungrowEnergyCoordinator, fake_controller):
+    coordinator = SungrowEnergyCoordinator.__new__(SungrowEnergyCoordinator)
+    coordinator._controller = fake_controller
+    coordinator._modbus_lock = asyncio.Lock()
+    return coordinator
+
+
 def test_sungrow_coordinator_passes_requested_discharge_power_to_controller():
     SungrowEnergyCoordinator, restore = _load_sungrow_energy_coordinator()
 
     async def run_force_discharge():
         fake_controller = _FakeSungrowController()
-        coordinator = SungrowEnergyCoordinator.__new__(SungrowEnergyCoordinator)
-        coordinator._controller = fake_controller
+        coordinator = _new_sungrow_coordinator(SungrowEnergyCoordinator, fake_controller)
 
         result = await coordinator.force_discharge(duration_minutes=30, power_w=20000)
         return result, fake_controller
@@ -404,14 +410,40 @@ def test_sungrow_coordinator_passes_requested_charge_power_to_controller():
 
     async def run_force_charge():
         fake_controller = _FakeSungrowController()
-        coordinator = SungrowEnergyCoordinator.__new__(SungrowEnergyCoordinator)
-        coordinator._controller = fake_controller
+        coordinator = _new_sungrow_coordinator(SungrowEnergyCoordinator, fake_controller)
 
         result = await coordinator.force_charge(duration_minutes=30, power_w=12000)
         return result, fake_controller
 
     try:
         result, fake_controller = asyncio.run(run_force_charge())
+    finally:
+        restore()
+
+    assert result
+    assert fake_controller.charge_rate_limits == [12]
+    assert fake_controller.force_charge_power_w == [12000]
+
+
+def test_sungrow_coordinator_serializes_force_charge_with_modbus_lock():
+    SungrowEnergyCoordinator, restore = _load_sungrow_energy_coordinator()
+
+    async def run_force_charge_while_locked():
+        fake_controller = _FakeSungrowController()
+        coordinator = _new_sungrow_coordinator(SungrowEnergyCoordinator, fake_controller)
+
+        async with coordinator._modbus_lock:
+            task = asyncio.create_task(
+                coordinator.force_charge(duration_minutes=30, power_w=12000)
+            )
+            await asyncio.sleep(0)
+            assert fake_controller.force_charge_power_w == []
+
+        result = await task
+        return result, fake_controller
+
+    try:
+        result, fake_controller = asyncio.run(run_force_charge_while_locked())
     finally:
         restore()
 

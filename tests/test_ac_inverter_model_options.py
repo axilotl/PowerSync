@@ -38,6 +38,15 @@ def test_every_visible_ac_inverter_brand_has_own_model_options():
             assert models != const["SUNGROW_MODELS"], brand
 
 
+def test_sungrow_battery_system_can_select_hybrid_model_for_curtailment():
+    const = _load_ac_inverter_namespace()
+
+    models = const["get_models_for_brand"]("sungrow", const["BATTERY_SYSTEM_SUNGROW"])
+
+    assert "sh20t" in models
+    assert "sg2.5rs" in models
+
+
 def test_brand_defaults_match_controller_defaults_for_hybrid_brands():
     const = _load_ac_inverter_namespace()
 

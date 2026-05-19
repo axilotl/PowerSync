@@ -3872,6 +3872,11 @@ class SungrowEnergyCoordinator(DataUpdateCoordinator):
         self._entry_id = entry_id
         self._controller = SungrowSHController(host, port, slave_id)
         self._energy_acc = EnergyAccumulator(hass, "sungrow")
+        # Sungrow/WiNet Modbus is sensitive to overlapping TCP operations.
+        # Keep each coordinator poll or control command as one serialized
+        # transaction so a refresh cannot close/reopen the shared client in the
+        # middle of a force charge/discharge sequence.
+        self._modbus_lock = asyncio.Lock()
 
         # Midnight baselines for computing daily import/export from total registers
         # Used when daily registers (13035/13044) read 0 (e.g. SH10RS + SBH)
@@ -3995,7 +4000,8 @@ class SungrowEnergyCoordinator(DataUpdateCoordinator):
         if not self._energy_acc._last_update:
             await self._energy_acc.async_restore()
         try:
-            data = await self._controller.get_battery_data()
+            async with self._modbus_lock:
+                data = await self._controller.get_battery_data()
 
             # If Modbus returned no battery data, keep previous readings
             # rather than reporting SOC=0% which causes the optimizer to
@@ -4122,7 +4128,7 @@ class SungrowEnergyCoordinator(DataUpdateCoordinator):
         Returns:
             True if successful
         """
-        async with self._controller:
+        async with self._modbus_lock, self._controller:
             target_power_w = power_w if power_w > 0 else 5000
             if power_w > 0:
                 await self._controller.set_charge_rate_limit(power_w / 1000)
@@ -4138,7 +4144,7 @@ class SungrowEnergyCoordinator(DataUpdateCoordinator):
         Returns:
             True if successful
         """
-        async with self._controller:
+        async with self._modbus_lock, self._controller:
             target_power_w = power_w if power_w > 0 else 5000
             if power_w > 0:
                 await self._controller.set_discharge_rate_limit(power_w / 1000)
@@ -4150,7 +4156,7 @@ class SungrowEnergyCoordinator(DataUpdateCoordinator):
         Returns:
             True if successful
         """
-        async with self._controller:
+        async with self._modbus_lock, self._controller:
             return await self._controller.restore_normal()
 
     async def set_max_soc(self, percent: int) -> bool:
@@ -4162,7 +4168,7 @@ class SungrowEnergyCoordinator(DataUpdateCoordinator):
         Returns:
             True if successful
         """
-        async with self._controller:
+        async with self._modbus_lock, self._controller:
             return await self._controller.set_max_soc(percent)
 
     async def set_backup_reserve(self, percent: int) -> bool:
@@ -4174,17 +4180,17 @@ class SungrowEnergyCoordinator(DataUpdateCoordinator):
         Returns:
             True if successful
         """
-        async with self._controller:
+        async with self._modbus_lock, self._controller:
             return await self._controller.set_backup_reserve(percent)
 
     async def set_backup_mode(self) -> bool:
         """Set Sungrow to Forced+Stop for IDLE (prevents self-consumption discharge)."""
-        async with self._controller:
+        async with self._modbus_lock, self._controller:
             return await self._controller.set_idle_mode()
 
     async def restore_work_mode_from_idle(self) -> bool:
         """Restore self-consumption mode after IDLE."""
-        async with self._controller:
+        async with self._modbus_lock, self._controller:
             return await self._controller.restore_from_idle()
 
     async def set_charge_rate_limit(self, kw: float) -> bool:
@@ -4196,7 +4202,7 @@ class SungrowEnergyCoordinator(DataUpdateCoordinator):
         Returns:
             True if successful
         """
-        async with self._controller:
+        async with self._modbus_lock, self._controller:
             return await self._controller.set_charge_rate_limit(kw)
 
     async def set_discharge_rate_limit(self, kw: float) -> bool:
@@ -4208,7 +4214,7 @@ class SungrowEnergyCoordinator(DataUpdateCoordinator):
         Returns:
             True if successful
         """
-        async with self._controller:
+        async with self._modbus_lock, self._controller:
             return await self._controller.set_discharge_rate_limit(kw)
 
     async def set_export_limit(self, watts: int | None) -> bool:
@@ -4220,7 +4226,7 @@ class SungrowEnergyCoordinator(DataUpdateCoordinator):
         Returns:
             True if successful
         """
-        async with self._controller:
+        async with self._modbus_lock, self._controller:
             return await self._controller.set_export_limit(watts)
 
     async def async_shutdown(self) -> None:

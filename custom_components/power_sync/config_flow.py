@@ -8009,6 +8009,7 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             inverter_slave_id = user_input.get(
                 CONF_INVERTER_SLAVE_ID, DEFAULT_INVERTER_SLAVE_ID
             )
+            inverter_model = user_input.get(CONF_INVERTER_MODEL)
 
             # Validate: if battery is Sungrow and AC inverter is also Sungrow,
             # check for IP/port/slave_id conflicts
@@ -8024,11 +8025,14 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     CONF_SUNGROW_SLAVE_ID, DEFAULT_SUNGROW_SLAVE_ID
                 )
 
-                # Same host, port, AND slave ID = conflict
+                # Same host, port, AND slave ID is only a conflict for a separate
+                # SG/string inverter. For SH hybrids the AC-curtailment form is
+                # configuring the same battery inverter's export-limit path.
                 if (
                     inverter_host == sungrow_host
                     and inverter_port == sungrow_port
                     and inverter_slave_id == sungrow_slave_id
+                    and not str(inverter_model or "").lower().startswith("sh")
                 ):
                     errors["base"] = "sungrow_modbus_conflict"
 
@@ -8041,7 +8045,7 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     # the separate inverter polling/curtailment path.
                     final_data[CONF_AC_INVERTER_CURTAILMENT_ENABLED] = True
                 final_data[CONF_INVERTER_BRAND] = inverter_brand
-                final_data[CONF_INVERTER_MODEL] = user_input.get(CONF_INVERTER_MODEL)
+                final_data[CONF_INVERTER_MODEL] = inverter_model
                 final_data[CONF_INVERTER_HOST] = inverter_host
                 final_data[CONF_INVERTER_PORT] = inverter_port
 

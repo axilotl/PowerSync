@@ -16131,6 +16131,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "foxess_curtailment_state": "normal",  # Track FoxESS DC curtailment state
         "sigenergy_curtailment_state": "normal",  # Track Sigenergy DC curtailment state
         "alphaess_curtailment_state": "normal",  # Track AlphaESS DC curtailment state
+        "sungrow_curtailment_state": "normal",  # Track Sungrow export-limit curtailment state
+        "sungrow_power_limit_w": None,  # Current Sungrow load-following export limit
         "amber_usage_coordinator": amber_usage_coordinator,  # For actual metered cost data
         "flow_power_twap_tracker": flow_power_twap_tracker,  # For dynamic PEA pricing
         "flow_power_portal_client": flow_power_portal_client,  # Authenticated portal client
@@ -19051,6 +19053,160 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         except Exception as e:
             _LOGGER.error("GoodWe curtailment error: %s", e, exc_info=True)
 
+    async def handle_sungrow_curtailment(feedin_price=None, import_price=None) -> None:
+        """Handle Sungrow SH curtailment via the export-limit register.
+
+        Uses load-following when live load data is available so the inverter can
+        keep powering the house and charging the battery while blocking exports.
+        """
+        entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+        current_state = entry_data.get("sungrow_curtailment_state", "normal")
+
+        def ac_inverter_is_same_hybrid() -> bool:
+            inverter_brand = entry.options.get(
+                CONF_INVERTER_BRAND,
+                entry.data.get(CONF_INVERTER_BRAND, ""),
+            )
+            inverter_model = entry.options.get(
+                CONF_INVERTER_MODEL,
+                entry.data.get(CONF_INVERTER_MODEL, ""),
+            )
+            if (
+                inverter_brand != "sungrow"
+                or not str(inverter_model or "").lower().startswith("sh")
+            ):
+                return False
+
+            inverter_host = entry.options.get(
+                CONF_INVERTER_HOST,
+                entry.data.get(CONF_INVERTER_HOST, ""),
+            )
+            inverter_port = entry.options.get(
+                CONF_INVERTER_PORT,
+                entry.data.get(CONF_INVERTER_PORT, DEFAULT_INVERTER_PORT),
+            )
+            inverter_slave_id = entry.options.get(
+                CONF_INVERTER_SLAVE_ID,
+                entry.data.get(CONF_INVERTER_SLAVE_ID, DEFAULT_INVERTER_SLAVE_ID),
+            )
+            return (
+                inverter_host == entry.data.get(CONF_SUNGROW_HOST, "")
+                and inverter_port
+                == entry.data.get(CONF_SUNGROW_PORT, DEFAULT_SUNGROW_PORT)
+                and inverter_slave_id
+                == entry.data.get(CONF_SUNGROW_SLAVE_ID, DEFAULT_SUNGROW_SLAVE_ID)
+            )
+
+        if feedin_price is None:
+            _price_coord = (
+                amber_coordinator or localvolts_coordinator
+                or aemo_sensor_coordinator or octopus_coordinator
+            )
+            if _price_coord and _price_coord.data:
+                current_prices = _price_coord.data.get("current", [])
+                for price_data in current_prices:
+                    if price_data.get("channelType") == "feedIn":
+                        feedin_price = price_data.get("perKwh", 0)
+                    elif price_data.get("channelType") == "general":
+                        import_price = price_data.get("perKwh", 0)
+
+        if feedin_price is None:
+            _LOGGER.warning("Sungrow curtailment: no feed-in price available")
+            return
+
+        export_earnings = -feedin_price
+        _LOGGER.info(
+            "Sungrow curtailment check: export_earnings=%.2fc/kWh, import=%.2fc/kWh, state=%s",
+            export_earnings, import_price or 0, current_state,
+        )
+
+        sungrow_coord = entry_data.get("sungrow_coordinator")
+        native_available = bool(
+            sungrow_coord and hasattr(sungrow_coord, "set_export_limit")
+        )
+        if not native_available:
+            _LOGGER.debug("Sungrow curtailment: no coordinator export-limit control available")
+
+        try:
+            if native_available and export_earnings < 1:
+                live_status = await get_live_status()
+                home_load_w = 0
+                if live_status and live_status.get("load_power"):
+                    home_load_w = int(live_status.get("load_power", 0))
+                    battery_power = live_status.get("battery_power", 0) or 0
+                    battery_charge_w = max(0, -int(battery_power))
+                    if battery_charge_w > 50:
+                        home_load_w += battery_charge_w
+                        _LOGGER.info(
+                            "Sungrow load-following limit: home=%dW + battery charging=%dW = %dW",
+                            int(live_status.get("load_power", 0)),
+                            battery_charge_w,
+                            home_load_w,
+                        )
+                    else:
+                        _LOGGER.info(
+                            "Sungrow load-following limit: home load=%dW",
+                            home_load_w,
+                        )
+                else:
+                    _LOGGER.info(
+                        "Sungrow load-following data unavailable, using zero-export limit"
+                    )
+
+                current_limit = entry_data.get("sungrow_power_limit_w")
+                if current_state == "curtailed" and current_limit == home_load_w:
+                    _LOGGER.debug(
+                        "Sungrow already curtailed at %dW, no action needed",
+                        home_load_w,
+                    )
+                else:
+                    _LOGGER.info(
+                        "Sungrow curtailment TRIGGERED: export_earnings=%.2fc (<1c) -> export limit %dW",
+                        export_earnings,
+                        home_load_w,
+                    )
+                    success = await sungrow_coord.set_export_limit(home_load_w)
+                    if success:
+                        hass.data[DOMAIN][entry.entry_id][
+                            "sungrow_curtailment_state"
+                        ] = "curtailed"
+                        hass.data[DOMAIN][entry.entry_id][
+                            "sungrow_power_limit_w"
+                        ] = home_load_w
+                    else:
+                        _LOGGER.error("Sungrow set_export_limit(%d) failed", home_load_w)
+            elif native_available:
+                if current_state != "normal":
+                    _LOGGER.info(
+                        "Sungrow curtailment RESTORED: export_earnings=%.2fc (>=1c) -> normal export",
+                        export_earnings,
+                    )
+                    success = await sungrow_coord.set_export_limit(None)
+                    if success:
+                        hass.data[DOMAIN][entry.entry_id][
+                            "sungrow_curtailment_state"
+                        ] = "normal"
+                        hass.data[DOMAIN][entry.entry_id]["sungrow_power_limit_w"] = (
+                            None
+                        )
+                    else:
+                        _LOGGER.error("Sungrow set_export_limit(None) failed")
+                else:
+                    _LOGGER.debug("Sungrow already in normal mode, no action needed")
+
+            ac_enabled = entry.options.get(
+                CONF_AC_INVERTER_CURTAILMENT_ENABLED,
+                entry.data.get(CONF_AC_INVERTER_CURTAILMENT_ENABLED, False),
+            )
+            if ac_enabled and not ac_inverter_is_same_hybrid():
+                await apply_inverter_curtailment(
+                    curtail=export_earnings < 1,
+                    import_price=import_price,
+                    export_earnings=export_earnings,
+                )
+        except Exception as e:
+            _LOGGER.error("Sungrow curtailment error: %s", e, exc_info=True)
+
     async def handle_solar_curtailment_check(call: ServiceCall = None) -> None:
         """
         Check export prices and curtail solar export when price is below 1c/kWh.
@@ -19101,6 +19257,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # GoodWe uses export limit register for curtailment, not Tesla API
         if is_goodwe:
             await handle_goodwe_curtailment()
+            return
+
+        # Sungrow uses export limit register for curtailment, not Tesla API
+        if is_sungrow:
+            await handle_sungrow_curtailment()
             return
 
         if token_getter is None:
@@ -19453,6 +19614,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             feedin_price = websocket_data.get('feedIn', {}).get('perKwh') if websocket_data else None
             import_price = websocket_data.get('general', {}).get('perKwh') if websocket_data else None
             await handle_goodwe_curtailment(feedin_price=feedin_price, import_price=import_price)
+            return
+
+        # Sungrow uses export limit register for curtailment, not Tesla API
+        if is_sungrow:
+            feedin_price = websocket_data.get('feedIn', {}).get('perKwh') if websocket_data else None
+            import_price = websocket_data.get('general', {}).get('perKwh') if websocket_data else None
+            await handle_sungrow_curtailment(feedin_price=feedin_price, import_price=import_price)
             return
 
         if token_getter is None:

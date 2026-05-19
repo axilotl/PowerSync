@@ -554,6 +554,19 @@ def test_direct_ac_inverter_menu_enables_runtime_polling():
     assert "True" in menu_block
 
 
+def test_sungrow_hybrid_model_can_share_battery_modbus_endpoint():
+    source = CONFIG_FLOW_PATH.read_text()
+    method = _options_flow_method("async_step_inverter_config")
+    method_source = ast.get_source_segment(source, method)
+
+    assert method_source is not None
+    conflict_index = method_source.index('errors["base"] = "sungrow_modbus_conflict"')
+    conflict_block = method_source[conflict_index - 350 : conflict_index + 80]
+
+    assert "inverter_model = user_input.get(CONF_INVERTER_MODEL)" in method_source
+    assert 'not str(inverter_model or "").lower().startswith("sh")' in conflict_block
+
+
 def test_sungrow_ac_inverter_models_include_three_phase_sg_rt():
     const_source = (ROOT / "custom_components" / "power_sync" / "const.py").read_text()
     inverter_source = (

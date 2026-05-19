@@ -1538,11 +1538,6 @@ def get_models_for_brand(brand: str, battery_system: str = None) -> dict[str, st
     if models is None:
         return {brand_key: INVERTER_BRANDS.get(brand_key, brand or "Inverter")}
 
-    # If battery system is Sungrow and AC inverter is also Sungrow,
-    # only show SG-series (string inverters), not SH-series (hybrid with battery)
-    if brand_key == "sungrow" and battery_system == BATTERY_SYSTEM_SUNGROW:
-        return SUNGROW_SG_MODELS
-
     return models
 
 
