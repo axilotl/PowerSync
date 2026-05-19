@@ -683,6 +683,84 @@ def test_generic_plug_detection_blocks_available_without_connector():
     assert asyncio.run(ev_planner.is_ev_plugged_in(hass, entry)) is False
 
 
+def test_sigenergy_plug_detection_wins_before_ocpp_false(monkeypatch):
+    hass = _FakeHass()
+    hass.states = _FakeStates()
+    entry = SimpleNamespace(
+        entry_id="entry-1",
+        data={},
+        options={
+            "sigenergy_charger_enabled": True,
+            "ocpp_enabled": True,
+        },
+    )
+
+    async def sigenergy_plugged(config_entry):
+        assert config_entry is entry
+        return True
+
+    monkeypatch.setattr(
+        ev_planner,
+        "_read_sigenergy_charger_plugged_state",
+        sigenergy_plugged,
+    )
+
+    assert asyncio.run(
+        ev_planner.is_ev_plugged_in(hass, entry, vehicle_vin="sigenergy_charger")
+    ) is True
+
+
+def test_sigenergy_plug_detection_can_report_unplugged(monkeypatch):
+    hass = _FakeHass()
+    hass.states = _FakeStates()
+    entry = SimpleNamespace(
+        entry_id="entry-1",
+        data={},
+        options={"sigenergy_charger_enabled": True},
+    )
+
+    async def sigenergy_unplugged(config_entry):
+        return False
+
+    monkeypatch.setattr(
+        ev_planner,
+        "_read_sigenergy_charger_plugged_state",
+        sigenergy_unplugged,
+    )
+
+    assert asyncio.run(
+        ev_planner.is_ev_plugged_in(hass, entry, vehicle_vin="sigenergy_charger")
+    ) is False
+
+
+def test_disconnected_sigenergy_does_not_block_any_vehicle_fallback(monkeypatch):
+    hass = _FakeHass()
+    hass.states = _FakeStates({
+        "sensor.garage_ev_status": "Available",
+        "sensor.evse_status_connector": "Preparing",
+    })
+    entry = SimpleNamespace(
+        entry_id="entry-1",
+        data={},
+        options={
+            "sigenergy_charger_enabled": True,
+            "generic_charger_enabled": True,
+            "generic_charger_status_entity": "sensor.garage_ev_status",
+        },
+    )
+
+    async def sigenergy_unplugged(config_entry):
+        return False
+
+    monkeypatch.setattr(
+        ev_planner,
+        "_read_sigenergy_charger_plugged_state",
+        sigenergy_unplugged,
+    )
+
+    assert asyncio.run(ev_planner.is_ev_plugged_in(hass, entry)) is True
+
+
 def test_tesla_ble_plug_detection_ignores_off_charger_switch():
     hass = _FakeHass()
     hass.states = _FakeStates({

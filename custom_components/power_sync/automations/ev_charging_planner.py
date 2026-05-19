@@ -100,6 +100,63 @@ def _valid_state(state: Any) -> bool:
     return bool(state and state.state not in ("unavailable", "unknown", "None", None))
 
 
+async def _read_sigenergy_charger_plugged_state(config_entry: "ConfigEntry") -> bool | None:
+    """Read the configured Sigenergy EV charger connection state."""
+    from ..const import (
+        CONF_SIGENERGY_CHARGER_ENABLED,
+        CONF_SIGENERGY_CHARGER_HOST,
+        CONF_SIGENERGY_CHARGER_PORT,
+        CONF_SIGENERGY_CHARGER_SLAVE_ID,
+        CONF_SIGENERGY_CHARGER_TYPE,
+        CONF_SIGENERGY_MODBUS_HOST,
+        DEFAULT_SIGENERGY_CHARGER_PORT,
+        DEFAULT_SIGENERGY_CHARGER_SLAVE_ID,
+        SIGENERGY_CHARGER_EVAC,
+    )
+    from ..sigenergy_charger import SigenergyEVChargerController
+
+    opts = {**config_entry.data, **config_entry.options} if config_entry else {}
+    if not opts.get(CONF_SIGENERGY_CHARGER_ENABLED):
+        return None
+
+    host = (
+        opts.get(CONF_SIGENERGY_CHARGER_HOST)
+        or opts.get(CONF_SIGENERGY_MODBUS_HOST)
+        or ""
+    )
+    host = str(host).strip()
+    if not host:
+        _LOGGER.debug("Sigenergy charger plug check skipped: no Modbus host configured")
+        return None
+
+    controller = SigenergyEVChargerController(
+        host=host,
+        port=opts.get(CONF_SIGENERGY_CHARGER_PORT, DEFAULT_SIGENERGY_CHARGER_PORT),
+        slave_id=opts.get(
+            CONF_SIGENERGY_CHARGER_SLAVE_ID,
+            DEFAULT_SIGENERGY_CHARGER_SLAVE_ID,
+        ),
+        charger_type=opts.get(CONF_SIGENERGY_CHARGER_TYPE, SIGENERGY_CHARGER_EVAC),
+    )
+    try:
+        state = await controller.read_state()
+        if state is None:
+            _LOGGER.debug("Sigenergy charger plug check: no state returned")
+            return None
+        _LOGGER.debug(
+            "Sigenergy charger plugged_in check: state=%s connected=%s charging=%s",
+            state.status,
+            state.is_connected,
+            state.is_charging,
+        )
+        return bool(state.is_connected or state.is_charging)
+    except Exception as err:
+        _LOGGER.debug("Sigenergy charger plug check failed: %s", err)
+        return None
+    finally:
+        await controller.disconnect()
+
+
 def _cached_ble_plug_state(hass: "HomeAssistant", prefix: str) -> bool | None:
     """Return a recent cached BLE charge-flap reading when one exists."""
     domain_data = hass.data.get(DOMAIN) if isinstance(getattr(hass, "data", None), dict) else None
@@ -576,8 +633,19 @@ async def is_ev_plugged_in(
         CONF_OCPP_ENABLED,
         CONF_GENERIC_CHARGER_ENABLED,
         CONF_GENERIC_CHARGER_STATUS_ENTITY,
+        CONF_SIGENERGY_CHARGER_ENABLED,
     )
     from homeassistant.helpers import entity_registry as er, device_registry as dr
+
+    # Sigenergy EVAC/EVDC exposes its own Modbus connection state. Check it
+    # before OCPP/generic paths, because those can return False early when both
+    # charger integrations are configured during migration/testing.
+    if config_entry and vehicle_vin in (None, "sigenergy_charger"):
+        opts = {**config_entry.data, **config_entry.options}
+        if opts.get(CONF_SIGENERGY_CHARGER_ENABLED):
+            plugged = await _read_sigenergy_charger_plugged_state(config_entry)
+            if plugged is True or (vehicle_vin == "sigenergy_charger" and plugged is not None):
+                return plugged
 
     # Zaptec standalone — check cached state first
     if config_entry:
