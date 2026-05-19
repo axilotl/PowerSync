@@ -114,6 +114,7 @@ def _install_power_sync_stubs() -> None:
     const_module.CONF_OPTIMIZATION_BATTERY_CAPACITY_WH = "battery_capacity_wh"
     const_module.CONF_OPTIMIZATION_ALLOW_GRID_CHARGE = "allow_grid_charge"
     const_module.CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED = "optimization_spread_export_enabled"
+    const_module.CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED = "optimization_spread_import_enabled"
     const_module.CONF_OPTIMIZATION_MAX_CHARGE_W = "max_charge_w"
     const_module.CONF_OPTIMIZATION_MAX_DISCHARGE_W = "max_discharge_w"
     const_module.CONF_SIGENERGY_EXPORT_LIMIT_KW = "sigenergy_export_limit_kw"
@@ -134,6 +135,10 @@ def _install_power_sync_stubs() -> None:
     const_module.DEFAULT_EXPORT_BOOST_THRESHOLD = 0.0
     const_module.DISCHARGE_DURATIONS = [5, 10, 15, 30, 45, 60, 75, 90, 105, 120, 150, 180, 210, 240]
     const_module.TARGET_EXPORT_POWER_BATTERY_SYSTEMS = {
+        "goodwe", "sigenergy", "sungrow", "foxess",
+        "alphaess", "solax", "fronius_reserva", "neovolt",
+    }
+    const_module.TARGET_CHARGE_POWER_BATTERY_SYSTEMS = {
         "goodwe", "sigenergy", "sungrow", "foxess",
         "alphaess", "solax", "fronius_reserva", "neovolt",
     }
@@ -1309,6 +1314,207 @@ def test_spread_export_schedule_flattens_planned_energy_across_allowed_window(op
     original_wh = sum(action.battery_discharge_w for action in actions) * (5 / 60)
     spread_wh = sum(action.battery_discharge_w for action in spread.actions) * (5 / 60)
     assert spread_wh == pytest.approx(original_wh, abs=0.1)
+
+
+def test_spread_import_schedule_flattens_planned_energy_across_same_price_window(opt_module):
+    coordinator = _coordinator(opt_module, "octopus")
+    coordinator.battery_system = "goodwe"
+    coordinator._config.spread_import_enabled = True
+    coordinator._config.max_charge_w = 15000
+    coordinator._config.battery_capacity_wh = 50000
+    start = datetime(2026, 5, 3, 11, 0, tzinfo=timezone.utc)
+    actions = [
+        opt_module.ScheduleAction(
+            timestamp=start + idx * timedelta(minutes=5),
+            action="charge" if idx < 18 else "self_consumption",
+            power_w=15000 if idx < 18 else 0,
+            battery_charge_w=15000 if idx < 18 else 0,
+        )
+        for idx in range(36)
+    ]
+    schedule = opt_module.OptimizationSchedule(
+        actions=actions,
+        predicted_cost=0,
+        predicted_savings=0,
+        last_updated=start,
+    )
+
+    spread = coordinator._spread_import_schedule(
+        schedule,
+        [0.12] * 36,
+        [False] * 36,
+        initial_soc=0.35,
+    )
+
+    assert {action.action for action in spread.actions} == {"charge"}
+    assert [action.power_w for action in spread.actions] == [7500.0] * 36
+    original_wh = sum(action.battery_charge_w for action in actions) * (5 / 60)
+    spread_wh = sum(action.battery_charge_w for action in spread.actions) * (5 / 60)
+    assert spread_wh == pytest.approx(original_wh, abs=0.1)
+
+
+def test_spread_import_free_window_caps_to_available_battery_room(opt_module):
+    coordinator = _coordinator(opt_module, "octopus")
+    coordinator.battery_system = "goodwe"
+    coordinator._config.spread_import_enabled = True
+    coordinator._config.max_charge_w = 15000
+    coordinator._config.battery_capacity_wh = 50000
+    start = datetime(2026, 5, 3, 11, 0, tzinfo=timezone.utc)
+    actions = [
+        opt_module.ScheduleAction(
+            timestamp=start + idx * timedelta(minutes=5),
+            action="charge",
+            power_w=15000,
+            battery_charge_w=15000,
+        )
+        for idx in range(36)
+    ]
+    schedule = opt_module.OptimizationSchedule(
+        actions=actions,
+        predicted_cost=0,
+        predicted_savings=0,
+        last_updated=start,
+    )
+
+    spread = coordinator._spread_import_schedule(
+        schedule,
+        [0.0] * 36,
+        [False] * 36,
+        initial_soc=0.80,
+    )
+
+    expected_power_w = round(((1.0 - 0.80) * 50000 / 0.92) / 3, 1)
+    assert [action.power_w for action in spread.actions] == [expected_power_w] * 36
+    spread_wh = sum(action.battery_charge_w for action in spread.actions) * (5 / 60)
+    assert spread_wh == pytest.approx((1.0 - 0.80) * 50000 / 0.92, abs=0.1)
+
+
+def test_spread_import_schedule_does_not_cross_price_boundary(opt_module):
+    coordinator = _coordinator(opt_module, "octopus")
+    coordinator.battery_system = "goodwe"
+    coordinator._config.spread_import_enabled = True
+    coordinator._config.max_charge_w = 6000
+    start = datetime(2026, 5, 3, 11, 0, tzinfo=timezone.utc)
+    actions = [
+        opt_module.ScheduleAction(
+            timestamp=start + idx * timedelta(minutes=5),
+            action="charge" if idx < 2 else "self_consumption",
+            power_w=6000 if idx < 2 else 0,
+            battery_charge_w=6000 if idx < 2 else 0,
+        )
+        for idx in range(12)
+    ]
+    schedule = opt_module.OptimizationSchedule(
+        actions=actions,
+        predicted_cost=0,
+        predicted_savings=0,
+        last_updated=start,
+    )
+
+    spread = coordinator._spread_import_schedule(
+        schedule,
+        [0.10] * 6 + [0.20] * 6,
+        [False] * 12,
+        initial_soc=0.20,
+    )
+
+    assert [action.power_w for action in spread.actions[:6]] == [2000.0] * 6
+    assert [action.action for action in spread.actions[6:]] == ["self_consumption"] * 6
+
+
+def test_spread_import_schedule_splits_on_blocked_charge_slot(opt_module):
+    coordinator = _coordinator(opt_module, "octopus")
+    coordinator.battery_system = "goodwe"
+    coordinator._config.spread_import_enabled = True
+    coordinator._config.max_charge_w = 6000
+    start = datetime(2026, 5, 3, 11, 0, tzinfo=timezone.utc)
+    actions = [
+        opt_module.ScheduleAction(
+            timestamp=start + idx * timedelta(minutes=5),
+            action="charge" if idx in (0, 1, 4) else "self_consumption",
+            power_w=6000 if idx in (0, 1, 4) else 0,
+            battery_charge_w=6000 if idx in (0, 1, 4) else 0,
+        )
+        for idx in range(6)
+    ]
+    schedule = opt_module.OptimizationSchedule(
+        actions=actions,
+        predicted_cost=0,
+        predicted_savings=0,
+        last_updated=start,
+    )
+
+    spread = coordinator._spread_import_schedule(
+        schedule,
+        [0.10] * 6,
+        [False, False, False, True, False, False],
+        initial_soc=0.20,
+    )
+
+    assert [action.power_w for action in spread.actions[:3]] == [4000.0] * 3
+    assert spread.actions[3].action == "self_consumption"
+    assert [action.power_w for action in spread.actions[4:]] == [3000.0] * 2
+
+
+def test_spread_import_schedule_preserves_export_actions(opt_module):
+    coordinator = _coordinator(opt_module, "octopus")
+    coordinator.battery_system = "goodwe"
+    coordinator._config.spread_import_enabled = True
+    coordinator._config.max_charge_w = 6000
+    start = datetime(2026, 5, 3, 11, 0, tzinfo=timezone.utc)
+    actions = [
+        opt_module.ScheduleAction(
+            timestamp=start + idx * timedelta(minutes=5),
+            action=(
+                "charge"
+                if idx in (0, 1, 4)
+                else "export"
+                if idx == 3
+                else "self_consumption"
+            ),
+            power_w=(
+                6000
+                if idx in (0, 1, 4)
+                else 5000
+                if idx == 3
+                else 0
+            ),
+            battery_charge_w=6000 if idx in (0, 1, 4) else 0,
+            battery_discharge_w=5000 if idx == 3 else 0,
+        )
+        for idx in range(6)
+    ]
+    schedule = opt_module.OptimizationSchedule(
+        actions=actions,
+        predicted_cost=0,
+        predicted_savings=0,
+        last_updated=start,
+    )
+
+    spread = coordinator._spread_import_schedule(
+        schedule,
+        [0.10] * 6,
+        [False] * 6,
+        initial_soc=0.20,
+    )
+
+    assert [action.power_w for action in spread.actions[:3]] == [4000.0] * 3
+    assert spread.actions[3].action == "export"
+    assert spread.actions[3].power_w == 5000
+    assert [action.power_w for action in spread.actions[4:]] == [3000.0] * 2
+
+
+def test_spread_import_schedule_requires_enabled_supported_battery(opt_module):
+    coordinator = _coordinator(opt_module, "octopus")
+    coordinator.battery_system = "goodwe"
+    coordinator._config.spread_import_enabled = False
+
+    assert coordinator._should_spread_import_schedule() is False
+
+    coordinator._config.spread_import_enabled = True
+    coordinator.battery_system = "tesla"
+
+    assert coordinator._should_spread_import_schedule() is False
 
 
 def test_profit_max_spread_uses_flow_power_export_window(opt_module):

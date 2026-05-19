@@ -282,6 +282,8 @@ def test_optimization_options_exposes_enabled_toggle():
     assert "new_options[CONF_OPTIMIZATION_ENABLED] = optimization_enabled" in method_source
     assert "CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED" in method_source
     assert "new_options[CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED] = spread_export_enabled" in method_source
+    assert "CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED" in method_source
+    assert "new_options[CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED] = spread_import_enabled" in method_source
     assert "optimization_provider != OPT_PROVIDER_POWERSYNC" in method_source
 
 
@@ -313,6 +315,8 @@ def test_initial_smart_optimization_configuration_exposes_enabled_toggle():
     assert "user_input.get(CONF_OPTIMIZATION_ENABLED, True)" in method_source
     assert "CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED" in method_source
     assert "user_input.get(CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED" in method_source
+    assert "CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED" in method_source
+    assert "user_input.get(CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED" in method_source
 
 
 def test_initial_setup_routes_to_combined_optimization_options_page():
@@ -539,6 +543,43 @@ def test_sungrow_curtailment_options_expose_ac_inverter_path():
     assert "return await self.async_step_inverter_brand()" in sungrow_branch
 
 
+def test_tesla_curtailment_options_expose_powerwall_offgrid_fallback():
+    source = CONFIG_FLOW_PATH.read_text()
+    method = _options_flow_method("async_step_curtailment_options")
+    method_source = ast.get_source_segment(source, method)
+
+    assert method_source is not None
+    tesla_branch = method_source[
+        method_source.index("else:\n                # Tesla") : method_source.index(
+            "# No AC inverter - route to weather options"
+        )
+    ]
+    tesla_schema_branch = method_source[
+        method_source.index("else:\n            # Tesla") : method_source.index(
+            "return self.async_show_form"
+        )
+    ]
+
+    assert "CONF_POWERWALL_OFFGRID_AS_CURTAILMENT" in tesla_branch
+    assert "CONF_POWERWALL_OFFGRID_AS_CURTAILMENT" in tesla_schema_branch
+    assert "is_tesla = battery_system == BATTERY_SYSTEM_TESLA" in method_source
+
+
+def test_powerwall_offgrid_fallback_toggle_is_translated():
+    for path in (STRINGS_PATH, TRANSLATIONS_PATH):
+        data = json.loads(path.read_text())
+        step = data["options"]["step"]["curtailment_options"]
+
+        assert (
+            step["data"]["powerwall_offgrid_as_curtailment"]
+            == "Enable Powerwall off-grid fallback"
+        )
+        assert (
+            "temporarily island the Powerwall"
+            in step["data_description"]["powerwall_offgrid_as_curtailment"]
+        )
+
+
 def test_direct_ac_inverter_menu_enables_runtime_polling():
     source = CONFIG_FLOW_PATH.read_text()
     method = _options_flow_method("async_step_inverter_config")
@@ -626,6 +667,8 @@ def test_optimization_enabled_toggle_is_translated_in_config_and_options():
             assert "LP optimizer" in step["data_description"]["optimization_enabled"]
             assert step["data"]["optimization_spread_export_enabled"] == "Spread export across window"
             assert "spreads planned battery export" in step["data_description"]["optimization_spread_export_enabled"]
+            assert step["data"]["optimization_spread_import_enabled"] == "Spread import across window"
+            assert "spreads planned grid charging" in step["data_description"]["optimization_spread_import_enabled"]
 
 
 def test_globird_tariff_guidance_is_translated():

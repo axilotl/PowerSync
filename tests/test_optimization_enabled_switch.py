@@ -38,13 +38,20 @@ def test_spread_export_switch_is_registered_and_capability_gated():
     switch_source = SWITCH_PATH.read_text()
 
     assert 'CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED = "optimization_spread_export_enabled"' in const_source
+    assert 'CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED = "optimization_spread_import_enabled"' in const_source
     assert 'SWITCH_TYPE_OPTIMIZATION_SPREAD_EXPORT = "optimization_spread_export"' in const_source
+    assert 'SWITCH_TYPE_OPTIMIZATION_SPREAD_IMPORT = "optimization_spread_import"' in const_source
     assert "TARGET_EXPORT_POWER_BATTERY_SYSTEMS = {" in const_source
+    assert "TARGET_CHARGE_POWER_BATTERY_SYSTEMS = {" in const_source
     assert "if battery_system in TARGET_EXPORT_POWER_BATTERY_SYSTEMS:" in switch_source
+    assert "if battery_system in TARGET_CHARGE_POWER_BATTERY_SYSTEMS:" in switch_source
     assert "class SpreadExportSwitch(SwitchEntity):" in switch_source
+    assert "class SpreadImportSwitch(SwitchEntity):" in switch_source
     assert "_attr_entity_category = EntityCategory.CONFIG" in switch_source
     assert "set_spread_export_enabled(True)" in switch_source
     assert "set_spread_export_enabled(False)" in switch_source
+    assert "set_spread_import_enabled(True)" in switch_source
+    assert "set_spread_import_enabled(False)" in switch_source
 
 
 def test_spread_export_setting_is_exposed_through_api_and_coordinator():
@@ -52,6 +59,10 @@ def test_spread_export_setting_is_exposed_through_api_and_coordinator():
     coordinator_source = COORDINATOR_PATH.read_text()
 
     assert '"spread_export_enabled": opt_coordinator._config.spread_export_enabled' in init_source
+    assert '"spread_import_enabled": opt_coordinator._config.spread_import_enabled' in init_source
     assert 'new_options[CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED] = bool(settings["spread_export_enabled"])' in init_source
+    assert 'new_options[CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED] = bool(settings["spread_import_enabled"])' in init_source
     assert '"spread_export_enabled": self._config.spread_export_enabled' in coordinator_source
+    assert '"spread_import_enabled": self._config.spread_import_enabled' in coordinator_source
     assert "def set_spread_export_enabled(self, enabled: bool) -> None:" in coordinator_source
+    assert "def set_spread_import_enabled(self, enabled: bool) -> None:" in coordinator_source

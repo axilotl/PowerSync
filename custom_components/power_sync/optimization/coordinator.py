@@ -86,6 +86,7 @@ class OptimizationConfig:
     profit_max_enabled: bool = False
     profit_max_target_soc: float = 1.0
     spread_export_enabled: bool = False
+    spread_import_enabled: bool = False
 
 
 # Update interval for the coordinator
@@ -360,11 +361,24 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Return whether export spreading is active."""
         return self._config.spread_export_enabled
 
+    @property
+    def spread_import_enabled(self) -> bool:
+        """Return whether import spreading is active."""
+        return self._config.spread_import_enabled
+
     def _supports_target_export_power(self) -> bool:
         """Return True when the selected battery can honor a target export power."""
         try:
             from ..const import TARGET_EXPORT_POWER_BATTERY_SYSTEMS
             return self.battery_system in TARGET_EXPORT_POWER_BATTERY_SYSTEMS
+        except Exception:
+            return False
+
+    def _supports_target_charge_power(self) -> bool:
+        """Return True when the selected battery can honor a target charge power."""
+        try:
+            from ..const import TARGET_CHARGE_POWER_BATTERY_SYSTEMS
+            return self.battery_system in TARGET_CHARGE_POWER_BATTERY_SYSTEMS
         except Exception:
             return False
 
@@ -391,6 +405,32 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             from ..const import CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED, DOMAIN
             new_options = dict(self._entry.options)
             new_options[CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED] = bool(enabled)
+            self.hass.data.setdefault(DOMAIN, {}).setdefault(self.entry_id, {})["_skip_reload"] = True
+            self.hass.config_entries.async_update_entry(self._entry, options=new_options)
+
+    def set_spread_import_enabled(self, enabled: bool) -> None:
+        """Enable or disable spread-import mode."""
+        self._config.spread_import_enabled = bool(enabled)
+        if self._load_estimator:
+            self._load_estimator.invalidate_cache()
+        _LOGGER.info(
+            "Spread Import Across Window %s",
+            "ENABLED" if enabled else "DISABLED",
+        )
+        if self.hass and self.entry_id:
+            from homeassistant.helpers.dispatcher import async_dispatcher_send
+
+            from ..const import DOMAIN
+
+            async_dispatcher_send(
+                self.hass,
+                f"{DOMAIN}_{self.entry_id}_spread_import",
+                bool(enabled),
+            )
+        if self._entry:
+            from ..const import CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED, DOMAIN
+            new_options = dict(self._entry.options)
+            new_options[CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED] = bool(enabled)
             self.hass.data.setdefault(DOMAIN, {}).setdefault(self.entry_id, {})["_skip_reload"] = True
             self.hass.config_entries.async_update_entry(self._entry, options=new_options)
 
@@ -742,6 +782,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             from ..const import (
                 CONF_OPTIMIZATION_ALLOW_GRID_CHARGE,
                 CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED,
+                CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED,
                 CONF_PROFIT_MAX_ENABLED,
                 CONF_PROFIT_MAX_TARGET_SOC,
                 DEFAULT_PROFIT_MAX_TARGET_SOC,
@@ -761,6 +802,14 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
             if self._config.spread_export_enabled:
                 _LOGGER.info("Spread Export Across Window: ENABLED")
+            self._config.spread_import_enabled = bool(
+                self._entry.options.get(
+                    CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED,
+                    self._entry.data.get(CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED, False),
+                )
+            )
+            if self._config.spread_import_enabled:
+                _LOGGER.info("Spread Import Across Window: ENABLED")
 
             profit_max = self._entry.options.get(
                 CONF_PROFIT_MAX_ENABLED,
@@ -1531,6 +1580,14 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
             self._last_optimizer_result = result
             self._current_schedule = result.schedule
+            if self._should_spread_import_schedule():
+                self._current_schedule = self._spread_import_schedule(
+                    self._current_schedule,
+                    import_prices,
+                    battery_charge_blocked,
+                    soc,
+                )
+                result.schedule = self._current_schedule
             if self._should_spread_export_schedule():
                 self._current_schedule = self._spread_export_schedule(
                     self._current_schedule,
@@ -2624,6 +2681,119 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return (
             self._config.spread_export_enabled
             and self._supports_target_export_power()
+        )
+
+    def _should_spread_import_schedule(self) -> bool:
+        """Return True when optimizer charge actions should be flattened."""
+        return (
+            self._config.spread_import_enabled
+            and self._supports_target_charge_power()
+        )
+
+    def _spread_import_schedule(
+        self,
+        schedule: OptimizationSchedule,
+        import_prices: list[float] | None,
+        blocked_slots: list[bool] | None,
+        initial_soc: float,
+    ) -> OptimizationSchedule:
+        """Spread planned grid-charge energy across same-price import windows."""
+        actions = list(schedule.actions or [])
+        if not actions or not import_prices:
+            return schedule
+
+        n = len(actions)
+        prices = [float(price) for price in import_prices[:n]]
+        if len(prices) < n:
+            return schedule
+
+        blocked = [bool(value) for value in (blocked_slots or [])[:n]]
+        if len(blocked) < n:
+            blocked.extend([False] * (n - len(blocked)))
+
+        interval_hours = max(1, int(self._config.interval_minutes or 5)) / 60.0
+        capacity_wh = max(0.0, float(self._config.battery_capacity_wh or 0))
+        efficiency = float(getattr(self._optimizer, "efficiency", 0.92) or 0.92)
+        max_charge_w = max(0.0, float(self._config.max_charge_w or 0))
+        new_actions: list[ScheduleAction] = list(actions)
+        soc_cursor = max(0.0, min(1.0, float(initial_soc or 0.0)))
+
+        def _advance_soc(soc: float, action: Any) -> float:
+            if capacity_wh <= 0:
+                return soc
+            try:
+                charge_w = max(0.0, float(getattr(action, "battery_charge_w", 0.0) or 0.0))
+                discharge_w = max(0.0, float(getattr(action, "battery_discharge_w", 0.0) or 0.0))
+            except (TypeError, ValueError):
+                return soc
+            stored_wh = charge_w * interval_hours * efficiency
+            removed_wh = discharge_w * interval_hours / max(efficiency, 0.001)
+            return max(0.0, min(1.0, soc + (stored_wh - removed_wh) / capacity_wh))
+
+        idx = 0
+        while idx < n:
+            if blocked[idx] or getattr(actions[idx], "action", None) in ("discharge", "export"):
+                soc_cursor = _advance_soc(soc_cursor, new_actions[idx])
+                idx += 1
+                continue
+
+            start = idx
+            price = prices[idx]
+            while (
+                idx < n
+                and not blocked[idx]
+                and getattr(actions[idx], "action", None) not in ("discharge", "export")
+                and abs(prices[idx] - price) <= 1e-6
+            ):
+                idx += 1
+            end = idx
+            window_actions = actions[start:end]
+            charge_wh = sum(
+                max(0.0, float(getattr(action, "battery_charge_w", 0.0) or 0.0))
+                * interval_hours
+                for action in window_actions
+                if getattr(action, "action", None) == "charge"
+            )
+            if charge_wh <= 0 or max_charge_w <= 0:
+                for pos in range(start, end):
+                    soc_cursor = _advance_soc(soc_cursor, new_actions[pos])
+                continue
+
+            if price <= 0.001 and capacity_wh > 0:
+                available_wh = max(0.0, (1.0 - soc_cursor) * capacity_wh / max(efficiency, 0.001))
+                charge_wh = min(charge_wh, available_wh)
+                if charge_wh <= 0:
+                    for pos in range(start, end):
+                        soc_cursor = _advance_soc(soc_cursor, new_actions[pos])
+                    continue
+
+            target_w = min(
+                max_charge_w,
+                charge_wh / (len(window_actions) * interval_hours),
+            )
+            target_w = round(max(0.0, target_w), 1)
+            if target_w <= 0:
+                for pos in range(start, end):
+                    soc_cursor = _advance_soc(soc_cursor, new_actions[pos])
+                continue
+
+            for pos in range(start, end):
+                original = actions[pos]
+                new_actions[pos] = ScheduleAction(
+                    timestamp=original.timestamp,
+                    action="charge",
+                    power_w=target_w,
+                    soc=original.soc,
+                    battery_charge_w=target_w,
+                    battery_discharge_w=0.0,
+                )
+                soc_cursor = _advance_soc(soc_cursor, new_actions[pos])
+
+        return OptimizationSchedule(
+            actions=new_actions,
+            predicted_cost=schedule.predicted_cost,
+            predicted_savings=schedule.predicted_savings,
+            last_updated=schedule.last_updated,
         )
 
     def _spread_export_schedule(
@@ -5263,6 +5433,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "status_message": status_message,
             "cost_function": self._cost_function.value,
             "spread_export_enabled": self._config.spread_export_enabled,
+            "spread_import_enabled": self._config.spread_import_enabled,
             "status": "active" if self._enabled and optimizer_available else "disabled",
             "optimization_status": "active" if optimizer_available else "not_available",
             "current_action": current_action,
@@ -5283,6 +5454,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "max_grid_export_w": self._config.max_grid_export_w,
                 "allow_grid_charge": self._config.allow_grid_charge,
                 "spread_export_enabled": self._config.spread_export_enabled,
+                "spread_import_enabled": self._config.spread_import_enabled,
                 "battery_specs_source": self._battery_specs_source,
                 "backup_reserve": self._config.backup_reserve,
                 "hardware_backup_reserve": (self._startup_backup_reserve if self._startup_backup_reserve is not None else 0) / 100,
@@ -5292,6 +5464,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "features": {
                 "ev_integration": self._ev_integration_enabled or len(self._ev_configs) > 0,
                 "spread_export": self._should_spread_export_schedule(),
+                "spread_import": self._should_spread_import_schedule(),
                 "vpp_enabled": False,
                 "built_in_optimizer": True,
             },
@@ -5604,6 +5777,10 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if "spread_export_enabled" in settings:
             self.set_spread_export_enabled(bool(settings["spread_export_enabled"]))
             response["changes"].append(f"spread_export_enabled: {settings['spread_export_enabled']}")
+
+        if "spread_import_enabled" in settings:
+            self.set_spread_import_enabled(bool(settings["spread_import_enabled"]))
+            response["changes"].append(f"spread_import_enabled: {settings['spread_import_enabled']}")
 
         if "profit_max_target_time" in settings and self._entry:
             from ..const import CONF_PROFIT_MAX_TARGET_TIME

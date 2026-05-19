@@ -334,6 +334,7 @@
           "optimization_max_discharge_w": "Maximum discharge power",
           "optimization_allow_grid_charge": "Allow grid charging",
           "optimization_spread_export_enabled": "Spread export across window",
+          "optimization_spread_import_enabled": "Spread import across window",
           "profit_max_target_time": "Profit Max target time",
           "profit_max_target_soc": "Profit Max target SOC"
         },
@@ -346,6 +347,7 @@
           "optimization_max_discharge_w": "Maximum discharge/export power in kW that the LP optimizer may request.",
           "optimization_allow_grid_charge": "When disabled, Smart Optimization can still charge from solar surplus but will not plan forced battery charging from grid import.",
           "optimization_spread_export_enabled": "When enabled on supported batteries, Smart Optimization spreads planned battery export across the full eligible export window instead of using maximum discharge power.",
+          "optimization_spread_import_enabled": "When enabled on supported batteries, Smart Optimization spreads planned grid charging across each same-price import window instead of using maximum charge power.",
           "profit_max_target_time": "HH:MM time for Profit Max to reach the configured target SOC before the export window. Default 17:15.",
           "profit_max_target_soc": "Battery SOC Profit Max should target before the export window. Default 100%."
         },
@@ -1081,6 +1083,7 @@
           "optimization_max_discharge_w": "Maximum discharge power",
           "optimization_allow_grid_charge": "Allow grid charging",
           "optimization_spread_export_enabled": "Spread export across window",
+          "optimization_spread_import_enabled": "Spread import across window",
           "profit_max_target_time": "Profit Max target time",
           "profit_max_target_soc": "Profit Max target SOC"
         },
@@ -1093,6 +1096,7 @@
           "optimization_max_discharge_w": "Maximum discharge/export power in kW that the LP optimizer may request.",
           "optimization_allow_grid_charge": "When disabled, Smart Optimization can still charge from solar surplus but will not plan forced battery charging from grid import.",
           "optimization_spread_export_enabled": "When enabled on supported batteries, Smart Optimization spreads planned battery export across the full eligible export window instead of using maximum discharge power.",
+          "optimization_spread_import_enabled": "When enabled on supported batteries, Smart Optimization spreads planned grid charging across each same-price import window instead of using maximum charge power.",
           "profit_max_target_time": "HH:MM time for Profit Max to reach the configured target SOC before the export window. Default 17:15.",
           "profit_max_target_soc": "Battery SOC Profit Max should target before the export window. Default 100%."
         },
@@ -1537,12 +1541,14 @@
         "data": {
           "battery_curtailment_enabled": "Enable battery export curtailment",
           "ac_inverter_curtailment_enabled": "Enable AC-coupled inverter shutdown",
+          "powerwall_offgrid_as_curtailment": "Enable Powerwall off-grid fallback",
           "sigenergy_dc_curtailment_enabled": "Enable DC solar curtailment",
           "openweathermap_api_key": "OpenWeatherMap API key"
         },
         "data_description": {
           "battery_curtailment_enabled": "Stop battery from exporting to grid when feed-in price is negative. This is the main toggle -- must be enabled for any curtailment to work.",
           "ac_inverter_curtailment_enabled": "Shut down AC-coupled solar inverter (Fronius, Sungrow, GoodWe, Enphase) when feed-in price is negative. Use if solar bypasses your battery and exports directly.",
+          "powerwall_offgrid_as_curtailment": "Allow PowerSync to temporarily island the Powerwall when export curtailment is needed but no AC inverter curtailment path is configured or available.",
           "sigenergy_dc_curtailment_enabled": "Reduce DC solar output when export prices go negative. Requires Modbus write access to the Sigenergy system.",
           "openweathermap_api_key": "Free API key from openweathermap.org for weather-based automations (sunny, cloudy, rain, snow, and storm triggers). Leave blank to disable."
         },

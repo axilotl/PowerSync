@@ -500,6 +500,7 @@ from .const import (
     CONF_OPTIMIZATION_MAX_CHARGE_W,
     CONF_OPTIMIZATION_MAX_DISCHARGE_W,
     CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED,
+    CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED,
     CONF_PROFIT_MAX_ENABLED,
     CONF_PROFIT_MAX_TARGET_TIME,
     CONF_PROFIT_MAX_TARGET_SOC,
@@ -27320,6 +27321,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             add_spread_export = hass.data[DOMAIN][entry.entry_id].pop("switch_add_spread_export", None)
             if add_spread_export:
                 add_spread_export(optimization_coordinator)
+            add_spread_import = hass.data[DOMAIN][entry.entry_id].pop("switch_add_spread_import", None)
+            if add_spread_import:
+                add_spread_import(optimization_coordinator)
 
             # Add LP forecast + optimizer action sensors (deferred from sensor platform setup).
             # Sensor platform is set up before the optimizer, so sensor.py stores
@@ -27739,6 +27743,13 @@ class OptimizationSettingsView(HomeAssistantView):
                         config_entry.data.get(CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED, False),
                     )
                 ),
+                "spread_import_enabled": bool(
+                    config_entry
+                    and config_entry.options.get(
+                        CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED,
+                        config_entry.data.get(CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED, False),
+                    )
+                ),
                 "config": {
                     "battery_capacity_wh": _entry_int_setting(
                         CONF_OPTIMIZATION_BATTERY_CAPACITY_WH,
@@ -27764,6 +27775,14 @@ class OptimizationSettingsView(HomeAssistantView):
                         config_entry.options.get(
                             CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED,
                             config_entry.data.get(CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED, False),
+                        )
+                        if config_entry
+                        else False
+                    ),
+                    "spread_import_enabled": bool(
+                        config_entry.options.get(
+                            CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED,
+                            config_entry.data.get(CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED, False),
                         )
                         if config_entry
                         else False
@@ -27807,12 +27826,14 @@ class OptimizationSettingsView(HomeAssistantView):
             "ev_integration": opt_coordinator._ev_integration_enabled,
             "profit_max_enabled": opt_coordinator.profit_max_mode,
             "spread_export_enabled": opt_coordinator._config.spread_export_enabled,
+            "spread_import_enabled": opt_coordinator._config.spread_import_enabled,
             "config": {
                 "battery_capacity_wh": opt_coordinator._config.battery_capacity_wh,
                 "max_charge_w": opt_coordinator._config.max_charge_w,
                 "max_discharge_w": opt_coordinator._config.max_discharge_w,
                 "allow_grid_charge": opt_coordinator._config.allow_grid_charge,
                 "spread_export_enabled": opt_coordinator._config.spread_export_enabled,
+                "spread_import_enabled": opt_coordinator._config.spread_import_enabled,
                 "backup_reserve": round(opt_coordinator._config.backup_reserve * 100),
                 "hardware_backup_reserve": opt_coordinator._startup_backup_reserve if opt_coordinator._startup_backup_reserve is not None else 0,
                 "battery_specs_source": opt_coordinator._battery_specs_source,
@@ -27926,6 +27947,10 @@ class OptimizationSettingsView(HomeAssistantView):
             if "spread_export_enabled" in settings:
                 new_options[CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED] = bool(settings["spread_export_enabled"])
                 changes.append(f"Set spread export to {settings['spread_export_enabled']}")
+
+            if "spread_import_enabled" in settings:
+                new_options[CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED] = bool(settings["spread_import_enabled"])
+                changes.append(f"Set spread import to {settings['spread_import_enabled']}")
 
             if "cost_function" in settings:
                 from .const import CONF_OPTIMIZATION_COST_FUNCTION

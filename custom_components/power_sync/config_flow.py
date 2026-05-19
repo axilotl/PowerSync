@@ -43,6 +43,7 @@ from .const import (
     CONF_TESLA_ENERGY_SITE_ID,
     CONF_POWERWALL_LOCAL_IP,
     CONF_POWERWALL_LOCAL_PAIRED,
+    CONF_POWERWALL_OFFGRID_AS_CURTAILMENT,
     CONF_AUTO_SYNC_ENABLED,
     CONF_DEMAND_CHARGE_ENABLED,
     CONF_DEMAND_CHARGE_RATE,
@@ -353,6 +354,7 @@ from .const import (
     CONF_OPTIMIZATION_MAX_DISCHARGE_W,
     CONF_PROFIT_MAX_TARGET_TIME,
     CONF_PROFIT_MAX_TARGET_SOC,
+    CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED,
     COST_FUNCTION_COST,
     DEFAULT_OPTIMIZATION_BACKUP_RESERVE,
     DEFAULT_PROFIT_MAX_TARGET_TIME,
@@ -2035,6 +2037,7 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._ml_options = {}
             if optimization_provider == OPT_PROVIDER_POWERSYNC:
                 spread_export_enabled = user_input.get(CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED, False)
+                spread_import_enabled = user_input.get(CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED, False)
                 self._ml_options = {
                     CONF_OPTIMIZATION_ENABLED: bool(
                         user_input.get(CONF_OPTIMIZATION_ENABLED, True)
@@ -2062,6 +2065,7 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         True,
                     ),
                     CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED: spread_export_enabled,
+                    CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED: spread_import_enabled,
                     CONF_PROFIT_MAX_TARGET_TIME: user_input.get(
                         CONF_PROFIT_MAX_TARGET_TIME,
                         DEFAULT_PROFIT_MAX_TARGET_TIME,
@@ -2150,6 +2154,10 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     ): BooleanSelector(),
                     vol.Required(
                         CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED,
+                        default=False,
+                    ): BooleanSelector(),
+                    vol.Required(
+                        CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED,
                         default=False,
                     ): BooleanSelector(),
                     vol.Required(
@@ -6016,8 +6024,13 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 spread_export_enabled = bool(
                     user_input.get(CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED, False)
                 )
+                spread_import_enabled = bool(
+                    user_input.get(CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED, False)
+                )
                 new_data[CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED] = spread_export_enabled
                 new_options[CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED] = spread_export_enabled
+                new_data[CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED] = spread_import_enabled
+                new_options[CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED] = spread_import_enabled
                 new_data[CONF_PROFIT_MAX_TARGET_TIME] = profit_max_target_time
                 new_options[CONF_PROFIT_MAX_TARGET_TIME] = profit_max_target_time
                 new_data[CONF_PROFIT_MAX_TARGET_SOC] = profit_max_target_soc
@@ -6091,6 +6104,10 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
         current_spread_export_enabled = self._get_option(
             CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED,
             self.config_entry.data.get(CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED, False),
+        )
+        current_spread_import_enabled = self._get_option(
+            CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED,
+            self.config_entry.data.get(CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED, False),
         )
         current_profit_max_target_time = self._get_option(
             CONF_PROFIT_MAX_TARGET_TIME,
@@ -6181,6 +6198,10 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 vol.Required(
                     CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED,
                     default=bool(current_spread_export_enabled),
+                ): BooleanSelector(),
+                vol.Required(
+                    CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED,
+                    default=bool(current_spread_import_enabled),
                 ): BooleanSelector(),
                 vol.Required(
                     CONF_PROFIT_MAX_TARGET_TIME,
@@ -7719,6 +7740,7 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
         )
         is_sigenergy = battery_system == BATTERY_SYSTEM_SIGENERGY
         is_sungrow = battery_system == BATTERY_SYSTEM_SUNGROW
+        is_tesla = battery_system == BATTERY_SYSTEM_TESLA
 
         if user_input is not None:
             # Check if solar curtailment is being disabled
@@ -7752,6 +7774,10 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     CONF_AC_INVERTER_CURTAILMENT_ENABLED, False
                 )
                 self._curtailment_options[CONF_AC_INVERTER_CURTAILMENT_ENABLED] = ac_enabled
+                if is_tesla:
+                    self._curtailment_options[CONF_POWERWALL_OFFGRID_AS_CURTAILMENT] = (
+                        user_input.get(CONF_POWERWALL_OFFGRID_AS_CURTAILMENT, False)
+                    )
                 if ac_enabled:
                     return await self.async_step_inverter_brand()
                 return self._save_and_finish(self._curtailment_options)
@@ -7795,6 +7821,9 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 )
                 self._curtailment_options[CONF_AC_INVERTER_CURTAILMENT_ENABLED] = (
                     ac_enabled
+                )
+                self._curtailment_options[CONF_POWERWALL_OFFGRID_AS_CURTAILMENT] = (
+                    user_input.get(CONF_POWERWALL_OFFGRID_AS_CURTAILMENT, False)
                 )
 
                 if ac_enabled:
@@ -7849,6 +7878,14 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     CONF_AC_INVERTER_CURTAILMENT_ENABLED,
                     default=self._get_option(
                         CONF_AC_INVERTER_CURTAILMENT_ENABLED, False
+                    ),
+                )
+            ] = BooleanSelector()
+            schema_dict[
+                vol.Optional(
+                    CONF_POWERWALL_OFFGRID_AS_CURTAILMENT,
+                    default=self._get_option(
+                        CONF_POWERWALL_OFFGRID_AS_CURTAILMENT, False
                     ),
                 )
             ] = BooleanSelector()
