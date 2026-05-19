@@ -8013,6 +8013,10 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 # Combine amber options, curtailment options, and inverter config
                 final_data = {**getattr(self, "_amber_options", {})}
                 final_data.update(getattr(self, "_curtailment_options", {}))
+                if getattr(self, "_from_menu", False):
+                    # Opening the AC inverter menu means the user is enabling
+                    # the separate inverter polling/curtailment path.
+                    final_data[CONF_AC_INVERTER_CURTAILMENT_ENABLED] = True
                 final_data[CONF_INVERTER_BRAND] = inverter_brand
                 final_data[CONF_INVERTER_MODEL] = user_input.get(CONF_INVERTER_MODEL)
                 final_data[CONF_INVERTER_HOST] = inverter_host

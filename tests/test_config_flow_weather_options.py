@@ -514,6 +514,21 @@ def test_sungrow_curtailment_options_expose_ac_inverter_path():
     assert "return await self.async_step_inverter_brand()" in sungrow_branch
 
 
+def test_direct_ac_inverter_menu_enables_runtime_polling():
+    source = CONFIG_FLOW_PATH.read_text()
+    method = _options_flow_method("async_step_inverter_config")
+    method_source = ast.get_source_segment(source, method)
+
+    assert method_source is not None
+    menu_block = method_source[
+        method_source.index('if getattr(self, "_from_menu", False):') :
+        method_source.index("final_data[CONF_INVERTER_BRAND]")
+    ]
+
+    assert "CONF_AC_INVERTER_CURTAILMENT_ENABLED" in menu_block
+    assert "True" in menu_block
+
+
 def test_sungrow_ac_inverter_models_include_three_phase_sg_rt():
     const_source = (ROOT / "custom_components" / "power_sync" / "const.py").read_text()
     inverter_source = (
