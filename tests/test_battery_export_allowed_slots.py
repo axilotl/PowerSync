@@ -124,6 +124,7 @@ def _install_power_sync_stubs() -> None:
     const_module.CONF_PROFIT_MAX_TARGET_SOC = "profit_max_target_soc"
     const_module.DEFAULT_PROFIT_MAX_TARGET_TIME = "17:15"
     const_module.DEFAULT_PROFIT_MAX_TARGET_SOC = 1.0
+    const_module.DEFAULT_OPTIMIZATION_INTERVAL = 5
     const_module.FLOW_POWER_EXPORT_RATES = {"NSW1": 0.45}
     const_module.CONF_EXPORT_BOOST_ENABLED = "export_boost_enabled"
     const_module.CONF_EXPORT_PRICE_OFFSET = "export_price_offset"
@@ -253,6 +254,14 @@ def test_update_config_propagates_backup_reserve_to_software_floor(opt_module):
     coordinator.update_config(backup_reserve=0.35)
 
     assert energy.min_soc_calls == [35]
+
+
+def test_update_config_forces_fixed_five_minute_interval(opt_module):
+    coordinator = _coordinator(opt_module, "amber")
+
+    coordinator.update_config(interval_minutes=30)
+
+    assert coordinator._config.interval_minutes == 5
 
 
 def test_startup_restore_target_prefers_hardware_reserve_config(opt_module):
@@ -428,6 +437,43 @@ def test_set_settings_persists_optimizer_reserve_to_data_and_options(opt_module)
     assert coordinator._entry.options["optimization_backup_reserve"] == 0.2
     assert updates[-1]["data"]["optimization_backup_reserve"] == 0.2
     assert updates[-1]["options"]["optimization_backup_reserve"] == 0.2
+
+
+def test_set_settings_ignores_interval_minutes_override(opt_module):
+    coordinator = _coordinator(opt_module, "amber")
+    coordinator.entry_id = "entry-1"
+    coordinator._config.interval_minutes = 30
+    coordinator._entry.data = {"optimization_interval": 30}
+    coordinator._entry.options["optimization_interval"] = 30
+
+    updates = []
+
+    class _ConfigEntries:
+        def async_update_entry(self, entry, **kwargs):
+            updates.append(kwargs)
+            if "data" in kwargs:
+                entry.data = kwargs["data"]
+            if "options" in kwargs:
+                entry.options = kwargs["options"]
+
+    coordinator.hass = SimpleNamespace(
+        data={"power_sync": {"entry-1": {}}},
+        config_entries=_ConfigEntries(),
+    )
+
+    result = asyncio.run(coordinator.set_settings({"interval_minutes": 30}))
+
+    assert result["success"] is True
+    assert result["changes"] == []
+    assert coordinator._config.interval_minutes == 5
+    assert updates == []
+
+
+def test_startup_uses_fixed_optimization_interval_not_persisted_value():
+    init_source = (ROOT / "custom_components" / "power_sync" / "__init__.py").read_text()
+
+    assert "saved_interval_minutes = DEFAULT_OPTIMIZATION_INTERVAL" in init_source
+    assert "CONF_OPTIMIZATION_INTERVAL, entry.data.get" not in init_source
 
 
 def _true_indexes(slots: list[bool]) -> list[int]:
@@ -987,7 +1033,7 @@ def test_charge_executes_immediately_above_reserve(opt_module):
     assert coordinator._last_executed_action == "charge"
 
 
-def test_optimizer_owned_force_charge_survives_short_lp_slot_shuffle(opt_module):
+def test_optimizer_owned_force_charge_restores_when_current_slot_stops_charging(opt_module):
     battery = _FakeBattery()
     coordinator = _execution_coordinator(opt_module, battery, soc=0.50)
     coordinator.battery_system = "foxess"
@@ -1025,56 +1071,10 @@ def test_optimizer_owned_force_charge_survives_short_lp_slot_shuffle(opt_module)
     asyncio.run(coordinator._execute_optimizer_action(shuffled_actions[0]))
 
     assert battery.force_charge_calls == [(10, 23500, False)]
-    assert battery.self_consumption_calls == 0
-    assert battery.restore_normal_calls == 0
-    assert coordinator._optimizer_force_state["active"] is True
-    assert coordinator._last_executed_action == "charge"
-
-
-def test_optimizer_owned_force_charge_uses_lookahead_power_when_refreshing_shuffle(opt_module):
-    battery = _FakeBattery()
-    coordinator = _execution_coordinator(opt_module, battery, soc=0.50)
-    coordinator.battery_system = "foxess"
-    start = datetime(2026, 5, 3, 8, 30, tzinfo=timezone.utc)
-    initial_action = SimpleNamespace(
-        action="charge",
-        power_w=23500,
-        timestamp=start,
-    )
-    coordinator._current_schedule = SimpleNamespace(actions=[initial_action])
-
-    asyncio.run(coordinator._execute_optimizer_action(initial_action))
-
-    shuffled_actions = [
-        SimpleNamespace(
-            action="self_consumption",
-            power_w=0,
-            timestamp=start,
-        ),
-        SimpleNamespace(
-            action="charge",
-            power_w=23500,
-            timestamp=start + timedelta(minutes=5),
-        ),
-        SimpleNamespace(
-            action="charge",
-            power_w=23500,
-            timestamp=start + timedelta(minutes=10),
-        ),
-    ]
-    coordinator._current_schedule = SimpleNamespace(actions=shuffled_actions)
-    coordinator._optimizer_force_state["hardware_expires_at"] = start
-
-    asyncio.run(coordinator._execute_optimizer_action(shuffled_actions[0]))
-
-    assert battery.force_charge_calls == [
-        (5, 23500, False),
-        (10, 23500, True),
-    ]
-    assert battery.self_consumption_calls == 0
-    assert battery.restore_normal_calls == 0
-    assert coordinator._optimizer_force_state["active"] is True
-    assert coordinator._last_executed_action == "charge"
+    assert battery.self_consumption_calls == 1
+    assert battery.restore_normal_calls == 1
+    assert coordinator._optimizer_force_state["active"] is False
+    assert coordinator._last_executed_action == "self_consumption"
 
 
 def test_optimizer_owned_force_charge_does_not_override_idle_with_lookahead_charge(opt_module):

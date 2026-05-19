@@ -118,6 +118,7 @@ def _install_power_sync_stubs() -> None:
     const_module.SOLCAST_ESTIMATE = "estimate"
     const_module.SOLCAST_ESTIMATE10 = "estimate10"
     const_module.SOLCAST_ESTIMATE90 = "estimate90"
+    const_module.DEFAULT_OPTIMIZATION_INTERVAL = 5
     sys.modules["power_sync.const"] = const_module
 
     ev_module = types.ModuleType("power_sync.optimization.ev_coordinator")

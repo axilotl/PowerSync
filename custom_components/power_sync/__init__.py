@@ -493,7 +493,6 @@ from .const import (
     OPT_PROVIDER_NATIVE,
     OPT_PROVIDER_POWERSYNC,
     CONF_OPTIMIZATION_COST_FUNCTION,
-    CONF_OPTIMIZATION_INTERVAL,
     CONF_OPTIMIZATION_BACKUP_RESERVE,
     CONF_HARDWARE_BACKUP_RESERVE,
     CONF_OPTIMIZATION_BATTERY_CAPACITY_WH,
@@ -505,6 +504,7 @@ from .const import (
     CONF_PROFIT_MAX_ENABLED,
     CONF_PROFIT_MAX_TARGET_TIME,
     CONF_PROFIT_MAX_TARGET_SOC,
+    DEFAULT_OPTIMIZATION_INTERVAL,
     DEFAULT_OPTIMIZATION_BACKUP_RESERVE,
     DEFAULT_PROFIT_MAX_TARGET_TIME,
     DEFAULT_PROFIT_MAX_TARGET_SOC,
@@ -27234,7 +27234,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             # Prefer data so stale options from older API writes cannot override
             # the user's current optimizer reserve after restart.
             saved_cost_function = entry.options.get(CONF_OPTIMIZATION_COST_FUNCTION, entry.data.get(CONF_OPTIMIZATION_COST_FUNCTION, "self_consumption"))
-            saved_interval_minutes = entry.options.get(CONF_OPTIMIZATION_INTERVAL, entry.data.get(CONF_OPTIMIZATION_INTERVAL, 5))
+            saved_interval_minutes = DEFAULT_OPTIMIZATION_INTERVAL
             saved_backup_reserve_pct = entry.data.get(
                 CONF_OPTIMIZATION_BACKUP_RESERVE,
                 entry.options.get(CONF_OPTIMIZATION_BACKUP_RESERVE))

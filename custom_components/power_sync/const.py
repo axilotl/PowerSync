@@ -1661,7 +1661,7 @@ TARGET_CHARGE_POWER_BATTERY_SYSTEMS = {
 COST_FUNCTION_COST = "cost"
 
 # Default optimization settings
-DEFAULT_OPTIMIZATION_INTERVAL = 30     # Re-optimize every 30 minutes
+DEFAULT_OPTIMIZATION_INTERVAL = 5      # Re-optimize every 5 minutes
 DEFAULT_OPTIMIZATION_HORIZON = 48      # 48-hour forecast horizon
 DEFAULT_OPTIMIZATION_BACKUP_RESERVE = 0.20  # 20% minimum SOC
 DEFAULT_PROFIT_MAX_TARGET_TIME = "17:15"  # 15 min before Flow Power Happy Hour

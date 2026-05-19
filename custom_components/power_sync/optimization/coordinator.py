@@ -23,12 +23,14 @@ from .schedule_reader import OptimizationSchedule, ScheduleAction
 from .executor import ScheduleExecutor, ExecutionStatus, BatteryAction
 from .load_estimator import LoadEstimator, SolcastForecaster
 from .ev_coordinator import EVCoordinator, EVConfig, EVChargingMode
+from ..const import DEFAULT_OPTIMIZATION_INTERVAL
 from ..tariff_time import find_matching_tou_period, period_entries
 
 _LOGGER = logging.getLogger(__name__)
 
 COST_STORE_VERSION = 1
 COST_STORE_SAVE_DELAY = 300  # Coalesce writes — flush at most every 5 minutes
+FIXED_OPTIMIZATION_INTERVAL_MINUTES = DEFAULT_OPTIMIZATION_INTERVAL
 
 
 def _hhmm_to_minutes(value: Any, default: str = "17:15") -> int:
@@ -80,7 +82,7 @@ class OptimizationConfig:
     max_grid_export_w: int | None = None
     allow_grid_charge: bool = True
     backup_reserve: float = 0.2
-    interval_minutes: int = 5
+    interval_minutes: int = FIXED_OPTIMIZATION_INTERVAL_MINUTES
     horizon_hours: int = 48
     cost_function: str = "cost"
     profit_max_enabled: bool = False
@@ -90,7 +92,7 @@ class OptimizationConfig:
 
 
 # Update interval for the coordinator
-UPDATE_INTERVAL = timedelta(minutes=5)
+UPDATE_INTERVAL = timedelta(minutes=FIXED_OPTIMIZATION_INTERVAL_MINUTES)
 
 
 class CostFunction:
@@ -1945,16 +1947,9 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     return
 
                 # Optimizer-triggered: check if LP still wants the same action.
-                # LP degeneracy in flat-price windows (e.g. 14-18c midday) means
-                # the LP is indifferent about WHICH specific 5-min slot to charge
-                # in, so it may shuffle action[t=0] between charge and
-                # self_consumption while still planning to charge within the
-                # same cheap window. Canceling the already-uploaded tariff in
-                # that case is pure waste — check a short lookahead (~20 min,
-                # 4 intervals at 5-min) before canceling. A 20-min window
-                # captures slot-shuffles that bounce back within 3-4 LP cycles
-                # while still permitting cancellation when LP genuinely
-                # commits to a sustained non-force action.
+                # If the current slot no longer matches the active optimizer
+                # force mode, restore immediately and let the next 5-minute LP
+                # interval issue a fresh command if needed.
                 def _action_matches_force(a) -> bool:
                     return (
                         (force_type == "discharge" and a.action in ("discharge", "export"))
@@ -1964,29 +1959,6 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 lp_matches_force = _action_matches_force(action)
                 force_window_action = action
 
-                if (
-                    not lp_matches_force
-                    and getattr(action, "action", None) != "idle"
-                    and self._current_schedule
-                    and self._current_schedule.actions
-                ):
-                    for _i, _a in enumerate(self._current_schedule.actions):
-                        if _a.timestamp == action.timestamp:
-                            _lookahead = self._current_schedule.actions[_i + 1:_i + 5]
-                            matching_lookahead = next(
-                                (_la for _la in _lookahead if _action_matches_force(_la)),
-                                None,
-                            )
-                            if matching_lookahead is not None:
-                                lp_matches_force = True
-                                force_window_action = matching_lookahead
-                                _LOGGER.info(
-                                    "Optimizer: LP shuffled action[t=0] to %s but still "
-                                    "plans %s within next ~20 min — keeping force %s "
-                                    "active (slot-shuffle protection)",
-                                    action.action, force_type, force_type,
-                                )
-                            break
                 if lp_matches_force:
                     # Extend the expiry timer so the force mode doesn't expire
                     # between optimizer cycles (avoids restore→re-issue gap).
@@ -5285,8 +5257,11 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def update_config(self, **kwargs) -> None:
         """Update optimization configuration."""
         for key, value in kwargs.items():
+            if key == "interval_minutes":
+                value = FIXED_OPTIMIZATION_INTERVAL_MINUTES
             if hasattr(self._config, key):
                 setattr(self._config, key, value)
+        self._config.interval_minutes = FIXED_OPTIMIZATION_INTERVAL_MINUTES
 
         # Sync config to optimizer
         if self._optimizer:
@@ -5720,9 +5695,11 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Handle config updates
         config_keys = [
             "battery_capacity_wh", "max_charge_w", "max_discharge_w",
-            "allow_grid_charge", "backup_reserve", "interval_minutes", "horizon_hours",
+            "allow_grid_charge", "backup_reserve", "horizon_hours",
         ]
         config_updates = {k: v for k, v in settings.items() if k in config_keys}
+        if "interval_minutes" in settings:
+            self._config.interval_minutes = FIXED_OPTIMIZATION_INTERVAL_MINUTES
         if config_updates:
             # Convert backup_reserve from percentage (0-100) to decimal (0-1)
             if "backup_reserve" in config_updates:
