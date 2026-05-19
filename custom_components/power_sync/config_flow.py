@@ -1028,6 +1028,56 @@ def validate_goodwe_ems_entity_prefix(
     return None
 
 
+def _goodwe_ems_prefix_exists(hass: HomeAssistant, prefix: str) -> bool:
+    """Return whether a GoodWe EMS prefix has the required HA entity pair."""
+    return (
+        hass.states.get(f"select.{prefix}_ems_mode") is not None
+        and hass.states.get(f"number.{prefix}_ems_power_limit") is not None
+    )
+
+
+def _goodwe_ems_prefix_candidates(hass: HomeAssistant) -> list[str]:
+    """Return GoodWe EMS prefixes with both required HA entities loaded."""
+    try:
+        mode_entity_ids = hass.states.async_entity_ids("select")
+    except TypeError:
+        mode_entity_ids = [
+            entity_id
+            for entity_id in hass.states.async_entity_ids()
+            if entity_id.startswith("select.")
+        ]
+
+    candidates: list[str] = []
+    for entity_id in mode_entity_ids:
+        if not entity_id.startswith("select.") or not entity_id.endswith("_ems_mode"):
+            continue
+        prefix = entity_id.removeprefix("select.").removesuffix("_ems_mode")
+        if hass.states.get(f"number.{prefix}_ems_power_limit") is not None:
+            candidates.append(prefix)
+
+    return sorted(set(candidates))
+
+
+def resolve_goodwe_ems_entity_prefix(
+    hass: HomeAssistant,
+    prefix: str | None,
+) -> str:
+    """Resolve a typed GoodWe EMS prefix, auto-detecting when needed."""
+    typed_prefix = (prefix or "").strip()
+    if typed_prefix and _goodwe_ems_prefix_exists(hass, typed_prefix):
+        return typed_prefix
+
+    candidates = _goodwe_ems_prefix_candidates(hass)
+    if typed_prefix in candidates:
+        return typed_prefix
+    if "goodwe" in candidates:
+        return "goodwe"
+    if len(candidates) == 1:
+        return candidates[0]
+
+    return typed_prefix
+
+
 def resolve_goodwe_ems_control_mode(mode: str | None, prefix: str | None) -> str:
     """Return the GoodWe EMS control mode, preserving legacy prefix configs."""
     if mode in (GOODWE_EMS_CONTROL_DIRECT, GOODWE_EMS_CONTROL_ENTITY):
@@ -3460,10 +3510,15 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if not host:
                 errors["base"] = "goodwe_connect_failed"
             else:
+                resolved_ems_prefix = (
+                    resolve_goodwe_ems_entity_prefix(self.hass, ems_prefix)
+                    if ems_control_mode == GOODWE_EMS_CONTROL_ENTITY
+                    else ems_prefix
+                )
                 ems_error = validate_goodwe_ems_control_mode(
                     self.hass,
                     ems_control_mode,
-                    ems_prefix,
+                    resolved_ems_prefix,
                 )
                 if ems_error:
                     errors["base"] = ems_error
@@ -3484,7 +3539,7 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             if ems_control_mode == GOODWE_EMS_CONTROL_ENTITY:
                                 self._goodwe_data[
                                     CONF_GOODWE_EMS_ENTITY_PREFIX
-                                ] = ems_prefix
+                                ] = resolved_ems_prefix
                             _LOGGER.info(
                                 "GoodWe connection successful: %s (SN: %s, %sW)",
                                 result.get("model_name"),
@@ -5126,10 +5181,15 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     user_input.get(CONF_GOODWE_EMS_CONTROL_MODE),
                     ems_prefix,
                 )
+                resolved_ems_prefix = (
+                    resolve_goodwe_ems_entity_prefix(self.hass, ems_prefix)
+                    if ems_control_mode == GOODWE_EMS_CONTROL_ENTITY
+                    else ems_prefix
+                )
                 ems_error = validate_goodwe_ems_control_mode(
                     self.hass,
                     ems_control_mode,
-                    ems_prefix,
+                    resolved_ems_prefix,
                 )
                 if ems_error:
                     errors["base"] = ems_error
@@ -5149,8 +5209,8 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     new_data.update(goodwe_values)
                     new_options.update(goodwe_values)
                     if ems_control_mode == GOODWE_EMS_CONTROL_ENTITY:
-                        new_data[CONF_GOODWE_EMS_ENTITY_PREFIX] = ems_prefix
-                        new_options[CONF_GOODWE_EMS_ENTITY_PREFIX] = ems_prefix
+                        new_data[CONF_GOODWE_EMS_ENTITY_PREFIX] = resolved_ems_prefix
+                        new_options[CONF_GOODWE_EMS_ENTITY_PREFIX] = resolved_ems_prefix
                     else:
                         new_data.pop(CONF_GOODWE_EMS_ENTITY_PREFIX, None)
                         new_options.pop(CONF_GOODWE_EMS_ENTITY_PREFIX, None)
@@ -6950,10 +7010,15 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     user_input.get(CONF_GOODWE_EMS_CONTROL_MODE),
                     ems_prefix,
                 )
+                resolved_ems_prefix = (
+                    resolve_goodwe_ems_entity_prefix(self.hass, ems_prefix)
+                    if ems_control_mode == GOODWE_EMS_CONTROL_ENTITY
+                    else ems_prefix
+                )
                 ems_error = validate_goodwe_ems_control_mode(
                     self.hass,
                     ems_control_mode,
-                    ems_prefix,
+                    resolved_ems_prefix,
                 )
                 if ems_error:
                     errors["base"] = ems_error
@@ -6970,7 +7035,7 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     new_data[CONF_GOODWE_PROTOCOL] = protocol
                     new_data[CONF_GOODWE_EMS_CONTROL_MODE] = ems_control_mode
                     if ems_control_mode == GOODWE_EMS_CONTROL_ENTITY:
-                        new_data[CONF_GOODWE_EMS_ENTITY_PREFIX] = ems_prefix
+                        new_data[CONF_GOODWE_EMS_ENTITY_PREFIX] = resolved_ems_prefix
                     else:
                         new_data.pop(CONF_GOODWE_EMS_ENTITY_PREFIX, None)
 

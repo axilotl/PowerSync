@@ -378,6 +378,7 @@ def test_goodwe_flow_exposes_explicit_ems_control_mode_selector():
         assert "CONF_GOODWE_EMS_CONTROL_MODE" in method_source
         assert "goodwe_ems_control_options()" in method_source
         assert "validate_goodwe_ems_control_mode" in method_source
+        assert "resolve_goodwe_ems_entity_prefix" in method_source
         assert "GOODWE_EMS_CONTROL_ENTITY" in method_source
 
 
@@ -390,6 +391,84 @@ def test_goodwe_runtime_uses_entity_prefix_only_for_entity_control_mode():
     assert "GOODWE_EMS_CONTROL_ENTITY" in init_source
     assert "configured_ems_prefix" in init_source
     assert "goodwe_ems_control_mode is None" in init_source
+
+
+class _GoodWeStates:
+    def __init__(self, entity_ids: list[str]) -> None:
+        self._entity_ids = set(entity_ids)
+
+    def async_entity_ids(self, domain: str | None = None) -> list[str]:
+        return sorted(
+            entity_id
+            for entity_id in self._entity_ids
+            if domain is None or entity_id.startswith(f"{domain}.")
+        )
+
+    def get(self, entity_id: str):
+        return object() if entity_id in self._entity_ids else None
+
+
+class _GoodWeHass:
+    def __init__(self, entity_ids: list[str]) -> None:
+        self.states = _GoodWeStates(entity_ids)
+
+
+def _goodwe_prefix_namespace() -> dict[str, object]:
+    function_names = {
+        "validate_goodwe_ems_entity_prefix",
+        "_goodwe_ems_prefix_exists",
+        "_goodwe_ems_prefix_candidates",
+        "resolve_goodwe_ems_entity_prefix",
+    }
+    functions = [
+        node
+        for node in _module_tree().body
+        if isinstance(node, ast.FunctionDef) and node.name in function_names
+    ]
+    module = ast.Module(body=functions, type_ignores=[])
+    ast.fix_missing_locations(module)
+    namespace = {
+        "HomeAssistant": object,
+        "_LOGGER": type(
+            "_Logger",
+            (),
+            {"warning": staticmethod(lambda *args, **kwargs: None)},
+        ),
+    }
+    exec(compile(module, str(CONFIG_FLOW_PATH), "exec"), namespace)
+    return namespace
+
+
+def test_goodwe_ems_prefix_auto_detects_goodwe_when_typed_prefix_is_stale():
+    namespace = _goodwe_prefix_namespace()
+    resolve_prefix = namespace["resolve_goodwe_ems_entity_prefix"]
+    validate_prefix = namespace["validate_goodwe_ems_entity_prefix"]
+    hass = _GoodWeHass(
+        [
+            "select.goodwe_ems_mode",
+            "number.goodwe_ems_power_limit",
+        ]
+    )
+
+    resolved = resolve_prefix(hass, "goodwe_esa")
+
+    assert resolved == "goodwe"
+    assert validate_prefix(hass, resolved) is None
+
+
+def test_goodwe_ems_prefix_keeps_typed_prefix_when_pair_exists():
+    namespace = _goodwe_prefix_namespace()
+    resolve_prefix = namespace["resolve_goodwe_ems_entity_prefix"]
+    hass = _GoodWeHass(
+        [
+            "select.goodwe_esa_ems_mode",
+            "number.goodwe_esa_ems_power_limit",
+            "select.goodwe_ems_mode",
+            "number.goodwe_ems_power_limit",
+        ]
+    )
+
+    assert resolve_prefix(hass, "goodwe_esa") == "goodwe_esa"
 
 
 def test_sungrow_options_flow_removes_retired_dual_config():
