@@ -209,8 +209,12 @@ def _install_solar_surplus_runtime_stubs(monkeypatch, live_status: dict):
         set_amps_calls.append(amps)
         return True
 
+    async def fake_observed_ev_power_kw(*args, **kwargs):
+        return 0.0
+
     monkeypatch.setattr(actions, "_get_tesla_live_status", fake_live_status)
     monkeypatch.setattr(actions, "_set_vehicle_amps", fake_set_vehicle_amps)
+    monkeypatch.setattr(actions, "_get_observed_ev_power_kw", fake_observed_ev_power_kw)
     return set_amps_calls
 
 
@@ -968,6 +972,46 @@ def test_dynamic_deadline_start_uses_configured_max_over_idle_tesla_cap(monkeypa
     assert set_amps_calls == [32]
 
 
+def test_dynamic_sigenergy_start_uses_charger_abstraction(monkeypatch):
+    set_amps_calls: list[tuple[str, int, str]] = []
+
+    async def fake_set_vehicle_amps(hass, config_entry, vehicle_id, amps, params):
+        set_amps_calls.append((vehicle_id, amps, params["charger_type"]))
+        return True
+
+    async def fail_tesla_start(*args, **kwargs):
+        raise AssertionError("Sigenergy dynamic starts must not use Tesla discovery")
+
+    monkeypatch.setattr(actions, "_set_vehicle_amps", fake_set_vehicle_amps)
+    monkeypatch.setattr(actions, "_action_start_ev_charging", fail_tesla_start)
+    actions._dynamic_ev_state.clear()
+    hass = _Hass([])
+
+    result = asyncio.run(
+        actions._action_start_ev_charging_dynamic(
+            hass,
+            _Entry(),
+            {
+                "vehicle_id": "sigenergy_charger",
+                "vehicle_vin": "sigenergy_charger",
+                "dynamic_mode": "battery_target",
+                "owner_mode": "smart_schedule",
+                "charger_type": "sigenergy",
+                "target_battery_charge_kw": 0,
+                "min_charge_amps": 6,
+                "max_charge_amps": 32,
+            },
+            context=None,
+        )
+    )
+
+    assert result is True
+    assert set_amps_calls == [("sigenergy_charger", 32, "sigenergy")]
+    state = actions._dynamic_ev_state["entry-1"]["sigenergy_charger"]
+    assert state["current_amps"] == 32
+    assert state["params"]["target_battery_charge_kw"] == 0
+
+
 def test_dynamic_update_holds_fixed_deadline_rate(monkeypatch):
     set_amps_calls: list[int] = []
 
@@ -1483,7 +1527,127 @@ def test_solar_surplus_parallel_reserve_prevents_ramp_while_battery_charging(mon
     state = actions._dynamic_ev_state["entry-1"][vehicle_id]
     assert state["current_amps"] == 7
     assert state["low_surplus_start"] is not None
-    assert set_amps_calls == []
+
+
+def test_solar_surplus_strict_below_floor_can_start_with_battery_charging(monkeypatch):
+    async def fake_start(*args, **kwargs):
+        return True
+
+    hass = _Hass([])
+    vehicle_id = "VIN123"
+    actions._dynamic_ev_state.clear()
+    state = _solar_surplus_state(current_amps=0)
+    state["charging_started"] = False
+    state["high_surplus_start"] = datetime.now() - timedelta(minutes=4)
+    state["params"].update(
+        {
+            "household_buffer_kw": 1.0,
+            "allow_parallel_charging": True,
+            "max_battery_charge_rate_kw": 5.0,
+            "min_battery_soc": 20,
+            "pause_below_soc": 10,
+            "notify_on_start": False,
+        }
+    )
+    actions._dynamic_ev_state["entry-1"] = {vehicle_id: state}
+    set_amps_calls = _install_solar_surplus_runtime_stubs(
+        monkeypatch,
+        {
+            "battery_soc": 15,
+            "grid_power": -4000,
+            "battery_power": -5000,
+            "solar_power": 0,
+            "load_power": 0,
+        },
+    )
+    monkeypatch.setattr(actions, "_action_start_ev_charging", fake_start)
+    monkeypatch.setattr(actions, "_is_vehicle_charge_complete", lambda *args, **kwargs: False)
+
+    asyncio.run(
+        actions._dynamic_ev_update_surplus(hass, _Entry(), "entry-1", vehicle_id)
+    )
+
+    state = actions._dynamic_ev_state["entry-1"][vehicle_id]
+    assert state["charging_started"] is True
+    assert state["parallel_charging_mode"] is True
+    assert set_amps_calls[-1] > 0
+
+
+def test_solar_surplus_strict_below_floor_pauses_when_battery_discharges(monkeypatch):
+    hass = _Hass([])
+    vehicle_id = "VIN123"
+    actions._dynamic_ev_state.clear()
+    state = _solar_surplus_state(current_amps=7)
+    state["parallel_charging_mode"] = True
+    state["params"].update(
+        {
+            "household_buffer_kw": 1.0,
+            "allow_parallel_charging": True,
+            "max_battery_charge_rate_kw": 5.0,
+            "min_battery_soc": 20,
+            "pause_below_soc": 10,
+        }
+    )
+    actions._dynamic_ev_state["entry-1"] = {vehicle_id: state}
+    set_amps_calls = _install_solar_surplus_runtime_stubs(
+        monkeypatch,
+        {
+            "battery_soc": 15,
+            "grid_power": -2000,
+            "battery_power": 800,
+            "solar_power": 0,
+            "load_power": 0,
+        },
+    )
+
+    asyncio.run(
+        actions._dynamic_ev_update_surplus(hass, _Entry(), "entry-1", vehicle_id)
+    )
+
+    state = actions._dynamic_ev_state["entry-1"][vehicle_id]
+    assert state["paused"] is True
+    assert "battery is discharging" in state["paused_reason"]
+    assert state["current_amps"] == 0
+    assert set_amps_calls == [0]
+
+
+def test_solar_surplus_strict_below_floor_pauses_on_grid_import(monkeypatch):
+    hass = _Hass([])
+    vehicle_id = "VIN123"
+    actions._dynamic_ev_state.clear()
+    state = _solar_surplus_state(current_amps=7)
+    state["parallel_charging_mode"] = True
+    state["params"].update(
+        {
+            "household_buffer_kw": 1.0,
+            "allow_parallel_charging": True,
+            "max_battery_charge_rate_kw": 5.0,
+            "grid_import_tolerance_kw": 0.1,
+            "min_battery_soc": 20,
+            "pause_below_soc": 10,
+        }
+    )
+    actions._dynamic_ev_state["entry-1"] = {vehicle_id: state}
+    set_amps_calls = _install_solar_surplus_runtime_stubs(
+        monkeypatch,
+        {
+            "battery_soc": 15,
+            "grid_power": 900,
+            "battery_power": -5000,
+            "solar_power": 0,
+            "load_power": 0,
+        },
+    )
+
+    asyncio.run(
+        actions._dynamic_ev_update_surplus(hass, _Entry(), "entry-1", vehicle_id)
+    )
+
+    state = actions._dynamic_ev_state["entry-1"][vehicle_id]
+    assert state["paused"] is True
+    assert "grid import" in state["paused_reason"]
+    assert state["current_amps"] == 0
+    assert set_amps_calls == [0]
 
 
 def test_solar_surplus_stop_delay_uses_tesla_hardware_minimum(monkeypatch):

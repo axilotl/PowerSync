@@ -5084,6 +5084,10 @@ class AutoScheduleExecutor:
         # Resolve vehicle_id to actual VIN or BLE identifier
         # Sequential IDs (e.g. "1", "3") are mapped to BLE identifiers or VINs
         vehicle_vin = self._resolve_vehicle_vin(vehicle_id) if vehicle_id != "_default" else None
+        opts = {**self.config_entry.data, **self.config_entry.options}
+        charger_type = settings.charger_type
+        if charger_type == "tesla":
+            charger_type = _configured_charger_type(opts)
 
         params = {
             "vehicle_id": vehicle_id,
@@ -5096,7 +5100,7 @@ class AutoScheduleExecutor:
             "max_charge_amps": settings.max_charge_amps,
             "voltage": settings.voltage,
             "phases": settings.phases,
-            "charger_type": settings.charger_type,
+            "charger_type": charger_type,
             "min_battery_soc": settings.get_effective_min_battery_to_start(dt_util.now().weekday()),
             "pause_below_soc": (
                 settings.get_effective_consume_battery_level(dt_util.now().weekday())
@@ -5116,7 +5120,19 @@ class AutoScheduleExecutor:
             "pre_charge_wake_off_service_data": settings.pre_charge_wake_off_service_data,
             "no_grid_import": settings.get_effective_limit_grid_import(dt_util.now().weekday()),
             **_get_optimizer_battery_params(self.hass, self.config_entry),
+            "target_battery_charge_kw": 0,
         }
+        params = _with_configured_charger_entities(self.hass, params, opts, charger_type)
+        if charger_type != "tesla":
+            configured_vehicle_id = None if settings.vehicle_id == "_default" else settings.vehicle_id
+            loadpoint_id = _resolve_dynamic_loadpoint_id(
+                charger_type,
+                vehicle_vin,
+                params,
+                configured_vehicle_id,
+            )
+            params["vehicle_id"] = loadpoint_id
+            params["vehicle_vin"] = loadpoint_id
         if force_max_rate:
             params.update({
                 "start_amps": settings.max_charge_amps,
@@ -5482,6 +5498,7 @@ def _build_dynamic_charging_params(
         **vehicle_charger_params,
         **_get_optimizer_battery_params(hass, config_entry),
         "charger_type": charger_type,
+        "target_battery_charge_kw": 0,
     }
     if no_grid_import:
         params["no_grid_import"] = True
@@ -5804,11 +5821,13 @@ def _get_vehicle_charger_params(
 def _get_optimizer_battery_params(
     hass: "HomeAssistant",
     config_entry: "ConfigEntry",
+    *,
+    include_target: bool = False,
 ) -> dict:
     """Get battery charge/discharge specs from the optimizer coordinator.
 
-    Returns target_battery_charge_kw and max_inverter_kw derived from the
-    optimizer's auto-detected or manually-configured battery specs.
+    Returns battery capability params derived from the optimizer's auto-detected
+    or manually-configured battery specs.
     Falls back to empty dict if the optimizer isn't available.
     """
     try:
@@ -5819,11 +5838,13 @@ def _get_optimizer_battery_params(
             max_charge_kw = opt_coordinator._config.max_charge_w / 1000.0
             max_discharge_kw = opt_coordinator._config.max_discharge_w / 1000.0
             if max_charge_kw > 0 and max_discharge_kw > 0:
-                return {
-                    "target_battery_charge_kw": max_charge_kw,
+                params = {
                     "max_inverter_kw": max_discharge_kw,
                     "max_battery_charge_rate_kw": max_charge_kw,
                 }
+                if include_target:
+                    params["target_battery_charge_kw"] = max_charge_kw
+                return params
     except Exception:
         pass
 

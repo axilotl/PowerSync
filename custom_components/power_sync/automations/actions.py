@@ -4529,11 +4529,55 @@ async def _dynamic_ev_update_surplus(
     # Check if parallel charging is possible below the battery floor. At this
     # point raw_surplus_kw is already the amount left for EV charging after
     # reserving max_battery_charge_kw for the battery.
+    battery_power_kw = (live_status.get("battery_power", 0) or 0) / 1000
+    grid_power_kw = (live_status.get("grid_power", 0) or 0) / 1000
+    grid_import_tolerance_kw = params.get("grid_import_tolerance_kw", 0.1)
+    battery_charge_kw = max(0.0, -battery_power_kw)
+    battery_discharge_kw = max(0.0, battery_power_kw)
+    strict_surplus_available = (
+        allow_parallel and
+        battery_soc < min_soc and
+        battery_charge_kw > 0.05 and
+        battery_discharge_kw <= 0.05 and
+        grid_power_kw <= grid_import_tolerance_kw and
+        raw_surplus_kw > 0
+    )
     parallel_charging_available = (
         allow_parallel and
         battery_soc < min_soc and
-        raw_surplus_kw > 0
+        strict_surplus_available
     )
+
+    if allow_parallel and battery_soc < min_soc and state.get("charging_started"):
+        unsafe_reason = None
+        if battery_discharge_kw > 0.05:
+            unsafe_reason = (
+                f"battery is discharging {battery_discharge_kw:.1f}kW below "
+                f"the {min_soc}% floor"
+            )
+        elif grid_power_kw > grid_import_tolerance_kw:
+            unsafe_reason = (
+                f"grid import {grid_power_kw:.1f}kW exceeds "
+                f"{grid_import_tolerance_kw:.1f}kW tolerance below the {min_soc}% floor"
+            )
+        elif raw_surplus_kw <= 0:
+            unsafe_reason = (
+                f"no surplus remains after reserving {max_battery_charge_kw}kW "
+                f"for the battery below the {min_soc}% floor"
+            )
+        elif battery_charge_kw <= 0.05:
+            unsafe_reason = (
+                f"battery is not charging below the {min_soc}% floor"
+            )
+
+        if unsafe_reason:
+            if not state.get("paused"):
+                state["paused"] = True
+                state["paused_reason"] = f"Strict surplus paused - {unsafe_reason}"
+                _LOGGER.info(f"⚡ Solar surplus EV: {state['paused_reason']}")
+            await _set_vehicle_amps(hass, config_entry, vehicle_id, 0, params)
+            state["current_amps"] = 0
+            return
 
     # Don't start charging until battery reaches min_soc (unless parallel charging is available)
     if not state.get("charging_started"):
@@ -4543,17 +4587,18 @@ async def _dynamic_ev_update_surplus(
                 state["paused_reason"] = None
                 state["parallel_charging_mode"] = True
                 _LOGGER.info(
-                    f"⚡ Solar surplus EV: Parallel charging enabled - "
+                    f"⚡ Solar surplus EV: Strict surplus below floor - "
                     f"{raw_surplus_kw:.1f}kW remains after reserving "
-                    f"{max_battery_charge_kw}kW for the battery (battery at {battery_soc:.0f}%)"
+                    f"{max_battery_charge_kw}kW for the battery "
+                    f"(battery at {battery_soc:.0f}%, charging {battery_charge_kw:.1f}kW)"
                 )
             else:
                 state["paused"] = True
                 if allow_parallel:
                     state["paused_reason"] = (
-                        f"Waiting for battery to reach {min_soc}% or surplus to remain after "
-                        f"the {max_battery_charge_kw}kW battery reserve "
-                        f"(currently {battery_soc:.0f}%, available {raw_surplus_kw:.1f}kW)"
+                        f"Waiting for battery to reach {min_soc}% or strict surplus below floor "
+                        f"(battery charging {battery_charge_kw:.1f}kW, grid {grid_power_kw:.1f}kW, "
+                        f"available after {max_battery_charge_kw}kW reserve {raw_surplus_kw:.1f}kW)"
                     )
                 else:
                     state["paused_reason"] = f"Waiting for battery to reach {min_soc}% (currently {battery_soc:.0f}%)"
@@ -4621,11 +4666,11 @@ async def _dynamic_ev_update_surplus(
                 f"Solar surplus EV: Not resuming - stop_at_floor=True, "
                 f"battery {battery_soc:.0f}% < floor {pause_soc}%"
             )
-        elif state.get("parallel_charging_mode") and raw_surplus_kw > 0:
+        elif state.get("parallel_charging_mode") and strict_surplus_available:
             # Parallel mode: surplus recovered
             can_resume = True
             _LOGGER.info(
-                f"⚡ Solar surplus EV: Resuming parallel charging - "
+                f"⚡ Solar surplus EV: Resuming strict surplus below floor - "
                 f"{raw_surplus_kw:.1f}kW remains after battery reserve"
             )
 
@@ -5459,7 +5504,7 @@ async def _action_start_ev_charging_dynamic_locked(
     # For battery_target mode, start EV charging immediately
     # For solar_surplus mode, we wait for sufficient surplus before starting
     if dynamic_mode == "battery_target":
-        if charger_type in ("ocpp", "generic", "zaptec") or _is_ha_native_charger_type(charger_type):
+        if charger_type in ("ocpp", "generic", "zaptec", "sigenergy") or _is_ha_native_charger_type(charger_type):
             start_success = await _set_vehicle_amps(
                 hass, config_entry, vehicle_id, start_amps, params
             )
