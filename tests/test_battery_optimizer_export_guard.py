@@ -82,6 +82,23 @@ def _optimizer(module):
     )
 
 
+class _FakeSparseMatrix:
+    def __init__(self, shape, dtype=float):
+        self.shape = shape
+        self._values = {}
+
+    def __setitem__(self, key, value):
+        if value:
+            self._values[key] = value
+
+    def tocsr(self):
+        return self
+
+    @property
+    def nnz(self):
+        return len(self._values)
+
+
 def test_lp_solver_uses_extended_time_limit(battery_optimizer_module, monkeypatch):
     captured = {}
 
@@ -94,6 +111,12 @@ def test_lp_solver_uses_extended_time_limit(battery_optimizer_module, monkeypatc
 
     monkeypatch.setattr(battery_optimizer_module, "SCIPY_AVAILABLE", True)
     monkeypatch.setattr(battery_optimizer_module, "linprog", fake_linprog, raising=False)
+    monkeypatch.setattr(
+        battery_optimizer_module,
+        "sparse",
+        types.SimpleNamespace(lil_matrix=_FakeSparseMatrix),
+        raising=False,
+    )
     optimizer = _optimizer(battery_optimizer_module)
 
     result = optimizer.optimize(
@@ -647,3 +670,176 @@ def test_disallow_grid_charge_still_allows_solar_surplus_charging(
     assert max(action.battery_charge_w for action in result.schedule.actions) > 1000
     assert all(action.action != "charge" for action in result.schedule.actions)
     assert max(result.grid_import_w) <= 1e-6
+
+
+def test_tiered_lp_periods_reduce_flat_48h_horizon(battery_optimizer_module):
+    optimizer = battery_optimizer_module.BatteryOptimizer(
+        interval_minutes=5,
+        horizon_hours=48,
+    )
+    n = 576
+
+    periods = optimizer._build_lp_periods(
+        n,
+        import_prices=[0.25] * n,
+        export_prices=[0.08] * n,
+        solar=[0.0] * n,
+        load=[0.7] * n,
+        allow_battery_export=[False] * n,
+        block_battery_charge=[False] * n,
+    )
+
+    assert len(periods) == 132
+    assert len(periods) < 160
+    assert periods[0].slot_count == 1
+    assert periods[72].slot_count == 6
+    assert periods[-1].slot_count == 12
+
+
+def test_tiered_lp_periods_split_on_masks_prices_and_deadline(
+    battery_optimizer_module,
+):
+    optimizer = battery_optimizer_module.BatteryOptimizer(
+        interval_minutes=5,
+        horizon_hours=48,
+    )
+    optimizer.pre_window_slot = 100
+    n = 144
+    allow_export = [False] * n
+    allow_export[111:] = [True] * (n - 111)
+    import_prices = [0.25] * n
+    import_prices[120:] = [0.29] * (n - 120)
+
+    periods = optimizer._build_lp_periods(
+        n,
+        import_prices=import_prices,
+        export_prices=[0.08] * n,
+        solar=[0.0] * n,
+        load=[0.7] * n,
+        allow_battery_export=allow_export,
+        block_battery_charge=[False] * n,
+    )
+
+    boundaries = {period.end for period in periods}
+    assert 100 in boundaries
+    assert 111 in boundaries
+    assert 120 in boundaries
+
+
+def test_tiered_lp_periods_split_on_solar_surplus_changes(
+    battery_optimizer_module,
+):
+    optimizer = battery_optimizer_module.BatteryOptimizer(
+        interval_minutes=5,
+        horizon_hours=12,
+    )
+    n = 144
+    solar = [0.0] * n
+    for idx in range(75, 78):
+        solar[idx] = 5.0
+
+    periods = optimizer._build_lp_periods(
+        n,
+        import_prices=[0.30] * n,
+        export_prices=[0.08] * n,
+        solar=solar,
+        load=[0.5] * n,
+        allow_battery_export=[False] * n,
+        block_battery_charge=[False] * n,
+    )
+
+    boundaries = {period.end for period in periods}
+    assert 75 in boundaries
+    assert 78 in boundaries
+
+
+def test_no_grid_charge_does_not_expand_solar_charge_into_dark_slots(
+    battery_optimizer_module,
+):
+    if not battery_optimizer_module.SCIPY_AVAILABLE:
+        pytest.skip("scipy unavailable")
+
+    optimizer = battery_optimizer_module.BatteryOptimizer(
+        capacity_wh=13500,
+        max_charge_w=7000,
+        max_discharge_w=7000,
+        backup_reserve=0.20,
+        interval_minutes=5,
+        horizon_hours=12,
+    )
+    n = 144
+    solar = [0.0] * n
+    for idx in range(75, 78):
+        solar[idx] = 5.0
+
+    result = optimizer.optimize(
+        import_prices=[0.30] * n,
+        export_prices=[0.08] * n,
+        solar_forecast=solar,
+        load_forecast=[0.5] * n,
+        current_soc=0.20,
+        allow_battery_export=False,
+        allow_grid_charge=False,
+    )
+
+    assert result.solver_used == "highs"
+    assert max(
+        result.schedule.actions[idx].battery_charge_w
+        for idx in range(72, 75)
+    ) <= 1e-6
+    assert max(
+        result.schedule.actions[idx].battery_charge_w
+        for idx in range(75, 78)
+    ) > 1000
+
+
+def test_sparse_lp_stats_and_schedule_expansion(
+    battery_optimizer_module,
+    monkeypatch,
+):
+    captured = {}
+
+    def fake_linprog(c, **kwargs):
+        captured["A_eq"] = kwargs["A_eq"]
+        captured["A_ub"] = kwargs["A_ub"]
+        captured["bounds"] = kwargs["bounds"]
+        return types.SimpleNamespace(
+            success=True,
+            message="Optimization terminated successfully.",
+            status=0,
+            x=[0.0] * len(c),
+            fun=0.0,
+        )
+
+    monkeypatch.setattr(battery_optimizer_module, "SCIPY_AVAILABLE", True)
+    monkeypatch.setattr(battery_optimizer_module, "linprog", fake_linprog, raising=False)
+    monkeypatch.setattr(
+        battery_optimizer_module,
+        "sparse",
+        types.SimpleNamespace(lil_matrix=_FakeSparseMatrix),
+        raising=False,
+    )
+    optimizer = battery_optimizer_module.BatteryOptimizer(
+        interval_minutes=5,
+        horizon_hours=48,
+    )
+    n = 576
+
+    result = optimizer.optimize(
+        import_prices=[0.25] * n,
+        export_prices=[0.08] * n,
+        solar_forecast=[0.0] * n,
+        load_forecast=[0.7] * n,
+        current_soc=0.50,
+        allow_battery_export=[False] * n,
+    )
+
+    assert result.solver_used == "highs"
+    assert len(result.schedule.actions) == n
+    assert len(result.grid_import_w) == n
+    assert result.lp_stats["backend"] == "scipy_sparse"
+    assert result.lp_stats["base_steps"] == n
+    assert result.lp_stats["period_count"] == 132
+    assert result.lp_stats["variables"] == 5 * 132 + 1
+    assert result.lp_stats["constraints"] == captured["A_eq"].shape[0] + captured["A_ub"].shape[0]
+    assert len(captured["bounds"]) == result.lp_stats["variables"]

@@ -5418,6 +5418,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "solver_used": self._last_optimizer_result.solver_used,
                 "feasible": self._last_optimizer_result.feasible,
             }
+            lp_stats.update(getattr(self._last_optimizer_result, "lp_stats", {}) or {})
 
         # Read monitoring mode from config entry
         from ..const import CONF_MONITORING_MODE
