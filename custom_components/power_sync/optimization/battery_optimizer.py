@@ -50,6 +50,9 @@ DEFAULT_EXPORT_PRICE = 0.08
 # Battery round-trip efficiency
 DEFAULT_EFFICIENCY = 0.92
 
+# HiGHS can legitimately need more than 10s for 48h/5min plans on HA hardware.
+LP_SOLVER_TIME_LIMIT_SECONDS = 30.0
+
 
 @dataclass
 class OptimizerResult:
@@ -739,7 +742,12 @@ class BatteryOptimizer:
                 bounds.append((0, self.max_discharge_kw))  # battery_discharge
 
         # === Solve ===
-        _LOGGER.debug(f"Solving LP: {n} time steps, {4*n} variables")
+        _LOGGER.debug(
+            "Solving LP: %d time steps, %d variables, %.0fs limit",
+            n,
+            4 * n,
+            LP_SOLVER_TIME_LIMIT_SECONDS,
+        )
 
         result = linprog(
             c,
@@ -749,7 +757,7 @@ class BatteryOptimizer:
             b_eq=b_eq,
             bounds=bounds,
             method="highs",
-            options={"time_limit": 10.0},
+            options={"time_limit": LP_SOLVER_TIME_LIMIT_SECONDS},
         )
 
         if not result.success:

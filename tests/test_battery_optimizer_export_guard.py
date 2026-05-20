@@ -82,6 +82,35 @@ def _optimizer(module):
     )
 
 
+def test_lp_solver_uses_extended_time_limit(battery_optimizer_module, monkeypatch):
+    captured = {}
+
+    def fake_linprog(*args, **kwargs):
+        captured["options"] = kwargs["options"]
+        return types.SimpleNamespace(
+            success=False,
+            message="Time limit reached.",
+        )
+
+    monkeypatch.setattr(battery_optimizer_module, "SCIPY_AVAILABLE", True)
+    monkeypatch.setattr(battery_optimizer_module, "linprog", fake_linprog, raising=False)
+    optimizer = _optimizer(battery_optimizer_module)
+
+    result = optimizer.optimize(
+        import_prices=[0.05] * 12,
+        export_prices=[0.10] * 12,
+        solar_forecast=[0.0] * 12,
+        load_forecast=[0.5] * 12,
+        current_soc=0.80,
+    )
+
+    assert captured["options"]["time_limit"] == (
+        battery_optimizer_module.LP_SOLVER_TIME_LIMIT_SECONDS
+    )
+    assert captured["options"]["time_limit"] == 30.0
+    assert result.solver_used == "greedy"
+
+
 def test_default_blocks_battery_export_when_fit_beats_import(battery_optimizer_module):
     optimizer = _optimizer(battery_optimizer_module)
 
