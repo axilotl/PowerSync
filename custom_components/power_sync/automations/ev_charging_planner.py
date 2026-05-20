@@ -4368,9 +4368,10 @@ class AutoScheduleExecutor:
         # - Single phase: 5A × 230V = 1.15kW
         # - Three phase: 5A × 230V × 3 = 3.45kW
         if should_charge and source == "solar_surplus":
-            # Get solar surplus config to check home_battery_minimum and parallel charging settings
+            # Smart Schedule owns the home-battery start floor here. Solar
+            # surplus settings still provide parallel-charge reserve behavior.
             solar_config = await self._get_solar_surplus_config()
-            min_battery_for_ev = get_solar_surplus_min_battery_soc(solar_config)
+            min_battery_for_ev = effective_home_min
             allow_parallel = solar_config.get("allow_parallel_charging", False)
             max_battery_charge_kw = solar_config.get("max_battery_charge_rate_kw", 5.0)
 

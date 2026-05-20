@@ -523,6 +523,74 @@ def test_auto_schedule_start_allows_solar_surplus_takeover(monkeypatch, fake_act
     assert params["allow_ownership_takeover"] is True
 
 
+def test_auto_schedule_solar_uses_smart_schedule_battery_floor(monkeypatch, fake_actions):
+    start_calls: list[str] = []
+
+    async def at_home(*args, **kwargs):
+        return "home"
+
+    async def plugged_in(*args, **kwargs):
+        return True
+
+    async def vehicle_soc(self, vehicle_id):
+        return 40
+
+    async def start_charging(self, vehicle_id, settings, state, source, force_max_rate=False):
+        start_calls.append(source)
+        state.is_charging = True
+
+    class SolarPlanner:
+        async def should_charge_now(self, **kwargs):
+            assert kwargs["min_battery_soc"] == 45
+            return True, "solar surplus available", "solar_surplus"
+
+    fake_actions._action_start_ev_charging_dynamic = AsyncMock(return_value=True)
+    monkeypatch.setattr(ev_planner, "get_ev_location", at_home)
+    monkeypatch.setattr(ev_planner, "is_ev_plugged_in", plugged_in)
+    monkeypatch.setattr(ev_planner.AutoScheduleExecutor, "_get_vehicle_soc", vehicle_soc)
+    monkeypatch.setattr(ev_planner.AutoScheduleExecutor, "_start_charging", start_charging)
+    monkeypatch.setattr(
+        ev_planner.dt_util,
+        "now",
+        lambda: SimpleNamespace(weekday=lambda: 0),
+    )
+
+    hass = _FakeHass()
+    hass.data["power_sync"]["entry-1"]["automation_store"]._data["solar_surplus_config"] = {}
+    executor = ev_planner.AutoScheduleExecutor(
+        hass,
+        _FakeConfigEntry(),
+        planner=SolarPlanner(),
+    )
+    settings = ev_planner.AutoScheduleSettings(
+        vehicle_id=VIN,
+        display_name="Model 3",
+        target_soc=80,
+        min_battery_to_start=45,
+    )
+    state = ev_planner.AutoScheduleState(vehicle_id=VIN)
+    state.current_plan = SimpleNamespace(windows=[])
+    state.last_plan_update = ev_planner.datetime.now()
+    executor._state[VIN] = state
+
+    asyncio.run(
+        executor._evaluate_vehicle(
+            VIN,
+            settings,
+            {
+                "battery_soc": 50,
+                "solar_power": 7000,
+                "load_power": 1000,
+                "grid_power": -1000,
+            },
+            current_price_cents=0,
+        )
+    )
+
+    assert start_calls == ["solar_surplus"]
+    assert state.last_decision == "started"
+
+
 def test_auto_schedule_deadline_uses_vehicle_max_amps(monkeypatch, fake_actions):
     fake_actions._action_start_ev_charging_dynamic = AsyncMock(return_value=True)
     monkeypatch.setattr(
