@@ -3499,10 +3499,12 @@ class AutoScheduleExecutor:
 
         # Set the charge rate — resolve to actual VIN/BLE identifier
         vehicle_vin = self._resolve_vehicle_vin(vehicle_id) if vehicle_id != "_default" else None
+        opts = {**self.config_entry.data, **self.config_entry.options}
+        charger_type = _effective_auto_schedule_charger_type(settings, opts)
         params = {
             "vehicle_vin": vehicle_vin,
             "amps": target_amps,
-            "charger_type": settings.charger_type,
+            "charger_type": charger_type,
             "charger_switch_entity": settings.charger_switch_entity,
             "charger_amps_entity": settings.charger_amps_entity,
             "charger_status_entity": settings.charger_status_entity,
@@ -3514,6 +3516,7 @@ class AutoScheduleExecutor:
             "pre_charge_wake_on_service_data": settings.pre_charge_wake_on_service_data,
             "pre_charge_wake_off_service_data": settings.pre_charge_wake_off_service_data,
         }
+        params = _with_configured_charger_entities(self.hass, params, opts, charger_type)
 
         try:
             success = await _set_vehicle_amps(
@@ -5086,9 +5089,7 @@ class AutoScheduleExecutor:
         # Sequential IDs (e.g. "1", "3") are mapped to BLE identifiers or VINs
         vehicle_vin = self._resolve_vehicle_vin(vehicle_id) if vehicle_id != "_default" else None
         opts = {**self.config_entry.data, **self.config_entry.options}
-        charger_type = settings.charger_type
-        if charger_type == "tesla":
-            charger_type = _configured_charger_type(opts)
+        charger_type = _effective_auto_schedule_charger_type(settings, opts)
 
         params = {
             "vehicle_id": vehicle_id,
@@ -5339,6 +5340,17 @@ def _configured_charger_type(opts: Mapping[str, Any]) -> str:
     if opts.get(CONF_OCPP_ENABLED):
         return "ocpp"
     return "tesla"
+
+
+def _effective_auto_schedule_charger_type(
+    settings: AutoScheduleSettings,
+    opts: Mapping[str, Any],
+) -> str:
+    """Return the physical charger backend for Smart Schedule actions."""
+    charger_type = str(settings.charger_type or "").lower()
+    if not charger_type or charger_type == "tesla":
+        return _configured_charger_type(opts)
+    return charger_type
 
 
 def _resolve_dynamic_loadpoint_id(

@@ -457,6 +457,102 @@ def test_auto_schedule_sigenergy_start_uses_modbus_backend(monkeypatch, fake_act
     assert params["target_battery_charge_kw"] == 0
 
 
+def test_auto_schedule_blank_charger_type_uses_configured_sigenergy(
+    monkeypatch,
+    fake_actions,
+):
+    fake_actions._action_start_ev_charging_dynamic = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        ev_planner.dt_util,
+        "now",
+        lambda: SimpleNamespace(weekday=lambda: 0),
+    )
+
+    class SigenergyEntry(_FakeConfigEntry):
+        options = {
+            "sigenergy_charger_enabled": True,
+            "sigenergy_charger_host": "192.0.2.21",
+            "sigenergy_charger_port": 502,
+            "sigenergy_charger_slave_id": 1,
+            "sigenergy_charger_type": "evac",
+        }
+
+    executor = ev_planner.AutoScheduleExecutor(
+        _FakeHass(),
+        SigenergyEntry(),
+        planner=SimpleNamespace(),
+    )
+    settings = ev_planner.AutoScheduleSettings(
+        vehicle_id="sigenergy_charger",
+        display_name="Sigenergy EVAC",
+        charger_type="",
+        max_charge_amps=30,
+    )
+    state = ev_planner.AutoScheduleState(vehicle_id="sigenergy_charger")
+
+    asyncio.run(executor._start_charging("sigenergy_charger", settings, state, "grid_opportunistic"))
+
+    fake_actions._action_start_ev_charging_dynamic.assert_awaited_once()
+    _hass, _entry, params = fake_actions._action_start_ev_charging_dynamic.await_args.args
+    assert params["vehicle_id"] == "sigenergy_charger"
+    assert params["vehicle_vin"] == "sigenergy_charger"
+    assert params["charger_type"] == "sigenergy"
+    assert params["sigenergy_charger_host"] == "192.0.2.21"
+
+
+def test_auto_schedule_rate_update_blank_charger_type_uses_configured_sigenergy(
+    monkeypatch,
+    fake_actions,
+):
+    set_amps_calls = []
+
+    async def set_vehicle_amps(hass, entry, vehicle_id, amps, params):
+        set_amps_calls.append((vehicle_id, amps, params))
+        return True
+
+    fake_actions._set_vehicle_amps = set_vehicle_amps
+    monkeypatch.setattr(
+        ev_planner.dt_util,
+        "now",
+        lambda: SimpleNamespace(weekday=lambda: 0),
+    )
+
+    class SigenergyEntry(_FakeConfigEntry):
+        options = {
+            "sigenergy_charger_enabled": True,
+            "sigenergy_charger_host": "192.0.2.22",
+            "sigenergy_charger_port": 502,
+            "sigenergy_charger_slave_id": 1,
+            "sigenergy_charger_type": "evac",
+        }
+
+    executor = ev_planner.AutoScheduleExecutor(
+        _FakeHass(),
+        SigenergyEntry(),
+        planner=SimpleNamespace(),
+    )
+    settings = ev_planner.AutoScheduleSettings(
+        vehicle_id="sigenergy_charger",
+        display_name="Sigenergy EVAC",
+        charger_type="",
+        min_charge_amps=5,
+        max_charge_amps=32,
+        voltage=230,
+        phases=1,
+    )
+
+    assert asyncio.run(
+        executor._set_vehicle_charge_rate("sigenergy_charger", 3680, settings)
+    )
+
+    assert len(set_amps_calls) == 1
+    vehicle_id, amps, params = set_amps_calls[0]
+    assert vehicle_id == "sigenergy_charger"
+    assert amps == 16
+    assert params["charger_type"] == "sigenergy"
+    assert params["sigenergy_charger_host"] == "192.0.2.22"
+
+
 def test_price_level_ocpp_start_uses_detected_hacs_prefix(monkeypatch, fake_actions):
     fake_actions._action_start_ev_charging_dynamic = AsyncMock(return_value=True)
 
