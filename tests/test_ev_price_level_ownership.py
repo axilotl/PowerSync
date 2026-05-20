@@ -80,6 +80,7 @@ class _FakeHass:
         enabled: bool = True,
         price_settings: dict | None = None,
         states: dict[str, str] | None = None,
+        entries: list | None = None,
     ) -> None:
         settings = {"enabled": enabled}
         if price_settings:
@@ -97,6 +98,9 @@ class _FakeHass:
         self.entity_registry = SimpleNamespace(entities={})
         self.device_registry = SimpleNamespace(devices={})
         self.states = _FakeStates(states)
+        self.config_entries = SimpleNamespace(
+            async_entries=lambda domain=None: entries or []
+        )
 
 
 class _FakeStates:
@@ -1177,3 +1181,27 @@ def test_unknown_vehicle_soc_uses_recovery_price_fallback(monkeypatch):
     assert mode == "price_level_recovery"
     assert "EV SOC unknown" in reason
     assert state.last_decision == "wants_charge"
+
+
+def test_price_level_generic_soc_uses_fallback_sensor():
+    entry = SimpleNamespace(
+        entry_id="entry-1",
+        data={},
+        options={
+            "generic_charger_enabled": True,
+            "generic_charger_soc_entity": "sensor.primary_ev_soc",
+            "generic_charger_soc_entity_2": "sensor.fallback_ev_soc",
+        },
+    )
+    executor = ev_planner.PriceLevelChargingExecutor(
+        _FakeHass(
+            states={
+                "sensor.primary_ev_soc": "unknown",
+                "sensor.fallback_ev_soc": "68",
+            },
+            entries=[entry],
+        ),
+        entry,
+    )
+
+    assert asyncio.run(executor._get_ev_soc()) == 68

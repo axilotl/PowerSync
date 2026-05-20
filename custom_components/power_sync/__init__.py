@@ -10086,29 +10086,24 @@ class EVVehiclesView(HomeAssistantView):
             # Discover generic charger vehicle (SoC from external sensor e.g. MQTT/BYD)
             from .const import (
                 CONF_GENERIC_CHARGER_ENABLED,
-                CONF_GENERIC_CHARGER_SOC_ENTITY,
                 CONF_GENERIC_CHARGER_STATUS_ENTITY,
+            )
+            from .automations.generic_charger_soc import (
+                generic_charger_soc_entities,
+                resolve_generic_charger_soc,
             )
             entries = self._hass.config_entries.async_entries(DOMAIN)
             for entry in entries:
                 opts = {**entry.data, **entry.options}
                 if not opts.get(CONF_GENERIC_CHARGER_ENABLED):
                     continue
-                soc_entity = opts.get(CONF_GENERIC_CHARGER_SOC_ENTITY, "")
+                soc_entities = generic_charger_soc_entities(opts)
                 status_entity = opts.get(CONF_GENERIC_CHARGER_STATUS_ENTITY, "")
-                if not soc_entity and not status_entity:
+                if not soc_entities and not status_entity:
                     continue  # No sensors configured — nothing to show
 
-                battery_level = None
-                if soc_entity:
-                    soc_state = self._hass.states.get(soc_entity)
-                    if soc_state and soc_state.state not in ("unavailable", "unknown", "None", None):
-                        try:
-                            val = float(soc_state.state)
-                            if 0 <= val <= 100:
-                                battery_level = int(val)
-                        except (ValueError, TypeError):
-                            pass
+                resolved_soc = resolve_generic_charger_soc(self._hass, opts)
+                battery_level = int(resolved_soc) if resolved_soc is not None else None
 
                 is_plugged_in = False
                 charging_state = "Disconnected"
@@ -11923,22 +11918,16 @@ class ChargingScheduleView(HomeAssistantView):
             Current battery level (0-100), defaults to 50 if not found.
         """
         # Method 0: Generic charger SoC sensor
-        from .const import CONF_GENERIC_CHARGER_ENABLED, CONF_GENERIC_CHARGER_SOC_ENTITY
+        from .const import CONF_GENERIC_CHARGER_ENABLED
+        from .automations.generic_charger_soc import resolve_generic_charger_soc
         entries = self._hass.config_entries.async_entries(DOMAIN)
         for entry in entries:
             opts = {**entry.data, **entry.options}
             if opts.get(CONF_GENERIC_CHARGER_ENABLED):
-                soc_entity = opts.get(CONF_GENERIC_CHARGER_SOC_ENTITY, "")
-                if soc_entity:
-                    state = self._hass.states.get(soc_entity)
-                    if state and state.state not in ("unavailable", "unknown", "None", None):
-                        try:
-                            level = float(state.state)
-                            if 0 <= level <= 100:
-                                _LOGGER.debug("ChargingScheduleView: Found generic charger SoC from %s: %.1f%%", soc_entity, level)
-                                return int(level)
-                        except (ValueError, TypeError):
-                            pass
+                level = resolve_generic_charger_soc(self._hass, opts)
+                if level is not None:
+                    _LOGGER.debug("ChargingScheduleView: Found generic charger SoC: %.1f%%", level)
+                    return int(level)
                 break
 
         # Method 1a: Check Tesla BLE sensor with configured prefix
@@ -13457,6 +13446,7 @@ class EVLoadpointStatusView(HomeAssistantView):
                 build_generic_charger_observation,
                 build_loadpoint_status,
             )
+            from .automations.generic_charger_soc import resolve_generic_charger_soc
             from .automations.ev_ownership import get_ev_last_commands, get_ev_ownerships
             from .automations.ev_charging_planner import (
                 get_ev_charging_coordinator,
@@ -13466,7 +13456,6 @@ class EVLoadpointStatusView(HomeAssistantView):
             from .const import (
                 CONF_GENERIC_CHARGER_AMPS_ENTITY,
                 CONF_GENERIC_CHARGER_ENABLED,
-                CONF_GENERIC_CHARGER_SOC_ENTITY,
                 CONF_GENERIC_CHARGER_STATUS_ENTITY,
                 CONF_GENERIC_CHARGER_SWITCH_ENTITY,
             )
@@ -13528,12 +13517,11 @@ class EVLoadpointStatusView(HomeAssistantView):
                 switch_entity = opts.get(CONF_GENERIC_CHARGER_SWITCH_ENTITY)
                 amps_entity = opts.get(CONF_GENERIC_CHARGER_AMPS_ENTITY)
                 status_entity = opts.get(CONF_GENERIC_CHARGER_STATUS_ENTITY)
-                soc_entity = opts.get(CONF_GENERIC_CHARGER_SOC_ENTITY)
 
                 switch_state = self._hass.states.get(switch_entity) if switch_entity else None
                 amps_state = self._hass.states.get(amps_entity) if amps_entity else None
                 status_state = self._hass.states.get(status_entity) if status_entity else None
-                soc_state = self._hass.states.get(soc_entity) if soc_entity else None
+                resolved_soc = resolve_generic_charger_soc(self._hass, opts)
 
                 vehicle_name = "EV"
                 automation_store = entry_data.get("automation_store")
@@ -13550,7 +13538,7 @@ class EVLoadpointStatusView(HomeAssistantView):
                         switch_state=switch_state.state if switch_state else None,
                         amps_value=amps_state.state if amps_state else None,
                         status_state=status_state.state if status_state else None,
-                        soc_value=soc_state.state if soc_state else None,
+                        soc_value=resolved_soc,
                     )
                 )
 

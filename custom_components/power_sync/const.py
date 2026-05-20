@@ -130,6 +130,7 @@ CONF_GENERIC_CHARGER_SWITCH_ENTITY = "generic_charger_switch_entity"
 CONF_GENERIC_CHARGER_AMPS_ENTITY = "generic_charger_amps_entity"
 CONF_GENERIC_CHARGER_STATUS_ENTITY = "generic_charger_status_entity"
 CONF_GENERIC_CHARGER_SOC_ENTITY = "generic_charger_soc_entity"
+CONF_GENERIC_CHARGER_SOC_ENTITY_2 = "generic_charger_soc_entity_2"
 
 # Sigenergy EV Charger configuration
 CONF_SIGENERGY_CHARGER_ENABLED = "sigenergy_charger_enabled"

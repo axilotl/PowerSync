@@ -243,6 +243,47 @@ def test_weather_entity_label_is_translated():
         assert "Optional" in step["data_description"]["weather_entity"]
 
 
+def test_ev_charging_options_include_fallback_generic_soc_sensor():
+    source = CONFIG_FLOW_PATH.read_text()
+    method = _options_flow_method("async_step_ev_charging")
+    method_source = ast.get_source_segment(source, method)
+
+    assert method_source is not None
+    assert "CONF_GENERIC_CHARGER_SOC_ENTITY" in method_source
+    assert "CONF_GENERIC_CHARGER_SOC_ENTITY_2" in method_source
+    assert method_source.index("CONF_GENERIC_CHARGER_SOC_ENTITY") < method_source.index(
+        "CONF_GENERIC_CHARGER_SOC_ENTITY_2"
+    )
+
+
+def test_ev_charging_save_preserves_fallback_generic_soc_sensor():
+    source = CONFIG_FLOW_PATH.read_text()
+    method = _options_flow_method("_save_ev_options")
+    method_source = ast.get_source_segment(source, method)
+
+    assert method_source is not None
+    assert "CONF_GENERIC_CHARGER_SOC_ENTITY_2" in method_source
+    assert "final_data[CONF_GENERIC_CHARGER_SOC_ENTITY_2]" in method_source
+
+
+def test_ev_charging_fallback_generic_soc_sensor_is_translated():
+    for path in (STRINGS_PATH, TRANSLATIONS_PATH):
+        data = json.loads(path.read_text())
+        for section, step_name in (
+            ("options", "ev_charging_setup"),
+            ("options", "ev_charging"),
+        ):
+            step = data[section]["step"][step_name]
+
+            assert (
+                step["data"]["generic_charger_soc_entity_2"]
+                == "Fallback EV battery SoC sensor"
+            )
+            assert "primary SoC sensor" in step["data_description"][
+                "generic_charger_soc_entity_2"
+            ]
+
+
 def test_globird_initial_flow_warns_tesla_users_about_tariff_baseline():
     source = CONFIG_FLOW_PATH.read_text()
     method = _config_flow_method("async_step_aemo_config")

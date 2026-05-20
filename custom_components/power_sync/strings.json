@@ -1601,7 +1601,8 @@
           "generic_charger_switch_entity": "Charger switch entity",
           "generic_charger_amps_entity": "Charger amps entity",
           "generic_charger_status_entity": "Connector status sensor",
-          "generic_charger_soc_entity": "EV battery SoC sensor"
+          "generic_charger_soc_entity": "EV battery SoC sensor",
+          "generic_charger_soc_entity_2": "Fallback EV battery SoC sensor"
         },
         "data_description": {
           "ev_charging_enabled": "Enable smart charging for Tesla vehicles. Not required for OCPP or Zaptec chargers.",
@@ -1616,7 +1617,8 @@
           "generic_charger_switch_entity": "Entity ID of the switch that starts/stops charging (e.g. switch.evnex_charge_now). Required.",
           "generic_charger_amps_entity": "Entity ID for charge current control in amps. Leave blank if not supported.",
           "generic_charger_status_entity": "Entity ID reporting connector status. Recognised: charging, preparing, suspended_evse, suspended_ev, finishing. Leave blank to skip.",
-          "generic_charger_soc_entity": "Entity ID reporting EV battery SoC as a percentage. Used for target SoC charging. Leave blank if unavailable."
+          "generic_charger_soc_entity": "Entity ID reporting EV battery SoC as a percentage. Used for target SoC charging. Leave blank if unavailable.",
+          "generic_charger_soc_entity_2": "Optional second EV battery SoC sensor. Used only when the primary SoC sensor is unavailable or invalid."
         },
         "submit": "Save"
       },
@@ -1662,7 +1664,8 @@
           "generic_charger_switch_entity": "Charger switch entity",
           "generic_charger_amps_entity": "Charger amps entity",
           "generic_charger_status_entity": "Connector status sensor",
-          "generic_charger_soc_entity": "EV battery SoC sensor"
+          "generic_charger_soc_entity": "EV battery SoC sensor",
+          "generic_charger_soc_entity_2": "Fallback EV battery SoC sensor"
         },
         "data_description": {
           "ev_charging_enabled": "Enable smart charging for Tesla vehicles. Not required for OCPP or Zaptec chargers.",
@@ -1677,7 +1680,8 @@
           "generic_charger_switch_entity": "Entity ID of the switch that starts/stops charging. Required.",
           "generic_charger_amps_entity": "Entity ID for charge current control in amps. Leave blank if not supported.",
           "generic_charger_status_entity": "Entity ID reporting connector status. Leave blank to skip plug detection.",
-          "generic_charger_soc_entity": "Entity ID reporting EV battery SoC as a percentage. Leave blank if unavailable."
+          "generic_charger_soc_entity": "Entity ID reporting EV battery SoC as a percentage. Leave blank if unavailable.",
+          "generic_charger_soc_entity_2": "Optional second EV battery SoC sensor. Used only when the primary SoC sensor is unavailable or invalid."
         },
         "submit": "Save"
       },

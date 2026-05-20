@@ -22,6 +22,27 @@ from power_sync.automations.loadpoint_status import (  # noqa: E402
     charging_state_plugged_status,
     coalesce_ev_widget_data,
 )
+from power_sync.automations.generic_charger_soc import (  # noqa: E402
+    resolve_generic_charger_soc,
+)
+
+
+class _State:
+    def __init__(self, state):
+        self.state = state
+
+
+class _States:
+    def __init__(self, states):
+        self._states = states
+
+    def get(self, entity_id):
+        return self._states.get(entity_id)
+
+
+class _Hass:
+    def __init__(self, states):
+        self.states = _States(states)
 
 
 def test_charging_state_plugged_status_matches_idle_connected_tesla_states():
@@ -31,6 +52,54 @@ def test_charging_state_plugged_status_matches_idle_connected_tesla_states():
     assert charging_state_plugged_status("No Power") is True
     assert charging_state_plugged_status("Disconnected") is False
     assert charging_state_plugged_status("unknown") is None
+
+
+def test_generic_charger_soc_resolver_prefers_primary_sensor():
+    hass = _Hass({
+        "sensor.car_a_soc": _State("61"),
+        "sensor.car_b_soc": _State("72"),
+    })
+
+    assert resolve_generic_charger_soc(hass, {
+        "generic_charger_soc_entity": "sensor.car_a_soc",
+        "generic_charger_soc_entity_2": "sensor.car_b_soc",
+    }) == 61
+
+
+def test_generic_charger_soc_resolver_falls_back_when_primary_unavailable():
+    hass = _Hass({
+        "sensor.car_a_soc": _State("unavailable"),
+        "sensor.car_b_soc": _State("72"),
+    })
+
+    assert resolve_generic_charger_soc(hass, {
+        "generic_charger_soc_entity": "sensor.car_a_soc",
+        "generic_charger_soc_entity_2": "sensor.car_b_soc",
+    }) == 72
+
+
+def test_generic_charger_soc_resolver_falls_back_when_primary_invalid():
+    hass = _Hass({
+        "sensor.car_a_soc": _State("125"),
+        "sensor.car_b_soc": _State("47.9"),
+    })
+
+    assert resolve_generic_charger_soc(hass, {
+        "generic_charger_soc_entity": "sensor.car_a_soc",
+        "generic_charger_soc_entity_2": "sensor.car_b_soc",
+    }) == 47.9
+
+
+def test_generic_charger_soc_resolver_returns_none_when_all_invalid():
+    hass = _Hass({
+        "sensor.car_a_soc": _State("not-a-number"),
+        "sensor.car_b_soc": _State("-1"),
+    })
+
+    assert resolve_generic_charger_soc(hass, {
+        "generic_charger_soc_entity": "sensor.car_a_soc",
+        "generic_charger_soc_entity_2": "sensor.car_b_soc",
+    }) is None
 
 
 def test_widget_data_removes_active_wall_connector_when_named_ev_is_active():
@@ -542,6 +611,27 @@ def test_generic_charger_observation_reports_commanded_without_power():
     assert loadpoints[0]["status"] == "commanded_no_power"
     assert loadpoints[0]["current_amps"] == 16
     assert loadpoints[0]["soc"] == 62
+
+
+def test_generic_charger_loadpoint_uses_fallback_soc_value():
+    hass = _Hass({
+        "sensor.primary_soc": _State("unknown"),
+        "sensor.fallback_soc": _State("71"),
+    })
+    observation = build_generic_charger_observation(
+        vehicle_name="Generic EV",
+        switch_state="off",
+        status_state="connected",
+        soc_value=resolve_generic_charger_soc(hass, {
+            "generic_charger_soc_entity": "sensor.primary_soc",
+            "generic_charger_soc_entity_2": "sensor.fallback_soc",
+        }),
+    )
+
+    loadpoints = build_loadpoint_status({}, [observation])
+
+    assert loadpoints[0]["vehicle_name"] == "Generic EV"
+    assert loadpoints[0]["soc"] == 71
 
 
 def test_generic_charger_observation_keeps_configured_idle_loadpoint():

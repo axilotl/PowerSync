@@ -981,29 +981,18 @@ async def get_ev_battery_level(
         CONF_TESLA_BLE_ENTITY_PREFIX,
         DEFAULT_TESLA_BLE_ENTITY_PREFIX,
         CONF_GENERIC_CHARGER_ENABLED,
-        CONF_GENERIC_CHARGER_SOC_ENTITY,
     )
+    from .generic_charger_soc import resolve_generic_charger_soc
     from homeassistant.helpers import entity_registry as er, device_registry as dr
 
     # Generic charger — check configured SoC sensor
     if config_entry:
         opts = {**config_entry.data, **config_entry.options}
         if opts.get(CONF_GENERIC_CHARGER_ENABLED):
-            soc_entity = opts.get(CONF_GENERIC_CHARGER_SOC_ENTITY, "")
-            if soc_entity:
-                state = hass.states.get(soc_entity)
-                if state and state.state not in ("unavailable", "unknown", "None", None):
-                    try:
-                        level = float(state.state)
-                        if 0 <= level <= 100:
-                            _LOGGER.debug(
-                                "Generic charger SoC from %s: %.1f%%",
-                                soc_entity, level,
-                            )
-                            return level
-                    except (ValueError, TypeError):
-                        pass
-                _LOGGER.debug("Generic charger SoC entity %s not available", soc_entity)
+            level = resolve_generic_charger_soc(hass, opts)
+            if level is not None:
+                _LOGGER.debug("Generic charger SoC resolved: %.1f%%", level)
+                return level
 
     # Method 1: Tesla BLE
     if vehicle_vin and vehicle_vin.startswith("ble_"):
@@ -3770,42 +3759,57 @@ class AutoScheduleExecutor:
         """
         from ..const import (
             DOMAIN,
+            CONF_GENERIC_CHARGER_ENABLED,
             CONF_TESLA_BLE_ENTITY_PREFIX,
             DEFAULT_TESLA_BLE_ENTITY_PREFIX,
             TESLA_BLE_SENSOR_CHARGE_LEVEL,
         )
+        from .generic_charger_soc import resolve_generic_charger_soc
         from homeassistant.helpers import entity_registry as er, device_registry as dr
 
         live_soc = None
+        entries = self.hass.config_entries.async_entries(DOMAIN)
+
+        for entry in entries:
+            opts = {**entry.data, **entry.options}
+            if not opts.get(CONF_GENERIC_CHARGER_ENABLED):
+                continue
+            if vehicle_id not in ("_default", "generic_ev", "ev"):
+                continue
+            generic_soc = resolve_generic_charger_soc(self.hass, opts)
+            if generic_soc is not None:
+                live_soc = int(generic_soc)
+                _LOGGER.debug("Found generic charger SoC: %s%%", live_soc)
+                break
 
         # Method 1: Check Tesla BLE sensor with configured prefix
         config = {}
-        entries = self.hass.config_entries.async_entries(DOMAIN)
         if entries:
             config = dict(entries[0].options)
 
         # Resolve vehicle-specific BLE prefix if available
         vehicle_vin = self._resolve_vehicle_vin(vehicle_id)
-        if vehicle_vin and vehicle_vin.startswith("ble_"):
-            ble_prefixes = [vehicle_vin[4:]]
-        else:
-            raw_prefix = config.get(CONF_TESLA_BLE_ENTITY_PREFIX, DEFAULT_TESLA_BLE_ENTITY_PREFIX)
-            # Scan every configured BLE prefix — in dual-car setups the old
-            # code silently used only the first prefix and returned its SoC
-            # for any vehicle whose VIN couldn't be resolved.
-            ble_prefixes = [p.strip() for p in raw_prefix.split(",") if p.strip()]
-        for prefix in ble_prefixes:
-            ble_charge_level_entity = TESLA_BLE_SENSOR_CHARGE_LEVEL.format(prefix=prefix)
-            ble_state = self.hass.states.get(ble_charge_level_entity)
-            if ble_state and ble_state.state not in ("unavailable", "unknown", "None", None):
-                try:
-                    level = float(ble_state.state)
-                    if 0 <= level <= 100:
-                        live_soc = int(level)
-                        _LOGGER.debug(f"Found Tesla BLE SoC from {ble_charge_level_entity}: {live_soc}%")
-                        break
-                except (ValueError, TypeError):
-                    continue
+        if live_soc is None:
+            if vehicle_vin and vehicle_vin.startswith("ble_"):
+                ble_prefixes = [vehicle_vin[4:]]
+            else:
+                raw_prefix = config.get(CONF_TESLA_BLE_ENTITY_PREFIX, DEFAULT_TESLA_BLE_ENTITY_PREFIX)
+                # Scan every configured BLE prefix — in dual-car setups the old
+                # code silently used only the first prefix and returned its SoC
+                # for any vehicle whose VIN couldn't be resolved.
+                ble_prefixes = [p.strip() for p in raw_prefix.split(",") if p.strip()]
+            for prefix in ble_prefixes:
+                ble_charge_level_entity = TESLA_BLE_SENSOR_CHARGE_LEVEL.format(prefix=prefix)
+                ble_state = self.hass.states.get(ble_charge_level_entity)
+                if ble_state and ble_state.state not in ("unavailable", "unknown", "None", None):
+                    try:
+                        level = float(ble_state.state)
+                        if 0 <= level <= 100:
+                            live_soc = int(level)
+                            _LOGGER.debug(f"Found Tesla BLE SoC from {ble_charge_level_entity}: {live_soc}%")
+                            break
+                    except (ValueError, TypeError):
+                        continue
 
         # Method 2: Check Tesla Fleet/Teslemetry entities via device registry
         if live_soc is None:
@@ -5960,7 +5964,20 @@ class PriceLevelChargingExecutor:
             vehicle_vin: Optional VIN to check specific vehicle. If None, returns
                          SoC of first vehicle found (backward compatible).
         """
+        from ..const import CONF_GENERIC_CHARGER_ENABLED
+        from .generic_charger_soc import resolve_generic_charger_soc
         from homeassistant.helpers import entity_registry as er, device_registry as dr
+
+        config_entries = getattr(self.hass, "config_entries", None)
+        if vehicle_vin in (None, "_default", "generic_ev", "ev") and config_entries:
+            for entry in config_entries.async_entries(self._domain):
+                opts = {**entry.data, **entry.options}
+                if not opts.get(CONF_GENERIC_CHARGER_ENABLED):
+                    continue
+                generic_soc = resolve_generic_charger_soc(self.hass, opts)
+                if generic_soc is not None:
+                    return int(generic_soc)
+                break
 
         # Method 1: Check tesla_vehicles in entry_data (legacy)
         entry_data = self.hass.data.get(self._domain, {}).get(self.config_entry.entry_id, {})

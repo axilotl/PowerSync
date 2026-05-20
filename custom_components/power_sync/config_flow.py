@@ -295,6 +295,7 @@ from .const import (
     CONF_GENERIC_CHARGER_AMPS_ENTITY,
     CONF_GENERIC_CHARGER_STATUS_ENTITY,
     CONF_GENERIC_CHARGER_SOC_ENTITY,
+    CONF_GENERIC_CHARGER_SOC_ENTITY_2,
     # Sigenergy EV charger configuration
     CONF_SIGENERGY_CHARGER_ENABLED,
     CONF_SIGENERGY_CHARGER_TYPE,
@@ -8390,6 +8391,10 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 CONF_GENERIC_CHARGER_SOC_ENTITY,
                 default=self._get_option(CONF_GENERIC_CHARGER_SOC_ENTITY, ""),
             ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
+            vol.Optional(
+                CONF_GENERIC_CHARGER_SOC_ENTITY_2,
+                default=self._get_option(CONF_GENERIC_CHARGER_SOC_ENTITY_2, ""),
+            ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
             # Sigenergy EVAC/EVDC charger direct Modbus control
             vol.Optional(
                 CONF_SIGENERGY_CHARGER_ENABLED,
@@ -8498,6 +8503,9 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
         generic_soc = ev_input.get(CONF_GENERIC_CHARGER_SOC_ENTITY, "")
         if generic_soc:
             final_data[CONF_GENERIC_CHARGER_SOC_ENTITY] = generic_soc
+        generic_soc_2 = ev_input.get(CONF_GENERIC_CHARGER_SOC_ENTITY_2, "")
+        if generic_soc_2:
+            final_data[CONF_GENERIC_CHARGER_SOC_ENTITY_2] = generic_soc_2
 
         # Add Sigenergy EV charger settings
         final_data[CONF_SIGENERGY_CHARGER_ENABLED] = ev_input.get(
