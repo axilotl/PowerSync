@@ -3558,6 +3558,18 @@ class SigenergyEnergyCoordinator(DataUpdateCoordinator):
         async with self._controller:
             return await self._controller.set_standby_mode()
 
+    async def set_no_discharge_mode(self) -> bool:
+        """Block Sigenergy battery discharge while still allowing battery charge."""
+        async with self._controller:
+            mode_ok = await self._controller.set_self_consumption_mode()
+            limit_ok = await self._controller.set_discharge_rate_limit(0)
+            return bool(mode_ok and limit_ok)
+
+    async def restore_no_discharge_mode(self) -> bool:
+        """Restore Sigenergy discharge capacity after no-discharge preserve mode."""
+        async with self._controller:
+            return await self._controller.restore_normal()
+
     async def restore_work_mode_from_idle(self) -> bool:
         """Restore self-consumption mode after IDLE."""
         async with self._controller:
@@ -4228,6 +4240,16 @@ class SungrowEnergyCoordinator(DataUpdateCoordinator):
         async with self._modbus_lock, self._controller:
             return await self._controller.set_idle_mode()
 
+    async def set_no_discharge_mode(self) -> bool:
+        """Block Sungrow battery discharge while still allowing battery charge."""
+        async with self._modbus_lock, self._controller:
+            return await self._controller.set_discharge_rate_limit(0)
+
+    async def restore_no_discharge_mode(self) -> bool:
+        """Restore Sungrow from scheduled EV no-discharge preserve mode."""
+        async with self._modbus_lock, self._controller:
+            return await self._controller.restore_normal()
+
     async def restore_work_mode_from_idle(self) -> bool:
         """Restore self-consumption mode after IDLE."""
         async with self._modbus_lock, self._controller:
@@ -4819,6 +4841,16 @@ class FoxESSEnergyCoordinator(DataUpdateCoordinator):
         """Set FoxESS to Backup mode (IDLE — prevents self-consumption discharge)."""
         async with self._modbus_lock, self._controller:
             return await self._controller.set_backup_mode()
+
+    async def set_no_discharge_mode(self) -> bool:
+        """Block FoxESS self-consumption discharge while still allowing charge."""
+        async with self._modbus_lock, self._controller:
+            return await self._controller.set_backup_mode()
+
+    async def restore_no_discharge_mode(self) -> bool:
+        """Restore FoxESS from scheduled EV no-discharge preserve mode."""
+        async with self._modbus_lock, self._controller:
+            return await self._controller.restore_work_mode_from_idle()
 
     async def restore_work_mode_from_idle(self) -> bool:
         """Restore work mode to Self Use after IDLE Backup mode."""

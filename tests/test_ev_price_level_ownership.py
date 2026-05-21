@@ -6,6 +6,7 @@ import asyncio
 import importlib
 import sys
 import types
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -101,6 +102,7 @@ class _FakeHass:
         self.config_entries = SimpleNamespace(
             async_entries=lambda domain=None: entries or []
         )
+        self.services = SimpleNamespace(async_call=AsyncMock())
 
 
 class _FakeStates:
@@ -417,6 +419,54 @@ def test_scheduled_ocpp_start_uses_ocpp_loadpoint_id(fake_actions):
     assert params["charger_type"] == "ocpp"
     assert params["ocpp_charger_id"] == "evse_1"
     assert params["allow_ownership_takeover"] is True
+
+
+def test_scheduled_preserve_home_battery_sets_optimizer_intent(fake_actions):
+    fake_actions._action_start_ev_charging_dynamic = AsyncMock(return_value=True)
+    fake_actions._action_stop_ev_charging_dynamic = AsyncMock(return_value=True)
+
+    hass = _FakeHass()
+    hass.data["power_sync"]["entry-1"]["automation_store"]._data[
+        "scheduled_charging"
+    ] = {"preserve_home_battery": True}
+
+    executor = ev_planner.ScheduledChargingExecutor(hass, _FakeConfigEntry())
+    result = asyncio.run(executor._start_charging("Scheduled window"))
+
+    assert result is True
+    preserve_state = hass.data["power_sync"]["entry-1"]["scheduled_ev_preserve_state"]
+    assert preserve_state["active"] is True
+    assert preserve_state["mode"] == "no_discharge_charge_allowed"
+
+    result = asyncio.run(executor._stop_charging("Outside schedule"))
+
+    assert result is True
+    preserve_state = hass.data["power_sync"]["entry-1"]["scheduled_ev_preserve_state"]
+    assert preserve_state["active"] is False
+
+
+def test_scheduled_time_window_excludes_end_boundary(monkeypatch):
+    executor = ev_planner.ScheduledChargingExecutor(_FakeHass(), _FakeConfigEntry())
+
+    monkeypatch.setattr(
+        ev_planner.dt_util,
+        "now",
+        lambda: datetime(2026, 5, 21, 15, 0, tzinfo=timezone.utc),
+    )
+
+    assert executor._is_in_time_window("11:00", "15:00") is False
+
+
+def test_scheduled_overnight_time_window_excludes_end_boundary(monkeypatch):
+    executor = ev_planner.ScheduledChargingExecutor(_FakeHass(), _FakeConfigEntry())
+
+    monkeypatch.setattr(
+        ev_planner.dt_util,
+        "now",
+        lambda: datetime(2026, 5, 21, 6, 0, tzinfo=timezone.utc),
+    )
+
+    assert executor._is_in_time_window("22:00", "06:00") is False
 
 
 def test_auto_schedule_sigenergy_start_uses_modbus_backend(monkeypatch, fake_actions):
@@ -811,7 +861,9 @@ def test_price_level_leaves_ownership_lease_session_alone(monkeypatch, fake_acti
     assert "manual mode owns" in state.last_decision_reason
 
 
-def test_price_level_zaptec_start_is_blocked_by_manual_owner():
+def test_price_level_zaptec_start_is_blocked_by_manual_owner(fake_actions):
+    fake_actions._action_start_ev_charging_dynamic = AsyncMock(return_value=True)
+
     class ZaptecEntry(_FakeConfigEntry):
         options = {
             "zaptec_standalone_enabled": True,

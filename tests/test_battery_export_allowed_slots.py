@@ -799,9 +799,19 @@ class _FakeBattery:
 class _FakeEnergyCoordinator:
     def __init__(self) -> None:
         self.restore_work_mode_from_idle_calls = 0
+        self.no_discharge_calls = 0
+        self.restore_no_discharge_calls = 0
 
     async def restore_work_mode_from_idle(self):
         self.restore_work_mode_from_idle_calls += 1
+
+    async def set_no_discharge_mode(self):
+        self.no_discharge_calls += 1
+        return True
+
+    async def restore_no_discharge_mode(self):
+        self.restore_no_discharge_calls += 1
+        return True
 
 
 def _execution_coordinator(opt_module, battery: _FakeBattery, soc: float):
@@ -815,6 +825,7 @@ def _execution_coordinator(opt_module, battery: _FakeBattery, soc: float):
     coordinator._last_executed_action = "self_consumption"
     coordinator._startup_backup_reserve = 20
     coordinator._pre_idle_backup_reserve = None
+    coordinator._scheduled_ev_no_discharge_active = False
     coordinator._last_export_prices = None
     coordinator.energy_coordinator = None
     coordinator.battery_system = "tesla"
@@ -829,6 +840,16 @@ def _execution_coordinator(opt_module, battery: _FakeBattery, soc: float):
     return coordinator
 
 
+def _enable_scheduled_ev_preserve(coordinator):
+    coordinator.hass.data = {
+        "power_sync": {
+            coordinator.entry_id: {
+                "scheduled_ev_preserve_state": {"active": True}
+            }
+        }
+    }
+
+
 def test_self_consumption_reapplies_when_tesla_mode_drifted_to_tou(opt_module):
     battery = _FakeBattery(hardware_mode="autonomous")
     coordinator = _execution_coordinator(opt_module, battery, soc=0.50)
@@ -841,6 +862,88 @@ def test_self_consumption_reapplies_when_tesla_mode_drifted_to_tou(opt_module):
 
     assert battery.self_consumption_calls == 1
     assert battery.backup_reserve_calls == [20]
+    assert coordinator._last_executed_action == "self_consumption"
+
+
+def test_scheduled_ev_preserve_blocks_export_but_allows_charge(opt_module):
+    battery = _FakeBattery()
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.80)
+    energy = _FakeEnergyCoordinator()
+    coordinator.energy_coordinator = energy
+    _enable_scheduled_ev_preserve(coordinator)
+
+    asyncio.run(
+        coordinator._execute_optimizer_action(
+            SimpleNamespace(action="export", power_w=5000)
+        )
+    )
+
+    assert battery.force_discharge_calls == []
+    assert energy.no_discharge_calls == 1
+    assert coordinator._last_executed_action == "no_discharge"
+
+    asyncio.run(
+        coordinator._execute_optimizer_action(
+            SimpleNamespace(action="charge", power_w=3000)
+        )
+    )
+
+    assert battery.force_charge_calls == [(10, 3000, False)]
+    assert energy.no_discharge_calls == 1
+
+
+def test_scheduled_ev_preserve_cancels_active_optimizer_export(opt_module):
+    battery = _FakeBattery()
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.80)
+    energy = _FakeEnergyCoordinator()
+    coordinator.energy_coordinator = energy
+    coordinator.battery_system = "goodwe"
+    start = datetime(2026, 5, 3, 8, 30, tzinfo=timezone.utc)
+    actions = [
+        SimpleNamespace(
+            action="export",
+            power_w=5000,
+            timestamp=start + idx * timedelta(minutes=5),
+        )
+        for idx in range(3)
+    ]
+    coordinator._current_schedule = SimpleNamespace(actions=actions)
+
+    asyncio.run(coordinator._execute_optimizer_action(actions[0]))
+    _enable_scheduled_ev_preserve(coordinator)
+    asyncio.run(coordinator._execute_optimizer_action(actions[0]))
+
+    assert battery.force_discharge_calls == [(15, 5000, False, None)]
+    assert battery.restore_normal_calls == 1
+    assert energy.no_discharge_calls == 1
+    assert coordinator._optimizer_force_state["active"] is False
+    assert coordinator._last_executed_action == "no_discharge"
+
+
+def test_scheduled_ev_preserve_release_restores_no_discharge_mode(opt_module):
+    battery = _FakeBattery()
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.80)
+    energy = _FakeEnergyCoordinator()
+    coordinator.energy_coordinator = energy
+    _enable_scheduled_ev_preserve(coordinator)
+
+    asyncio.run(
+        coordinator._execute_optimizer_action(
+            SimpleNamespace(action="self_consumption", power_w=0)
+        )
+    )
+    coordinator.hass.data["power_sync"][coordinator.entry_id][
+        "scheduled_ev_preserve_state"
+    ]["active"] = False
+
+    asyncio.run(
+        coordinator._execute_optimizer_action(
+            SimpleNamespace(action="self_consumption", power_w=0)
+        )
+    )
+
+    assert energy.no_discharge_calls == 1
+    assert energy.restore_no_discharge_calls == 1
     assert coordinator._last_executed_action == "self_consumption"
 
 

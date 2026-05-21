@@ -53,3 +53,15 @@ def test_brand_defaults_match_controller_defaults_for_hybrid_brands():
     assert const["get_brand_defaults"]("sigenergy") == {"port": 502, "slave_id": 247}
     assert const["get_brand_defaults"]("solax") == {"port": 502, "slave_id": 1}
     assert const["get_brand_defaults"]("alphaess") == {"port": 502, "slave_id": 85}
+    assert const["get_brand_defaults"]("solaredge") == {"port": 502, "slave_id": 1}
+
+
+def test_solaredge_ac_inverter_options_are_available():
+    const = _load_ac_inverter_namespace()
+
+    assert const["INVERTER_BRANDS"]["solaredge"] == "SolarEdge"
+    models = const["get_models_for_brand"]("solaredge")
+
+    assert "energy-hub" in models
+    assert "three-phase" in models
+    assert models != const["SUNGROW_MODELS"]

@@ -161,6 +161,7 @@ BATTERY_SYSTEM_SOLAX = "solax"
 BATTERY_SYSTEM_SAJ_H2 = "saj_h2"
 BATTERY_SYSTEM_FRONIUS_RESERVA = "fronius_reserva"
 BATTERY_SYSTEM_NEOVOLT = "neovolt"
+BATTERY_SYSTEM_SOLAREDGE = "solaredge"
 
 BATTERY_SYSTEMS = {
     BATTERY_SYSTEM_TESLA: "Tesla Powerwall — Fleet API or Teslemetry",
@@ -174,6 +175,7 @@ BATTERY_SYSTEMS = {
     BATTERY_SYSTEM_SAJ_H2: "SAJ H2/HS2 — via SAJ H2 Modbus integration",
     BATTERY_SYSTEM_FRONIUS_RESERVA: "Fronius Reserva — via Fronius Modbus integration",
     BATTERY_SYSTEM_NEOVOLT: "Neovolt/Bytewatt — via Neovolt Modbus integration",
+    BATTERY_SYSTEM_SOLAREDGE: "SolarEdge Home / inverter curtailment — Modbus TCP",
 }
 
 # Sungrow SH-series Battery System Configuration (Modbus TCP)
@@ -483,6 +485,18 @@ NEOVOLT_SURPLUS_BALANCER_MODES = (
 )
 DEFAULT_NEOVOLT_SURPLUS_BALANCER_MODE = NEOVOLT_SURPLUS_BALANCER_AUTO
 DEFAULT_NEOVOLT_SOC_BALANCE_TOLERANCE = 5.0
+
+# SolarEdge inverter / SolarEdge Home curtailment via Modbus TCP.
+# v1 is curtailment-only: active power limit control, not battery dispatch.
+CONF_SOLAREDGE_HOST = "solaredge_host"
+CONF_SOLAREDGE_PORT = "solaredge_port"
+CONF_SOLAREDGE_SLAVE_ID = "solaredge_slave_id"
+CONF_SOLAREDGE_RATED_POWER_W = "solaredge_rated_power_w"
+CONF_SOLAREDGE_ENTITY_PREFIX = "solaredge_entity_prefix"
+CONF_SOLAREDGE_DC_CURTAILMENT_ENABLED = "solaredge_dc_curtailment_enabled"
+DEFAULT_SOLAREDGE_PORT = 502
+DEFAULT_SOLAREDGE_SLAVE_ID = 1
+DEFAULT_SOLAREDGE_RATED_POWER_W = 5000
 
 # Demand charge configuration
 CONF_DEMAND_CHARGE_ENABLED = "demand_charge_enabled"
@@ -1269,6 +1283,7 @@ CONF_INVERTER_HOST = "inverter_host"
 CONF_INVERTER_PORT = "inverter_port"
 CONF_INVERTER_SLAVE_ID = "inverter_slave_id"
 CONF_INVERTER_TOKEN = "inverter_token"  # JWT token for Enphase IQ Gateway (firmware 7.x+)
+CONF_INVERTER_RATED_POWER_W = "inverter_rated_power_w"
 CONF_ENPHASE_USERNAME = "enphase_username"  # Enlighten username/email for auto token refresh
 CONF_ENPHASE_PASSWORD = "enphase_password"  # Enlighten password for auto token refresh
 CONF_ENPHASE_SERIAL = "enphase_serial"  # Envoy serial number (optional, auto-detected)
@@ -1293,6 +1308,7 @@ INVERTER_BRANDS = {
     "sigenergy": "Sigenergy",
     "solax": "Solax",
     "alphaess": "AlphaESS",
+    "solaredge": "SolarEdge",
 }
 
 # Fronius models (SunSpec Modbus)
@@ -1426,6 +1442,13 @@ ALPHAESS_MODELS = {
     "storion-t30": "Storion-T30 (Three Phase)",
 }
 
+SOLAREDGE_MODELS = {
+    "hd-wave": "HD-Wave / Home Wave",
+    "energy-hub": "Energy Hub / Home Hub",
+    "three-phase": "Three Phase",
+    "commercial": "Commercial / Synergy",
+}
+
 # Sungrow SG series (string inverters) - residential PV-only inverters.
 SUNGROW_SG_MODELS = {
     "sg2.5rs": "SG2.5RS",
@@ -1535,6 +1558,7 @@ def get_models_for_brand(brand: str, battery_system: str = None) -> dict[str, st
         "sigenergy": SIGENERGY_MODELS,
         "solax": SOLAX_MODELS,
         "alphaess": ALPHAESS_MODELS,
+        "solaredge": SOLAREDGE_MODELS,
     }
 
     models = brand_models.get(brand_key)
@@ -1557,6 +1581,7 @@ def get_brand_defaults(brand: str) -> dict[str, int]:
         "sigenergy": {"port": 502, "slave_id": 247},
         "solax": {"port": 502, "slave_id": 1},
         "alphaess": {"port": 502, "slave_id": 85},
+        "solaredge": {"port": 502, "slave_id": 1},
     }
     return defaults.get(brand_key, {"port": 502, "slave_id": 1})
 
@@ -1605,6 +1630,7 @@ OPTIMIZATION_PROVIDER_NATIVE_NAMES = {
     BATTERY_SYSTEM_SAJ_H2: "SAJ H2",
     BATTERY_SYSTEM_FRONIUS_RESERVA: "Fronius Reserva",
     BATTERY_SYSTEM_NEOVOLT: "Neovolt",
+    BATTERY_SYSTEM_SOLAREDGE: "SolarEdge",
 }
 
 OPTIMIZATION_PROVIDERS = {
@@ -1681,6 +1707,7 @@ BATTERY_CAPACITY_DEFAULTS = {
     BATTERY_SYSTEM_SAJ_H2: 10000,     # Varies, default 10 kWh
     BATTERY_SYSTEM_FRONIUS_RESERVA: 9600,  # Fronius Reserva varies by module count
     BATTERY_SYSTEM_NEOVOLT: 20100,    # Bytewatt pack is commonly 20.1 kWh
+    BATTERY_SYSTEM_SOLAREDGE: 10000,  # SolarEdge Home Battery varies by stack
 }
 
 # Max charge/discharge power defaults by system (W)
@@ -1696,6 +1723,7 @@ BATTERY_POWER_DEFAULTS = {
     BATTERY_SYSTEM_SAJ_H2: 5000,       # Varies by model
     BATTERY_SYSTEM_FRONIUS_RESERVA: 5000,  # Reserva/GEN24 common operating target
     BATTERY_SYSTEM_NEOVOLT: 5000,      # Configurable in the upstream Neovolt integration
+    BATTERY_SYSTEM_SOLAREDGE: 5000,    # Active-power curtailment only in v1
 }
 
 # Optimization service

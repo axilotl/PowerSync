@@ -257,6 +257,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Restored when exiting IDLE so we don't overwrite the user's
         # hardware reserve with the optimizer's LP floor.
         self._pre_idle_backup_reserve: int | None = None
+        self._scheduled_ev_no_discharge_active = False
         # User's real backup reserve captured ONCE on startup, before any
         # IDLE modifies it. Used as the authoritative restore value.
         self._startup_backup_reserve: int | None = None
@@ -288,6 +289,177 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._pre_idle_backup_reserve, e,
             )
             return False
+
+    def _scheduled_ev_preserve_active(self) -> bool:
+        """Return True when scheduled EV charging requested no-discharge mode."""
+        state = (
+            self.hass.data.get("power_sync", {})
+            .get(self.entry_id, {})
+            .get("scheduled_ev_preserve_state", {})
+        )
+        return bool(state.get("active"))
+
+    async def _set_scheduled_ev_no_discharge_mode(self, battery, reason: str) -> bool:
+        """Prevent home-battery discharge while still allowing battery charging."""
+        if self._scheduled_ev_no_discharge_active:
+            return True
+
+        try:
+            if (
+                self.energy_coordinator
+                and hasattr(self.energy_coordinator, "set_no_discharge_mode")
+            ):
+                ok = await self.energy_coordinator.set_no_discharge_mode()
+            else:
+                ok = await self._set_idle_hold_mode(battery, preserve_charge=True)
+        except Exception as err:
+            _LOGGER.warning(
+                "Scheduled EV preserve: failed to enter no-discharge mode: %s",
+                err,
+            )
+            return False
+
+        if ok is False:
+            _LOGGER.warning("Scheduled EV preserve: no-discharge mode returned False")
+            return False
+
+        self._scheduled_ev_no_discharge_active = True
+        _LOGGER.info(
+            "Scheduled EV preserve: battery discharge blocked, charging still allowed (%s)",
+            reason,
+        )
+        return True
+
+    async def _release_scheduled_ev_no_discharge_mode(self, reason: str = "") -> bool:
+        """Release scheduled EV no-discharge mode when preserve is no longer active."""
+        if not self._scheduled_ev_no_discharge_active:
+            return True
+
+        self._scheduled_ev_no_discharge_active = False
+        try:
+            if (
+                self.energy_coordinator
+                and hasattr(self.energy_coordinator, "restore_no_discharge_mode")
+            ):
+                ok = await self.energy_coordinator.restore_no_discharge_mode()
+            elif (
+                self.energy_coordinator
+                and hasattr(self.energy_coordinator, "restore_work_mode_from_idle")
+            ):
+                ok = await self.energy_coordinator.restore_work_mode_from_idle()
+            elif (
+                self._executor
+                and hasattr(self._executor.battery_controller, "restore_normal")
+            ):
+                ok = await self._executor.battery_controller.restore_normal()
+            else:
+                ok = True
+        except Exception as err:
+            _LOGGER.warning(
+                "Scheduled EV preserve: failed to release no-discharge mode: %s",
+                err,
+            )
+            return False
+
+        if ok is False:
+            _LOGGER.warning("Scheduled EV preserve: no-discharge release returned False")
+            return False
+
+        _LOGGER.info(
+            "Scheduled EV preserve: battery no-discharge mode released%s",
+            f" ({reason})" if reason else "",
+        )
+        return True
+
+    async def _set_idle_hold_mode(self, battery, preserve_charge: bool = False) -> bool:
+        """Apply the existing optimiser hold semantics.
+
+        ``preserve_charge`` means prefer no-discharge paths that still allow
+        solar/grid charge. Backends without such a primitive fall back to their
+        existing IDLE hold behavior.
+        """
+        soc, _ = await self._get_battery_state()
+        soc_pct = int(soc * 100)
+        configured_idle_floor = int(self._config.backup_reserve * 100)
+
+        if self._pre_idle_backup_reserve is None:
+            if self._startup_backup_reserve is not None:
+                self._pre_idle_backup_reserve = self._startup_backup_reserve
+                _LOGGER.debug(
+                    "Optimizer: Using startup backup reserve for IDLE restore: %d%%",
+                    self._startup_backup_reserve,
+                )
+            else:
+                saved = None
+                if hasattr(battery, "get_backup_reserve"):
+                    try:
+                        saved = await battery.get_backup_reserve()
+                    except Exception:
+                        pass
+                if (
+                    saved is None
+                    and self.energy_coordinator
+                    and hasattr(self.energy_coordinator, "data")
+                ):
+                    coord_data = self.energy_coordinator.data or {}
+                    saved = coord_data.get("backup_reserve") or coord_data.get("min_soc")
+                    if saved is not None:
+                        saved = int(saved)
+                if saved is not None:
+                    self._pre_idle_backup_reserve = saved
+                    _LOGGER.debug(
+                        "Optimizer: Saved pre-IDLE backup reserve (fallback): %d%%",
+                        saved,
+                    )
+
+        non_tesla_hold_pct = max(soc_pct, configured_idle_floor)
+
+        if (
+            self.energy_coordinator
+            and hasattr(self.energy_coordinator, "set_backup_mode")
+        ):
+            await self.energy_coordinator.set_backup_mode()
+            if hasattr(battery, "set_backup_reserve") and self.battery_system != "sigenergy":
+                self._idle_reserve_adjustment = True
+                try:
+                    await battery.set_backup_reserve(non_tesla_hold_pct)
+                finally:
+                    self._idle_reserve_adjustment = False
+            _LOGGER.info(
+                "Optimizer: IDLE — holding SOC at %d%% (hold mode)",
+                non_tesla_hold_pct,
+            )
+            return True
+
+        if hasattr(battery, "set_backup_reserve"):
+            if hasattr(battery, "set_self_consumption_mode"):
+                reserve = min(max(soc_pct, 0), 80)
+                await battery.set_self_consumption_mode()
+            elif hasattr(battery, "restore_normal"):
+                reserve = non_tesla_hold_pct
+                await battery.restore_normal()
+            else:
+                reserve = non_tesla_hold_pct
+            self._idle_reserve_adjustment = True
+            try:
+                await battery.set_backup_reserve(reserve)
+            finally:
+                self._idle_reserve_adjustment = False
+            _LOGGER.info(
+                "Optimizer: IDLE — holding SOC at %d%% via self_consumption "
+                "(backup reserve=%d%%)",
+                soc_pct, reserve,
+            )
+            return True
+
+        if hasattr(battery, "set_self_consumption_mode"):
+            await battery.set_self_consumption_mode()
+            _LOGGER.info("Optimizer: IDLE — self-consumption (no set_backup_reserve)")
+            return True
+        if hasattr(battery, "restore_normal"):
+            await battery.restore_normal()
+            return True
+        return False
 
     @property
     def enabled(self) -> bool:
@@ -1358,6 +1530,8 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     _LOGGER.info("Optimizer disable: restored work mode from IDLE")
                 except Exception as e:
                     _LOGGER.warning("Failed to restore work mode on disable: %s", e)
+        if self._scheduled_ev_no_discharge_active:
+            await self._release_scheduled_ev_no_discharge_mode("optimizer disabled")
         self._last_executed_action = None
 
         # Cancel background tasks first so they can't run optimization
@@ -1958,7 +2132,10 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         or (force_type == "charge" and a.action == "charge")
                     )
 
+                preserve_active_for_force = self._scheduled_ev_preserve_active()
                 lp_matches_force = _action_matches_force(action)
+                if preserve_active_for_force and force_type == "discharge":
+                    lp_matches_force = False
                 force_window_action = action
 
                 if lp_matches_force:
@@ -2103,7 +2280,10 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     await battery.restore_normal()
                 # Restore backup_reserve to pre-IDLE value if available,
                 # so we don't overwrite the user's hardware reserve setting.
-                if hasattr(battery, "set_backup_reserve") and self._pre_idle_backup_reserve is not None:
+                if (
+                    hasattr(battery, "set_backup_reserve")
+                    and self._pre_idle_backup_reserve is not None
+                ):
                     await battery.set_backup_reserve(self._pre_idle_backup_reserve)
                     _LOGGER.info(
                         "Optimizer: Restored backup reserve to %d%% "
@@ -2211,6 +2391,23 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                             effective_action, _current_export * 100,
                         )
                         effective_action = "self_consumption"
+
+            preserve_active = self._scheduled_ev_preserve_active()
+            if preserve_active and effective_action in (
+                "discharge",
+                "export",
+                "consume",
+                "self_consumption",
+                "idle",
+            ):
+                if effective_action != "idle":
+                    _LOGGER.info(
+                        "Scheduled EV preserve: overriding optimizer %s → no_discharge",
+                        effective_action,
+                    )
+                effective_action = "no_discharge"
+            elif not preserve_active:
+                await self._release_scheduled_ev_no_discharge_mode("preserve inactive")
 
             # When transitioning from IDLE to another action, immediately undo
             # what IDLE did (restore work mode and backup_reserve) before
@@ -2340,102 +2537,13 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         "Optimizer: Discharging/exporting at %.0fW for %dmin",
                         action.power_w, discharge_duration,
                     )
+            elif effective_action == "no_discharge":
+                await self._set_scheduled_ev_no_discharge_mode(
+                    battery,
+                    getattr(action, "action", "scheduled_ev_preserve"),
+                )
             elif effective_action == "idle":
-                # IDLE: Hold battery at current SOC by setting backup reserve
-                # to current percentage. This prevents discharge while grid
-                # serves the home load. Useful for Amber when prices are cheap
-                # and the battery should hold charge for an upcoming spike.
-                soc, _ = await self._get_battery_state()
-                soc_pct = int(soc * 100)
-                # Non-Tesla hardware can use its native reserve/floor as the
-                # hold point. Tesla must not raise backup_reserve above current
-                # SOC here because that can trigger grid charging up to the
-                # optimizer floor.
-                configured_idle_floor = int(self._config.backup_reserve * 100)
-
-                # Use the startup-captured backup reserve as the restore value.
-                # Don't read from the API here — it may already show an
-                # IDLE-elevated value from a previous cycle.
-                if self._pre_idle_backup_reserve is None:
-                    if self._startup_backup_reserve is not None:
-                        self._pre_idle_backup_reserve = self._startup_backup_reserve
-                        _LOGGER.debug("Optimizer: Using startup backup reserve for IDLE restore: %d%%", self._startup_backup_reserve)
-                    else:
-                        # Startup capture failed — try reading now as last resort
-                        saved = None
-                        if hasattr(battery, "get_backup_reserve"):
-                            try:
-                                saved = await battery.get_backup_reserve()
-                            except Exception:
-                                pass
-                        if saved is None and self.energy_coordinator and hasattr(self.energy_coordinator, "data"):
-                            coord_data = self.energy_coordinator.data or {}
-                            saved = coord_data.get("backup_reserve") or coord_data.get("min_soc")
-                            if saved is not None:
-                                saved = int(saved)
-                        if saved is not None:
-                            self._pre_idle_backup_reserve = saved
-                            _LOGGER.debug("Optimizer: Saved pre-IDLE backup reserve (fallback): %d%%", saved)
-                non_tesla_hold_pct = max(soc_pct, configured_idle_floor)
-
-                # FoxESS/Sungrow: Use a hold mode for IDLE. In normal
-                # self-consumption mode, min_soc/backup_reserve is only a
-                # passive floor — the battery still discharges to serve home
-                # load and the optimizer chases SOC downward. Switching to a
-                # hold mode (FoxESS: Backup, Sungrow: Forced+Stop) prevents
-                # all self-consumption discharge so the grid serves load.
-                if (
-                    self.energy_coordinator
-                    and hasattr(self.energy_coordinator, "set_backup_mode")
-                ):
-                    await self.energy_coordinator.set_backup_mode()
-                    # FoxESS/Sungrow: also set min_soc as a safety floor in hold mode.
-                    # Sigenergy: STANDBY stops all battery activity — don't touch
-                    # backup_reserve (it causes grid-charging to reach the level).
-                    if hasattr(battery, "set_backup_reserve") and self.battery_system != "sigenergy":
-                        self._idle_reserve_adjustment = True
-                        try:
-                            await battery.set_backup_reserve(non_tesla_hold_pct)
-                        finally:
-                            self._idle_reserve_adjustment = False
-                    _LOGGER.info(
-                        "Optimizer: IDLE — holding SOC at %d%% (hold mode)",
-                        non_tesla_hold_pct,
-                    )
-                elif hasattr(battery, "set_backup_reserve"):
-                    configured_reserve_pct = int(self._config.backup_reserve * 100)
-                    if hasattr(battery, "set_self_consumption_mode"):
-                        # Tesla IDLE: self_consumption mode prevents TOU-based
-                        # grid charging (autonomous+TOU charges independently).
-                        # Set reserve to current SOC only. Using the optimizer
-                        # floor here can raise the Tesla hardware reserve above
-                        # current SOC and make the Powerwall charge from grid.
-                        reserve = min(max(soc_pct, 0), 80)
-                        await battery.set_self_consumption_mode()
-                    elif hasattr(battery, "restore_normal"):
-                        # GoodWe (and similar): must exit ECO_CHARGE/ECO_DISCHARGE
-                        # before setting the DOD floor, otherwise the inverter
-                        # ignores the floor and continues the forced mode.
-                        # No 80% cap — GoodWe DOD range goes up to 89%.
-                        reserve = non_tesla_hold_pct
-                        await battery.restore_normal()
-                    else:
-                        reserve = non_tesla_hold_pct
-                    self._idle_reserve_adjustment = True
-                    try:
-                        await battery.set_backup_reserve(reserve)
-                    finally:
-                        self._idle_reserve_adjustment = False
-                    _LOGGER.info(
-                        "Optimizer: IDLE — holding SOC at %d%% via self_consumption "
-                        "(backup reserve=%d%%)",
-                        soc_pct, reserve,
-                    )
-                elif hasattr(battery, "set_self_consumption_mode"):
-                    await battery.set_self_consumption_mode()
-                    _LOGGER.info("Optimizer: IDLE — self-consumption (no set_backup_reserve)")
-                elif hasattr(battery, "restore_normal"):
-                    await battery.restore_normal()
+                await self._set_idle_hold_mode(battery)
             elif effective_action == "off_grid":
                 # Off-grid curtailment: physically disconnect from grid.
                 # Delegates to CurtailmentFallback which enforces SOC floor,

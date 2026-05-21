@@ -5599,6 +5599,37 @@ async def _start_coordinated_charging(
         allow_ownership_takeover=allow_ownership_takeover,
     )
     charger_type = params.get("charger_type", _configured_charger_type(opts))
+    loadpoint_id = params.get("vehicle_id") or vehicle_vin
+    try:
+        from .ev_ownership import can_claim_ev_ownership, record_ev_command
+
+        can_claim, _lease_id, _lease, blocked_reason = can_claim_ev_ownership(
+            hass,
+            config_entry,
+            loadpoint_id,
+            owner_mode=owner_mode,
+            allow_takeover=allow_ownership_takeover,
+        )
+        if not can_claim:
+            record_ev_command(
+                hass,
+                config_entry,
+                loadpoint_id,
+                command=f"start_{owner_mode}",
+                success=False,
+                reason=blocked_reason,
+            )
+            _LOGGER.info(
+                "%s start blocked for %s: %s",
+                log_prefix,
+                loadpoint_id,
+                blocked_reason,
+            )
+            return False
+    except Exception as err:
+        _LOGGER.debug("EV ownership start guard failed for %s: %s", loadpoint_id, err)
+        return False
+
     if (
         charger_type == "zaptec"
         and cooldown_state is not None
@@ -6744,6 +6775,7 @@ class ScheduledChargingExecutor:
         self.config_entry = config_entry
         self._domain = DOMAIN
         self._state = ScheduledChargingState()
+        self._preserve_home_battery_active = False
 
     def _get_settings(self) -> dict:
         """Get scheduled charging settings from store."""
@@ -6755,6 +6787,7 @@ class ScheduledChargingExecutor:
             "start_time": "00:00",
             "end_time": "06:00",
             "max_price_cents": 30,
+            "preserve_home_battery": False,
         }
 
         if store:
@@ -6763,6 +6796,58 @@ class ScheduledChargingExecutor:
             defaults.update(settings)
 
         return defaults
+
+    def _set_preserve_home_battery_intent(self, reason: str) -> None:
+        """Publish scheduled EV preserve intent for the optimiser to execute."""
+        entry_data = self.hass.data.setdefault(self._domain, {}).setdefault(
+            self.config_entry.entry_id,
+            {},
+        )
+        entry_data["scheduled_ev_preserve_state"] = {
+            "active": True,
+            "mode": "no_discharge_charge_allowed",
+            "source": "scheduled_charging",
+            "reason": reason,
+        }
+        if not self._preserve_home_battery_active:
+            _LOGGER.info(
+                "Scheduled charging: requested home battery preserve mode (%s)",
+                reason,
+            )
+        self._preserve_home_battery_active = True
+
+    def _clear_preserve_home_battery_intent(self, reason: str = "") -> None:
+        """Clear scheduled EV preserve intent."""
+        entry_data = self.hass.data.get(self._domain, {}).get(
+            self.config_entry.entry_id,
+            {},
+        )
+        state = entry_data.setdefault("scheduled_ev_preserve_state", {})
+        state.update({
+            "active": False,
+            "mode": "no_discharge_charge_allowed",
+            "source": "scheduled_charging",
+            "reason": reason,
+        })
+        if not self._preserve_home_battery_active:
+            return
+        self._preserve_home_battery_active = False
+        _LOGGER.info(
+            "Scheduled charging: cleared home battery preserve request%s",
+            f" ({reason})" if reason else "",
+        )
+
+    async def apply_preserve_home_battery(
+        self,
+        wants_charge: bool,
+        reason: str,
+    ) -> None:
+        """Sync preserve-home-battery mode with the current schedule decision."""
+        preserve_enabled = self._get_settings().get("preserve_home_battery", False)
+        if wants_charge and preserve_enabled:
+            self._set_preserve_home_battery_intent(reason)
+        else:
+            self._clear_preserve_home_battery_intent(reason)
 
     def _is_in_time_window(self, start_time_str: str, end_time_str: str) -> bool:
         """Check if current time is within the scheduled window."""
@@ -6777,13 +6862,16 @@ class ScheduledChargingExecutor:
             start_time = dt_time(int(start_parts[0]), int(start_parts[1]))
             end_time = dt_time(int(end_parts[0]), int(end_parts[1]))
 
+            if start_time == end_time:
+                return False
+
             # Handle overnight windows (e.g., 22:00 - 06:00)
-            if start_time <= end_time:
+            if start_time < end_time:
                 # Same day window
-                return start_time <= current_time <= end_time
+                return start_time <= current_time < end_time
             else:
                 # Overnight window
-                return current_time >= start_time or current_time <= end_time
+                return current_time >= start_time or current_time < end_time
 
         except Exception as e:
             _LOGGER.error(f"Error parsing time window: {e}")
@@ -6791,6 +6879,7 @@ class ScheduledChargingExecutor:
 
     async def _start_charging(self, reason: str) -> bool:
         """Start EV charging."""
+        await self.apply_preserve_home_battery(True, reason)
         success = await _start_coordinated_charging(
             self.hass,
             self._domain,
@@ -6827,6 +6916,7 @@ class ScheduledChargingExecutor:
         self._state.last_decision = "stopped"
         self._state.last_decision_reason = reason
         _LOGGER.info(f"Scheduled charging: Stopped - {reason}")
+        self._clear_preserve_home_battery_intent(reason)
         return True
 
     async def get_charging_decision(self, current_price_cents: Optional[float]) -> Tuple[bool, str, str]:
@@ -6903,6 +6993,7 @@ class ScheduledChargingExecutor:
         elif not should_charge and self._state.is_charging:
             await self._stop_charging(reason)
         else:
+            await self.apply_preserve_home_battery(should_charge, reason)
             self._state.last_decision = "charging" if self._state.is_charging else "waiting"
             self._state.last_decision_reason = reason
 
@@ -6921,6 +7012,7 @@ class ScheduledChargingExecutor:
             "is_charging": self._state.is_charging,
             "last_decision": self._state.last_decision,
             "last_decision_reason": self._state.last_decision_reason,
+            "preserve_home_battery_active": self._preserve_home_battery_active,
             "settings": settings,
         }
 
@@ -7081,6 +7173,7 @@ class EVChargingModeCoordinator:
         decisions: List[ChargingModeDecision] = []
         if scheduled_exec:
             wants_charge, reason, source = await scheduled_exec.get_charging_decision(current_price_cents)
+            await scheduled_exec.apply_preserve_home_battery(wants_charge, reason)
             decisions.append(ChargingModeDecision(
                 mode_name="Scheduled",
                 wants_charge=wants_charge,

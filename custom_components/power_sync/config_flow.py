@@ -84,6 +84,7 @@ from .const import (
     BATTERY_SYSTEM_SAJ_H2,
     BATTERY_SYSTEM_FRONIUS_RESERVA,
     BATTERY_SYSTEM_NEOVOLT,
+    BATTERY_SYSTEM_SOLAREDGE,
     BATTERY_SYSTEMS,
     CONF_ESY_CONFIG_ENTRY_ID,
     # Solax battery system configuration
@@ -125,6 +126,15 @@ from .const import (
     DEFAULT_NEOVOLT_SURPLUS_BALANCER_MODE,
     DEFAULT_NEOVOLT_SOC_BALANCE_TOLERANCE,
     NEOVOLT_SURPLUS_BALANCER_MODES,
+    CONF_SOLAREDGE_HOST,
+    CONF_SOLAREDGE_PORT,
+    CONF_SOLAREDGE_SLAVE_ID,
+    CONF_SOLAREDGE_RATED_POWER_W,
+    CONF_SOLAREDGE_ENTITY_PREFIX,
+    CONF_SOLAREDGE_DC_CURTAILMENT_ENABLED,
+    DEFAULT_SOLAREDGE_PORT,
+    DEFAULT_SOLAREDGE_SLAVE_ID,
+    DEFAULT_SOLAREDGE_RATED_POWER_W,
     # AlphaESS battery system configuration
     CONF_ALPHAESS_MODBUS_HOST,
     CONF_ALPHAESS_MODBUS_PORT,
@@ -224,6 +234,7 @@ from .const import (
     CONF_INVERTER_PORT,
     CONF_INVERTER_SLAVE_ID,
     CONF_INVERTER_TOKEN,
+    CONF_INVERTER_RATED_POWER_W,
     CONF_ENPHASE_USERNAME,
     CONF_ENPHASE_PASSWORD,
     CONF_ENPHASE_SERIAL,
@@ -1174,6 +1185,7 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._foxess_data: dict[str, Any] = {}  # FoxESS Modbus configuration
         self._goodwe_data: dict[str, Any] = {}  # GoodWe configuration
         self._neovolt_data: dict[str, Any] = {}  # Neovolt bridge configuration
+        self._solaredge_data: dict[str, Any] = {}  # SolarEdge curtailment configuration
         self._aemo_only_mode: bool = False  # True if using AEMO spike only (no Amber)
         self._aemo_data: dict[str, Any] = {}
         self._flow_power_data: dict[str, Any] = {}
@@ -1532,6 +1544,8 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return await self.async_step_fronius_reserva_battery()
         elif self._selected_battery_system == BATTERY_SYSTEM_NEOVOLT:
             return await self.async_step_neovolt_battery()
+        elif self._selected_battery_system == BATTERY_SYSTEM_SOLAREDGE:
+            return await self.async_step_solaredge()
         else:
             return await self.async_step_tesla_provider()
 
@@ -1561,6 +1575,7 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             **getattr(self, "_saj_h2_data", {}),
             **getattr(self, "_fronius_reserva_data", {}),
             **getattr(self, "_neovolt_data", {}),
+            **getattr(self, "_solaredge_data", {}),
             CONF_ELECTRICITY_PROVIDER: self._selected_electricity_provider,
         }
 
@@ -1603,6 +1618,7 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             BATTERY_SYSTEM_SAJ_H2: "SAJ H2",
             BATTERY_SYSTEM_FRONIUS_RESERVA: "Fronius Reserva",
             BATTERY_SYSTEM_NEOVOLT: "Neovolt",
+            BATTERY_SYSTEM_SOLAREDGE: "SolarEdge",
         }.get(self._selected_battery_system, "")
 
         if battery_label:
@@ -2625,6 +2641,118 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="esy_sunhome",
             data_schema=vol.Schema({}),
+            errors=errors,
+        )
+
+    async def async_step_solaredge(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Configure SolarEdge Modbus curtailment.
+
+        SolarEdge v1 support is curtailment-only. Direct Modbus is preferred;
+        entity fallback is allowed for existing SolarEdge Modbus HA integrations.
+        """
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            host = (user_input.get(CONF_SOLAREDGE_HOST) or "").strip()
+            port = int(user_input.get(CONF_SOLAREDGE_PORT, DEFAULT_SOLAREDGE_PORT))
+            slave_id = int(
+                user_input.get(CONF_SOLAREDGE_SLAVE_ID, DEFAULT_SOLAREDGE_SLAVE_ID)
+            )
+            rated_power_w = float(
+                user_input.get(
+                    CONF_SOLAREDGE_RATED_POWER_W, DEFAULT_SOLAREDGE_RATED_POWER_W
+                )
+            )
+            entity_prefix = (
+                user_input.get(CONF_SOLAREDGE_ENTITY_PREFIX) or ""
+            ).strip()
+
+            if rated_power_w <= 0:
+                errors["base"] = "solaredge_rated_power_required"
+            elif not host and not entity_prefix:
+                errors["base"] = "solaredge_host_required"
+            else:
+                from .inverters.solaredge import SolarEdgeController
+
+                controller = SolarEdgeController(
+                    host=host,
+                    port=port,
+                    slave_id=slave_id,
+                    rated_power_w=rated_power_w,
+                    entity_prefix=entity_prefix,
+                    hass=self.hass,
+                )
+                try:
+                    connected = await controller.connect()
+                    if not connected:
+                        errors["base"] = "solaredge_connect_failed"
+                finally:
+                    try:
+                        await controller.disconnect()
+                    except Exception:
+                        pass
+
+                if not errors:
+                    self._solaredge_data = {
+                        CONF_SOLAREDGE_HOST: host,
+                        CONF_SOLAREDGE_PORT: port,
+                        CONF_SOLAREDGE_SLAVE_ID: slave_id,
+                        CONF_SOLAREDGE_RATED_POWER_W: rated_power_w,
+                        CONF_SOLAREDGE_ENTITY_PREFIX: entity_prefix,
+                        CONF_SOLAREDGE_DC_CURTAILMENT_ENABLED: user_input.get(
+                            CONF_SOLAREDGE_DC_CURTAILMENT_ENABLED, False
+                        ),
+                    }
+                    return self._create_final_entry()
+
+        return self.async_show_form(
+            step_id="solaredge",
+            data_schema=vol.Schema(
+                {
+                    vol.Optional(
+                        CONF_SOLAREDGE_HOST,
+                        default=self._get_option(CONF_SOLAREDGE_HOST, ""),
+                    ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
+                    vol.Optional(
+                        CONF_SOLAREDGE_PORT,
+                        default=self._get_option(
+                            CONF_SOLAREDGE_PORT, DEFAULT_SOLAREDGE_PORT
+                        ),
+                    ): NumberSelector(NumberSelectorConfig(
+                        min=1, max=65535, step=1, mode=NumberSelectorMode.BOX,
+                    )),
+                    vol.Optional(
+                        CONF_SOLAREDGE_SLAVE_ID,
+                        default=self._get_option(
+                            CONF_SOLAREDGE_SLAVE_ID, DEFAULT_SOLAREDGE_SLAVE_ID
+                        ),
+                    ): NumberSelector(NumberSelectorConfig(
+                        min=1, max=247, step=1, mode=NumberSelectorMode.BOX,
+                    )),
+                    vol.Required(
+                        CONF_SOLAREDGE_RATED_POWER_W,
+                        default=self._get_option(
+                            CONF_SOLAREDGE_RATED_POWER_W,
+                            DEFAULT_SOLAREDGE_RATED_POWER_W,
+                        ),
+                    ): NumberSelector(NumberSelectorConfig(
+                        min=1, max=100000, step=1, unit_of_measurement="W",
+                        mode=NumberSelectorMode.BOX,
+                    )),
+                    vol.Optional(
+                        CONF_SOLAREDGE_ENTITY_PREFIX,
+                        default=self._get_option(CONF_SOLAREDGE_ENTITY_PREFIX, ""),
+                    ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
+                    vol.Optional(
+                        CONF_SOLAREDGE_DC_CURTAILMENT_ENABLED,
+                        default=self._get_option(
+                            CONF_SOLAREDGE_DC_CURTAILMENT_ENABLED, False
+                        ),
+                    ): BooleanSelector(),
+                }
+            ),
             errors=errors,
         )
 
@@ -4659,6 +4787,8 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             menu_options.append("fronius_reserva_connection")
         elif battery_system == BATTERY_SYSTEM_NEOVOLT:
             menu_options.append("neovolt_connection")
+        elif battery_system == BATTERY_SYSTEM_SOLAREDGE:
+            menu_options.append("solaredge_connection")
 
         menu_options.extend([
             "optimization",
@@ -5948,6 +6078,118 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     )
                 ),
             }),
+            errors=errors,
+        )
+
+    async def async_step_solaredge_connection(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Menu handler: SolarEdge Modbus curtailment settings."""
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            host = (user_input.get(CONF_SOLAREDGE_HOST) or "").strip()
+            port = int(user_input.get(CONF_SOLAREDGE_PORT, DEFAULT_SOLAREDGE_PORT))
+            slave_id = int(
+                user_input.get(CONF_SOLAREDGE_SLAVE_ID, DEFAULT_SOLAREDGE_SLAVE_ID)
+            )
+            rated_power_w = float(
+                user_input.get(
+                    CONF_SOLAREDGE_RATED_POWER_W, DEFAULT_SOLAREDGE_RATED_POWER_W
+                )
+            )
+            entity_prefix = (
+                user_input.get(CONF_SOLAREDGE_ENTITY_PREFIX) or ""
+            ).strip()
+
+            if rated_power_w <= 0:
+                errors["base"] = "solaredge_rated_power_required"
+            elif not host and not entity_prefix:
+                errors["base"] = "solaredge_host_required"
+            else:
+                from .inverters.solaredge import SolarEdgeController
+
+                controller = SolarEdgeController(
+                    host=host,
+                    port=port,
+                    slave_id=slave_id,
+                    rated_power_w=rated_power_w,
+                    entity_prefix=entity_prefix,
+                    hass=self.hass,
+                )
+                try:
+                    if not await controller.connect():
+                        errors["base"] = "solaredge_connect_failed"
+                finally:
+                    try:
+                        await controller.disconnect()
+                    except Exception:
+                        pass
+
+                if not errors:
+                    updates = {
+                        CONF_SOLAREDGE_HOST: host,
+                        CONF_SOLAREDGE_PORT: port,
+                        CONF_SOLAREDGE_SLAVE_ID: slave_id,
+                        CONF_SOLAREDGE_RATED_POWER_W: rated_power_w,
+                        CONF_SOLAREDGE_ENTITY_PREFIX: entity_prefix,
+                        CONF_SOLAREDGE_DC_CURTAILMENT_ENABLED: user_input.get(
+                            CONF_SOLAREDGE_DC_CURTAILMENT_ENABLED, False
+                        ),
+                    }
+                    new_data = {**self.config_entry.data, **updates}
+                    self.hass.config_entries.async_update_entry(
+                        self.config_entry, data=new_data
+                    )
+                    new_options = {**self.config_entry.options, **updates}
+                    return self.async_create_entry(title="", data=new_options)
+
+        return self.async_show_form(
+            step_id="solaredge_connection",
+            data_schema=vol.Schema(
+                {
+                    vol.Optional(
+                        CONF_SOLAREDGE_HOST,
+                        default=self._get_option(CONF_SOLAREDGE_HOST, ""),
+                    ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
+                    vol.Optional(
+                        CONF_SOLAREDGE_PORT,
+                        default=self._get_option(
+                            CONF_SOLAREDGE_PORT, DEFAULT_SOLAREDGE_PORT
+                        ),
+                    ): NumberSelector(NumberSelectorConfig(
+                        min=1, max=65535, step=1, mode=NumberSelectorMode.BOX,
+                    )),
+                    vol.Optional(
+                        CONF_SOLAREDGE_SLAVE_ID,
+                        default=self._get_option(
+                            CONF_SOLAREDGE_SLAVE_ID, DEFAULT_SOLAREDGE_SLAVE_ID
+                        ),
+                    ): NumberSelector(NumberSelectorConfig(
+                        min=1, max=247, step=1, mode=NumberSelectorMode.BOX,
+                    )),
+                    vol.Required(
+                        CONF_SOLAREDGE_RATED_POWER_W,
+                        default=self._get_option(
+                            CONF_SOLAREDGE_RATED_POWER_W,
+                            DEFAULT_SOLAREDGE_RATED_POWER_W,
+                        ),
+                    ): NumberSelector(NumberSelectorConfig(
+                        min=1, max=100000, step=1, unit_of_measurement="W",
+                        mode=NumberSelectorMode.BOX,
+                    )),
+                    vol.Optional(
+                        CONF_SOLAREDGE_ENTITY_PREFIX,
+                        default=self._get_option(CONF_SOLAREDGE_ENTITY_PREFIX, ""),
+                    ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
+                    vol.Optional(
+                        CONF_SOLAREDGE_DC_CURTAILMENT_ENABLED,
+                        default=self._get_option(
+                            CONF_SOLAREDGE_DC_CURTAILMENT_ENABLED, False
+                        ),
+                    ): BooleanSelector(),
+                }
+            ),
             errors=errors,
         )
 
@@ -8091,6 +8333,7 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 CONF_INVERTER_SLAVE_ID, DEFAULT_INVERTER_SLAVE_ID
             )
             inverter_model = user_input.get(CONF_INVERTER_MODEL)
+            inverter_rated_power_w = user_input.get(CONF_INVERTER_RATED_POWER_W)
 
             # Validate: if battery is Sungrow and AC inverter is also Sungrow,
             # check for IP/port/slave_id conflicts
@@ -8129,6 +8372,10 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 final_data[CONF_INVERTER_MODEL] = inverter_model
                 final_data[CONF_INVERTER_HOST] = inverter_host
                 final_data[CONF_INVERTER_PORT] = inverter_port
+                if inverter_rated_power_w is not None:
+                    final_data[CONF_INVERTER_RATED_POWER_W] = float(
+                        inverter_rated_power_w
+                    )
 
                 # Only include slave ID for Modbus brands (not Enphase/Zeversolar which use HTTP)
                 if inverter_brand not in ("enphase", "zeversolar"):
@@ -8318,6 +8565,21 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     description={"suggested_value": current_load_following},
                 )
             ] = BooleanSelector()
+
+        if brand == "solaredge":
+            current_rated_power_w = self._get_option(
+                CONF_INVERTER_RATED_POWER_W,
+                DEFAULT_SOLAREDGE_RATED_POWER_W,
+            )
+            schema_dict[
+                vol.Required(
+                    CONF_INVERTER_RATED_POWER_W,
+                    default=current_rated_power_w,
+                )
+            ] = NumberSelector(NumberSelectorConfig(
+                min=1, max=100000, step=1, unit_of_measurement="W",
+                mode=NumberSelectorMode.BOX,
+            ))
 
         # Restore SOC threshold - restore inverter when battery drops below this %
         current_restore_soc = self._get_option(

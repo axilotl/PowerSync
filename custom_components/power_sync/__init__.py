@@ -306,6 +306,7 @@ from .const import (
     CONF_INVERTER_PORT,
     CONF_INVERTER_SLAVE_ID,
     CONF_INVERTER_TOKEN,
+    CONF_INVERTER_RATED_POWER_W,
     CONF_INVERTER_RESTORE_SOC,
     CONF_FRONIUS_LOAD_FOLLOWING,
     # Enphase credentials for JWT token refresh
@@ -335,6 +336,7 @@ from .const import (
     CONF_ALPHAESS_MODBUS_PORT,
     CONF_ALPHAESS_MODBUS_SLAVE_ID,
     CONF_ALPHAESS_EXPORT_LIMIT_KW,
+    CONF_ALPHAESS_DC_CURTAILMENT_ENABLED,
     CONF_ALPHAESS_CLOUD_ENABLED,
     CONF_ALPHAESS_CLOUD_APP_ID,
     CONF_ALPHAESS_CLOUD_APP_SECRET,
@@ -380,6 +382,16 @@ from .const import (
     DEFAULT_NEOVOLT_MAX_DISCHARGE_KW,
     DEFAULT_NEOVOLT_SURPLUS_BALANCER_MODE,
     DEFAULT_NEOVOLT_SOC_BALANCE_TOLERANCE,
+    BATTERY_SYSTEM_SOLAREDGE,
+    CONF_SOLAREDGE_HOST,
+    CONF_SOLAREDGE_PORT,
+    CONF_SOLAREDGE_SLAVE_ID,
+    CONF_SOLAREDGE_RATED_POWER_W,
+    CONF_SOLAREDGE_ENTITY_PREFIX,
+    CONF_SOLAREDGE_DC_CURTAILMENT_ENABLED,
+    DEFAULT_SOLAREDGE_PORT,
+    DEFAULT_SOLAREDGE_SLAVE_ID,
+    DEFAULT_SOLAREDGE_RATED_POWER_W,
     # Battery system selection
     CONF_BATTERY_SYSTEM,
     BATTERY_SYSTEM_SUNGROW,
@@ -5352,6 +5364,10 @@ class InverterStatusView(HomeAssistantView):
             CONF_FRONIUS_LOAD_FOLLOWING,
             entry.data.get(CONF_FRONIUS_LOAD_FOLLOWING, False)
         )
+        inverter_rated_power_w = entry.options.get(
+            CONF_INVERTER_RATED_POWER_W,
+            entry.data.get(CONF_INVERTER_RATED_POWER_W),
+        )
         # Enphase Enlighten credentials for automatic JWT token refresh
         enphase_username = entry.options.get(
             CONF_ENPHASE_USERNAME,
@@ -5402,6 +5418,7 @@ class InverterStatusView(HomeAssistantView):
                 enphase_zero_export_profile=enphase_zero_export_profile,
                 enphase_is_installer=enphase_is_installer,
                 max_export_limit_kw=entry.data.get(CONF_SIGENERGY_EXPORT_LIMIT_KW),
+                rated_power_w=inverter_rated_power_w,
                 hass=self._hass,
             )
 
@@ -14389,6 +14406,7 @@ class ScheduledChargingSettingsView(HomeAssistantView):
                 "start_time": "00:00",
                 "end_time": "06:00",
                 "max_price_cents": 30,
+                "preserve_home_battery": False,
             }
 
             if store:
@@ -14426,10 +14444,17 @@ class ScheduledChargingSettingsView(HomeAssistantView):
                 "start_time": "00:00",
                 "end_time": "06:00",
                 "max_price_cents": 30,
+                "preserve_home_battery": False,
             })
 
             # Update with provided values
-            for key in ["enabled", "start_time", "end_time", "max_price_cents"]:
+            for key in [
+                "enabled",
+                "start_time",
+                "end_time",
+                "max_price_cents",
+                "preserve_home_battery",
+            ]:
                 if key in data:
                     settings[key] = data[key]
 
@@ -15185,7 +15210,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.warning("Failed to start Amber usage coordinator: %s", e)
             amber_usage_coordinator = None
 
-    # Check if this is a Sigenergy, Sungrow, FoxESS, GoodWe, AlphaESS, or ESY Sunhome setup (no Tesla needed)
+    # Check if this is a non-Tesla setup that can operate without Tesla APIs.
     is_sigenergy = bool(entry.data.get(CONF_SIGENERGY_STATION_ID))
     is_sungrow = bool(entry.data.get(CONF_SUNGROW_HOST))
     is_foxess = bool(
@@ -15203,6 +15228,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     is_saj_h2 = bool(entry.data.get(CONF_SAJ_CONFIG_ENTRY_ID))
     is_fronius_reserva = bool(entry.data.get(CONF_FRONIUS_RESERVA_CONFIG_ENTRY_ID))
     is_neovolt = bool(_get_neovolt_entry_ids(entry.data, hass))
+    is_solaredge = bool(
+        entry.data.get(CONF_BATTERY_SYSTEM) == BATTERY_SYSTEM_SOLAREDGE
+        or entry.data.get(CONF_SOLAREDGE_HOST)
+        or entry.data.get(CONF_SOLAREDGE_ENTITY_PREFIX)
+    )
     tesla_coordinator = None
     sigenergy_coordinator = None
     sungrow_coordinator = None
@@ -16309,9 +16339,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "is_saj_h2": is_saj_h2,  # Track if SAJ H2 battery system
         "is_fronius_reserva": is_fronius_reserva,  # Track if Fronius Reserva battery system
         "is_neovolt": is_neovolt,  # Track if Neovolt battery system
+        "is_solaredge": is_solaredge,  # Track if SolarEdge curtailment system
         "foxess_curtailment_state": "normal",  # Track FoxESS DC curtailment state
         "sigenergy_curtailment_state": "normal",  # Track Sigenergy DC curtailment state
         "alphaess_curtailment_state": "normal",  # Track AlphaESS DC curtailment state
+        "solaredge_curtailment_state": "normal",  # Track SolarEdge active-power curtailment state
         "sungrow_curtailment_state": "normal",  # Track Sungrow export-limit curtailment state
         "sungrow_power_limit_w": None,  # Current Sungrow load-following export limit
         "amber_usage_coordinator": amber_usage_coordinator,  # For actual metered cost data
@@ -16979,6 +17011,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             CONF_FRONIUS_LOAD_FOLLOWING,
             entry.data.get(CONF_FRONIUS_LOAD_FOLLOWING, False)
         )
+        inverter_rated_power_w = entry.options.get(
+            CONF_INVERTER_RATED_POWER_W,
+            entry.data.get(CONF_INVERTER_RATED_POWER_W),
+        )
 
         # Enphase Enlighten credentials for automatic JWT token refresh
         enphase_username = entry.options.get(
@@ -17026,6 +17062,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 enphase_zero_export_profile=enphase_zero_export_profile,
                 enphase_is_installer=enphase_is_installer,
                 max_export_limit_kw=entry.data.get(CONF_SIGENERGY_EXPORT_LIMIT_KW),
+                rated_power_w=inverter_rated_power_w,
                 hass=hass,
             )
 
@@ -17062,7 +17099,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 # Use load-following curtailment for supported brands
                 # Limit = home load + battery charge rate (so we don't export but still charge battery)
                 home_load_w = None
-                if inverter_brand in ("zeversolar", "sigenergy", "sungrow", "enphase", "foxess", "huawei", "goodwe", "solax", "alphaess"):
+                if inverter_brand in ("zeversolar", "sigenergy", "sungrow", "enphase", "foxess", "huawei", "goodwe", "solax", "alphaess", "solaredge"):
                     live_status = await get_live_status()
                     if live_status and live_status.get("load_power"):
                         home_load_w = int(live_status.get("load_power", 0))
@@ -19193,6 +19230,114 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         except Exception as e:
             _LOGGER.error("AlphaESS curtailment error: %s", e, exc_info=True)
 
+    async def handle_solaredge_curtailment(feedin_price=None, import_price=None) -> None:
+        """Handle SolarEdge active-power curtailment via Modbus/entity fallback."""
+        dc_curtailment_enabled = entry.options.get(
+            CONF_SOLAREDGE_DC_CURTAILMENT_ENABLED,
+            entry.data.get(CONF_SOLAREDGE_DC_CURTAILMENT_ENABLED, False),
+        )
+        if not dc_curtailment_enabled:
+            _LOGGER.debug("SolarEdge DC/export curtailment is disabled, skipping")
+            return
+
+        entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+        current_state = entry_data.get("solaredge_curtailment_state", "normal")
+
+        if feedin_price is None:
+            _price_coord = (
+                amber_coordinator or localvolts_coordinator
+                or aemo_sensor_coordinator or octopus_coordinator
+            )
+            if _price_coord and _price_coord.data:
+                current_prices = _price_coord.data.get("current", [])
+                for price_data in current_prices:
+                    if price_data.get("channelType") == "feedIn":
+                        feedin_price = price_data.get("perKwh", 0)
+                    elif price_data.get("channelType") == "general":
+                        import_price = price_data.get("perKwh", 0)
+
+        if feedin_price is None:
+            _LOGGER.warning("SolarEdge curtailment: no feed-in price available")
+            return
+
+        export_earnings = -feedin_price
+        _LOGGER.info(
+            "SolarEdge curtailment check: export_earnings=%.2fc/kWh, import=%.2fc/kWh, state=%s",
+            export_earnings,
+            import_price or 0,
+            current_state,
+        )
+
+        host = entry.options.get(
+            CONF_SOLAREDGE_HOST,
+            entry.data.get(CONF_SOLAREDGE_HOST, ""),
+        )
+        port = entry.options.get(
+            CONF_SOLAREDGE_PORT,
+            entry.data.get(CONF_SOLAREDGE_PORT, DEFAULT_SOLAREDGE_PORT),
+        )
+        slave_id = entry.options.get(
+            CONF_SOLAREDGE_SLAVE_ID,
+            entry.data.get(CONF_SOLAREDGE_SLAVE_ID, DEFAULT_SOLAREDGE_SLAVE_ID),
+        )
+        rated_power_w = entry.options.get(
+            CONF_SOLAREDGE_RATED_POWER_W,
+            entry.data.get(CONF_SOLAREDGE_RATED_POWER_W, DEFAULT_SOLAREDGE_RATED_POWER_W),
+        )
+        entity_prefix = entry.options.get(
+            CONF_SOLAREDGE_ENTITY_PREFIX,
+            entry.data.get(CONF_SOLAREDGE_ENTITY_PREFIX, ""),
+        )
+
+        from .inverters.solaredge import SolarEdgeController
+
+        controller = entry_data.get("solaredge_controller")
+        controller_key = (host, int(port), int(slave_id), float(rated_power_w), entity_prefix)
+        if (
+            not isinstance(controller, SolarEdgeController)
+            or entry_data.get("solaredge_controller_key") != controller_key
+        ):
+            controller = SolarEdgeController(
+                host=host,
+                port=int(port),
+                slave_id=int(slave_id),
+                rated_power_w=float(rated_power_w),
+                entity_prefix=entity_prefix,
+                hass=hass,
+            )
+            entry_data["solaredge_controller"] = controller
+            entry_data["solaredge_controller_key"] = controller_key
+
+        try:
+            if export_earnings < 1:
+                if current_state == "normal":
+                    _LOGGER.info(
+                        "SolarEdge curtailment TRIGGERED: export_earnings=%.2fc (<1c) -> active power 0%%",
+                        export_earnings,
+                    )
+                    success = await controller.curtail()
+                    if success:
+                        entry_data["solaredge_curtailment_state"] = "curtailed"
+                    else:
+                        _LOGGER.error("SolarEdge curtail() failed")
+                else:
+                    _LOGGER.debug("SolarEdge already curtailed, no action needed")
+            else:
+                if current_state != "normal":
+                    _LOGGER.info(
+                        "SolarEdge curtailment RESTORED: export_earnings=%.2fc (>=1c) -> active power 100%%",
+                        export_earnings,
+                    )
+                    success = await controller.restore()
+                    if success:
+                        entry_data["solaredge_curtailment_state"] = "normal"
+                    else:
+                        _LOGGER.error("SolarEdge restore() failed")
+                else:
+                    _LOGGER.debug("SolarEdge already in normal mode, no action needed")
+        except Exception as e:
+            _LOGGER.error("SolarEdge curtailment error: %s", e, exc_info=True)
+
     async def handle_goodwe_curtailment(feedin_price=None, import_price=None) -> None:
         """Handle GoodWe DC curtailment via export limit register.
 
@@ -19471,6 +19616,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Sungrow uses export limit register for curtailment, not Tesla API
         if is_sungrow:
             await handle_sungrow_curtailment()
+            return
+
+        # SolarEdge uses active power limit for curtailment, not Tesla API
+        if is_solaredge:
+            await handle_solaredge_curtailment()
             return
 
         if token_getter is None:
@@ -19830,6 +19980,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             feedin_price = websocket_data.get('feedIn', {}).get('perKwh') if websocket_data else None
             import_price = websocket_data.get('general', {}).get('perKwh') if websocket_data else None
             await handle_sungrow_curtailment(feedin_price=feedin_price, import_price=import_price)
+            return
+
+        # SolarEdge uses active power limit for curtailment, not Tesla API
+        if is_solaredge:
+            feedin_price = websocket_data.get('feedIn', {}).get('perKwh') if websocket_data else None
+            import_price = websocket_data.get('general', {}).get('perKwh') if websocket_data else None
+            await handle_solaredge_curtailment(feedin_price=feedin_price, import_price=import_price)
             return
 
         if token_getter is None:
@@ -25322,6 +25479,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             CONF_FRONIUS_LOAD_FOLLOWING,
             entry.data.get(CONF_FRONIUS_LOAD_FOLLOWING, False)
         )
+        inverter_rated_power_w = entry.options.get(
+            CONF_INVERTER_RATED_POWER_W,
+            entry.data.get(CONF_INVERTER_RATED_POWER_W),
+        )
         # Enphase Enlighten credentials for automatic JWT token refresh
         enphase_username = entry.options.get(
             CONF_ENPHASE_USERNAME,
@@ -25368,6 +25529,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 enphase_zero_export_profile=enphase_zero_export_profile,
                 enphase_is_installer=enphase_is_installer,
                 max_export_limit_kw=entry.data.get(CONF_SIGENERGY_EXPORT_LIMIT_KW),
+                rated_power_w=inverter_rated_power_w,
+                hass=hass,
             )
 
             home_load_w = None
@@ -25381,7 +25544,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     home_load_w = 0
             else:
                 # Load-following mode - get home load for dynamic limiting
-                if inverter_brand in ("zeversolar", "sigenergy", "sungrow", "enphase", "foxess", "huawei", "goodwe", "solax", "alphaess"):
+                if inverter_brand in ("zeversolar", "sigenergy", "sungrow", "enphase", "foxess", "huawei", "goodwe", "solax", "alphaess", "solaredge"):
                     live_status = await get_live_status()
                     if live_status and live_status.get("load_power"):
                         home_load_w = int(live_status.get("load_power", 0))
@@ -25458,6 +25621,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             CONF_FRONIUS_LOAD_FOLLOWING,
             entry.data.get(CONF_FRONIUS_LOAD_FOLLOWING, False)
         )
+        inverter_rated_power_w = entry.options.get(
+            CONF_INVERTER_RATED_POWER_W,
+            entry.data.get(CONF_INVERTER_RATED_POWER_W),
+        )
         # Enphase Enlighten credentials for automatic JWT token refresh
         enphase_username = entry.options.get(
             CONF_ENPHASE_USERNAME,
@@ -25504,6 +25671,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 enphase_zero_export_profile=enphase_zero_export_profile,
                 enphase_is_installer=enphase_is_installer,
                 max_export_limit_kw=entry.data.get(CONF_SIGENERGY_EXPORT_LIMIT_KW),
+                rated_power_w=inverter_rated_power_w,
+                hass=hass,
             )
 
             _LOGGER.info(f"🟢 Restoring {inverter_brand} inverter at {inverter_host}")
@@ -26640,7 +26809,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             inverter_host = entry.options.get(CONF_INVERTER_HOST, entry.data.get(CONF_INVERTER_HOST))
 
             # Only brands with load-following curtail() support
-            if inverter_brand not in ("zeversolar", "sigenergy", "sungrow", "enphase", "foxess", "huawei", "goodwe", "solax", "alphaess"):
+            if inverter_brand not in ("zeversolar", "sigenergy", "sungrow", "enphase", "foxess", "huawei", "goodwe", "solax", "alphaess", "solaredge"):
                 return
 
             if not inverter_host:

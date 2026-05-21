@@ -22,6 +22,7 @@ INVERTER_BRANDS = {
     "foxess": "FoxESS",
     "solax": "Solax",
     "alphaess": "AlphaESS",
+    "solaredge": "SolarEdge",
 }
 
 # Fronius models (SunSpec Modbus)
@@ -151,6 +152,13 @@ ALPHAESS_MODELS = {
     "storion-t30": "Storion-T30 (Three Phase)",
 }
 
+SOLAREDGE_MODELS = {
+    "hd-wave": "HD-Wave / Home Wave",
+    "energy-hub": "Energy Hub / Home Hub",
+    "three-phase": "Three Phase",
+    "commercial": "Commercial / Synergy",
+}
+
 # Sungrow SG series (string inverters) - single phase residential
 SUNGROW_SG_MODELS = {
     "sg2.5rs": "SG2.5RS",
@@ -239,6 +247,8 @@ def get_inverter_controller(
     enphase_zero_export_profile: Optional[str] = None,
     enphase_is_installer: bool = False,
     max_export_limit_kw: Optional[float] = None,
+    rated_power_w: Optional[float] = None,
+    entity_prefix: Optional[str] = None,
     hass=None,
 ) -> Optional[InverterController]:
     """Factory function to get the appropriate inverter controller.
@@ -258,6 +268,8 @@ def get_inverter_controller(
         enphase_normal_profile: Grid profile name for normal operation (fallback)
         enphase_zero_export_profile: Grid profile name for zero export (fallback)
         enphase_is_installer: Whether user has installer-level Enlighten access
+        rated_power_w: Rated AC output power for percentage-based controllers
+        entity_prefix: Optional HA entity prefix for entity fallback controllers
 
     Returns:
         InverterController instance or None if brand not supported
@@ -388,6 +400,19 @@ def get_inverter_controller(
             slave_id=slave_id,
             model=model,
             max_export_limit_kw=max_export_limit_kw,
+        )
+
+    if brand_lower == "solaredge":
+        from .solaredge import SolarEdgeController
+
+        return SolarEdgeController(
+            host=host,
+            port=port,
+            slave_id=slave_id,
+            model=model,
+            rated_power_w=rated_power_w,
+            entity_prefix=entity_prefix,
+            hass=hass,
         )
 
     _LOGGER.error(f"Unsupported inverter brand: {brand}")
