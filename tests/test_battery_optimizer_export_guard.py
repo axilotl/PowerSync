@@ -309,7 +309,7 @@ def test_below_reserve_lp_recovers_to_configured_floor(
     assert captured["bounds"][-1][0] == pytest.approx(5.0)
 
 
-def test_reserve_floor_grid_import_stays_self_consumption_not_hold(
+def test_reserve_floor_self_consumption_forecasts_net_load_drain(
     battery_optimizer_module,
 ):
     optimizer = battery_optimizer_module.BatteryOptimizer(
@@ -327,20 +327,50 @@ def test_reserve_floor_grid_import_stays_self_consumption_not_hold(
         grid_export=[0.0],
         battery_charge=[0.0],
         battery_discharge=[0.0],
-        solar=[0.0],
-        load=[1.0],
+        solar=[0.4],
+        load=[1.4],
         soc_0=0.20,
         import_prices=[0.30],
         export_prices=[0.05],
     )
 
-    assert schedule.actions[0].soc == 0.20
-    assert schedule.actions[0].battery_discharge_w == 0
+    assert schedule.actions[0].soc < 0.20
+    assert schedule.actions[0].battery_discharge_w == 1000.0
     assert schedule.actions[0].action == "self_consumption"
     api = schedule.to_api_response()
-    assert api["discharge_w"] == [0.0]
-    assert api["battery_consume_w"] == [0.0]
+    assert api["discharge_w"] == [1000.0]
+    assert api["battery_consume_w"] == [1000.0]
     assert api["battery_export_w"] == [0.0]
+
+
+def test_schedule_soc_display_can_drop_below_optimizer_reserve(
+    battery_optimizer_module,
+):
+    optimizer = battery_optimizer_module.BatteryOptimizer(
+        capacity_wh=13500,
+        max_charge_w=5000,
+        max_discharge_w=5000,
+        backup_reserve=0.20,
+        interval_minutes=5,
+        horizon_hours=1,
+    )
+
+    schedule = optimizer._build_schedule(
+        n=1,
+        grid_import=[0.0],
+        grid_export=[0.0],
+        battery_charge=[0.0],
+        battery_discharge=[1.35],
+        solar=[0.0],
+        load=[1.35],
+        soc_0=0.20,
+        import_prices=[0.30],
+        export_prices=[0.05],
+    )
+
+    assert schedule.actions[0].action == "self_consumption"
+    assert schedule.actions[0].soc < 0.20
+    assert schedule.to_api_response()["soc"][0] == schedule.actions[0].soc
 
 
 def test_schedule_api_reports_self_consumption_discharge_for_charts(

@@ -1365,15 +1365,6 @@ class BatteryOptimizer:
                 and not charge_blocked
             )
 
-            # Update SOC using the command intent. During free electricity we
-            # intentionally request max charge for the whole free window; the
-            # inverter/BMS handles any taper once the battery is physically full.
-            effective_charge_kw = charge_kw
-            if free_import_slot:
-                effective_charge_kw = max(charge_kw, self.max_charge_kw)
-            soc += (effective_charge_kw * eff - discharge_kw / eff) * dt / cap
-            soc = max(self.backup_reserve, min(1.0, soc))
-
             # Determine action
             if free_import_slot:
                 # Free electricity — always request force charge for the full
@@ -1440,6 +1431,37 @@ class BatteryOptimizer:
             if free_import_slot and action == "charge":
                 reported_charge_w = power_w
                 reported_discharge_w = 0.0
+            elif (
+                action == "self_consumption"
+                and charge_kw < threshold_kw
+                and discharge_kw < threshold_kw
+            ):
+                net_home_kw = load[t] - solar[t]
+                if net_home_kw > threshold_kw:
+                    available_kw = soc * cap * eff / dt
+                    natural_discharge_kw = min(
+                        self.max_discharge_kw,
+                        net_home_kw,
+                        max(0.0, available_kw),
+                    )
+                    reported_discharge_w = natural_discharge_kw * 1000
+                    reported_charge_w = 0.0
+                    power_w = natural_discharge_kw * 1000
+                elif net_home_kw < -threshold_kw and not charge_blocked:
+                    available_kw = (1.0 - soc) * cap / (eff * dt)
+                    natural_charge_kw = min(
+                        self.max_charge_kw,
+                        -net_home_kw,
+                        max(0.0, available_kw),
+                    )
+                    reported_charge_w = natural_charge_kw * 1000
+                    reported_discharge_w = 0.0
+                    power_w = natural_charge_kw * 1000
+
+            effective_charge_kw = reported_charge_w / 1000
+            effective_discharge_kw = reported_discharge_w / 1000
+            soc += (effective_charge_kw * eff - effective_discharge_kw / eff) * dt / cap
+            soc = max(0.0, min(1.0, soc))
 
             actions.append(ScheduleAction(
                 timestamp=ts,
