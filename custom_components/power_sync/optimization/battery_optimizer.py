@@ -132,6 +132,7 @@ class BatteryOptimizer:
         # that the below-reserve adjustment fires at INFO instead of WARNING.
         # (SOC below reserve is expected during intentional force discharge.)
         self.suppress_reserve_warning: bool = False
+        self._below_reserve_recovery_target: float | None = None
 
         # Pre-window SOC floor: enforce soc[pre_window_slot - 1] >= target.
         # Used by the coordinator to guarantee the battery is filled before
@@ -559,6 +560,7 @@ class BatteryOptimizer:
                 "reserve %.1f%% to avoid infeasibility",
                 soc_0 * 100, self.backup_reserve * 100, effective_reserve * 100,
             )
+            self._below_reserve_recovery_target = self.backup_reserve
             self.backup_reserve = effective_reserve
 
         try:
@@ -573,6 +575,7 @@ class BatteryOptimizer:
         finally:
             if _soc_below_reserve:
                 self.backup_reserve = _saved_reserve
+                self._below_reserve_recovery_target = None
 
     def _solve_lp_inner(
         self,
@@ -612,6 +615,23 @@ class BatteryOptimizer:
         p_allow_export = [period.allow_battery_export for period in periods]
         p_block_charge = [period.block_battery_charge for period in periods]
         p_dt = [period.slot_count * self.dt_hours for period in periods]
+        reserve_floor = [self.backup_reserve] * (p_n + 1)
+        recovery_target = self._below_reserve_recovery_target
+        if recovery_target is not None and recovery_target > self.backup_reserve:
+            max_reachable = soc_0
+            reserve_floor[0] = soc_0
+            for t in range(p_n):
+                reachable_charge_kw = 0.0 if p_block_charge[t] else self.max_charge_kw
+                if not allow_grid_charge:
+                    reachable_charge_kw = min(
+                        reachable_charge_kw,
+                        max(0.0, p_solar[t] - p_load[t]),
+                    )
+                max_reachable = min(
+                    recovery_target,
+                    max_reachable + reachable_charge_kw * eff * p_dt[t] / cap,
+                )
+                reserve_floor[t + 1] = max(self.backup_reserve, max_reachable)
 
         # HAEO-style state model: power variables per period, battery energy
         # variables at period boundaries. This removes the dense cumulative SOC
@@ -804,7 +824,7 @@ class BatteryOptimizer:
             # Prevent current-period charge from funding same-period discharge.
             A_ub[len(b_ub), discharge_var(t)] = p_dt[t] / eff
             A_ub[len(b_ub), energy_var(t)] = -1.0
-            b_ub.append(-self.backup_reserve * cap)
+            b_ub.append(-reserve_floor[t] * cap)
 
             # Export must be backed by physical energy from solar surplus or
             # battery discharge.
@@ -941,8 +961,8 @@ class BatteryOptimizer:
                 bounds.append((0, self.max_discharge_kw))  # battery_discharge
 
         bounds.append((soc_0 * cap, soc_0 * cap))
-        for _ in range(p_n):
-            bounds.append((self.backup_reserve * cap, cap))
+        for t in range(1, p_n + 1):
+            bounds.append((reserve_floor[t] * cap, cap))
 
         A_eq = A_eq.tocsr()
         A_ub = A_ub.tocsr()

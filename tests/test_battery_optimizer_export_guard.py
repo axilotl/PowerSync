@@ -263,6 +263,52 @@ def test_below_reserve_can_grid_charge_during_cheap_window(battery_optimizer_mod
     assert max(action.battery_charge_w for action in cheap_window) > 1000
 
 
+def test_below_reserve_lp_recovers_to_configured_floor(
+    battery_optimizer_module,
+    monkeypatch,
+):
+    captured = {}
+
+    def fake_linprog(c, **kwargs):
+        captured["bounds"] = kwargs["bounds"]
+        return types.SimpleNamespace(
+            success=True,
+            message="Optimization terminated successfully.",
+            status=0,
+            x=[0.0] * len(c),
+            fun=0.0,
+        )
+
+    monkeypatch.setattr(battery_optimizer_module, "SCIPY_AVAILABLE", True)
+    monkeypatch.setattr(battery_optimizer_module, "linprog", fake_linprog, raising=False)
+    monkeypatch.setattr(
+        battery_optimizer_module,
+        "sparse",
+        types.SimpleNamespace(lil_matrix=_FakeSparseMatrix),
+        raising=False,
+    )
+    optimizer = battery_optimizer_module.BatteryOptimizer(
+        capacity_wh=10000,
+        max_charge_w=10000,
+        max_discharge_w=10000,
+        backup_reserve=0.50,
+        interval_minutes=5,
+        horizon_hours=1,
+    )
+
+    optimizer.optimize(
+        import_prices=[0.0] * 12,
+        export_prices=[0.20] * 12,
+        solar_forecast=[0.0] * 12,
+        load_forecast=[0.0] * 12,
+        current_soc=0.15,
+        acquisition_cost_kwh=0.0,
+        allow_battery_export=[True] * 12,
+    )
+
+    assert captured["bounds"][-1][0] == pytest.approx(5.0)
+
+
 def test_reserve_floor_grid_import_stays_self_consumption_not_hold(
     battery_optimizer_module,
 ):

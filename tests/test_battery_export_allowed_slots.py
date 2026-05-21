@@ -1286,6 +1286,15 @@ def test_grid_export_cap_resolves_from_energy_data(opt_module):
     assert coordinator._resolve_max_grid_export_w() == 4600
 
 
+def test_curtailed_sigenergy_zero_export_limit_is_not_planning_cap(opt_module):
+    coordinator = _coordinator(opt_module, "amber")
+    coordinator.energy_coordinator = SimpleNamespace(
+        data={"export_limit_kw": 0, "is_curtailed": True}
+    )
+
+    assert coordinator._resolve_max_grid_export_w() is None
+
+
 def test_spread_export_schedule_flattens_planned_energy_across_allowed_window(opt_module):
     coordinator = _coordinator(opt_module, "octopus")
     coordinator.battery_system = "goodwe"

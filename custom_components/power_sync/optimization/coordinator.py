@@ -515,6 +515,8 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         data = getattr(self.energy_coordinator, "data", None)
         if isinstance(data, dict):
             export_limit = data.get("export_limit_kw")
+            if data.get("is_curtailed") and self._kw_to_w(export_limit) == 0:
+                return None
             if export_limit != "unlimited":
                 return self._kw_to_w(export_limit)
 
