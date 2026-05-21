@@ -3549,6 +3549,41 @@ def _calendar_entry_from_energy_summary(coordinator: Any) -> dict[str, Any]:
     }
 
 
+def _calendar_entry_with_detail_aliases(entry: dict[str, Any]) -> dict[str, Any]:
+    """Add Tesla-style detail fields for mobile screens that still read them."""
+    enriched = dict(entry)
+    solar_wh = enriched.get("solar_generation", 0) or 0
+    battery_discharge_wh = enriched.get("battery_discharge", 0) or 0
+    battery_charge_wh = enriched.get("battery_charge", 0) or 0
+    grid_import_wh = enriched.get("grid_import", 0) or 0
+    grid_export_wh = enriched.get("grid_export", 0) or 0
+    home_consumption_wh = enriched.get("home_consumption", 0) or 0
+    battery_to_home_wh = min(battery_discharge_wh, home_consumption_wh)
+    remaining_home_wh = max(0, home_consumption_wh - battery_to_home_wh)
+    grid_to_home_wh = min(grid_import_wh, remaining_home_wh)
+    solar_to_home_wh = max(0, remaining_home_wh - grid_to_home_wh)
+    solar_to_battery_wh = min(
+        battery_charge_wh,
+        max(0, solar_wh - solar_to_home_wh - grid_export_wh),
+    )
+    grid_to_battery_wh = max(0, battery_charge_wh - solar_to_battery_wh)
+
+    enriched.setdefault("solar_energy_exported", solar_wh)
+    enriched.setdefault("battery_energy_exported", battery_discharge_wh)
+    enriched.setdefault("battery_energy_imported", battery_charge_wh)
+    enriched.setdefault("battery_energy_imported_from_grid", grid_to_battery_wh)
+    enriched.setdefault("battery_energy_imported_from_solar", solar_to_battery_wh)
+    enriched.setdefault("consumer_energy_imported", home_consumption_wh)
+    enriched.setdefault("consumer_energy_imported_from_grid", grid_to_home_wh)
+    enriched.setdefault("consumer_energy_imported_from_solar", solar_to_home_wh)
+    enriched.setdefault("consumer_energy_imported_from_battery", battery_to_home_wh)
+    enriched.setdefault("grid_energy_imported", grid_import_wh)
+    enriched.setdefault("grid_energy_exported", grid_export_wh)
+    enriched.setdefault("grid_energy_exported_from_solar", grid_export_wh)
+    enriched.setdefault("grid_energy_exported_from_battery", 0)
+    return enriched
+
+
 _CALENDAR_STATISTIC_FIELDS = {
     "solar_generation": "daily_solar_energy",
     "battery_discharge": "daily_battery_discharge",
@@ -3634,9 +3669,11 @@ def _calendar_current_entry(
     """Build a current-day calendar entry using all live non-Tesla sources."""
     entry = _calendar_entry_from_energy_summary(coordinator)
     if hass is None:
-        return entry
+        return _calendar_entry_with_detail_aliases(entry)
     state_entry = _calendar_entry_from_energy_sensor_states(hass, preferred_entry_id)
-    return _merge_calendar_energy_entries(entry, state_entry)
+    return _calendar_entry_with_detail_aliases(
+        _merge_calendar_energy_entries(entry, state_entry)
+    )
 
 
 def _calendar_time_series_from_energy_summary(
@@ -3798,7 +3835,10 @@ async def _calendar_time_series_from_statistics(
         except Exception as exc:
             _LOGGER.debug("Failed to build calendar history from statistics: %s", exc)
 
-    rows = [time_series[key] for key in sorted(time_series)]
+    rows = [
+        _calendar_entry_with_detail_aliases(time_series[key])
+        for key in sorted(time_series)
+    ]
     if includes_today:
         current_entry = _calendar_current_entry(
             hass, coordinator, preferred_entry_id

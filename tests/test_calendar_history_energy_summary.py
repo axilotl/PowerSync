@@ -23,6 +23,7 @@ def _calendar_namespace() -> dict[str, Any]:
     wanted_functions = {
         "_energy_summary_wh",
         "_calendar_entry_from_energy_summary",
+        "_calendar_entry_with_detail_aliases",
         "_calendar_entry_has_energy",
         "_calendar_energy_state_wh",
         "_calendar_entry_from_energy_sensor_states",
@@ -96,6 +97,10 @@ def test_current_calendar_entry_uses_live_daily_sensor_states_when_accumulator_i
     assert entry["grid_import"] == 1500
     assert entry["grid_export"] == 750
     assert entry["home_consumption"] == 5600
+    assert entry["solar_energy_exported"] == 4200
+    assert entry["grid_energy_exported"] == 750
+    assert entry["grid_energy_imported"] == 1500
+    assert entry["consumer_energy_imported"] == 5600
 
 
 def test_current_calendar_entry_keeps_coordinator_values_and_fills_only_missing_fields():
@@ -126,3 +131,43 @@ def test_current_calendar_entry_keeps_coordinator_values_and_fills_only_missing_
 
     assert entry["solar_generation"] == 1250
     assert entry["grid_import"] == 1800
+
+
+def test_current_calendar_entry_exposes_tesla_style_detail_aliases():
+    namespace = _calendar_namespace()
+    namespace["_find_calendar_statistic_entity_ids"] = lambda hass, entry_id: {}
+    hass = SimpleNamespace(states=_States({}))
+    coordinator = SimpleNamespace(
+        data={
+            "energy_summary": {
+                "pv_today_kwh": 2.5,
+                "discharge_today_kwh": 1.2,
+                "charge_today_kwh": 3.4,
+                "grid_import_today_kwh": 0.8,
+                "grid_export_today_kwh": 0.6,
+                "load_today_kwh": 2.1,
+            }
+        }
+    )
+
+    entry = namespace["_calendar_current_entry"](hass, coordinator, "entry-1")
+
+    assert entry["solar_generation"] == 2500
+    assert entry["battery_discharge"] == 1200
+    assert entry["battery_charge"] == 3400
+    assert entry["grid_import"] == 800
+    assert entry["grid_export"] == 600
+    assert entry["home_consumption"] == 2100
+    assert entry["solar_energy_exported"] == 2500
+    assert entry["battery_energy_exported"] == 1200
+    assert entry["battery_energy_imported"] == 3400
+    assert entry["battery_energy_imported_from_grid"] == 1600
+    assert entry["battery_energy_imported_from_solar"] == 1800
+    assert entry["grid_energy_imported"] == 800
+    assert entry["grid_energy_exported"] == 600
+    assert entry["grid_energy_exported_from_solar"] == 600
+    assert entry["grid_energy_exported_from_battery"] == 0
+    assert entry["consumer_energy_imported"] == 2100
+    assert entry["consumer_energy_imported_from_grid"] == 800
+    assert entry["consumer_energy_imported_from_solar"] == 100
+    assert entry["consumer_energy_imported_from_battery"] == 1200
