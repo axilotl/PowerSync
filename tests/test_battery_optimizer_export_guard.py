@@ -263,7 +263,7 @@ def test_below_reserve_can_grid_charge_during_cheap_window(battery_optimizer_mod
     assert max(action.battery_charge_w for action in cheap_window) > 1000
 
 
-def test_below_reserve_lp_recovers_to_configured_floor(
+def test_below_optimizer_reserve_lp_uses_hardware_floor(
     battery_optimizer_module,
     monkeypatch,
 ):
@@ -292,6 +292,7 @@ def test_below_reserve_lp_recovers_to_configured_floor(
         max_charge_w=10000,
         max_discharge_w=10000,
         backup_reserve=0.50,
+        hardware_reserve=0.05,
         interval_minutes=5,
         horizon_hours=1,
     )
@@ -306,7 +307,157 @@ def test_below_reserve_lp_recovers_to_configured_floor(
         allow_battery_export=[True] * 12,
     )
 
-    assert captured["bounds"][-1][0] == pytest.approx(5.0)
+    assert captured["bounds"][-1][0] == pytest.approx(0.5)
+
+
+def test_below_optimizer_reserve_allows_natural_self_consumption(
+    battery_optimizer_module,
+):
+    optimizer = battery_optimizer_module.BatteryOptimizer(
+        capacity_wh=13500,
+        max_charge_w=5000,
+        max_discharge_w=5000,
+        backup_reserve=0.13,
+        hardware_reserve=0.05,
+        interval_minutes=5,
+        horizon_hours=1,
+    )
+
+    result = optimizer.optimize(
+        import_prices=[0.30] * 12,
+        export_prices=[0.05] * 12,
+        solar_forecast=[0.0] * 12,
+        load_forecast=[0.5] * 12,
+        current_soc=0.12,
+        acquisition_cost_kwh=0.0,
+        allow_battery_export=[False] * 12,
+    )
+
+    assert result.schedule.actions[0].action == "self_consumption"
+    assert result.schedule.actions[0].battery_discharge_w > 0
+    assert result.schedule.actions[0].battery_charge_w == 0
+
+
+def test_below_optimizer_reserve_blocks_lp_battery_export(
+    battery_optimizer_module,
+    monkeypatch,
+):
+    captured = {}
+
+    def fake_linprog(c, **kwargs):
+        captured["bounds"] = kwargs["bounds"]
+        captured["variable_count"] = len(c)
+        return types.SimpleNamespace(
+            success=True,
+            message="Optimization terminated successfully.",
+            status=0,
+            x=[0.0] * len(c),
+            fun=0.0,
+        )
+
+    monkeypatch.setattr(battery_optimizer_module, "SCIPY_AVAILABLE", True)
+    monkeypatch.setattr(
+        battery_optimizer_module,
+        "sparse",
+        types.SimpleNamespace(lil_matrix=_FakeSparseMatrix),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        battery_optimizer_module,
+        "linprog",
+        fake_linprog,
+        raising=False,
+    )
+    optimizer = battery_optimizer_module.BatteryOptimizer(
+        capacity_wh=13500,
+        max_charge_w=5000,
+        max_discharge_w=5000,
+        backup_reserve=0.15,
+        hardware_reserve=0.05,
+        interval_minutes=5,
+        horizon_hours=1,
+    )
+
+    result = optimizer.optimize(
+        import_prices=[0.05] * 12,
+        export_prices=[0.50] * 12,
+        solar_forecast=[0.0] * 12,
+        load_forecast=[0.1] * 12,
+        current_soc=0.149,
+        acquisition_cost_kwh=0.0,
+        allow_battery_export=[True] * 12,
+    )
+
+    assert result.solver_used == "highs"
+    period_count = (captured["variable_count"] - 1) // 5
+    grid_export_bounds = captured["bounds"][period_count:period_count * 2]
+    assert grid_export_bounds
+    assert all(bound[1] == 0.0 for bound in grid_export_bounds)
+    assert result.schedule.actions[0].action == "self_consumption"
+    assert max(result.grid_export_w) <= 1e-6
+    assert all(action.action != "export" for action in result.schedule.actions)
+
+
+def test_below_optimizer_reserve_blocks_greedy_battery_export(
+    battery_optimizer_module,
+    monkeypatch,
+):
+    monkeypatch.setattr(battery_optimizer_module, "SCIPY_AVAILABLE", False)
+    optimizer = battery_optimizer_module.BatteryOptimizer(
+        capacity_wh=13500,
+        max_charge_w=5000,
+        max_discharge_w=5000,
+        backup_reserve=0.15,
+        hardware_reserve=0.05,
+        interval_minutes=5,
+        horizon_hours=1,
+    )
+
+    result = optimizer.optimize(
+        import_prices=[0.05] * 12,
+        export_prices=[0.50] * 12,
+        solar_forecast=[0.0] * 12,
+        load_forecast=[0.1] * 12,
+        current_soc=0.149,
+        acquisition_cost_kwh=0.0,
+        allow_battery_export=[True] * 12,
+    )
+
+    assert result.solver_used == "greedy"
+    assert result.schedule.actions[0].action == "self_consumption"
+    assert max(result.grid_export_w) <= 1e-6
+    assert all(action.action != "export" for action in result.schedule.actions)
+
+
+def test_below_optimizer_reserve_greedy_allows_natural_self_consumption(
+    battery_optimizer_module,
+    monkeypatch,
+):
+    monkeypatch.setattr(battery_optimizer_module, "SCIPY_AVAILABLE", False)
+    optimizer = battery_optimizer_module.BatteryOptimizer(
+        capacity_wh=13500,
+        max_charge_w=5000,
+        max_discharge_w=5000,
+        backup_reserve=0.13,
+        hardware_reserve=0.05,
+        interval_minutes=5,
+        horizon_hours=1,
+    )
+
+    result = optimizer.optimize(
+        import_prices=[0.30] * 12,
+        export_prices=[0.05] * 12,
+        solar_forecast=[0.0] * 12,
+        load_forecast=[0.5] * 12,
+        current_soc=0.12,
+        acquisition_cost_kwh=0.0,
+        allow_battery_export=[False] * 12,
+    )
+
+    assert result.solver_used == "greedy"
+    assert result.schedule.actions[0].action == "self_consumption"
+    assert result.schedule.actions[0].battery_discharge_w > 0
+    assert result.schedule.actions[0].battery_charge_w == 0
 
 
 def test_reserve_floor_self_consumption_forecasts_net_load_drain(

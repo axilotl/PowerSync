@@ -920,6 +920,27 @@ def test_scheduled_ev_preserve_cancels_active_optimizer_export(opt_module):
     assert coordinator._last_executed_action == "no_discharge"
 
 
+def test_active_optimizer_export_at_reserve_is_canceled_not_extended(opt_module):
+    battery = _FakeBattery()
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.15)
+    coordinator.battery_system = "goodwe"
+    coordinator._config.backup_reserve = 0.15
+    action = SimpleNamespace(
+        action="export",
+        power_w=5000,
+        timestamp=datetime(2026, 5, 3, 8, 30, tzinfo=timezone.utc),
+    )
+    coordinator._current_schedule = SimpleNamespace(actions=[action])
+    coordinator._set_optimizer_force_state("discharge", 15, 5000)
+
+    asyncio.run(coordinator._execute_optimizer_action(action))
+
+    assert battery.force_discharge_calls == []
+    assert battery.restore_normal_calls == 1
+    assert coordinator._optimizer_force_state["active"] is False
+    assert coordinator._last_executed_action == "self_consumption"
+
+
 def test_scheduled_ev_preserve_release_restores_no_discharge_mode(opt_module):
     battery = _FakeBattery()
     coordinator = _execution_coordinator(opt_module, battery, soc=0.80)

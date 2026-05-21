@@ -2139,6 +2139,34 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 force_window_action = action
 
                 if lp_matches_force:
+                    if force_type == "discharge":
+                        try:
+                            soc_now, _ = await self._get_battery_state()
+                            opt_reserve = self._config.backup_reserve
+                            if soc_now is not None and soc_now <= opt_reserve:
+                                _LOGGER.warning(
+                                    "Optimizer: Canceling active force discharge — "
+                                    "SOC %.1f%% at/below optimizer reserve %.0f%%; "
+                                    "restoring self_consumption instead of extending",
+                                    soc_now * 100, opt_reserve * 100,
+                                )
+                                if force_state.get("scope") == "optimizer":
+                                    self._clear_optimizer_force_state()
+                                elif self._force_state_clearer:
+                                    self._force_state_clearer()
+                                if hasattr(battery, "restore_normal"):
+                                    await battery.restore_normal()
+                                elif hasattr(battery, "set_self_consumption_mode"):
+                                    await battery.set_self_consumption_mode()
+                                self._last_executed_action = "self_consumption"
+                                return
+                        except Exception as reserve_err:
+                            _LOGGER.debug(
+                                "Optimizer: reserve check before extending force "
+                                "discharge failed: %s",
+                                reserve_err,
+                            )
+
                     # Extend the expiry timer so the force mode doesn't expire
                     # between optimizer cycles (avoids restore→re-issue gap).
                     from ..const import DOMAIN as _EXT_DOMAIN

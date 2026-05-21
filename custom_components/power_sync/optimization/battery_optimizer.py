@@ -541,40 +541,41 @@ class BatteryOptimizer:
             x[2n..3n-1] = battery_charge[t] (kW, >= 0)
             x[3n..4n-1] = battery_discharge[t] (kW, >= 0)
         """
-        # If SOC is below backup_reserve, the LP is guaranteed infeasible
-        # (cannot satisfy soc[0] >= backup_reserve when starting below it
-        # and max charge can't bridge the gap in one timestep).
-        # Temporarily lower the effective reserve to current SOC so the LP
-        # can still produce a useful schedule (it will plan to charge back
-        # up towards the real reserve rather than failing outright).
+        # If SOC is below the optimiser reserve, self-consumption can still use
+        # the battery down to the hardware reserve. Keep the optimiser reserve
+        # intact for forced export/discharge decisions, but suppress battery
+        # export for this solve and lower only the physical SOC floor used by
+        # the LP. This avoids force-charging solely to recover the optimiser
+        # reserve while still treating it as the forced-discharge boundary.
         _soc_below_reserve = soc_0 < self.backup_reserve
-        _saved_reserve = self.backup_reserve
+        _saved_terminal_weight = self.terminal_weight
+        allow_battery_export = allow_battery_export or [True] * n
         if _soc_below_reserve:
-            # Use current SOC as the floor (no further discharge allowed).
-            # Using soc-1% caused cascading drain: each cycle allowed 1% more
-            # discharge, so the battery drained 3%+ per 5-minute LP cycle.
-            effective_reserve = soc_0
+            effective_reserve = max(0.0, min(soc_0, self.hardware_reserve))
             log = _LOGGER.info if self.suppress_reserve_warning else _LOGGER.warning
             log(
-                "SOC (%.1f%%) below backup reserve (%.0f%%) — using effective "
-                "reserve %.1f%% to avoid infeasibility",
+                "SOC (%.1f%%) below optimiser reserve (%.0f%%) — using "
+                "hardware reserve %.1f%% as self-consumption floor",
                 soc_0 * 100, self.backup_reserve * 100, effective_reserve * 100,
             )
-            self._below_reserve_recovery_target = self.backup_reserve
-            self.backup_reserve = effective_reserve
+            # Do not assign artificial end-of-horizon value to recovering the
+            # optimiser reserve. Real import/export prices can still justify
+            # charging, but ordinary self-use should be allowed to continue.
+            self.terminal_weight = 0.0
+            allow_battery_export = [False] * n
 
         try:
             return self._solve_lp_inner(
                 n, import_prices, export_prices, solar, load, soc_0,
                 cost_function,
                 acquisition_cost_kwh,
-                allow_battery_export or [True] * n,
+                allow_battery_export,
                 block_battery_charge or [False] * n,
                 allow_grid_charge,
             )
         finally:
             if _soc_below_reserve:
-                self.backup_reserve = _saved_reserve
+                self.terminal_weight = _saved_terminal_weight
                 self._below_reserve_recovery_target = None
 
     def _solve_lp_inner(
@@ -615,9 +616,15 @@ class BatteryOptimizer:
         p_allow_export = [period.allow_battery_export for period in periods]
         p_block_charge = [period.block_battery_charge for period in periods]
         p_dt = [period.slot_count * self.dt_hours for period in periods]
-        reserve_floor = [self.backup_reserve] * (p_n + 1)
+        optimizer_reserve = self.backup_reserve
+        self_consumption_floor = (
+            max(0.0, min(soc_0, self.hardware_reserve))
+            if soc_0 < optimizer_reserve
+            else optimizer_reserve
+        )
+        reserve_floor = [self_consumption_floor] * (p_n + 1)
         recovery_target = self._below_reserve_recovery_target
-        if recovery_target is not None and recovery_target > self.backup_reserve:
+        if recovery_target is not None and recovery_target > self_consumption_floor:
             max_reachable = soc_0
             reserve_floor[0] = soc_0
             for t in range(p_n):
@@ -631,7 +638,7 @@ class BatteryOptimizer:
                     recovery_target,
                     max_reachable + reachable_charge_kw * eff * p_dt[t] / cap,
                 )
-                reserve_floor[t + 1] = max(self.backup_reserve, max_reachable)
+                reserve_floor[t + 1] = max(self_consumption_floor, max_reachable)
 
         # HAEO-style state model: power variables per period, battery energy
         # variables at period boundaries. This removes the dense cumulative SOC
@@ -1156,6 +1163,13 @@ class BatteryOptimizer:
             if self.max_grid_export_w is not None
             else None
         )
+        optimizer_reserve = self.backup_reserve
+        below_optimizer_reserve = soc_0 < optimizer_reserve
+        self_consumption_floor = (
+            max(0.0, min(soc_0, self.hardware_reserve))
+            if below_optimizer_reserve
+            else optimizer_reserve
+        )
 
         grid_import = [0.0] * n
         grid_export = [0.0] * n
@@ -1180,8 +1194,9 @@ class BatteryOptimizer:
         # Pass 1: assign discharge/export to highest-spread periods
         soc_tracker = soc_0
         for spread, t, net_load in spreads:
+            battery_export_allowed = allow_battery_export[t] and not below_optimizer_reserve
             export_profitable_slot = (
-                allow_battery_export[t]
+                battery_export_allowed
                 and export_prices[t] > import_prices[t]
                 and (
                     acquisition_cost_kwh <= 0
@@ -1192,7 +1207,7 @@ class BatteryOptimizer:
                 t, n, import_prices, solar, load
             )
             self_consumption_value_slot = (
-                not allow_battery_export[t]
+                not battery_export_allowed
                 and import_prices[t] > export_prices[t]
                 and (
                     acquisition_cost_kwh <= 0
@@ -1203,6 +1218,7 @@ class BatteryOptimizer:
                 (export_profitable_slot and not future_self_consumption_value)
                 or self_consumption_value_slot
             ):
+                forced_export_slot = export_profitable_slot and not future_self_consumption_value
                 # Profitable to discharge; cap to home load when battery export
                 # is not explicitly permitted or export is below acquisition cost.
                 discharge_limit = self.max_discharge_kw
@@ -1212,14 +1228,17 @@ class BatteryOptimizer:
                         max(0.0, net_load + max_grid_export_kw),
                     )
                 if (
-                    not allow_battery_export[t]
+                    not battery_export_allowed
                     or (
                         acquisition_cost_kwh > 0
                         and export_prices[t] < acquisition_cost_kwh
                     )
                 ):
                     discharge_limit = min(discharge_limit, max(0.0, net_load))
-                discharge_room = (soc_tracker - self.backup_reserve) * cap * eff / dt
+                discharge_floor = (
+                    optimizer_reserve if forced_export_slot else self_consumption_floor
+                )
+                discharge_room = (soc_tracker - discharge_floor) * cap * eff / dt
                 discharge_kw = min(discharge_limit, max(0, discharge_room))
                 if discharge_kw > 0.01:
                     actions[t] = (0.0, discharge_kw)
@@ -1232,8 +1251,9 @@ class BatteryOptimizer:
         for _, t, net_load in sorted(spreads, key=lambda item: (import_prices[item[1]], item[1])):
             if t in actions:
                 continue
+            battery_export_allowed = allow_battery_export[t] and not below_optimizer_reserve
             export_profitable_slot = (
-                allow_battery_export[t]
+                battery_export_allowed
                 and export_prices[t] > import_prices[t]
                 and (
                     acquisition_cost_kwh <= 0
@@ -1243,6 +1263,18 @@ class BatteryOptimizer:
             future_self_consumption_value = self._has_future_self_consumption_value(
                 t, n, import_prices, solar, load
             )
+            if (
+                below_optimizer_reserve
+                and soc_tracker > self_consumption_floor + 0.005
+                and import_prices[t] > 0.001
+            ):
+                future_import_value = max(import_prices[t + 1:] or [import_prices[t]])
+                cheap_for_future_load = (
+                    future_import_value > import_prices[t] + 0.02
+                    and any(load[i] > solar[i] for i in range(t + 1, n))
+                )
+                if not cheap_for_future_load:
+                    continue
             if block_battery_charge[t] or (
                 export_profitable_slot and not future_self_consumption_value
             ):
@@ -1276,7 +1308,7 @@ class BatteryOptimizer:
                 grid_export[t] = export_kw
 
             soc += (charge_kw * eff - discharge_kw / eff) * dt / cap
-            soc = max(self.backup_reserve, min(1.0, soc))
+            soc = max(self_consumption_floor, min(1.0, soc))
 
         # Build schedule
         schedule = self._build_schedule(
