@@ -107,6 +107,15 @@ def _install_power_sync_stubs() -> None:
     const_module = types.ModuleType("power_sync.const")
     const_module.DOMAIN = "power_sync"
     const_module.CONF_ELECTRICITY_PROVIDER = "electricity_provider"
+    const_module.CONF_FLOW_POWER_BASE_RATE = "flow_power_base_rate"
+    const_module.CONF_FLOW_POWER_EXPORT_RATE = "flow_power_export_rate"
+    const_module.CONF_FLOW_POWER_STATE = "flow_power_state"
+    const_module.CONF_FP_NETWORK = "fp_network"
+    const_module.CONF_FP_TARIFF_CODE = "fp_tariff_code"
+    const_module.CONF_FP_TWAP_OVERRIDE = "fp_twap_override"
+    const_module.CONF_PEA_CUSTOM_VALUE = "pea_custom_value"
+    const_module.CONF_PEA_ENABLED = "pea_enabled"
+    const_module.CONF_SPIKE_PROTECTION_ENABLED = "spike_protection_enabled"
     const_module.CONF_DEMAND_CHARGE_ENABLED = "demand_charge_enabled"
     const_module.CONF_DEMAND_CHARGE_RATE = "demand_charge_rate"
     const_module.CONF_DEMAND_CHARGE_START_TIME = "demand_charge_start_time"
@@ -119,6 +128,12 @@ def _install_power_sync_stubs() -> None:
     const_module.SOLCAST_ESTIMATE10 = "estimate10"
     const_module.SOLCAST_ESTIMATE90 = "estimate90"
     const_module.DEFAULT_OPTIMIZATION_INTERVAL = 5
+    const_module.FLOW_POWER_BENCHMARK = 1.7
+    const_module.FLOW_POWER_DEFAULT_BASE_RATE = 34.0
+    const_module.FLOW_POWER_EXPORT_RATES = {"NSW1": 0.45}
+    const_module.FLOW_POWER_GST = 1.1
+    const_module.FLOW_POWER_MARKET_AVG = 8.0
+    const_module.NETWORK_API_NAME = {"Ausgrid": "ausgrid"}
     sys.modules["power_sync.const"] = const_module
 
     ev_module = types.ModuleType("power_sync.optimization.ev_coordinator")
@@ -348,6 +363,72 @@ def test_static_tou_provider_does_not_attach_dynamic_aemo_listener(opt_module):
 
     assert coordinator._is_dynamic_pricing is False
     assert coordinator.price_coordinator.listener_added is False
+
+
+def test_flow_power_optimizer_uses_v2_pea_formula(opt_module, monkeypatch):
+    async def _executor(fn, *args):
+        return fn(*args)
+
+    coordinator = object.__new__(opt_module.OptimizationCoordinator)
+    coordinator.hass = SimpleNamespace(
+        async_add_executor_job=_executor,
+        data={
+            "power_sync": {
+                "entry-1": {
+                    "fp_avg_daily_tariff": 5.0,
+                    "flow_power_twap_tracker": SimpleNamespace(twap=8.0),
+                }
+            }
+        },
+    )
+    coordinator._entry = SimpleNamespace(
+        entry_id="entry-1",
+        data={},
+        options={
+            "electricity_provider": "flow_power",
+            "flow_power_state": "NSW1",
+            "fp_network": "Ausgrid",
+            "fp_tariff_code": "EA025",
+        },
+    )
+    coordinator._config = opt_module.OptimizationConfig(horizon_hours=1)
+    coordinator.price_coordinator = SimpleNamespace(
+        data={
+            "current": [
+                {
+                    "channelType": "general",
+                    "wholesaleKWHPrice": 20.0,
+                    "perKwh": 20.0,
+                    "nemTime": "2026-05-03T08:35:00+00:00",
+                    "duration": 5,
+                },
+                {
+                    "channelType": "feedIn",
+                    "perKwh": -1.0,
+                    "nemTime": "2026-05-03T08:35:00+00:00",
+                    "duration": 5,
+                },
+            ],
+            "forecast": [],
+        }
+    )
+    coordinator._last_display_import_prices = None
+    coordinator._last_display_export_prices = None
+    coordinator._apply_export_boost = lambda export, import_prices=None: (export, [])
+    coordinator._apply_saving_session_prices = lambda imports, exports: (imports, exports)
+    coordinator._apply_chip_mode = lambda exports: exports
+    coordinator._apply_demand_charge_penalty = lambda imports: imports
+    monkeypatch.setattr(
+        opt_module,
+        "_flow_power_network_tariff_rate",
+        lambda when, network, tariff_code: 12.0,
+    )
+
+    import_prices, _ = asyncio.run(coordinator._get_price_forecast())
+
+    # Base 34c + PEA (1.1*20c + 12c - 1.1*8c - 5c - 1.7c) = 52.5c/kWh.
+    assert import_prices[0] == pytest.approx(0.525)
+    assert coordinator._last_display_import_prices[0] == pytest.approx(0.525)
 
 
 def test_schedule_polling_sleep_aligns_to_next_interval_boundary(opt_module, monkeypatch):

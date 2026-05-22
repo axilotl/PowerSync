@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from homeassistant.core import HomeAssistant
@@ -31,6 +31,18 @@ _LOGGER = logging.getLogger(__name__)
 COST_STORE_VERSION = 1
 COST_STORE_SAVE_DELAY = 300  # Coalesce writes — flush at most every 5 minutes
 FIXED_OPTIMIZATION_INTERVAL_MINUTES = DEFAULT_OPTIMIZATION_INTERVAL
+FLOW_POWER_NEM_TZ = timezone(timedelta(hours=10))
+
+
+def _flow_power_network_tariff_rate(
+    when: datetime,
+    network: str,
+    tariff_code: str,
+) -> float | None:
+    """Return the Flow Power v2 network tariff rate for an interval."""
+    from ..tariff_utils import get_network_tariff_rate
+
+    return get_network_tariff_rate(when, network, tariff_code)
 
 
 def _hhmm_to_minutes(value: Any, default: str = "17:15") -> int:
@@ -4200,6 +4212,24 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return ""
 
     @classmethod
+    def _get_entry_start_datetime(
+        cls,
+        e: dict,
+        fallback: datetime,
+    ) -> datetime:
+        """Return a parsed entry start datetime, falling back to the LP window."""
+        start_str = cls._get_entry_start_time(e)
+        if start_str:
+            try:
+                start_dt = datetime.fromisoformat(start_str.replace("Z", "+00:00"))
+                if start_dt.tzinfo is None:
+                    return start_dt.replace(tzinfo=fallback.tzinfo)
+                return start_dt
+            except (ValueError, TypeError):
+                pass
+        return fallback
+
+    @classmethod
     def _entry_remaining_minutes(
         cls,
         e: dict,
@@ -4319,15 +4349,25 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     fp_base_rate = 34.0
                     fp_pea_enabled = True
                     fp_custom_pea = None
+                    fp_market_avg = None
+                    fp_avg_daily_tariff = None
+                    fp_network = None
+                    fp_tariff_code = None
+                    fp_tariff_rates: dict[int, float] = {}
                     if self._entry:
                         from ..const import (
                             CONF_ELECTRICITY_PROVIDER,
+                            CONF_FP_NETWORK,
+                            CONF_FP_TARIFF_CODE,
+                            CONF_FP_TWAP_OVERRIDE,
                             CONF_PEA_ENABLED,
                             CONF_FLOW_POWER_BASE_RATE,
                             CONF_PEA_CUSTOM_VALUE,
+                            FLOW_POWER_GST,
                             FLOW_POWER_MARKET_AVG,
                             FLOW_POWER_BENCHMARK,
                             FLOW_POWER_DEFAULT_BASE_RATE,
+                            NETWORK_API_NAME,
                             DOMAIN as _DOMAIN,
                         )
                         _provider = self._entry.options.get(
@@ -4345,6 +4385,89 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                             )
                             fp_custom_pea = self._entry.options.get(
                                 CONF_PEA_CUSTOM_VALUE
+                            )
+                            domain_data = self.hass.data.get(
+                                _DOMAIN, {}
+                            ).get(self._entry.entry_id, {})
+                            twap_override = self._entry.options.get(
+                                CONF_FP_TWAP_OVERRIDE,
+                                self._entry.data.get(CONF_FP_TWAP_OVERRIDE),
+                            )
+                            if twap_override not in (None, ""):
+                                try:
+                                    fp_market_avg = float(twap_override)
+                                except (ValueError, TypeError):
+                                    fp_market_avg = None
+                            if fp_market_avg is None:
+                                fp_twap_tracker = domain_data.get(
+                                    "flow_power_twap_tracker"
+                                )
+                                fp_market_avg = (
+                                    fp_twap_tracker.twap
+                                    if fp_twap_tracker and fp_twap_tracker.twap is not None
+                                    else FLOW_POWER_MARKET_AVG
+                                )
+                            fp_avg_daily_tariff = domain_data.get(
+                                "fp_avg_daily_tariff"
+                            )
+                            fp_network_name = self._entry.options.get(
+                                CONF_FP_NETWORK,
+                                self._entry.data.get(CONF_FP_NETWORK),
+                            )
+                            fp_tariff_code = self._entry.options.get(
+                                CONF_FP_TARIFF_CODE,
+                                self._entry.data.get(CONF_FP_TARIFF_CODE),
+                            )
+                            if fp_network_name:
+                                fp_network = NETWORK_API_NAME.get(
+                                    fp_network_name,
+                                    str(fp_network_name).lower(),
+                                )
+
+                    if (
+                        is_flow_power
+                        and fp_network
+                        and fp_tariff_code
+                        and fp_avg_daily_tariff is not None
+                    ):
+                        tariff_datetimes: dict[int, datetime] = {}
+                        for entry in general:
+                            start_dt = self._get_entry_start_datetime(
+                                entry,
+                                current_window,
+                            ).astimezone(FLOW_POWER_NEM_TZ)
+                            tariff_datetimes[id(entry)] = start_dt
+
+                        def _lookup_flow_power_tariff_rates() -> dict[int, float]:
+                            rates: dict[int, float] = {}
+                            cache: dict[datetime, float | None] = {}
+                            for entry_id, start_dt in tariff_datetimes.items():
+                                cached = cache.get(start_dt)
+                                if start_dt not in cache:
+                                    cached = _flow_power_network_tariff_rate(
+                                        start_dt,
+                                        fp_network,
+                                        fp_tariff_code,
+                                    )
+                                    cache[start_dt] = cached
+                                if cached is not None:
+                                    rates[entry_id] = cached
+                            return rates
+
+                        try:
+                            if hasattr(self.hass, "async_add_executor_job"):
+                                fp_tariff_rates = await self.hass.async_add_executor_job(
+                                    _lookup_flow_power_tariff_rates
+                                )
+                            else:
+                                fp_tariff_rates = _lookup_flow_power_tariff_rates()
+                        except Exception as err:
+                            _LOGGER.warning(
+                                "Flow Power v2 tariff lookup failed for %s/%s; "
+                                "falling back to legacy PEA formula: %s",
+                                fp_network,
+                                fp_tariff_code,
+                                err,
                             )
 
                     import_prices = []
@@ -4375,18 +4498,24 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                                 wholesale_cents = e.get("wholesaleKWHPrice")
                                 if wholesale_cents is None:
                                     wholesale_cents = e.get("perKwh", 0)
-                                # Use dynamic TWAP if available
-                                fp_twap_tracker = self.hass.data.get(
-                                    _DOMAIN, {}
-                                ).get(self._entry.entry_id, {}).get(
-                                    "flow_power_twap_tracker"
-                                )
-                                fp_market_avg = (
-                                    fp_twap_tracker.twap
-                                    if fp_twap_tracker and fp_twap_tracker.twap is not None
-                                    else FLOW_POWER_MARKET_AVG
-                                )
-                                pea = wholesale_cents - fp_market_avg - FLOW_POWER_BENCHMARK
+                                tariff_rate = fp_tariff_rates.get(id(e))
+                                if (
+                                    tariff_rate is not None
+                                    and fp_avg_daily_tariff is not None
+                                ):
+                                    pea = (
+                                        FLOW_POWER_GST * wholesale_cents
+                                        + tariff_rate
+                                        - FLOW_POWER_GST * fp_market_avg
+                                        - fp_avg_daily_tariff
+                                        - FLOW_POWER_BENCHMARK
+                                    )
+                                else:
+                                    pea = (
+                                        wholesale_cents
+                                        - fp_market_avg
+                                        - FLOW_POWER_BENCHMARK
+                                    )
                                 price_dollar = max(
                                     0, (fp_base_rate + pea) / 100
                                 )
