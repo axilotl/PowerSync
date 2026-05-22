@@ -5507,7 +5507,26 @@ def _build_dynamic_charging_params(
         vehicle_vin,
     )
     configured_vehicle_id = vehicle_charger_params.pop("_configured_vehicle_id", None)
-    charger_type = vehicle_charger_params.get("charger_type") or _configured_charger_type(opts)
+    configured_charger_type = _configured_charger_type(opts)
+    stored_charger_type = vehicle_charger_params.get("charger_type")
+    if (
+        vehicle_vin is None
+        and configured_charger_type != "tesla"
+        and stored_charger_type
+        and stored_charger_type != configured_charger_type
+    ):
+        vehicle_charger_params = {
+            key: value
+            for key, value in vehicle_charger_params.items()
+            if key in ("min_charge_amps", "max_charge_amps", "voltage", "phases")
+        }
+        configured_vehicle_id = None
+        stored_charger_type = None
+    charger_type = (
+        configured_charger_type
+        if vehicle_vin is None and configured_charger_type != "tesla"
+        else stored_charger_type or configured_charger_type
+    )
 
     params = {
         "dynamic_mode": dynamic_mode,

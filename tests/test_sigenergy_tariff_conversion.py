@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import asyncio
 import sys
 import types
 from datetime import datetime, timedelta
@@ -298,3 +299,116 @@ def test_sigenergy_tariff_sync_does_not_require_optional_device_id():
     assert credentials_guard in helper_source
     assert "if not all([station_id, username, pass_enc, device_id]):" not in helper_source
     assert "device_id=device_id" in helper_source
+
+
+class _FakeTariffResponse:
+    def __init__(
+        self,
+        status: int,
+        *,
+        payload: dict | None = None,
+        text: str = "",
+        headers: dict | None = None,
+    ):
+        self.status = status
+        self._payload = payload or {}
+        self._text = text
+        self.headers = headers or {}
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def json(self):
+        return self._payload
+
+    async def text(self):
+        return self._text
+
+
+class _FakeTariffSession:
+    closed = False
+
+    def __init__(self, responses: list[_FakeTariffResponse]):
+        self.responses = responses
+        self.post_calls = 0
+
+    def post(self, *args, **kwargs):
+        self.post_calls += 1
+        return self.responses.pop(0)
+
+
+def test_sigenergy_set_tariff_retries_429_with_retry_after(
+    sigenergy_api_module,
+    monkeypatch,
+):
+    sleeps = []
+
+    async def fake_sleep(delay):
+        sleeps.append(delay)
+
+    monkeypatch.setattr(sigenergy_api_module.asyncio, "sleep", fake_sleep)
+
+    session = _FakeTariffSession(
+        [
+            _FakeTariffResponse(
+                429,
+                text="rate limited",
+                headers={"Retry-After": "0.25"},
+            ),
+            _FakeTariffResponse(200, payload={"code": 0}),
+        ]
+    )
+    client = sigenergy_api_module.SigenergyAPIClient(
+        access_token="token",
+        token_expires_at=datetime.utcnow() + timedelta(hours=1),
+        session=session,
+    )
+
+    result = asyncio.run(
+        client.set_tariff_rate(
+            station_id="123",
+            buy_prices=[{"timeRange": "00:00-00:30", "price": 1.0}],
+            sell_prices=[{"timeRange": "00:00-00:30", "price": 0.0}],
+        )
+    )
+
+    assert result == {"success": True, "message": "Tariff updated"}
+    assert session.post_calls == 2
+    assert sleeps == [0.25]
+
+
+def test_sigenergy_set_tariff_stops_after_repeated_429(
+    sigenergy_api_module,
+    monkeypatch,
+):
+    async def fake_sleep(_delay):
+        return None
+
+    monkeypatch.setattr(sigenergy_api_module.asyncio, "sleep", fake_sleep)
+
+    session = _FakeTariffSession(
+        [
+            _FakeTariffResponse(429, text="first"),
+            _FakeTariffResponse(429, text="second"),
+            _FakeTariffResponse(429, text="third"),
+        ]
+    )
+    client = sigenergy_api_module.SigenergyAPIClient(
+        access_token="token",
+        token_expires_at=datetime.utcnow() + timedelta(hours=1),
+        session=session,
+    )
+
+    result = asyncio.run(
+        client.set_tariff_rate(
+            station_id="123",
+            buy_prices=[{"timeRange": "00:00-00:30", "price": 1.0}],
+            sell_prices=[{"timeRange": "00:00-00:30", "price": 0.0}],
+        )
+    )
+
+    assert result == {"error": "Failed to set tariff: 429"}
+    assert session.post_calls == 3

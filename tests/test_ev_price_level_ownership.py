@@ -421,6 +421,44 @@ def test_scheduled_ocpp_start_uses_ocpp_loadpoint_id(fake_actions):
     assert params["allow_ownership_takeover"] is True
 
 
+def test_scheduled_sigenergy_start_uses_sigenergy_charger_loadpoint(fake_actions):
+    fake_actions._action_start_ev_charging_dynamic = AsyncMock(return_value=True)
+
+    class SigenergyEntry(_FakeConfigEntry):
+        options = {
+            "sigenergy_charger_enabled": True,
+            "sigenergy_charger_host": "192.0.2.10",
+            "sigenergy_charger_port": 502,
+            "sigenergy_charger_slave_id": 1,
+            "sigenergy_charger_type": "evac",
+        }
+
+    hass = _FakeHass()
+    hass.data["power_sync"]["entry-1"]["automation_store"]._data[
+        "vehicle_charging_configs"
+    ] = [{
+        "vehicle_id": "LRWYHCEK3PC907290",
+        "charger_type": "tesla",
+        "min_amps": 5,
+        "max_amps": 32,
+        "voltage": 230,
+        "phases": 1,
+    }]
+
+    executor = ev_planner.ScheduledChargingExecutor(hass, SigenergyEntry())
+    result = asyncio.run(executor._start_charging("Scheduled window"))
+
+    assert result is True
+    fake_actions._action_start_ev_charging_dynamic.assert_awaited_once()
+    _hass, _entry, params = fake_actions._action_start_ev_charging_dynamic.await_args.args
+    assert params["vehicle_id"] == "sigenergy_charger"
+    assert params["vehicle_vin"] == "sigenergy_charger"
+    assert params["charger_type"] == "sigenergy"
+    assert params["sigenergy_charger_host"] == "192.0.2.10"
+    assert params["sigenergy_charger_slave_id"] == 1
+    assert params["allow_ownership_takeover"] is True
+
+
 def test_scheduled_preserve_home_battery_sets_optimizer_intent(fake_actions):
     fake_actions._action_start_ev_charging_dynamic = AsyncMock(return_value=True)
     fake_actions._action_stop_ev_charging_dynamic = AsyncMock(return_value=True)

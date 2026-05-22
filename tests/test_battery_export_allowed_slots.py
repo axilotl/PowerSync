@@ -318,6 +318,21 @@ def test_startup_restore_target_does_not_treat_live_idle_reserve_as_persisted(op
     )
 
 
+def test_tesla_startup_ignores_polluted_zero_user_reserve(opt_module):
+    coordinator = _coordinator(
+        opt_module,
+        "amber",
+        _user_backup_reserve=0,
+        optimization_backup_reserve=60,
+    )
+    coordinator.battery_system = "tesla"
+
+    assert coordinator._configured_startup_backup_reserve() == (
+        60,
+        "optimizer floor config",
+    )
+
+
 def test_tesla_startup_replaces_stale_persisted_reserve_with_lower_live_reserve(opt_module):
     coordinator = _coordinator(
         opt_module,
@@ -348,6 +363,23 @@ def test_tesla_startup_replaces_stale_persisted_reserve_with_lower_live_reserve(
     ) == (30, "live Tesla backup reserve")
     assert coordinator._entry.options["_user_backup_reserve"] == 30
     assert updates[-1]["options"]["_user_backup_reserve"] == 30
+
+
+def test_tesla_startup_does_not_replace_persisted_reserve_with_live_zero(opt_module):
+    coordinator = _coordinator(
+        opt_module,
+        "amber",
+        _user_backup_reserve=30,
+    )
+    coordinator.battery_system = "tesla"
+
+    assert asyncio.run(
+        coordinator._resolve_startup_backup_reserve(
+            _FakeTeslaBattery(0),
+            30,
+            "persisted user backup reserve",
+        )
+    ) == (30, "persisted user backup reserve")
 
 
 def test_tesla_startup_keeps_persisted_reserve_when_live_reserve_is_higher(opt_module):

@@ -719,7 +719,9 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         persisted_user_reserve = self._reserve_percent(
             self._entry.options.get("_user_backup_reserve")
         )
-        if persisted_user_reserve is not None:
+        if persisted_user_reserve is not None and (
+            persisted_user_reserve > 0 or self.battery_system != "tesla"
+        ):
             return persisted_user_reserve, "persisted user backup reserve"
 
         optimizer_reserve = self._reserve_percent(
@@ -755,6 +757,14 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return startup_reserve, reserve_source
 
         if live_reserve is None or live_reserve >= startup_reserve:
+            return startup_reserve, reserve_source
+
+        if live_reserve == 0 and startup_reserve > 0:
+            _LOGGER.info(
+                "Optimizer startup: ignoring live Tesla backup reserve 0%% while "
+                "persisted user backup reserve is %d%%",
+                startup_reserve,
+            )
             return startup_reserve, reserve_source
 
         _LOGGER.info(

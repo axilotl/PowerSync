@@ -144,7 +144,7 @@ def _load_sungrow_energy_coordinator():
 def _controller_with_recorded_writes():
     controller = SungrowSHController("192.0.2.10")
     writes: list[tuple[int, int]] = []
-    read_values = [
+    ems_reads = [
         [controller.EMS_SELF_CONSUMPTION],
         [controller.EMS_FORCED],
     ]
@@ -157,7 +157,13 @@ def _controller_with_recorded_writes():
         return True
 
     async def read_register(address: int, count: int = 1):
-        return read_values.pop(0)
+        if address == controller.REG_EXPORT_LIMIT_ENABLED:
+            return [controller.EXPORT_LIMIT_DISABLE]
+        if address == controller.REG_EXPORT_LIMIT_SETTING:
+            return [0]
+        if address == controller.REG_EMS_MODE:
+            return ems_reads.pop(0)
+        return None
 
     controller.connect = connect
     controller._write_register = write_register
@@ -176,6 +182,49 @@ def test_force_discharge_writes_requested_power_to_forced_power_register():
     assert result
     assert writes == [
         (controller.REG_CHARGE_DISCHARGE_POWER, 20000),
+        (controller.REG_EMS_MODE, controller.EMS_FORCED),
+        (controller.REG_CHARGE_CMD, controller.CMD_DISCHARGE),
+    ]
+
+
+def test_force_discharge_disables_stale_zero_export_limit_first():
+    async def run_force_discharge():
+        controller = SungrowSHController("192.0.2.10")
+        writes: list[tuple[int, int]] = []
+        ems_reads = [
+            [controller.EMS_SELF_CONSUMPTION],
+            [controller.EMS_FORCED],
+        ]
+
+        async def connect() -> bool:
+            return True
+
+        async def write_register(address: int, value: int) -> bool:
+            writes.append((address, value))
+            return True
+
+        async def read_register(address: int, count: int = 1):
+            if address == controller.REG_EXPORT_LIMIT_ENABLED:
+                return [controller.EXPORT_LIMIT_ENABLE]
+            if address == controller.REG_EXPORT_LIMIT_SETTING:
+                return [0]
+            if address == controller.REG_EMS_MODE:
+                return ems_reads.pop(0)
+            return None
+
+        controller.connect = connect
+        controller._write_register = write_register
+        controller._read_register = read_register
+
+        result = await controller.force_discharge(power_w=15000)
+        return result, controller, writes
+
+    result, controller, writes = asyncio.run(run_force_discharge())
+
+    assert result
+    assert writes == [
+        (controller.REG_EXPORT_LIMIT_ENABLED, controller.EXPORT_LIMIT_DISABLE),
+        (controller.REG_CHARGE_DISCHARGE_POWER, 15000),
         (controller.REG_EMS_MODE, controller.EMS_FORCED),
         (controller.REG_CHARGE_CMD, controller.CMD_DISCHARGE),
     ]

@@ -52,6 +52,7 @@ from .coordinator import PowerwallLocalCoordinator
 from .curtailment_fallback import get_fallback as _get_curtailment_fallback
 from .exceptions import PowerwallLocalError, PowerwallPairingError
 from .pairing import PowerwallPairingManager
+from .transport import get_insecure_ssl_context
 
 if TYPE_CHECKING:
     pass
@@ -204,6 +205,11 @@ async def ensure_client(
     ):
         return existing
 
+    # PowerwallLocalClient constructs the signed TEDAPI transport immediately.
+    # Warm the shared SSL context off the event loop first so cloud-only paired
+    # entries (no LAN IP yet) do not trip Home Assistant's blocking-call check.
+    await get_insecure_ssl_context(hass)
+
     client = await _build_client(hass, entry)
     if client is None:
         return None
@@ -246,14 +252,6 @@ async def ensure_coordinator(
         except Exception:
             pass
         runtime["coordinator"] = None
-
-    # Warm up the shared insecure SSL context off the event loop before we
-    # construct the client — otherwise transport.__init__ hits
-    # ssl.create_default_context() synchronously on the loop and HA logs
-    # a blocking-call warning. The context is module-cached so this only
-    # pays the cost on first pair / first restart after pair.
-    from .transport import get_insecure_ssl_context
-    await get_insecure_ssl_context(hass)
 
     client = await ensure_client(hass, entry)
     if client is None:

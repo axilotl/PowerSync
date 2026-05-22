@@ -6,6 +6,7 @@ Based on https://github.com/Talie5in/amber2sigen
 """
 
 import base64
+import asyncio
 import logging
 from datetime import datetime, timedelta
 from typing import Any, Optional, Callable, Awaitable
@@ -401,29 +402,49 @@ class SigenergyAPIClient:
             )
             _LOGGER.info(f"Setting tariff for Sigenergy station {station_id}")
 
-            async with session.post(url, headers=headers, json=payload, timeout=30) as response:
-                if response.status != 200:
-                    _LOGGER.error(f"Set tariff failed: {response.status}")
-                    return {"error": f"Failed to set tariff: {response.status}"}
+            max_attempts = 3
+            for attempt in range(1, max_attempts + 1):
+                async with session.post(url, headers=headers, json=payload, timeout=30) as response:
+                    if response.status != 200:
+                        detail = await _read_response_detail(response)
+                        if response.status in (429, 500, 502, 503, 504) and attempt < max_attempts:
+                            retry_after = _sigenergy_retry_after(
+                                response.headers.get("Retry-After"),
+                                attempt=attempt,
+                            )
+                            _LOGGER.warning(
+                                "Set tariff failed: %s%s; retrying in %.1fs "
+                                "(attempt %d/%d)",
+                                response.status,
+                                detail,
+                                retry_after,
+                                attempt + 1,
+                                max_attempts,
+                            )
+                            await asyncio.sleep(retry_after)
+                            continue
 
-                result = await response.json()
-                response_code = result.get("code")
-                response_msg = result.get("msg", result.get("message", ""))
-                _LOGGER.info(
-                    "Sigenergy tariff API response: http=%s, code=%s, message=%s",
-                    response.status,
-                    response_code,
-                    response_msg or "<empty>",
-                )
+                        _LOGGER.error("Set tariff failed: %s%s", response.status, detail)
+                        return {"error": f"Failed to set tariff: {response.status}"}
 
-                # Check for success in response
-                if result.get("code") == 0 or result.get("success"):
-                    _LOGGER.info(f"Tariff updated successfully for station {station_id}")
-                    return {"success": True, "message": "Tariff updated"}
-                else:
-                    error_msg = result.get("msg", result.get("message", "Unknown error"))
-                    _LOGGER.error(f"Set tariff API error: {error_msg}")
-                    return {"error": error_msg}
+                    result = await response.json()
+                    response_code = result.get("code")
+                    response_msg = result.get("msg", result.get("message", ""))
+                    _LOGGER.info(
+                        "Sigenergy tariff API response: http=%s, code=%s, message=%s",
+                        response.status,
+                        response_code,
+                        response_msg or "<empty>",
+                    )
+
+                    # Check for success in response
+                    if result.get("code") == 0 or result.get("success"):
+                        _LOGGER.info(f"Tariff updated successfully for station {station_id}")
+                        return {"success": True, "message": "Tariff updated"}
+                    else:
+                        error_msg = result.get("msg", result.get("message", "Unknown error"))
+                        _LOGGER.error(f"Set tariff API error: {error_msg}")
+                        return {"error": error_msg}
 
         except Exception as e:
             _LOGGER.error(f"Set tariff error: {e}")
@@ -445,6 +466,32 @@ class SigenergyAPIClient:
 
         station_count = len(stations.get("stations", []))
         return True, f"Connected successfully. Found {station_count} station(s)."
+
+
+async def _read_response_detail(response: aiohttp.ClientResponse) -> str:
+    """Return a compact response detail for failed Sigenergy requests."""
+    try:
+        text = (await response.text()).strip()
+    except Exception:
+        return ""
+
+    if not text:
+        return ""
+
+    if len(text) > 300:
+        text = f"{text[:300]}..."
+    return f" ({text})"
+
+
+def _sigenergy_retry_after(retry_after: str | None, *, attempt: int) -> float:
+    """Return retry delay for transient Sigenergy tariff failures."""
+    if retry_after:
+        try:
+            return min(max(float(retry_after), 0.0), 60.0)
+        except ValueError:
+            pass
+
+    return min(5.0 * attempt, 30.0)
 
 
 def convert_tariff_rates_to_sigenergy(rates: dict[str, Any]) -> list[dict]:

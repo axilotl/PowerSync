@@ -1381,8 +1381,6 @@ async def _action_force_discharge(
             power_kw = params.get("power_w", 10000) / 1000 if params.get("power_w") else 10.0
             result = await controller.force_discharge(power_kw)
             if result:
-                # Also restore export limit to allow discharge to grid
-                await controller.restore_export_limit()
                 _LOGGER.info(f"Sigenergy: Force discharge activated at {power_kw}kW for {duration} minutes")
                 return True
             else:

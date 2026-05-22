@@ -720,6 +720,40 @@ class SungrowSHController(InverterController):
 
     # ===== Battery Control Methods (for use as battery system) =====
 
+    async def _disable_zero_export_limit_before_force_discharge(self) -> bool:
+        """Disable a stale zero-export limit before forced battery export.
+
+        Load-following curtailment uses the same export-limit registers. If a
+        previous zero-export limit remains enabled, the inverter accepts forced
+        discharge but only supplies local load instead of exporting to grid.
+        """
+        try:
+            enabled = await self._read_register(self.REG_EXPORT_LIMIT_ENABLED, 1)
+            setting = await self._read_register(self.REG_EXPORT_LIMIT_SETTING, 1)
+        except Exception as e:
+            _LOGGER.debug("Sungrow force discharge export-limit precheck failed: %s", e)
+            return True
+
+        if not enabled or not setting:
+            return True
+
+        if enabled[0] == self.EXPORT_LIMIT_ENABLE and int(setting[0]) == 0:
+            _LOGGER.info(
+                "Sungrow SH at %s has a 0 W export limit enabled; disabling before force discharge",
+                self.host,
+            )
+            success = await self._write_register(
+                self.REG_EXPORT_LIMIT_ENABLED,
+                self.EXPORT_LIMIT_DISABLE,
+            )
+            if not success:
+                _LOGGER.warning(
+                    "Sungrow force discharge blocked: failed to disable stale 0 W export limit"
+                )
+            return success
+
+        return True
+
     async def _write_forced_mode(self, cmd: int, label: str, power_w: float = 5000) -> bool:
         """Set EMS to forced mode with a charge/discharge command and verify.
 
@@ -733,6 +767,10 @@ class SungrowSHController(InverterController):
             try:
                 if not await self.connect():
                     return False
+
+                if cmd == self.CMD_DISCHARGE:
+                    if not await self._disable_zero_export_limit_before_force_discharge():
+                        return False
 
                 # Save current EMS mode for restore (only on first attempt)
                 if attempt == 1 and self._original_ems_mode is None:

@@ -5681,6 +5681,10 @@ class SungrowSettingsView(HomeAssistantView):
                 status=500
             )
 
+    async def post(self, request: web.Request) -> web.Response:
+        """Handle POST request to update Sungrow settings."""
+        return await SungrowDiagnosticsView(self._hass).post(request)
+
 
 class SungrowDiagnosticsView(HomeAssistantView):
     """HTTP view to inspect raw Sungrow SH Modbus telemetry registers."""
