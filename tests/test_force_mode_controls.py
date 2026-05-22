@@ -374,6 +374,28 @@ def test_foxess_cloud_coordinator_exposes_modbus_control_surface():
         _find_class_method(tree, "FoxESSCloudEnergyCoordinator", method_name)
 
 
+def test_foxess_entity_coordinator_exposes_modbus_control_surface():
+    tree = ast.parse(COORDINATOR_PATH.read_text())
+    expected_methods = {
+        "_async_update_data",
+        "force_charge",
+        "force_discharge",
+        "restore_normal",
+        "set_backup_mode",
+        "restore_work_mode_from_idle",
+        "set_backup_reserve",
+        "set_work_mode",
+        "set_operation_mode",
+        "set_charge_rate_limit",
+        "set_discharge_rate_limit",
+        "curtail",
+        "restore_curtailment",
+    }
+
+    for method_name in expected_methods:
+        _find_class_method(tree, "FoxESSEntityEnergyCoordinator", method_name)
+
+
 def test_foxess_cloud_force_modes_snapshot_and_restore_scheduler():
     source = COORDINATOR_PATH.read_text()
     tree = ast.parse(source)

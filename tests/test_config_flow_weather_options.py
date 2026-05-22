@@ -18,8 +18,10 @@ CONFIG_OPTION_TEXT_STEP_PAIRS = (
     ("sungrow", "sungrow_connection"),
     ("sungrow", "init_sungrow"),
     ("foxess_connection", "init_foxess"),
+    ("foxess_entity", "init_foxess"),
     ("foxess_tcp", "foxess_connection_options"),
     ("foxess_serial", "foxess_connection_options"),
+    ("foxess_entity", "foxess_connection_options"),
     ("foxess_tcp", "init_foxess"),
     ("foxess_serial", "init_foxess"),
     ("goodwe_connection", "goodwe_connection_options"),
@@ -397,6 +399,46 @@ def test_foxess_initial_flow_offers_cloud_only_backend():
     assert "return await self.async_step_foxess_cloud()" in method_source
 
 
+def test_foxess_initial_flow_offers_entity_bridge_backend():
+    source = CONFIG_FLOW_PATH.read_text()
+    method = _config_flow_method("async_step_foxess_connection")
+    method_source = ast.get_source_segment(source, method)
+
+    assert method_source is not None
+    assert "FOXESS_CONNECTION_ENTITY" in method_source
+    assert "Entity bridge (foxess_modbus)" in method_source
+    assert "return await self.async_step_foxess_entity()" in method_source
+
+
+def test_foxess_entity_flow_validates_and_stores_bridge_fields():
+    source = CONFIG_FLOW_PATH.read_text()
+    method = _config_flow_method("async_step_foxess_entity")
+    method_source = ast.get_source_segment(source, method)
+
+    assert method_source is not None
+    assert "_foxess_modbus_entry_options" in method_source
+    assert "_validate_foxess_entity_bridge" in method_source
+    assert "CONF_FOXESS_ENTITY_CONFIG_ENTRY_ID" in method_source
+    assert "CONF_FOXESS_ENTITY_PREFIX" in method_source
+    assert "CONF_FOXESS_CONNECTION_TYPE: FOXESS_CONNECTION_ENTITY" in method_source
+
+
+def test_foxess_options_flows_include_entity_bridge_fields():
+    source = CONFIG_FLOW_PATH.read_text()
+    for method_name in (
+        "async_step_foxess_connection_options",
+        "async_step_init_foxess",
+    ):
+        method = _options_flow_method(method_name)
+        method_source = ast.get_source_segment(source, method)
+
+        assert method_source is not None
+        assert "FOXESS_CONNECTION_ENTITY" in method_source
+        assert "_validate_foxess_entity_bridge" in method_source
+        assert "CONF_FOXESS_ENTITY_CONFIG_ENTRY_ID" in method_source
+        assert "CONF_FOXESS_ENTITY_PREFIX" in method_source
+
+
 def test_foxess_cloud_initial_flow_requires_api_key_for_cloud_only():
     source = CONFIG_FLOW_PATH.read_text()
     method = _config_flow_method("async_step_foxess_cloud")
@@ -418,6 +460,15 @@ def test_foxess_cloud_runtime_uses_battery_system_and_cloud_coordinator():
     assert "FOXESS_CONNECTION_CLOUD" in init_source
     assert "FoxESSCloudEnergyCoordinator" in init_source
     assert "Initializing FoxESS Cloud coordinator" in init_source
+
+
+def test_foxess_entity_runtime_uses_battery_system_and_entity_coordinator():
+    init_source = (ROOT / "custom_components" / "power_sync" / "__init__.py").read_text()
+
+    assert "CONF_BATTERY_SYSTEM) == BATTERY_SYSTEM_FOXESS" in init_source
+    assert "FOXESS_CONNECTION_ENTITY" in init_source
+    assert "FoxESSEntityEnergyCoordinator" in init_source
+    assert "Initializing FoxESS entity bridge coordinator" in init_source
 
 
 def test_goodwe_flow_exposes_explicit_ems_control_mode_selector():

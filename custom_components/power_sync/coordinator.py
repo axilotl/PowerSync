@@ -4877,6 +4877,170 @@ class FoxESSEnergyCoordinator(DataUpdateCoordinator):
         await self._controller.disconnect()
 
 
+class FoxESSEntityEnergyCoordinator(DataUpdateCoordinator):
+    """Bridge coordinator for FoxESS via nathanmarlor/foxess_modbus entities."""
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        foxess_entry_id: str | None = None,
+        entity_prefix: str = "",
+        entry_id: str = "",
+    ) -> None:
+        from .inverters.foxess_entity import FoxESSEntityController
+
+        self._entry_id = entry_id
+        self._controller = FoxESSEntityController(
+            hass,
+            foxess_entry_id=foxess_entry_id,
+            entity_prefix=entity_prefix,
+        )
+        self._energy_acc = EnergyAccumulator(hass, "foxess_entity")
+        self._validated = False
+
+        super().__init__(
+            hass,
+            _LOGGER,
+            name=f"{DOMAIN}_foxess_entity_energy",
+            update_interval=timedelta(seconds=30),
+        )
+
+    async def _async_update_data(self) -> dict[str, Any]:
+        """Return FoxESS data assembled from foxess_modbus entity states."""
+        if not self._energy_acc._last_update:
+            await self._energy_acc.async_restore()
+
+        try:
+            if not self._validated:
+                await self._controller.connect()
+                self._validated = True
+            status = self._controller.get_status()
+        except Exception as exc:
+            if self.data:
+                _LOGGER.warning(
+                    "FoxESS entity bridge read failed, returning stale data: %s",
+                    exc,
+                )
+                return self.data
+            raise UpdateFailed(f"FoxESS entity bridge read failed: {exc}") from exc
+
+        solar_kw = status.get("solar_power", 0.0) or 0.0
+        grid_kw = status.get("grid_power", 0.0) or 0.0
+        battery_kw = status.get("battery_power", 0.0) or 0.0
+        load_kw = status.get("load_power", 0.0) or 0.0
+        soc = status.get("battery_level", 0.0) or 0.0
+
+        buy, sell = _get_current_prices(self.hass, self._entry_id)
+        self._energy_acc.update(max(0.0, solar_kw), grid_kw, battery_kw, load_kw, buy, sell)
+        energy_summary = self._energy_acc.as_dict()
+        for status_key, summary_key in (
+            ("daily_solar_energy_kwh", "pv_today_kwh"),
+            ("daily_grid_import_kwh", "grid_import_today_kwh"),
+            ("daily_grid_export_kwh", "grid_export_today_kwh"),
+            ("daily_battery_charge_kwh", "charge_today_kwh"),
+            ("daily_battery_discharge_kwh", "discharge_today_kwh"),
+        ):
+            value = status.get(status_key)
+            if isinstance(value, (int, float)) and value >= 0:
+                energy_summary[summary_key] = round(float(value), 3)
+
+        data = {
+            "solar_power": solar_kw,
+            "grid_power": grid_kw,
+            "battery_power": battery_kw,
+            "load_power": load_kw,
+            "battery_level": soc,
+            "last_update": dt_util.utcnow(),
+            "battery_temperature": status.get("battery_temperature"),
+            "battery_soh": status.get("battery_soh"),
+            "backup_reserve": status.get("backup_reserve"),
+            "min_soc": status.get("min_soc"),
+            "mode": status.get("mode"),
+            "work_mode": status.get("work_mode"),
+            "work_mode_name": status.get("work_mode_name"),
+            "max_charge_current_a": status.get("max_charge_current_a"),
+            "max_discharge_current_a": status.get("max_discharge_current_a"),
+            "energy_summary": energy_summary,
+        }
+        for key in (
+            "battery_max_charge_power_w",
+            "battery_max_charge_power",
+            "battery_max_discharge_power_w",
+            "battery_max_discharge_power",
+        ):
+            if status.get(key) is not None:
+                data[key] = status[key]
+        for idx in range(1, 7):
+            for suffix in ("power", "voltage", "current"):
+                key = f"pv{idx}_{suffix}"
+                if status.get(key) is not None:
+                    data[key] = status[key]
+
+        _LOGGER.debug(
+            "FoxESS entity data: solar=%.2f kW, grid=%.2f kW, battery=%.2f kW (%.0f%%), load=%.2f kW, mode=%s",
+            data["solar_power"],
+            data["grid_power"],
+            data["battery_power"],
+            data["battery_level"],
+            data["load_power"],
+            data.get("work_mode_name", "?"),
+        )
+
+        return data
+
+    async def force_charge(
+        self,
+        duration_minutes: int = 30,
+        power_w: float = 0,
+        min_timeout_seconds: float | None = None,
+    ) -> bool:
+        return await self._controller.force_charge(duration_minutes, power_w)
+
+    async def force_discharge(
+        self,
+        duration_minutes: int = 30,
+        power_w: float = 0,
+        min_timeout_seconds: float | None = None,
+    ) -> bool:
+        return await self._controller.force_discharge(duration_minutes, power_w)
+
+    async def restore_normal(self) -> bool:
+        return await self._controller.restore_normal()
+
+    async def set_backup_reserve(self, percent: int) -> bool:
+        return await self._controller.set_backup_reserve(percent)
+
+    async def get_backup_reserve(self) -> int | None:
+        return await self._controller.get_backup_reserve()
+
+    async def set_backup_mode(self) -> bool:
+        return await self._controller.set_backup_mode()
+
+    async def restore_work_mode_from_idle(self) -> bool:
+        return await self._controller.restore_work_mode_from_idle()
+
+    async def set_work_mode(self, mode: int | str) -> bool:
+        return await self._controller.set_work_mode(mode)
+
+    async def set_operation_mode(self, mode: str) -> bool:
+        return await self._controller.set_operation_mode(mode)
+
+    async def set_charge_rate_limit(self, amps: float) -> bool:
+        return await self._controller.set_charge_rate_limit(amps)
+
+    async def set_discharge_rate_limit(self, amps: float) -> bool:
+        return await self._controller.set_discharge_rate_limit(amps)
+
+    async def curtail(self, home_load_w: int | None = None) -> bool:
+        return await self._controller.curtail(home_load_w)
+
+    async def restore_curtailment(self) -> bool:
+        return await self._controller.restore()
+
+    async def async_shutdown(self) -> None:
+        await self._controller.disconnect()
+
+
 class FoxESSCloudEnergyCoordinator(DataUpdateCoordinator):
     """Coordinator to fetch and control FoxESS systems through FoxESS Cloud."""
 

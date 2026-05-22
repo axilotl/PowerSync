@@ -392,6 +392,8 @@ from .const import (
     CONF_FOXESS_SERIAL_BAUDRATE,
     CONF_FOXESS_MODEL_FAMILY,
     CONF_FOXESS_DETECTED_MODEL,
+    CONF_FOXESS_ENTITY_CONFIG_ENTRY_ID,
+    CONF_FOXESS_ENTITY_PREFIX,
     CONF_FOXESS_CLOUD_USERNAME,
     CONF_FOXESS_CLOUD_PASSWORD,
     CONF_FOXESS_CLOUD_DEVICE_SN,
@@ -402,6 +404,7 @@ from .const import (
     FOXESS_CONNECTION_TCP,
     FOXESS_CONNECTION_SERIAL,
     FOXESS_CONNECTION_CLOUD,
+    FOXESS_CONNECTION_ENTITY,
     FOXESS_MODEL_H3_PRO,
     FOXESS_MODEL_H3_SMART,
     FOXESS_MODEL_FAMILIES,
@@ -560,6 +563,40 @@ def _normalize_optional_entity(value: Any) -> str | None:
     if not entity_id or entity_id.lower() == "none":
         return None
     return entity_id
+
+
+def _foxess_modbus_entry_options(hass: HomeAssistant) -> list[SelectOptionDict]:
+    """Return selectable Nathan Marlor foxess_modbus config entries."""
+    return [
+        SelectOptionDict(value=entry.entry_id, label=entry.title or entry.entry_id)
+        for entry in hass.config_entries.async_entries("foxess_modbus")
+    ]
+
+
+async def _validate_foxess_entity_bridge(
+    hass: HomeAssistant,
+    entry_id: str,
+    entity_prefix: str,
+) -> tuple[bool, str | None]:
+    """Validate foxess_modbus entity bridge setup."""
+    if not entry_id and not entity_prefix:
+        return False, "foxess_entity_required"
+    try:
+        from .inverters.foxess_entity import FoxESSEntityController
+
+        controller = FoxESSEntityController(
+            hass,
+            foxess_entry_id=entry_id or None,
+            entity_prefix=entity_prefix,
+        )
+        await controller.connect()
+        return True, None
+    except ValueError as exc:
+        _LOGGER.warning("FoxESS entity bridge validation failed: %s", exc)
+        return False, "foxess_entity_missing_entities"
+    except Exception as exc:
+        _LOGGER.error("FoxESS entity bridge setup error: %s", exc)
+        return False, "foxess_entity_connect_failed"
 
 
 def _form_kwh_to_wh(value: Any, default_kwh: float) -> int:
@@ -3350,7 +3387,7 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_foxess_connection(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Choose FoxESS connection type: TCP, Serial, or Cloud."""
+        """Choose FoxESS connection type: TCP, Serial, Cloud, or entity bridge."""
         if user_input is not None:
             conn_type = user_input.get(
                 CONF_FOXESS_CONNECTION_TYPE, FOXESS_CONNECTION_TCP
@@ -3362,6 +3399,11 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     CONF_FOXESS_CONNECTION_TYPE: FOXESS_CONNECTION_CLOUD,
                 }
                 return await self.async_step_foxess_cloud()
+            if conn_type == FOXESS_CONNECTION_ENTITY:
+                self._foxess_data = {
+                    CONF_FOXESS_CONNECTION_TYPE: FOXESS_CONNECTION_ENTITY,
+                }
+                return await self.async_step_foxess_entity()
             else:
                 return await self.async_step_foxess_tcp()
 
@@ -3377,12 +3419,71 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                                 SelectOptionDict(value=FOXESS_CONNECTION_TCP, label="Modbus TCP (LAN/Wi-Fi)"),
                                 SelectOptionDict(value=FOXESS_CONNECTION_SERIAL, label="RS485 Serial"),
                                 SelectOptionDict(value=FOXESS_CONNECTION_CLOUD, label="FoxESS Cloud API"),
+                                SelectOptionDict(value=FOXESS_CONNECTION_ENTITY, label="Entity bridge (foxess_modbus)"),
                             ],
                             mode=SelectSelectorMode.LIST,
                         )
                     ),
                 }
             ),
+        )
+
+    async def async_step_foxess_entity(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Configure FoxESS via nathanmarlor/foxess_modbus entities."""
+        errors: dict[str, str] = {}
+        entries = _foxess_modbus_entry_options(self.hass)
+
+        if user_input is not None:
+            selected_entry_id = ""
+            if len(entries) == 1:
+                selected_entry_id = entries[0]["value"]
+            elif entries:
+                selected_entry_id = user_input.get(CONF_FOXESS_ENTITY_CONFIG_ENTRY_ID, "")
+            entity_prefix = (user_input.get(CONF_FOXESS_ENTITY_PREFIX) or "").strip()
+
+            valid, error = await _validate_foxess_entity_bridge(
+                self.hass,
+                selected_entry_id,
+                entity_prefix,
+            )
+            if valid:
+                self._foxess_data = {
+                    CONF_FOXESS_CONNECTION_TYPE: FOXESS_CONNECTION_ENTITY,
+                }
+                if selected_entry_id:
+                    self._foxess_data[CONF_FOXESS_ENTITY_CONFIG_ENTRY_ID] = selected_entry_id
+                if entity_prefix:
+                    self._foxess_data[CONF_FOXESS_ENTITY_PREFIX] = entity_prefix
+                return self._create_final_entry()
+            errors["base"] = error or "foxess_entity_connect_failed"
+
+        schema: dict[Any, Any] = {}
+        if len(entries) > 1:
+            schema[
+                vol.Required(CONF_FOXESS_ENTITY_CONFIG_ENTRY_ID)
+            ] = SelectSelector(
+                SelectSelectorConfig(options=entries, mode=SelectSelectorMode.DROPDOWN)
+            )
+        elif not entries:
+            schema[
+                vol.Optional(CONF_FOXESS_ENTITY_PREFIX, default="")
+            ] = TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT))
+        else:
+            schema[
+                vol.Optional(CONF_FOXESS_ENTITY_PREFIX, default="")
+            ] = TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT))
+
+        if len(entries) > 1:
+            schema[
+                vol.Optional(CONF_FOXESS_ENTITY_PREFIX, default="")
+            ] = TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT))
+
+        return self.async_show_form(
+            step_id="foxess_entity",
+            data_schema=vol.Schema(schema),
+            errors=errors,
         )
 
     async def async_step_foxess_tcp(
@@ -5234,6 +5335,11 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             serial_port = user_input.get(CONF_FOXESS_SERIAL_PORT, "").strip()
             cloud_api_key = user_input.get(CONF_FOXESS_CLOUD_API_KEY, "").strip()
             cloud_device_sn = user_input.get(CONF_FOXESS_CLOUD_DEVICE_SN, "").strip()
+            entity_entry_id = user_input.get(CONF_FOXESS_ENTITY_CONFIG_ENTRY_ID, "").strip()
+            entity_prefix = user_input.get(CONF_FOXESS_ENTITY_PREFIX, "").strip()
+            entity_entries = _foxess_modbus_entry_options(self.hass)
+            if conn_type == FOXESS_CONNECTION_ENTITY and not entity_entry_id and len(entity_entries) == 1:
+                entity_entry_id = entity_entries[0]["value"]
 
             if conn_type == FOXESS_CONNECTION_TCP and not modbus_host:
                 errors["base"] = "foxess_host_required"
@@ -5241,7 +5347,15 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 errors["base"] = "foxess_serial_required"
             elif conn_type == FOXESS_CONNECTION_CLOUD and (not cloud_api_key or not cloud_device_sn):
                 errors["base"] = "foxess_cloud_required"
-            else:
+            elif conn_type == FOXESS_CONNECTION_ENTITY:
+                valid, error = await _validate_foxess_entity_bridge(
+                    self.hass,
+                    entity_entry_id,
+                    entity_prefix,
+                )
+                if not valid:
+                    errors["base"] = error or "foxess_entity_connect_failed"
+            if not errors:
                 new_data = dict(self.config_entry.data)
                 new_data[CONF_FOXESS_CONNECTION_TYPE] = conn_type
                 if conn_type == FOXESS_CONNECTION_TCP:
@@ -5254,6 +5368,15 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     new_data[CONF_FOXESS_SERIAL_BAUDRATE] = user_input.get(
                         CONF_FOXESS_SERIAL_BAUDRATE, DEFAULT_FOXESS_SERIAL_BAUDRATE
                     )
+                elif conn_type == FOXESS_CONNECTION_ENTITY:
+                    if entity_entry_id:
+                        new_data[CONF_FOXESS_ENTITY_CONFIG_ENTRY_ID] = entity_entry_id
+                    else:
+                        new_data.pop(CONF_FOXESS_ENTITY_CONFIG_ENTRY_ID, None)
+                    if entity_prefix:
+                        new_data[CONF_FOXESS_ENTITY_PREFIX] = entity_prefix
+                    else:
+                        new_data.pop(CONF_FOXESS_ENTITY_PREFIX, None)
                 else:
                     new_data[CONF_FOXESS_CLOUD_API_KEY] = cloud_api_key
                     new_data[CONF_FOXESS_CLOUD_DEVICE_SN] = cloud_device_sn
@@ -5282,63 +5405,81 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
         )
         current_cloud_api_key = self._get_option(CONF_FOXESS_CLOUD_API_KEY, "")
         current_cloud_device_sn = self._get_option(CONF_FOXESS_CLOUD_DEVICE_SN, "")
+        current_entity_entry_id = self._get_option(CONF_FOXESS_ENTITY_CONFIG_ENTRY_ID, "")
+        current_entity_prefix = self._get_option(CONF_FOXESS_ENTITY_PREFIX, "")
 
         foxess_conn_types = {
             FOXESS_CONNECTION_TCP: "Modbus TCP",
             FOXESS_CONNECTION_SERIAL: "RS485 Serial",
             FOXESS_CONNECTION_CLOUD: "FoxESS Cloud API",
+            FOXESS_CONNECTION_ENTITY: "Entity bridge (foxess_modbus)",
         }
+        schema_fields: dict[Any, Any] = {
+            vol.Required(
+                CONF_FOXESS_CONNECTION_TYPE,
+                default=current_conn_type,
+            ): SelectSelector(SelectSelectorConfig(
+                options=[
+                    SelectOptionDict(value=k, label=v)
+                    for k, v in foxess_conn_types.items()
+                ],
+                mode=SelectSelectorMode.DROPDOWN,
+            )),
+            vol.Optional(
+                CONF_FOXESS_HOST,
+                default=current_host,
+            ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
+            vol.Optional(
+                CONF_FOXESS_PORT,
+                default=current_port,
+            ): NumberSelector(NumberSelectorConfig(
+                min=1, max=65535, step=1, mode=NumberSelectorMode.BOX,
+            )),
+            vol.Optional(
+                CONF_FOXESS_SLAVE_ID,
+                default=current_slave_id,
+            ): NumberSelector(NumberSelectorConfig(
+                min=1, max=247, step=1, mode=NumberSelectorMode.BOX,
+            )),
+            vol.Optional(
+                CONF_FOXESS_SERIAL_PORT,
+                default=current_serial_port,
+            ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
+            vol.Optional(
+                CONF_FOXESS_SERIAL_BAUDRATE,
+                default=current_baudrate,
+            ): NumberSelector(NumberSelectorConfig(
+                min=300, max=115200, step=1, mode=NumberSelectorMode.BOX,
+            )),
+            vol.Optional(
+                CONF_FOXESS_CLOUD_API_KEY,
+                default=current_cloud_api_key,
+            ): TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD)),
+            vol.Optional(
+                CONF_FOXESS_CLOUD_DEVICE_SN,
+                default=current_cloud_device_sn,
+            ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
+        }
+        entity_entry_options = _foxess_modbus_entry_options(self.hass)
+        if entity_entry_options:
+            schema_fields[
+                vol.Optional(
+                    CONF_FOXESS_ENTITY_CONFIG_ENTRY_ID,
+                    default=current_entity_entry_id or entity_entry_options[0]["value"],
+                )
+            ] = SelectSelector(
+                SelectSelectorConfig(
+                    options=entity_entry_options,
+                    mode=SelectSelectorMode.DROPDOWN,
+                )
+            )
+        schema_fields[
+            vol.Optional(CONF_FOXESS_ENTITY_PREFIX, default=current_entity_prefix)
+        ] = TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT))
 
         return self.async_show_form(
             step_id="foxess_connection_options",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(
-                        CONF_FOXESS_CONNECTION_TYPE,
-                        default=current_conn_type,
-                    ): SelectSelector(SelectSelectorConfig(
-                        options=[
-                            SelectOptionDict(value=k, label=v)
-                            for k, v in foxess_conn_types.items()
-                        ],
-                        mode=SelectSelectorMode.DROPDOWN,
-                    )),
-                    vol.Optional(
-                        CONF_FOXESS_HOST,
-                        default=current_host,
-                    ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
-                    vol.Optional(
-                        CONF_FOXESS_PORT,
-                        default=current_port,
-                    ): NumberSelector(NumberSelectorConfig(
-                        min=1, max=65535, step=1, mode=NumberSelectorMode.BOX,
-                    )),
-                    vol.Optional(
-                        CONF_FOXESS_SLAVE_ID,
-                        default=current_slave_id,
-                    ): NumberSelector(NumberSelectorConfig(
-                        min=1, max=247, step=1, mode=NumberSelectorMode.BOX,
-                    )),
-                    vol.Optional(
-                        CONF_FOXESS_SERIAL_PORT,
-                        default=current_serial_port,
-                    ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
-                    vol.Optional(
-                        CONF_FOXESS_SERIAL_BAUDRATE,
-                        default=current_baudrate,
-                    ): NumberSelector(NumberSelectorConfig(
-                        min=300, max=115200, step=1, mode=NumberSelectorMode.BOX,
-                    )),
-                    vol.Optional(
-                        CONF_FOXESS_CLOUD_API_KEY,
-                        default=current_cloud_api_key,
-                    ): TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD)),
-                    vol.Optional(
-                        CONF_FOXESS_CLOUD_DEVICE_SN,
-                        default=current_cloud_device_sn,
-                    ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
-                }
-            ),
+            data_schema=vol.Schema(schema_fields),
             errors=errors,
         )
 
@@ -7143,6 +7284,11 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             serial_port = user_input.get(CONF_FOXESS_SERIAL_PORT, "").strip()
             cloud_api_key = user_input.get(CONF_FOXESS_CLOUD_API_KEY, "").strip()
             cloud_device_sn = user_input.get(CONF_FOXESS_CLOUD_DEVICE_SN, "").strip()
+            entity_entry_id = user_input.get(CONF_FOXESS_ENTITY_CONFIG_ENTRY_ID, "").strip()
+            entity_prefix = user_input.get(CONF_FOXESS_ENTITY_PREFIX, "").strip()
+            entity_entries = _foxess_modbus_entry_options(self.hass)
+            if conn_type == FOXESS_CONNECTION_ENTITY and not entity_entry_id and len(entity_entries) == 1:
+                entity_entry_id = entity_entries[0]["value"]
 
             if conn_type == FOXESS_CONNECTION_TCP and not modbus_host:
                 errors["base"] = "foxess_host_required"
@@ -7150,7 +7296,16 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 errors["base"] = "foxess_serial_required"
             elif conn_type == FOXESS_CONNECTION_CLOUD and (not cloud_api_key or not cloud_device_sn):
                 errors["base"] = "foxess_cloud_required"
-            else:
+            elif conn_type == FOXESS_CONNECTION_ENTITY:
+                valid, error = await _validate_foxess_entity_bridge(
+                    self.hass,
+                    entity_entry_id,
+                    entity_prefix,
+                )
+                if not valid:
+                    errors["base"] = error or "foxess_entity_connect_failed"
+
+            if not errors:
                 self._provider = user_input.get(CONF_ELECTRICITY_PROVIDER, "amber")
 
                 # Update config entry data with FoxESS settings
@@ -7166,6 +7321,15 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     new_data[CONF_FOXESS_SERIAL_BAUDRATE] = user_input.get(
                         CONF_FOXESS_SERIAL_BAUDRATE, DEFAULT_FOXESS_SERIAL_BAUDRATE
                     )
+                elif conn_type == FOXESS_CONNECTION_ENTITY:
+                    if entity_entry_id:
+                        new_data[CONF_FOXESS_ENTITY_CONFIG_ENTRY_ID] = entity_entry_id
+                    else:
+                        new_data.pop(CONF_FOXESS_ENTITY_CONFIG_ENTRY_ID, None)
+                    if entity_prefix:
+                        new_data[CONF_FOXESS_ENTITY_PREFIX] = entity_prefix
+                    else:
+                        new_data.pop(CONF_FOXESS_ENTITY_PREFIX, None)
                 else:
                     new_data[CONF_FOXESS_CLOUD_API_KEY] = cloud_api_key
                     new_data[CONF_FOXESS_CLOUD_DEVICE_SN] = cloud_device_sn
@@ -7221,6 +7385,8 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
         )
         current_cloud_api_key = self._get_option(CONF_FOXESS_CLOUD_API_KEY, "")
         current_cloud_device_sn = self._get_option(CONF_FOXESS_CLOUD_DEVICE_SN, "")
+        current_entity_entry_id = self._get_option(CONF_FOXESS_ENTITY_CONFIG_ENTRY_ID, "")
+        current_entity_prefix = self._get_option(CONF_FOXESS_ENTITY_PREFIX, "")
         current_opt_provider = self.config_entry.data.get(
             CONF_OPTIMIZATION_PROVIDER, OPT_PROVIDER_NATIVE
         )
@@ -7237,87 +7403,104 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             FOXESS_CONNECTION_TCP: "Modbus TCP",
             FOXESS_CONNECTION_SERIAL: "RS485 Serial",
             FOXESS_CONNECTION_CLOUD: "FoxESS Cloud API",
+            FOXESS_CONNECTION_ENTITY: "Entity bridge (foxess_modbus)",
         }
+
+        schema_fields: dict[Any, Any] = {
+            vol.Required(
+                CONF_ELECTRICITY_PROVIDER,
+                default=current_provider,
+            ): SelectSelector(SelectSelectorConfig(
+                options=[
+                    SelectOptionDict(value=k, label=v)
+                    for k, v in ELECTRICITY_PROVIDERS.items()
+                ],
+                mode=SelectSelectorMode.DROPDOWN,
+            )),
+            vol.Required(
+                CONF_OPTIMIZATION_PROVIDER,
+                default=current_opt_provider,
+            ): SelectSelector(SelectSelectorConfig(
+                options=[
+                    SelectOptionDict(value=k, label=v)
+                    for k, v in opt_providers.items()
+                ],
+                mode=SelectSelectorMode.DROPDOWN,
+            )),
+            vol.Required(
+                CONF_OPTIMIZATION_BACKUP_RESERVE,
+                default=int(current_backup_reserve * 100)
+                if current_backup_reserve < 1
+                else int(current_backup_reserve),
+            ): NumberSelector(NumberSelectorConfig(
+                min=0, max=100, step=1, unit_of_measurement="%",
+                mode=NumberSelectorMode.SLIDER,
+            )),
+            vol.Required(
+                CONF_FOXESS_CONNECTION_TYPE,
+                default=current_conn_type,
+            ): SelectSelector(SelectSelectorConfig(
+                options=[
+                    SelectOptionDict(value=k, label=v)
+                    for k, v in foxess_conn_types_legacy.items()
+                ],
+                mode=SelectSelectorMode.DROPDOWN,
+            )),
+            vol.Optional(
+                CONF_FOXESS_HOST,
+                default=current_host,
+            ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
+            vol.Optional(
+                CONF_FOXESS_PORT,
+                default=current_port,
+            ): NumberSelector(NumberSelectorConfig(
+                min=1, max=65535, step=1, mode=NumberSelectorMode.BOX,
+            )),
+            vol.Optional(
+                CONF_FOXESS_SLAVE_ID,
+                default=current_slave_id,
+            ): NumberSelector(NumberSelectorConfig(
+                min=1, max=247, step=1, mode=NumberSelectorMode.BOX,
+            )),
+            vol.Optional(
+                CONF_FOXESS_SERIAL_PORT,
+                default=current_serial_port,
+            ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
+            vol.Optional(
+                CONF_FOXESS_SERIAL_BAUDRATE,
+                default=current_baudrate,
+            ): NumberSelector(NumberSelectorConfig(
+                min=300, max=115200, step=1, mode=NumberSelectorMode.BOX,
+            )),
+            vol.Optional(
+                CONF_FOXESS_CLOUD_API_KEY,
+                default=current_cloud_api_key,
+            ): TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD)),
+            vol.Optional(
+                CONF_FOXESS_CLOUD_DEVICE_SN,
+                default=current_cloud_device_sn,
+            ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
+        }
+        entity_entry_options = _foxess_modbus_entry_options(self.hass)
+        if entity_entry_options:
+            schema_fields[
+                vol.Optional(
+                    CONF_FOXESS_ENTITY_CONFIG_ENTRY_ID,
+                    default=current_entity_entry_id or entity_entry_options[0]["value"],
+                )
+            ] = SelectSelector(
+                SelectSelectorConfig(
+                    options=entity_entry_options,
+                    mode=SelectSelectorMode.DROPDOWN,
+                )
+            )
+        schema_fields[
+            vol.Optional(CONF_FOXESS_ENTITY_PREFIX, default=current_entity_prefix)
+        ] = TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT))
 
         return self.async_show_form(
             step_id="init_foxess",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(
-                        CONF_ELECTRICITY_PROVIDER,
-                        default=current_provider,
-                    ): SelectSelector(SelectSelectorConfig(
-                        options=[
-                            SelectOptionDict(value=k, label=v)
-                            for k, v in ELECTRICITY_PROVIDERS.items()
-                        ],
-                        mode=SelectSelectorMode.DROPDOWN,
-                    )),
-                    vol.Required(
-                        CONF_OPTIMIZATION_PROVIDER,
-                        default=current_opt_provider,
-                    ): SelectSelector(SelectSelectorConfig(
-                        options=[
-                            SelectOptionDict(value=k, label=v)
-                            for k, v in opt_providers.items()
-                        ],
-                        mode=SelectSelectorMode.DROPDOWN,
-                    )),
-                    vol.Required(
-                        CONF_OPTIMIZATION_BACKUP_RESERVE,
-                        default=int(current_backup_reserve * 100)
-                        if current_backup_reserve < 1
-                        else int(current_backup_reserve),
-                    ): NumberSelector(NumberSelectorConfig(
-                        min=0, max=100, step=1, unit_of_measurement="%",
-                        mode=NumberSelectorMode.SLIDER,
-                    )),
-                    vol.Required(
-                        CONF_FOXESS_CONNECTION_TYPE,
-                        default=current_conn_type,
-                    ): SelectSelector(SelectSelectorConfig(
-                        options=[
-                            SelectOptionDict(value=k, label=v)
-                            for k, v in foxess_conn_types_legacy.items()
-                        ],
-                        mode=SelectSelectorMode.DROPDOWN,
-                    )),
-                    vol.Optional(
-                        CONF_FOXESS_HOST,
-                        default=current_host,
-                    ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
-                    vol.Optional(
-                        CONF_FOXESS_PORT,
-                        default=current_port,
-                    ): NumberSelector(NumberSelectorConfig(
-                        min=1, max=65535, step=1, mode=NumberSelectorMode.BOX,
-                    )),
-                    vol.Optional(
-                        CONF_FOXESS_SLAVE_ID,
-                        default=current_slave_id,
-                    ): NumberSelector(NumberSelectorConfig(
-                        min=1, max=247, step=1, mode=NumberSelectorMode.BOX,
-                    )),
-                    vol.Optional(
-                        CONF_FOXESS_SERIAL_PORT,
-                        default=current_serial_port,
-                    ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
-                    vol.Optional(
-                        CONF_FOXESS_SERIAL_BAUDRATE,
-                        default=current_baudrate,
-                    ): NumberSelector(NumberSelectorConfig(
-                        min=300, max=115200, step=1, mode=NumberSelectorMode.BOX,
-                    )),
-                    vol.Optional(
-                        CONF_FOXESS_CLOUD_API_KEY,
-                        default=current_cloud_api_key,
-                    ): TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD)),
-                    vol.Optional(
-                        CONF_FOXESS_CLOUD_DEVICE_SN,
-                        default=current_cloud_device_sn,
-                    ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
-                }
-            ),
+            data_schema=vol.Schema(schema_fields),
             errors=errors,
         )
 

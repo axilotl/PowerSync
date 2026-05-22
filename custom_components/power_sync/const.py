@@ -233,6 +233,8 @@ CONF_FOXESS_SERIAL_PORT = "foxess_serial_port"
 CONF_FOXESS_SERIAL_BAUDRATE = "foxess_serial_baudrate"
 CONF_FOXESS_MODEL_FAMILY = "foxess_model_family"
 CONF_FOXESS_DETECTED_MODEL = "foxess_detected_model"
+CONF_FOXESS_ENTITY_CONFIG_ENTRY_ID = "foxess_entity_config_entry_id"
+CONF_FOXESS_ENTITY_PREFIX = "foxess_entity_prefix"
 CONF_FOXESS_CLOUD_USERNAME = "foxess_cloud_username"
 CONF_FOXESS_CLOUD_PASSWORD = "foxess_cloud_password"
 CONF_FOXESS_CLOUD_DEVICE_SN = "foxess_cloud_device_sn"
@@ -248,6 +250,7 @@ DEFAULT_FOXESS_SERIAL_BAUDRATE = 9600
 FOXESS_CONNECTION_TCP = "tcp"
 FOXESS_CONNECTION_SERIAL = "serial"
 FOXESS_CONNECTION_CLOUD = "cloud"
+FOXESS_CONNECTION_ENTITY = "entity"
 
 # FoxESS model families
 FOXESS_MODEL_H1 = "H1"

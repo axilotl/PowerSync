@@ -373,7 +373,7 @@
           "foxess_connection_type": "Connection type"
         },
         "data_description": {
-          "foxess_connection_type": "Modbus TCP connects over LAN/WiFi. RS485 Serial provides direct register access. FoxESS Cloud API uses Open API control with cloud-rate-limit latency."
+          "foxess_connection_type": "Modbus TCP connects over LAN/WiFi. RS485 Serial provides direct register access. FoxESS Cloud API uses Open API control with cloud-rate-limit latency. Entity bridge reuses an existing foxess_modbus integration instead of opening another Modbus connection."
         },
         "submit": "Next"
       },
@@ -430,6 +430,19 @@
           "foxess_cloud_device_sn": "Inverter serial number from FoxESS Cloud. Auto-selected when the account has one device."
         },
         "submit": "Next"
+      },
+      "foxess_entity": {
+        "title": "FoxESS entity bridge",
+        "description": "Bridge through Nathan Marlor's foxess_modbus entities. PowerSync reads sensors and sends supported controls through Home Assistant services.",
+        "data": {
+          "foxess_entity_config_entry_id": "foxess_modbus integration",
+          "foxess_entity_prefix": "Entity prefix"
+        },
+        "data_description": {
+          "foxess_entity_config_entry_id": "Select the foxess_modbus integration entry PowerSync should read and control. If there is only one entry, PowerSync selects it automatically.",
+          "foxess_entity_prefix": "Optional fallback for renamed entities. Example: foxess for sensor.foxess_battery_soc and select.foxess_work_mode."
+        },
+        "submit": "Connect"
       },
       "goodwe_connection": {
         "title": "GoodWe inverter connection",
@@ -858,6 +871,9 @@
       "foxess_cloud_required": "FoxESS Cloud API key is required for Cloud API-only setup.",
       "foxess_cloud_device_required": "Select the FoxESS inverter serial number to use for Cloud API-only setup.",
       "foxess_cloud_connection_error": "Cannot reach FoxESS Cloud. Check your internet connection and retry.",
+      "foxess_entity_required": "Select a foxess_modbus integration entry, or enter an entity prefix such as foxess.",
+      "foxess_entity_missing_entities": "PowerSync could not find the required foxess_modbus entities. Required entities include battery SOC, grid power or import/export sensors, work mode, force charge/discharge power, and minimum SOC.",
+      "foxess_entity_connect_failed": "Cannot validate the FoxESS entity bridge. Check that the foxess_modbus integration is loaded and its entities are available.",
       "goodwe_connect_failed": "Cannot connect to GoodWe inverter. Verify the IP address is correct and the inverter is powered on and reachable from Home Assistant.",
       "goodwe_no_battery": "This GoodWe model (DT/MS/XS series) does not support battery control. Only ET/EH/ES/EM series hybrid inverters are supported.",
       "goodwe_ems_prefix_required": "Enter the GoodWe EMS entity prefix, or change EMS control method to Direct IP control.",
@@ -1014,20 +1030,30 @@
       },
       "foxess_connection_options": {
         "title": "FoxESS connection",
-        "description": "Update your FoxESS inverter Modbus settings. Changes take effect immediately.",
+        "description": "Update your FoxESS inverter connection settings. Changes take effect immediately.",
         "data": {
+          "foxess_connection_type": "Connection type",
           "foxess_host": "Inverter IP address",
           "foxess_port": "Modbus port",
           "foxess_slave_id": "Modbus slave ID",
           "foxess_serial_port": "Serial port path",
-          "foxess_serial_baudrate": "Baud rate"
+          "foxess_serial_baudrate": "Baud rate",
+          "foxess_cloud_api_key": "FoxESS Cloud API key",
+          "foxess_cloud_device_sn": "Device serial number",
+          "foxess_entity_config_entry_id": "foxess_modbus integration",
+          "foxess_entity_prefix": "Entity prefix"
         },
         "data_description": {
+          "foxess_connection_type": "Choose Modbus TCP, RS485 serial, FoxESS Cloud API, or the entity bridge for Nathan Marlor's foxess_modbus integration.",
           "foxess_host": "Local IP of your FoxESS inverter. H3 Smart may appear as 'espressif' on your network.",
           "foxess_port": "Default Modbus TCP port is 502.",
           "foxess_slave_id": "Default is 247 for FoxESS.",
           "foxess_serial_port": "e.g. /dev/ttyUSB0 for a USB-to-RS485 adapter.",
-          "foxess_serial_baudrate": "Default 9600. Only change if the inverter is configured differently."
+          "foxess_serial_baudrate": "Default 9600. Only change if the inverter is configured differently.",
+          "foxess_cloud_api_key": "Get your API key from foxesscloud.com > User Centre > API Management.",
+          "foxess_cloud_device_sn": "Inverter serial number from FoxESS Cloud.",
+          "foxess_entity_config_entry_id": "Select the foxess_modbus integration entry PowerSync should read and control. If there is only one entry, PowerSync selects it automatically.",
+          "foxess_entity_prefix": "Optional fallback for renamed entities. Example: foxess for sensor.foxess_battery_soc and select.foxess_work_mode."
         },
         "submit": "Save"
       },
@@ -1216,7 +1242,7 @@
       },
       "init_foxess": {
         "title": "FoxESS settings",
-        "description": "Configure pricing, optimization, and FoxESS connection. Use Modbus TCP, RS485 Serial, or FoxESS Cloud API for energy data and battery control.",
+        "description": "Configure pricing, optimization, and FoxESS connection. Use Modbus TCP, RS485 Serial, FoxESS Cloud API, or the foxess_modbus entity bridge for energy data and battery control.",
         "data": {
           "electricity_provider": "Electricity provider",
           "optimization_provider": "Optimization mode",
@@ -1226,17 +1252,25 @@
           "foxess_port": "Modbus port",
           "foxess_slave_id": "Modbus slave ID",
           "foxess_serial_port": "Serial port path",
-          "foxess_serial_baudrate": "Baud rate"
+          "foxess_serial_baudrate": "Baud rate",
+          "foxess_cloud_api_key": "FoxESS Cloud API key",
+          "foxess_cloud_device_sn": "Device serial number",
+          "foxess_entity_config_entry_id": "foxess_modbus integration",
+          "foxess_entity_prefix": "Entity prefix"
         },
         "data_description": {
           "optimization_provider": "Choose between FoxESS built-in scheduling or Smart Optimization (LP solver).",
           "optimization_backup_reserve": "The optimizer will not discharge below this level. Separate from your battery's hardware backup reserve.",
-          "foxess_connection_type": "Modbus TCP connects over LAN/WiFi. RS485 Serial provides direct register access. FoxESS Cloud API uses Open API control with cloud-rate-limit latency.",
+          "foxess_connection_type": "Modbus TCP connects over LAN/WiFi. RS485 Serial provides direct register access. FoxESS Cloud API uses Open API control with cloud-rate-limit latency. Entity bridge reuses an existing foxess_modbus integration instead of opening another Modbus connection.",
           "foxess_host": "Local IP of your FoxESS inverter. H3 Smart may appear as 'espressif' on your network.",
           "foxess_port": "Default Modbus TCP port is 502.",
           "foxess_slave_id": "Default is 247 for FoxESS.",
           "foxess_serial_port": "e.g. /dev/ttyUSB0 for a USB-to-RS485 adapter.",
-          "foxess_serial_baudrate": "Default 9600. Only change if the inverter is configured differently."
+          "foxess_serial_baudrate": "Default 9600. Only change if the inverter is configured differently.",
+          "foxess_cloud_api_key": "Get your API key from foxesscloud.com > User Centre > API Management.",
+          "foxess_cloud_device_sn": "Inverter serial number from FoxESS Cloud.",
+          "foxess_entity_config_entry_id": "Select the foxess_modbus integration entry PowerSync should read and control. If there is only one entry, PowerSync selects it automatically.",
+          "foxess_entity_prefix": "Optional fallback for renamed entities. Example: foxess for sensor.foxess_battery_soc and select.foxess_work_mode."
         },
         "submit": "Save"
       },

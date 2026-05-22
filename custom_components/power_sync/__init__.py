@@ -410,6 +410,8 @@ from .const import (
     CONF_FOXESS_SERIAL_PORT,
     CONF_FOXESS_SERIAL_BAUDRATE,
     CONF_FOXESS_MODEL_FAMILY,
+    CONF_FOXESS_ENTITY_CONFIG_ENTRY_ID,
+    CONF_FOXESS_ENTITY_PREFIX,
     CONF_FOXESS_CLOUD_API_KEY,
     CONF_FOXESS_CLOUD_DEVICE_SN,
     DEFAULT_FOXESS_PORT,
@@ -418,6 +420,7 @@ from .const import (
     FOXESS_CONNECTION_TCP,
     FOXESS_CONNECTION_SERIAL,
     FOXESS_CONNECTION_CLOUD,
+    FOXESS_CONNECTION_ENTITY,
     FOXESS_WORK_MODES,
     # GoodWe battery system configuration
     BATTERY_SYSTEM_GOODWE,
@@ -538,6 +541,7 @@ from .coordinator import (
     SigenergyEnergyCoordinator,
     SungrowEnergyCoordinator,
     FoxESSEnergyCoordinator,
+    FoxESSEntityEnergyCoordinator,
     FoxESSCloudEnergyCoordinator,
     GoodWeEnergyCoordinator,
     AlphaESSEnergyCoordinator,
@@ -15221,6 +15225,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         entry.data.get(CONF_BATTERY_SYSTEM) == BATTERY_SYSTEM_FOXESS
         or entry.data.get(CONF_FOXESS_HOST)
         or entry.data.get(CONF_FOXESS_SERIAL_PORT)
+        or entry.data.get(CONF_FOXESS_ENTITY_CONFIG_ENTRY_ID)
+        or entry.data.get(CONF_FOXESS_ENTITY_PREFIX)
     )
     is_goodwe = bool(entry.data.get(CONF_GOODWE_HOST))
     is_alphaess = bool(entry.data.get(CONF_ALPHAESS_MODBUS_HOST))
@@ -15330,6 +15336,29 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 _LOGGER.warning(
                     "FoxESS Cloud mode enabled but API key or device serial is missing"
                 )
+        elif foxess_conn_type == FOXESS_CONNECTION_ENTITY:
+            foxess_entry_id = entry.options.get(
+                CONF_FOXESS_ENTITY_CONFIG_ENTRY_ID,
+                entry.data.get(CONF_FOXESS_ENTITY_CONFIG_ENTRY_ID, ""),
+            )
+            foxess_entity_prefix = entry.options.get(
+                CONF_FOXESS_ENTITY_PREFIX,
+                entry.data.get(CONF_FOXESS_ENTITY_PREFIX, ""),
+            )
+            _LOGGER.info(
+                "Initializing FoxESS entity bridge coordinator: %s",
+                (
+                    f"config_entry={foxess_entry_id}"
+                    if foxess_entry_id
+                    else f"prefix={foxess_entity_prefix or '<auto>'}"
+                ),
+            )
+            foxess_coordinator = FoxESSEntityEnergyCoordinator(
+                hass,
+                foxess_entry_id=foxess_entry_id or None,
+                entity_prefix=foxess_entity_prefix,
+                entry_id=entry.entry_id,
+            )
         else:
             foxess_host = entry.options.get(CONF_FOXESS_HOST, entry.data.get(CONF_FOXESS_HOST, ""))
             foxess_port = entry.options.get(CONF_FOXESS_PORT, entry.data.get(CONF_FOXESS_PORT, DEFAULT_FOXESS_PORT))
