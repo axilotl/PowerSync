@@ -39,14 +39,15 @@ Control model (verified against stanus74 discussion #105 and live testing):
       (~500-1100 W above home load). It cannot push the battery to grid at
       a fixed high rate. TOU discharge is "fixed % of rated, PV added on
       top" — exactly what the LP wants for AEMO spike export.
-    - PowerSync owns slot 7 (00:00-23:59, days=127, power=100). One-time
-      bootstrap on every force_discharge call (idempotent). Toggle bit 6
-      of `discharge_time_enable_input` to start/stop.
+    - PowerSync owns slot 7 (00:00-23:59, days=127, power derived from the
+      requested watts and configured inverter rating). One-time bootstrap on
+      every force_discharge call (idempotent). Toggle bit 6 of
+      `discharge_time_enable_input` to start/stop.
     - Sequence:
         text.saj_discharge7_start_time_time = "00:00"
         text.saj_discharge7_end_time_time   = "23:59"
         number.saj_discharge7_day_mask_input = 127
-        number.saj_discharge7_power_percent_input = 100
+        number.saj_discharge7_power_percent_input = requested percent
         cache current charge_time_enable bitmask, then clear it (so a
           user-configured charge slot in AppMode=1 doesn't fight us)
         number.saj_discharge_time_enable_input = current_bitmask | (1<<6)
@@ -68,6 +69,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from typing import Any
 
 from homeassistant.helpers import entity_registry as er
@@ -547,18 +549,15 @@ class SajH2BatteryController:
         top of the configured target — exactly what's needed for AEMO spike
         export. PowerSync owns slot 7 here:
 
-            slot 7: 00:00–23:59, days=127, power=100  (always-ready)
+            slot 7: 00:00–23:59, days=127, power=requested percent
 
         We toggle bit 6 of `discharge_time_enable_input` to start/stop the slot,
         and switch AppMode to 1 (TOU). Charge slots are temporarily disabled
         for the duration so a user-configured charge slot in AppMode=1 doesn't
         fight us — the original bitmask is captured and restored on stop.
 
-        `power_w` is currently ignored — slot 7 always runs at 100% so the
-        inverter pushes the battery's rated discharge to grid plus any PV on
-        top. AEMO spikes and peak-export windows always want max rate. If a
-        future use case needs throttling, we'd write
-        number.saj_discharge7_power_percent_input here.
+        `power_w` is converted to a discharge percentage using the configured
+        inverter rated power. If no target is supplied, slot 7 runs at 100%.
         """
         if not self._check_tou_discharge_control_entities("force_discharge"):
             return False
@@ -577,10 +576,11 @@ class SajH2BatteryController:
             await self._clear_switch_controls_for_tou("force_discharge")
 
             # Bootstrap (idempotent): make sure slot 7 spans the whole day at 100%.
+            target_percent = self._tou_power_percent(power_w)
             await self._set_text("discharge7_start_time", "00:00")
             await self._set_text("discharge7_end_time", "23:59")
             await self._set_number("discharge7_day_mask", 127)
-            await self._set_number("discharge7_power_percent", 100)
+            await self._set_number("discharge7_power_percent", target_percent)
 
             # Capture & clear charge_time_enable so user charge slots don't
             # contend with us in AppMode=1. Skip if we already cached it
@@ -605,10 +605,24 @@ class SajH2BatteryController:
             await self.restore_normal()
             return False
         _LOGGER.info(
-            "SAJ H2 force_discharge: TOU mode, slot 7 at 100%% of %.0f W rated",
+            "SAJ H2 force_discharge: TOU mode, slot 7 at %d%% of %.0f W rated",
+            target_percent,
             self._inverter_rated_w,
         )
         return True
+
+    def _tou_power_percent(self, power_w: int | float) -> int:
+        """Convert requested watts to a SAJ TOU slot percentage."""
+        try:
+            requested_w = float(power_w)
+        except (TypeError, ValueError):
+            requested_w = 0.0
+
+        if requested_w <= 0 or self._inverter_rated_w <= 0:
+            return 100
+
+        percent = math.ceil((requested_w / self._inverter_rated_w) * 100.0)
+        return max(1, min(100, percent))
 
     async def set_idle(self) -> bool:
         """Hold battery at current SOC — no charge or discharge, grid serves home load.

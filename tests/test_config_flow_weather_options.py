@@ -325,6 +325,14 @@ def test_optimization_options_exposes_enabled_toggle():
     assert "new_options[CONF_OPTIMIZATION_ENABLED] = optimization_enabled" in method_source
     assert "CONF_MONITORING_MODE" in method_source
     assert "new_options[CONF_MONITORING_MODE] = monitoring_mode" in method_source
+    assert "CONF_HARDWARE_BACKUP_RESERVE" in method_source
+    assert "new_options[CONF_HARDWARE_BACKUP_RESERVE] = hardware_backup_reserve" in method_source
+    assert 'new_options.pop("_user_backup_reserve", None)' in method_source
+    assert (
+        method_source.index("CONF_OPTIMIZATION_BACKUP_RESERVE")
+        < method_source.index("CONF_HARDWARE_BACKUP_RESERVE")
+        < method_source.index("CONF_OPTIMIZATION_BATTERY_CAPACITY_WH")
+    )
     assert "CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED" in method_source
     assert "new_options[CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED] = spread_export_enabled" in method_source
     assert "CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED" in method_source
@@ -366,6 +374,12 @@ def test_initial_smart_optimization_configuration_exposes_enabled_toggle():
     assert "user_input.get(CONF_OPTIMIZATION_ENABLED, True)" in method_source
     assert "CONF_MONITORING_MODE" in method_source
     assert "user_input.get(CONF_MONITORING_MODE, False)" in method_source
+    assert "CONF_HARDWARE_BACKUP_RESERVE" in method_source
+    assert (
+        method_source.index("CONF_OPTIMIZATION_BACKUP_RESERVE")
+        < method_source.index("CONF_HARDWARE_BACKUP_RESERVE")
+        < method_source.index("CONF_OPTIMIZATION_BATTERY_CAPACITY_WH")
+    )
     assert "CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED" in method_source
     assert "user_input.get(CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED" in method_source
     assert "CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED" in method_source
@@ -775,13 +789,16 @@ def test_optimization_enabled_toggle_is_translated_in_config_and_options():
             assert "LP optimizer" in step["data_description"]["optimization_enabled"]
             assert step["data"]["monitoring_mode"] == "Monitoring mode"
             assert "Block battery and inverter control commands" in step["data_description"]["monitoring_mode"]
+            assert step["data"]["hardware_backup_reserve"] == "Hardware backup reserve"
+            assert "temporary hold or force-control modes" in step["data_description"]["hardware_backup_reserve"]
+            keys = list(step["data"])
+            assert keys.index("optimization_backup_reserve") < keys.index("hardware_backup_reserve")
             assert step["data"]["optimization_spread_export_enabled"] == "Spread export across window"
             assert "spreads planned battery export" in step["data_description"]["optimization_spread_export_enabled"]
             assert step["data"]["optimization_spread_import_enabled"] == "Spread import across window"
             assert "spreads planned grid charging" in step["data_description"]["optimization_spread_import_enabled"]
             assert step["data"]["profit_max_enabled"] == "Enable Profit Max"
             assert "profitable export opportunities" in step["data_description"]["profit_max_enabled"]
-            keys = list(step["data"])
             assert keys.index("profit_max_enabled") < keys.index("profit_max_target_time")
 
 

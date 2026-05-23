@@ -5487,6 +5487,64 @@ def _with_configured_charger_entities(
     return params
 
 
+def get_solar_surplus_vehicle_configs(
+    hass: "HomeAssistant",
+    config_entry: "ConfigEntry",
+    stored: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Return app solar-surplus vehicle configs, falling back to the entry charger."""
+    raw_configs = stored.get("vehicle_charging_configs", [])
+    configs = [
+        dict(config)
+        for config in raw_configs
+        if isinstance(config, Mapping)
+    ]
+    if configs:
+        return configs
+
+    opts = {**getattr(config_entry, "data", {}), **getattr(config_entry, "options", {})}
+    charger_type = _configured_charger_type(opts)
+    if charger_type == "tesla":
+        return []
+
+    params = _with_configured_charger_entities(
+        hass,
+        {"charger_type": charger_type},
+        opts,
+        charger_type,
+    )
+    vehicle_id = _resolve_dynamic_loadpoint_id(charger_type, None, params)
+    if not vehicle_id:
+        return []
+
+    labels = {
+        "generic": "Generic charger",
+        "ocpp": "OCPP charger",
+        "sigenergy": "Sigenergy charger",
+        "zaptec": "Zaptec charger",
+    }
+    config: dict[str, Any] = {
+        "vehicle_id": vehicle_id,
+        "display_name": labels.get(charger_type, "EV charger"),
+        "charger_type": charger_type,
+    }
+    for key in (
+        "charger_switch_entity",
+        "charger_amps_entity",
+        "charger_status_entity",
+        "charger_power_entity",
+        "ocpp_charger_id",
+        "sigenergy_charger_host",
+        "sigenergy_charger_port",
+        "sigenergy_charger_slave_id",
+        "sigenergy_charger_type",
+    ):
+        value = params.get(key)
+        if value not in (None, ""):
+            config[key] = value
+    return [config]
+
+
 def _build_dynamic_charging_params(
     hass: "HomeAssistant",
     domain: str,

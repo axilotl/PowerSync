@@ -459,6 +459,33 @@ def test_scheduled_sigenergy_start_uses_sigenergy_charger_loadpoint(fake_actions
     assert params["allow_ownership_takeover"] is True
 
 
+def test_solar_surplus_config_falls_back_to_sigenergy_entry_charger():
+    class SigenergyEntry(_FakeConfigEntry):
+        options = {
+            "sigenergy_charger_enabled": True,
+            "sigenergy_charger_host": "192.0.2.10",
+            "sigenergy_charger_port": 502,
+            "sigenergy_charger_slave_id": 1,
+            "sigenergy_charger_type": "evac",
+        }
+
+    configs = ev_planner.get_solar_surplus_vehicle_configs(
+        _FakeHass(),
+        SigenergyEntry(),
+        {"solar_surplus_config": {"enabled": True}},
+    )
+
+    assert configs == [{
+        "vehicle_id": "sigenergy_charger",
+        "display_name": "Sigenergy charger",
+        "charger_type": "sigenergy",
+        "sigenergy_charger_host": "192.0.2.10",
+        "sigenergy_charger_port": 502,
+        "sigenergy_charger_slave_id": 1,
+        "sigenergy_charger_type": "evac",
+    }]
+
+
 def test_scheduled_preserve_home_battery_sets_optimizer_intent(fake_actions):
     fake_actions._action_start_ev_charging_dynamic = AsyncMock(return_value=True)
     fake_actions._action_stop_ev_charging_dynamic = AsyncMock(return_value=True)

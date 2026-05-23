@@ -27242,6 +27242,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     get_solar_surplus_min_battery_soc,
                     normalize_solar_surplus_config,
                 )
+                from .automations.ev_charging_planner import get_solar_surplus_vehicle_configs
 
                 automation_store_ref = hass.data.get(DOMAIN, {}).get(entry.entry_id, {}).get("automation_store")
                 if automation_store_ref:
@@ -27260,7 +27261,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
                     if surplus_enabled and live_status:
                         # Get vehicle charger config from store
-                        vehicle_configs = stored.get("vehicle_charging_configs", [])
+                        vehicle_configs = get_solar_surplus_vehicle_configs(hass, entry, stored)
                         sorted_configs = sorted(vehicle_configs, key=lambda c: c.get("priority", 999))
                         allow_parallel = surplus_config.get("allow_parallel_charging", False)
 

@@ -171,8 +171,16 @@ def _controller(hass: _FakeHass) -> SajH2BatteryController:
     return controller
 
 
-def _tou_controller(hass: _FakeHass) -> SajH2BatteryController:
-    controller = SajH2BatteryController(hass, saj_entry_id="saj-entry")
+def _tou_controller(
+    hass: _FakeHass,
+    *,
+    inverter_rated_kw: float = 10.0,
+) -> SajH2BatteryController:
+    controller = SajH2BatteryController(
+        hass,
+        saj_entry_id="saj-entry",
+        inverter_rated_kw=inverter_rated_kw,
+    )
     controller._entity_map = {
         "charge7_start_time": "text.saj_charge7_start_time_time",
         "charge7_end_time": "text.saj_charge7_end_time_time",
@@ -338,6 +346,32 @@ def test_force_discharge_clears_stale_switch_controls_before_tou_slot_control():
     ]
     assert hass.states.get("switch.saj_passive_charge_control").state == "off"
     assert hass.states.get("sensor.saj_app_mode").state == "1"
+
+
+def test_force_discharge_sets_tou_slot_power_from_requested_watts():
+    hass = _FakeHass(_tou_states())
+    controller = _tou_controller(hass, inverter_rated_kw=10.0)
+
+    assert asyncio.run(controller.force_discharge(duration_minutes=30, power_w=2500))
+
+    assert (
+        "number",
+        "set_value",
+        {"entity_id": "number.saj_discharge7_power_percent_input", "value": 25},
+    ) in hass.services.calls
+
+
+def test_force_discharge_clamps_tou_slot_power_percent():
+    hass = _FakeHass(_tou_states())
+    controller = _tou_controller(hass, inverter_rated_kw=10.0)
+
+    assert asyncio.run(controller.force_discharge(duration_minutes=30, power_w=25000))
+
+    assert (
+        "number",
+        "set_value",
+        {"entity_id": "number.saj_discharge7_power_percent_input", "value": 100},
+    ) in hass.services.calls
 
 
 def test_restore_normal_after_force_charge_clears_charge_slot_and_restores_discharge_slots():

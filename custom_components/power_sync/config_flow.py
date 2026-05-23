@@ -362,6 +362,7 @@ from .const import (
     CONF_OPTIMIZATION_ENABLED,
     CONF_OPTIMIZATION_COST_FUNCTION,
     CONF_OPTIMIZATION_BACKUP_RESERVE,
+    CONF_HARDWARE_BACKUP_RESERVE,
     CONF_OPTIMIZATION_BATTERY_CAPACITY_WH,
     CONF_OPTIMIZATION_ALLOW_GRID_CHARGE,
     CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED,
@@ -2110,6 +2111,11 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         int(DEFAULT_OPTIMIZATION_BACKUP_RESERVE * 100),
                     )
                     / 100.0,
+                    CONF_HARDWARE_BACKUP_RESERVE: user_input.get(
+                        CONF_HARDWARE_BACKUP_RESERVE,
+                        int(DEFAULT_OPTIMIZATION_BACKUP_RESERVE * 100),
+                    )
+                    / 100.0,
                     CONF_OPTIMIZATION_BATTERY_CAPACITY_WH: _form_kwh_to_wh(
                         user_input.get(CONF_OPTIMIZATION_BATTERY_CAPACITY_WH),
                         default_capacity_kwh,
@@ -2171,6 +2177,18 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     ): BooleanSelector(),
                     vol.Required(
                         CONF_OPTIMIZATION_BACKUP_RESERVE,
+                        default=int(DEFAULT_OPTIMIZATION_BACKUP_RESERVE * 100),
+                    ): NumberSelector(
+                        NumberSelectorConfig(
+                            min=0,
+                            max=100,
+                            step=1,
+                            unit_of_measurement="%",
+                            mode=NumberSelectorMode.SLIDER,
+                        )
+                    ),
+                    vol.Required(
+                        CONF_HARDWARE_BACKUP_RESERVE,
                         default=int(DEFAULT_OPTIMIZATION_BACKUP_RESERVE * 100),
                     ): NumberSelector(
                         NumberSelectorConfig(
@@ -6391,6 +6409,13 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     )
                     / 100.0
                 )
+                hardware_backup_reserve = (
+                    user_input.get(
+                        CONF_HARDWARE_BACKUP_RESERVE,
+                        int(DEFAULT_OPTIMIZATION_BACKUP_RESERVE * 100),
+                    )
+                    / 100.0
+                )
                 capacity_wh = _form_kwh_to_wh(
                     user_input.get(CONF_OPTIMIZATION_BATTERY_CAPACITY_WH),
                     default_capacity_kwh,
@@ -6422,6 +6447,9 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 new_options[CONF_OPTIMIZATION_COST_FUNCTION] = COST_FUNCTION_COST
                 new_data[CONF_OPTIMIZATION_BACKUP_RESERVE] = backup_reserve
                 new_options[CONF_OPTIMIZATION_BACKUP_RESERVE] = backup_reserve
+                new_data[CONF_HARDWARE_BACKUP_RESERVE] = hardware_backup_reserve
+                new_options[CONF_HARDWARE_BACKUP_RESERVE] = hardware_backup_reserve
+                new_options.pop("_user_backup_reserve", None)
                 new_data[CONF_OPTIMIZATION_BATTERY_CAPACITY_WH] = capacity_wh
                 new_options[CONF_OPTIMIZATION_BATTERY_CAPACITY_WH] = capacity_wh
                 new_data[CONF_OPTIMIZATION_MAX_CHARGE_W] = charge_w
@@ -6478,6 +6506,10 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 CONF_OPTIMIZATION_BACKUP_RESERVE,
                 DEFAULT_OPTIMIZATION_BACKUP_RESERVE,
             ),
+        )
+        current_hardware_backup_reserve = self._get_option(
+            CONF_HARDWARE_BACKUP_RESERVE,
+            current_backup_reserve,
         )
         default_capacity_wh, default_charge_w, default_discharge_w = (
             _default_optimizer_specs_for(battery_system)
@@ -6589,6 +6621,15 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     default=int(current_backup_reserve * 100)
                     if current_backup_reserve < 1
                     else int(current_backup_reserve),
+                ): NumberSelector(NumberSelectorConfig(
+                    min=0, max=100, step=1, unit_of_measurement="%",
+                    mode=NumberSelectorMode.SLIDER,
+                )),
+                vol.Required(
+                    CONF_HARDWARE_BACKUP_RESERVE,
+                    default=int(current_hardware_backup_reserve * 100)
+                    if current_hardware_backup_reserve < 1
+                    else int(current_hardware_backup_reserve),
                 ): NumberSelector(NumberSelectorConfig(
                     min=0, max=100, step=1, unit_of_measurement="%",
                     mode=NumberSelectorMode.SLIDER,

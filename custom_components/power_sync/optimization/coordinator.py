@@ -2097,7 +2097,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _export_command_power_w(self, action: Any) -> float:
         """Return the hardware export command power for an optimizer action."""
         command_w = float(self._config.max_discharge_w)
-        if self._should_spread_export_schedule():
+        if self._supports_target_export_power():
             try:
                 requested_w = float(getattr(action, "power_w", 0.0) or 0.0)
             except (TypeError, ValueError):
@@ -2585,7 +2585,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         )
                     _LOGGER.info(
                         "Optimizer: Discharging/exporting at %.0fW for %dmin",
-                        action.power_w, discharge_duration,
+                        discharge_power, discharge_duration,
                     )
             elif effective_action == "no_discharge":
                 await self._set_scheduled_ev_no_discharge_mode(

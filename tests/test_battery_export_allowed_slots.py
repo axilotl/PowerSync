@@ -138,7 +138,7 @@ def _install_power_sync_stubs() -> None:
     const_module.DISCHARGE_DURATIONS = [5, 10, 15, 30, 45, 60, 75, 90, 105, 120, 150, 180, 210, 240]
     const_module.TARGET_EXPORT_POWER_BATTERY_SYSTEMS = {
         "goodwe", "sigenergy", "sungrow", "foxess",
-        "alphaess", "solax", "fronius_reserva", "neovolt",
+        "alphaess", "solax", "saj_h2", "fronius_reserva", "neovolt",
     }
     const_module.TARGET_CHARGE_POWER_BATTERY_SYSTEMS = {
         "goodwe", "sigenergy", "sungrow", "foxess",
@@ -1425,6 +1425,67 @@ def test_export_command_power_respects_grid_export_cap(opt_module):
     assert battery.force_discharge_calls == [(15, 5000, False, None)]
 
 
+@pytest.mark.parametrize(
+    "battery_system",
+    [
+        "goodwe",
+        "sigenergy",
+        "sungrow",
+        "foxess",
+        "alphaess",
+        "solax",
+        "saj_h2",
+        "fronius_reserva",
+        "neovolt",
+    ],
+)
+def test_target_export_battery_uses_planned_action_power_without_spread(
+    opt_module,
+    battery_system,
+):
+    battery = _FakeBattery()
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.80)
+    coordinator.battery_system = battery_system
+    coordinator._config.max_discharge_w = 5000
+    coordinator._config.spread_export_enabled = False
+    start = datetime(2026, 5, 3, 18, 30, tzinfo=timezone.utc)
+    actions = [
+        SimpleNamespace(
+            action="export",
+            power_w=1000,
+            timestamp=start + idx * timedelta(minutes=5),
+        )
+        for idx in range(3)
+    ]
+    coordinator._current_schedule = SimpleNamespace(actions=actions)
+
+    asyncio.run(coordinator._execute_optimizer_action(actions[0]))
+
+    assert battery.force_discharge_calls == [(15, 1000, False, None)]
+
+
+@pytest.mark.parametrize("battery_system", ["tesla", "esy_sunhome"])
+def test_non_target_export_battery_keeps_max_discharge_command(opt_module, battery_system):
+    battery = _FakeBattery()
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.80)
+    coordinator.battery_system = battery_system
+    coordinator._config.max_discharge_w = 5000
+    start = datetime(2026, 5, 3, 18, 30, tzinfo=timezone.utc)
+    actions = [
+        SimpleNamespace(
+            action="export",
+            power_w=1000,
+            timestamp=start + idx * timedelta(minutes=5),
+        )
+        for idx in range(3)
+    ]
+    coordinator._current_schedule = SimpleNamespace(actions=actions)
+
+    asyncio.run(coordinator._execute_optimizer_action(actions[0]))
+
+    assert battery.force_discharge_calls == [(15, 5000, False, None)]
+
+
 def test_grid_export_cap_resolves_from_sigenergy_config(opt_module):
     coordinator = _coordinator(
         opt_module,
@@ -1855,7 +1916,7 @@ def test_export_duration_clips_at_next_non_export_boundary(opt_module):
 
     asyncio.run(coordinator._execute_optimizer_action(actions[0]))
 
-    assert battery.force_discharge_calls == [(5, 5000, False, None)]
+    assert battery.force_discharge_calls == [(5, 4200, False, None)]
     assert coordinator._last_executed_action == "export"
 
 
