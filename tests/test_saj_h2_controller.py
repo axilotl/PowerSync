@@ -223,6 +223,48 @@ def test_force_charge_fails_when_charge_slot_entities_are_unmapped():
     assert hass.services.calls == []
 
 
+def test_status_uses_pv_string_sum_when_solar_total_omits_a_string():
+    hass = _FakeHass(
+        [
+            _FakeState("sensor.saj_battery_soc", "81"),
+            _FakeState("sensor.saj_battery_power", "0"),
+            _FakeState("sensor.saj_grid_power", "0"),
+            _FakeState("sensor.saj_total_pv_power", "345"),
+            _FakeState("sensor.saj_pv1_power", "175"),
+            _FakeState("sensor.saj_pv2_power", "170"),
+            _FakeState("sensor.saj_pv3_power", "150"),
+            _FakeState("sensor.saj_load_power", "1200"),
+            _FakeState("sensor.saj_power_current_day", "9.9"),
+            _FakeState("sensor.saj_feed_in_today_energy", "1.8"),
+            _FakeState("sensor.saj_sell_today_energy", "0.7"),
+        ]
+    )
+    controller = SajH2BatteryController(hass, saj_entry_id="saj-entry")
+    controller._entity_map = {
+        "battery_level": "sensor.saj_battery_soc",
+        "battery_power": "sensor.saj_battery_power",
+        "grid_power": "sensor.saj_grid_power",
+        "solar_power": "sensor.saj_total_pv_power",
+        "pv1_power": "sensor.saj_pv1_power",
+        "pv2_power": "sensor.saj_pv2_power",
+        "pv3_power": "sensor.saj_pv3_power",
+        "load_power": "sensor.saj_load_power",
+        "daily_solar_energy": "sensor.saj_power_current_day",
+        "daily_grid_import": "sensor.saj_feed_in_today_energy",
+        "daily_grid_export": "sensor.saj_sell_today_energy",
+    }
+
+    status = controller.get_status()
+
+    assert status["solar_power"] == 0.495
+    assert status["pv1_power"] == 0.175
+    assert status["pv2_power"] == 0.17
+    assert status["pv3_power"] == 0.15
+    assert status["daily_solar_energy_kwh"] == 9.9
+    assert status["daily_grid_import_kwh"] == 1.8
+    assert status["daily_grid_export_kwh"] == 0.7
+
+
 def test_force_charge_uses_tou_charge_slot_7_and_clears_discharge_slots():
     hass = _FakeHass(_tou_states(charge_bitmask="2", discharge_bitmask="5"))
     controller = _tou_controller(hass)

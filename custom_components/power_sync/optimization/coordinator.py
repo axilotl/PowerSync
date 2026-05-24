@@ -1464,12 +1464,26 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
             # Check if force charge/discharge is active (persisted across restart)
             _entry_data = self.hass.data.get(_STARTUP_DOMAIN, {}).get(self.entry_id, {})
+            _restart_restore_pending = bool(
+                _entry_data.get("optimizer_force_restart_restore_pending", False)
+            )
             _force_active = (
-                _entry_data.get("force_charge_state", {}).get("active", False)
-                or _entry_data.get("force_discharge_state", {}).get("active", False)
+                not _restart_restore_pending
+                and (
+                    _entry_data.get("force_charge_state", {}).get("active", False)
+                    or _entry_data.get("force_discharge_state", {}).get("active", False)
+                )
             )
             if _monitoring:
                 _LOGGER.info("Optimizer startup: monitoring mode active — skipping self-consumption mode set")
+            elif _restart_restore_pending:
+                _LOGGER.info("Optimizer startup: stale force restore pending — setting self-consumption mode")
+                try:
+                    if hasattr(battery, "set_self_consumption_mode"):
+                        await battery.set_self_consumption_mode()
+                        _LOGGER.info("Optimizer startup: set self-consumption mode (stale force restore)")
+                except Exception as e:
+                    _LOGGER.warning("Failed to set self-consumption during stale force restore: %s", e)
             elif _force_active:
                 _LOGGER.info("Optimizer startup: force mode active — skipping self-consumption mode set")
             else:

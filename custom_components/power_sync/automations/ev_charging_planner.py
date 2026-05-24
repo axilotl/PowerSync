@@ -3506,6 +3506,11 @@ class AutoScheduleExecutor:
             "pre_charge_wake_off_service_data": settings.pre_charge_wake_off_service_data,
         }
         params = _with_configured_charger_entities(self.hass, params, opts, charger_type)
+        if charger_type == "sigenergy" and not params.get("supports_rate_control", True):
+            _LOGGER.debug(
+                "Auto-schedule: Sigenergy EVDC rate update skipped; charger uses one-shot control"
+            )
+            return True
 
         try:
             success = await _set_vehicle_amps(
@@ -5484,6 +5489,21 @@ def _with_configured_charger_entities(
         params["sigenergy_charger_type"] = params.get("sigenergy_charger_type") or opts.get(
             CONF_SIGENERGY_CHARGER_TYPE
         )
+        normalized_type = str(params.get("sigenergy_charger_type") or "evac").lower()
+        is_evdc = normalized_type == "evdc"
+        params["sigenergy_charger_type"] = "evdc" if is_evdc else "evac"
+        params["supports_rate_control"] = not is_evdc
+        params["supports_restart_while_plugged"] = not is_evdc
+        params["control_strategy"] = "one_shot" if is_evdc else "dynamic_rate"
+        params["solar_control_strategy"] = "native_handoff" if is_evdc else "dynamic_rate"
+        params["charger_capabilities"] = {
+            "charger_type": params["sigenergy_charger_type"],
+            "supports_start_stop": True,
+            "supports_rate_control": params["supports_rate_control"],
+            "supports_restart_while_plugged": params["supports_restart_while_plugged"],
+            "control_strategy": params["control_strategy"],
+            "solar_control_strategy": params["solar_control_strategy"],
+        }
     return params
 
 
@@ -5538,6 +5558,11 @@ def get_solar_surplus_vehicle_configs(
         "sigenergy_charger_port",
         "sigenergy_charger_slave_id",
         "sigenergy_charger_type",
+        "supports_rate_control",
+        "supports_restart_while_plugged",
+        "control_strategy",
+        "solar_control_strategy",
+        "charger_capabilities",
     ):
         value = params.get(key)
         if value not in (None, ""):
@@ -5852,6 +5877,10 @@ def _get_vehicle_charger_params(
                         "charger_status_entity",
                         "charger_power_entity",
                         "ocpp_charger_id",
+                        "sigenergy_charger_host",
+                        "sigenergy_charger_port",
+                        "sigenergy_charger_slave_id",
+                        "sigenergy_charger_type",
                         "pre_charge_wake_entity",
                         "pre_charge_wake_duration_seconds",
                         "pre_charge_wake_on_service",
@@ -5879,6 +5908,10 @@ def _get_vehicle_charger_params(
                     "charger_status_entity",
                     "charger_power_entity",
                     "ocpp_charger_id",
+                    "sigenergy_charger_host",
+                    "sigenergy_charger_port",
+                    "sigenergy_charger_slave_id",
+                    "sigenergy_charger_type",
                     "pre_charge_wake_entity",
                     "pre_charge_wake_duration_seconds",
                     "pre_charge_wake_on_service",

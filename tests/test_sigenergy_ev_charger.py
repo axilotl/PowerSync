@@ -152,6 +152,23 @@ def test_evdc_uses_inverter_start_stop_register_and_rejects_current_limit(charge
     ]
 
 
+def test_sigenergy_charger_capabilities_distinguish_evac_and_evdc(charger_module):
+    evac = charger_module.sigenergy_charger_capabilities("evac")
+    evdc = charger_module.sigenergy_charger_capabilities("evdc")
+
+    assert evac.supports_start_stop is True
+    assert evac.supports_rate_control is True
+    assert evac.supports_restart_while_plugged is True
+    assert evac.control_strategy == "dynamic_rate"
+    assert evac.solar_control_strategy == "dynamic_rate"
+
+    assert evdc.supports_start_stop is True
+    assert evdc.supports_rate_control is False
+    assert evdc.supports_restart_while_plugged is False
+    assert evdc.control_strategy == "one_shot"
+    assert evdc.solar_control_strategy == "native_handoff"
+
+
 def test_sigenergy_charger_state_exports_mobile_vehicle_and_loadpoint_shapes(charger_module):
     state = charger_module.SigenergyChargerState(
         charger_type="evac",
@@ -175,11 +192,15 @@ def test_sigenergy_charger_state_exports_mobile_vehicle_and_loadpoint_shapes(cha
     assert vehicle["display_name"] == "Sigenergy EVAC"
     assert vehicle["charging_state"] == "Charging"
     assert vehicle["charger_power"] == 7.2
+    assert vehicle["supports_rate_control"] is True
+    assert vehicle["supports_restart_while_plugged"] is True
+    assert vehicle["control_strategy"] == "dynamic_rate"
 
     assert loadpoint["charger_id"] == "sigenergy_charger"
     assert loadpoint["charger_type"] == "sigenergy"
     assert loadpoint["include_idle"] is True
     assert loadpoint["is_charging"] is True
+    assert loadpoint["charger_capabilities"]["supports_rate_control"] is True
 
     assert widget["vehicle_name"] == "Sigenergy EVAC"
     assert widget["current_power_kw"] == 7.2
@@ -202,5 +223,9 @@ def test_sigenergy_charger_offline_placeholder_still_has_visible_status(charger_
     assert vehicle["display_name"] == "Sigenergy EVDC"
     assert vehicle["charging_state"] == "Unavailable"
     assert vehicle["is_online"] is False
+    assert vehicle["supports_rate_control"] is False
+    assert vehicle["supports_restart_while_plugged"] is False
+    assert vehicle["solar_control_strategy"] == "native_handoff"
     assert loadpoint["include_idle"] is True
     assert loadpoint["blocking_reason"] == "unavailable"
+    assert loadpoint["control_strategy"] == "one_shot"

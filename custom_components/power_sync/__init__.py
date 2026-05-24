@@ -20313,6 +20313,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Get persisted force mode state (survives HA restarts)
     persisted_force_state = hass.data[DOMAIN][entry.entry_id].get("force_mode_state") or {}
+    if persisted_force_state.get("source") == "optimizer":
+        hass.data[DOMAIN][entry.entry_id]["optimizer_force_restart_restore_pending"] = True
 
     # Storage for saved tariff and operation mode during force discharge
     force_discharge_state = {
@@ -20527,6 +20529,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         if not mode or not expires_at_str:
             _LOGGER.info("No valid persisted force mode state to restore")
+            if persisted_force_state.get("source") == "optimizer":
+                hass.data[DOMAIN][entry.entry_id]["optimizer_force_restart_restore_pending"] = False
             return
 
         try:
@@ -20601,6 +20605,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         e,
                         exc_info=True,
                     )
+                finally:
+                    hass.data[DOMAIN][entry.entry_id]["optimizer_force_restart_restore_pending"] = False
 
                 stored_data = await store.async_load() or {}
                 stored_data["force_mode_state"] = None
@@ -20769,6 +20775,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         except Exception as e:
             _LOGGER.error(f"Error restoring force mode from persistence: {e}", exc_info=True)
+            if persisted_force_state.get("source") == "optimizer":
+                hass.data[DOMAIN][entry.entry_id]["optimizer_force_restart_restore_pending"] = False
 
     # NOTE: restore_force_mode_from_persistence is scheduled AFTER handle_restore_normal
     # is defined (see below), because it needs handle_restore_normal in its closure.
@@ -21678,6 +21686,28 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                                 _LOGGER.info("Set export rule to battery_ok for site %s", site_id)
                             else:
                                 _LOGGER.warning("Could not set export rule for site %s: %s", site_id, response.status)
+
+                    # Force discharge is tariff-driven on Tesla. Disallow grid
+                    # charging before uploading the high-export tariff so the
+                    # gateway cannot satisfy the force window by importing from
+                    # the grid and charging the battery.
+                    _LOGGER.info("Disabling grid charging during force discharge for site %s...", site_id)
+                    async with session.post(
+                        f"{api_base}/api/1/energy_sites/{site_id}/grid_import_export",
+                        headers=headers,
+                        json={"disallow_charge_from_grid_with_solar_installed": True},
+                        timeout=aiohttp.ClientTimeout(total=30),
+                    ) as response:
+                        if response.status == 200:
+                            _LOGGER.info("Disabled grid charging for force discharge on site %s", site_id)
+                        else:
+                            text = await response.text()
+                            _LOGGER.warning(
+                                "Could not disable grid charging for force discharge on site %s: %s - %s",
+                                site_id,
+                                response.status,
+                                text[:200],
+                            )
 
                     saved_states[site_id] = site_state
 
@@ -27579,6 +27609,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             # (the fake tariff rates would give incorrect cost calculations)
             def get_force_state() -> dict:
                 """Get current force charge/discharge state."""
+                if hass.data[DOMAIN][entry.entry_id].get("optimizer_force_restart_restore_pending"):
+                    return {"active": False}
                 if force_charge_state.get("active"):
                     return {
                         "active": True,

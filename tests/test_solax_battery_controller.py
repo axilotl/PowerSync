@@ -347,3 +347,18 @@ def test_x3_ultra_entity_aliases_map_live_telemetry():
     assert status["pv3_power"] == 0.9
     assert status["pv1_voltage"] == 420.0
     assert status["pv2_current"] == 3.9
+
+
+def test_x3_ultra_solar_total_uses_pv_string_sum_when_total_is_partial():
+    states = _x3_ultra_states()
+    for state in states:
+        if state.entity_id == "sensor.solax_energy_dashboard_solax_solar_power":
+            state.state = "3600"
+    entity_ids = [state.entity_id for state in states]
+    hass = _FakeHass(states, registry_entries={"solax-entry": entity_ids})
+    controller = SolaxBatteryController(hass, solax_entry_id="solax-entry")
+
+    assert asyncio.run(controller.connect())
+
+    status = controller.get_status()
+    assert status["solar_power"] == 4.5

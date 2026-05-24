@@ -452,7 +452,7 @@ class SolaxBatteryController:
             grid_kw = -grid_kw
 
         pv_total_w = pv1_w + pv2_w + pv3_w
-        if solar_total_w is None or (solar_total_w == 0 and pv_total_w > 0):
+        if solar_total_w is None or pv_total_w > solar_total_w:
             solar_total_w = pv_total_w
         solar_kw = max(0.0, solar_total_w / 1000.0)
 

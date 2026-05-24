@@ -5832,6 +5832,15 @@ class SajH2EnergyCoordinator(DataUpdateCoordinator):
 
         buy, sell = _get_current_prices(self.hass, self._entry_id)
         self._energy_acc.update(max(0.0, solar_kw), grid_kw, battery_kw, load_kw, buy, sell)
+        energy_summary = self._energy_acc.as_dict()
+        for status_key, summary_key in (
+            ("daily_solar_energy_kwh", "pv_today_kwh"),
+            ("daily_grid_import_kwh", "grid_import_today_kwh"),
+            ("daily_grid_export_kwh", "grid_export_today_kwh"),
+        ):
+            value = status.get(status_key)
+            if isinstance(value, (int, float)) and value >= 0:
+                energy_summary[summary_key] = round(float(value), 3)
 
         return {
             "solar_power": solar_kw,
@@ -5839,13 +5848,16 @@ class SajH2EnergyCoordinator(DataUpdateCoordinator):
             "battery_power": battery_kw,
             "load_power": load_kw,
             "battery_level": soc,
+            "pv1_power": status.get("pv1_power"),
+            "pv2_power": status.get("pv2_power"),
+            "pv3_power": status.get("pv3_power"),
             "battery_temperature": status.get("battery_temperature"),
             "battery_soh": status.get("battery_soh"),
             "battery_capacity_kwh": status.get("battery_capacity_kwh"),
             "battery_max_charge_power_w": status.get("battery_max_charge_power_w"),
             "battery_max_discharge_power_w": status.get("battery_max_discharge_power_w"),
             "app_mode": status.get("app_mode"),
-            "energy_summary": self._energy_acc.as_dict(),
+            "energy_summary": energy_summary,
         }
 
     async def force_charge(self, duration_minutes: int, power_w: int) -> bool:

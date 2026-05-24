@@ -322,8 +322,47 @@ def test_optimizer_force_modes_are_not_reissued_after_restart():
     assert "SERVICE_RESTORE_NORMAL" in optimizer_branch
     assert '"set_self_consumption"' in optimizer_branch
     assert 'stored_data["force_mode_state"] = None' in optimizer_branch
+    assert '"optimizer_force_restart_restore_pending"] = False' in optimizer_branch
     assert "SERVICE_FORCE_DISCHARGE" not in optimizer_branch
     assert "SERVICE_FORCE_CHARGE" not in optimizer_branch
+
+
+def test_optimizer_restart_restore_is_hidden_from_force_getter():
+    source = INIT_PATH.read_text()
+    tree = ast.parse(source)
+    function = _find_function(tree, "get_force_state")
+    function_source = ast.get_source_segment(source, function)
+
+    assert function_source is not None
+    assert '"optimizer_force_restart_restore_pending"' in function_source
+    assert 'return {"active": False}' in function_source
+
+
+def test_optimizer_startup_ignores_stale_force_restore_window():
+    source = (ROOT / "custom_components" / "power_sync" / "optimization" / "coordinator.py").read_text()
+    tree = ast.parse(source)
+    method = _find_class_method(tree, "OptimizationCoordinator", "_deferred_enable_restore")
+    method_source = ast.get_source_segment(source, method)
+
+    assert method_source is not None
+    assert "_restart_restore_pending" in method_source
+    assert '"optimizer_force_restart_restore_pending"' in method_source
+    assert "not _restart_restore_pending" in method_source
+    assert "stale force restore pending" in method_source
+
+
+def test_tesla_force_discharge_disables_grid_charging_before_tariff_upload():
+    source = INIT_PATH.read_text()
+    tree = ast.parse(source)
+    function = _find_function(tree, "handle_force_discharge")
+    function_source = ast.get_source_segment(source, function)
+
+    assert function_source is not None
+    grid_disable_index = function_source.index(
+        '"disallow_charge_from_grid_with_solar_installed": True'
+    )
+    tariff_upload_index = function_source.index("send_tariff_to_tesla(")
+    assert grid_disable_index < tariff_upload_index
 
 
 def test_optimizer_backup_reserve_writes_do_not_persist_as_user_reserve():

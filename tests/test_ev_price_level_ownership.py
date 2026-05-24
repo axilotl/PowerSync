@@ -475,15 +475,42 @@ def test_solar_surplus_config_falls_back_to_sigenergy_entry_charger():
         {"solar_surplus_config": {"enabled": True}},
     )
 
-    assert configs == [{
-        "vehicle_id": "sigenergy_charger",
-        "display_name": "Sigenergy charger",
-        "charger_type": "sigenergy",
-        "sigenergy_charger_host": "192.0.2.10",
-        "sigenergy_charger_port": 502,
-        "sigenergy_charger_slave_id": 1,
-        "sigenergy_charger_type": "evac",
-    }]
+    assert len(configs) == 1
+    config = configs[0]
+    assert config["vehicle_id"] == "sigenergy_charger"
+    assert config["display_name"] == "Sigenergy charger"
+    assert config["charger_type"] == "sigenergy"
+    assert config["sigenergy_charger_host"] == "192.0.2.10"
+    assert config["sigenergy_charger_port"] == 502
+    assert config["sigenergy_charger_slave_id"] == 1
+    assert config["sigenergy_charger_type"] == "evac"
+    assert config["supports_rate_control"] is True
+    assert config["control_strategy"] == "dynamic_rate"
+
+
+def test_solar_surplus_config_marks_sigenergy_evdc_native_handoff():
+    class SigenergyEntry(_FakeConfigEntry):
+        options = {
+            "sigenergy_charger_enabled": True,
+            "sigenergy_charger_host": "192.0.2.11",
+            "sigenergy_charger_port": 502,
+            "sigenergy_charger_slave_id": 2,
+            "sigenergy_charger_type": "evdc",
+        }
+
+    configs = ev_planner.get_solar_surplus_vehicle_configs(
+        _FakeHass(),
+        SigenergyEntry(),
+        {"solar_surplus_config": {"enabled": True}},
+    )
+
+    assert len(configs) == 1
+    config = configs[0]
+    assert config["sigenergy_charger_type"] == "evdc"
+    assert config["supports_rate_control"] is False
+    assert config["supports_restart_while_plugged"] is False
+    assert config["control_strategy"] == "one_shot"
+    assert config["solar_control_strategy"] == "native_handoff"
 
 
 def test_scheduled_preserve_home_battery_sets_optimizer_intent(fake_actions):
@@ -670,6 +697,53 @@ def test_auto_schedule_rate_update_blank_charger_type_uses_configured_sigenergy(
     assert amps == 16
     assert params["charger_type"] == "sigenergy"
     assert params["sigenergy_charger_host"] == "192.0.2.22"
+
+
+def test_auto_schedule_rate_update_skips_sigenergy_evdc(
+    monkeypatch,
+    fake_actions,
+):
+    set_amps_calls = []
+
+    async def set_vehicle_amps(hass, entry, vehicle_id, amps, params):
+        set_amps_calls.append((vehicle_id, amps, params))
+        return True
+
+    fake_actions._set_vehicle_amps = set_vehicle_amps
+    monkeypatch.setattr(
+        ev_planner.dt_util,
+        "now",
+        lambda: SimpleNamespace(weekday=lambda: 0),
+    )
+
+    class SigenergyEntry(_FakeConfigEntry):
+        options = {
+            "sigenergy_charger_enabled": True,
+            "sigenergy_charger_host": "192.0.2.23",
+            "sigenergy_charger_port": 502,
+            "sigenergy_charger_slave_id": 2,
+            "sigenergy_charger_type": "evdc",
+        }
+
+    executor = ev_planner.AutoScheduleExecutor(
+        _FakeHass(),
+        SigenergyEntry(),
+        planner=SimpleNamespace(),
+    )
+    settings = ev_planner.AutoScheduleSettings(
+        vehicle_id="sigenergy_charger",
+        display_name="Sigenergy EVDC",
+        charger_type="",
+        min_charge_amps=6,
+        max_charge_amps=32,
+        voltage=230,
+        phases=1,
+    )
+
+    assert asyncio.run(
+        executor._set_vehicle_charge_rate("sigenergy_charger", 3680, settings)
+    )
+    assert set_amps_calls == []
 
 
 def test_price_level_ocpp_start_uses_detected_hacs_prefix(monkeypatch, fake_actions):

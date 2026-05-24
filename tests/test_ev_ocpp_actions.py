@@ -1109,6 +1109,44 @@ def test_dynamic_update_holds_fixed_deadline_rate(monkeypatch):
     assert set_amps_calls == [32]
 
 
+def test_dynamic_update_skips_sigenergy_evdc_rate_adjustment(monkeypatch):
+    set_amps_calls: list[int] = []
+
+    async def fake_set_vehicle_amps(hass, config_entry, vehicle_id, amps, params):
+        set_amps_calls.append(amps)
+        return True
+
+    monkeypatch.setattr(actions, "_set_vehicle_amps", fake_set_vehicle_amps)
+    actions._dynamic_ev_state.clear()
+    actions._dynamic_ev_state["entry-1"] = {
+        "sigenergy_charger": {
+            "active": True,
+            "current_amps": 32,
+            "target_amps": 32,
+            "params": {
+                "dynamic_mode": "battery_target",
+                "charger_type": "sigenergy",
+                "sigenergy_charger_type": "evdc",
+                "supports_rate_control": False,
+                "min_charge_amps": 6,
+                "max_charge_amps": 32,
+                "fixed_charge_amps": 16,
+                "voltage": 230,
+                "phases": 1,
+            },
+        }
+    }
+
+    hass = _Hass([])
+    asyncio.run(actions._dynamic_ev_update(hass, _Entry(), "entry-1", "sigenergy_charger"))
+
+    state = actions._dynamic_ev_state["entry-1"]["sigenergy_charger"]
+    assert set_amps_calls == []
+    assert state["current_amps"] == 32
+    assert state["target_amps"] == 32
+    assert "rate control is unsupported" in state["reason"]
+
+
 def test_dynamic_update_clears_unplugged_ble_session(monkeypatch):
     ev_planner = types.ModuleType("power_sync.automations.ev_charging_planner")
     plug_checks: list[str | None] = []
@@ -2068,3 +2106,121 @@ def test_sigenergy_evdc_dynamic_start_skips_unsupported_current_limit(monkeypatc
         ("start_charging", None),
         ("disconnect",),
     ]
+
+
+def test_sigenergy_evdc_one_shot_blocks_restart_until_unplug(monkeypatch):
+    calls: list[tuple] = []
+
+    class _SigenergyState:
+        def __init__(self, connected: bool) -> None:
+            self.is_connected = connected
+            self.is_charging = False
+
+    class _SigenergyController:
+        connected = True
+
+        def __init__(self, **config):
+            calls.append(("init", config))
+
+        async def read_state(self):
+            calls.append(("read_state", self.connected))
+            return _SigenergyState(self.connected)
+
+        async def start_charging(self, amps=None):
+            calls.append(("start_charging", amps))
+            return True
+
+        async def stop_charging(self):
+            calls.append(("stop_charging",))
+            return True
+
+        async def disconnect(self):
+            calls.append(("disconnect",))
+
+    monkeypatch.setattr(
+        actions,
+        "_new_sigenergy_charger",
+        lambda config: _SigenergyController(**config),
+    )
+    hass = _Hass([])
+    entry = SimpleNamespace(
+        entry_id="entry-1",
+        data={},
+        options={
+            "sigenergy_charger_host": "192.0.2.31",
+            "sigenergy_charger_slave_id": 2,
+            "sigenergy_charger_type": "evdc",
+        },
+    )
+    params = {"charger_type": "sigenergy"}
+
+    assert asyncio.run(actions._set_vehicle_amps(hass, entry, "sigenergy_charger", 24, params))
+    assert asyncio.run(actions._set_vehicle_amps(hass, entry, "sigenergy_charger", 0, params))
+    assert not asyncio.run(actions._set_vehicle_amps(hass, entry, "sigenergy_charger", 24, params))
+
+    _SigenergyController.connected = False
+    assert asyncio.run(actions._set_vehicle_amps(hass, entry, "sigenergy_charger", 24, params))
+
+    assert [call[0] for call in calls].count("start_charging") == 2
+    assert ("read_state", True) in calls
+    assert ("read_state", False) in calls
+
+
+def test_sigenergy_evdc_solar_surplus_uses_native_handoff_without_amp_updates(monkeypatch):
+    set_amps_calls = _install_solar_surplus_runtime_stubs(
+        monkeypatch,
+        {
+            "battery_soc": 100,
+            "battery_power": 0,
+            "grid_power": -2000,
+            "solar_power": 6000,
+            "load_power": 2000,
+        },
+    )
+    mode_calls: list[str] = []
+
+    class _SigenergyController:
+        async def set_self_consumption_mode(self):
+            mode_calls.append("self_consumption")
+            return True
+
+        async def disconnect(self):
+            mode_calls.append("disconnect")
+
+    async def fake_controller(config_entry):
+        return _SigenergyController()
+
+    monkeypatch.setattr(actions, "_get_sigenergy_controller", fake_controller)
+    actions._dynamic_ev_state.clear()
+    actions._dynamic_ev_state["entry-1"] = {
+        "sigenergy_charger": {
+            "active": True,
+            "current_amps": 0,
+            "target_amps": 0,
+            "charging_started": False,
+            "entity_max_rechecked": True,
+            "params": {
+                "dynamic_mode": "solar_surplus",
+                "charger_type": "sigenergy",
+                "sigenergy_charger_type": "evdc",
+                "supports_rate_control": False,
+                "solar_control_strategy": "native_handoff",
+                "min_charge_amps": 6,
+                "max_charge_amps": 32,
+                "voltage": 240,
+                "phases": 1,
+                "household_buffer_kw": 0.5,
+                "min_battery_soc": 80,
+            },
+        }
+    }
+
+    hass = _Hass([])
+    asyncio.run(actions._dynamic_ev_update(hass, _Entry(), "entry-1", "sigenergy_charger"))
+
+    state = actions._dynamic_ev_state["entry-1"]["sigenergy_charger"]
+    assert set_amps_calls == []
+    assert mode_calls == ["self_consumption", "disconnect"]
+    assert state["native_solar_mode_set"] is True
+    assert state["target_amps"] == 0
+    assert "native solar handoff" in state["reason"]

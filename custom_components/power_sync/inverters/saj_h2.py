@@ -96,6 +96,12 @@ _SENSOR_KEYS: dict[str, tuple[str, ...]] = {
     # Direction sensors — 1=discharging/export, -1=charging/import, 0=idle
     "direction_battery":           ("directionBattery",),
     "direction_grid":              ("directionGrid",),
+    "pv1_power":                   ("PV1Power", "PV1PowerWatt", "pv1Power", "pv1_power"),
+    "pv2_power":                   ("PV2Power", "PV2PowerWatt", "pv2Power", "pv2_power"),
+    "pv3_power":                   ("PV3Power", "PV3PowerWatt", "pv3Power", "pv3_power"),
+    "daily_solar_energy":          ("powerCurrentDay", "PowerCurrentDay", "power_current_day"),
+    "daily_grid_import":           ("feedInTodayEnergy", "FeedInTodayEnergy", "feed_in_today_energy"),
+    "daily_grid_export":           ("sellTodayEnergy", "SellTodayEnergy", "sell_today_energy"),
     # Engagement signals — distinguish "battery converter active" (mode 2, R-phase ~240V)
     # from "low-SOC lockout" (mode 4, R-phase 0V). Without these the controller silently
     # writes Modbus commands that go nowhere because the inverter's converter is offline.
@@ -384,13 +390,26 @@ class SajH2BatteryController:
             if max_discharge_pct is not None and 0 < max_discharge_pct <= 110
             else self._inverter_rated_w
         )
+        pv1_w = self._read_float("pv1_power") or 0.0
+        pv2_w = self._read_float("pv2_power") or 0.0
+        pv3_w = self._read_float("pv3_power") or 0.0
+        pv_total_w = pv1_w + pv2_w + pv3_w
+        solar_total_w = self._read_float("solar_power")
+        if solar_total_w is None or pv_total_w > solar_total_w:
+            solar_total_w = pv_total_w
 
         return {
             "battery_level":              self._read_float("battery_level") or 0.0,
             "battery_power":              battery_kw,
             "grid_power":                 grid_kw,
-            "solar_power":                max(0.0, (self._read_float("solar_power") or 0.0) / 1000.0),
+            "solar_power":                max(0.0, (solar_total_w or 0.0) / 1000.0),
             "load_power":                 max(0.0, (self._read_float("load_power") or 0.0) / 1000.0),
+            "pv1_power":                  max(0.0, pv1_w / 1000.0),
+            "pv2_power":                  max(0.0, pv2_w / 1000.0),
+            "pv3_power":                  max(0.0, pv3_w / 1000.0),
+            "daily_solar_energy_kwh":     self._read_float("daily_solar_energy"),
+            "daily_grid_import_kwh":      self._read_float("daily_grid_import"),
+            "daily_grid_export_kwh":      self._read_float("daily_grid_export"),
             "battery_temperature":        self._read_float("battery_temperature"),
             "battery_soh":                self._read_float("battery_soh"),
             "app_mode":                   self._read_float("app_mode"),
