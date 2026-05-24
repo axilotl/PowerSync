@@ -15,7 +15,8 @@ state, and status consistency problems across Home Assistant and the mobile app.
 - Home Assistant and the mobile app display the same charging status, owner,
   reason, and next action.
 - OCPP, generic switch/number chargers, Zaptec, Tesla Fleet, Tesla BLE, and
-  Teslemetry Bluetooth use the same control contract.
+  Teslemetry Bluetooth use the same control contract, with Sigenergy EVAC/EVDC
+  chargers represented through the same loadpoint model.
 
 ## Reported Failure Patterns
 
@@ -98,7 +99,10 @@ Adapters should translate each charger/provider into this model:
 - Tesla BLE / Teslemetry Bluetooth
 - OCPP through HACS OCPP
 - Generic switch/number chargers
+- Generic charger fallback SoC sensors, where charger state and vehicle battery
+  level come from different integrations
 - Zaptec standalone
+- Sigenergy EVAC / EVDC Modbus chargers
 
 ## Coordinator Rules
 

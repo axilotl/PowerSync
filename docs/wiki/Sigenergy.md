@@ -4,6 +4,7 @@ PowerSync supports Sigenergy systems through two separate paths:
 
 - **Sigenergy Cloud API** uploads the current tariff so the Sigenergy app can show matching tariff graphs.
 - **Modbus TCP / Remote EMS** reads live power data and lets PowerSync control charge, discharge, reserve, and curtailment.
+- **Sigenergy EVAC / EVDC charger support** can be configured separately for EV charging, using the charger type, host, port, and slave ID exposed through PowerSync's EV charging settings.
 
 ## Smart Optimization requirements
 
