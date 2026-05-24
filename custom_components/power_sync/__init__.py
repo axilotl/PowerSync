@@ -505,6 +505,7 @@ from .const import (
     # Smart Optimization configuration
     CONF_OPTIMIZATION_PROVIDER,
     CONF_OPTIMIZATION_ENABLED,
+    CONF_OPTIMIZATION_EV_INTEGRATION,
     OPT_PROVIDER_NATIVE,
     OPT_PROVIDER_POWERSYNC,
     CONF_OPTIMIZATION_COST_FUNCTION,
@@ -28173,7 +28174,13 @@ class OptimizationSettingsView(HomeAssistantView):
                 ),
                 "cost_function": "cost",
                 "backup_reserve": round(backup_reserve * 100),
-                "ev_integration": False,
+                "ev_integration": bool(
+                    config_entry
+                    and config_entry.options.get(
+                        CONF_OPTIMIZATION_EV_INTEGRATION,
+                        config_entry.data.get(CONF_OPTIMIZATION_EV_INTEGRATION, False),
+                    )
+                ),
                 "profit_max_enabled": bool(
                     config_entry
                     and config_entry.options.get(

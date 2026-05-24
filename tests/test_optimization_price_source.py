@@ -121,6 +121,7 @@ def _install_power_sync_stubs() -> None:
     const_module.CONF_DEMAND_CHARGE_START_TIME = "demand_charge_start_time"
     const_module.CONF_DEMAND_CHARGE_END_TIME = "demand_charge_end_time"
     const_module.CONF_DEMAND_CHARGE_DAYS = "demand_charge_days"
+    const_module.CONF_OPTIMIZATION_EV_INTEGRATION = "optimization_ev_integration"
     const_module.DEFAULT_SOLCAST_ESTIMATE_TYPE = "estimate"
     const_module.SOLCAST_ESTIMATE = "estimate"
     const_module.SOLCAST_ESTIMATE10 = "estimate10"
@@ -274,6 +275,23 @@ def _coordinator_with_static_tou_provider(opt_coordinator):
     coordinator._last_display_import_prices = None
     coordinator._last_display_export_prices = None
     return coordinator
+
+
+def test_ev_integration_defaults_to_initial_config_data(opt_module):
+    entry = SimpleNamespace(
+        data={"optimization_ev_integration": True},
+        options={},
+    )
+
+    coordinator = opt_module.OptimizationCoordinator(
+        hass=SimpleNamespace(),
+        entry_id="entry-1",
+        battery_system="tesla",
+        battery_controller=SimpleNamespace(),
+        entry=entry,
+    )
+
+    assert coordinator._ev_integration_enabled is True
 
 
 def test_static_tou_provider_uses_tariff_even_when_aemo_data_exists(opt_module):

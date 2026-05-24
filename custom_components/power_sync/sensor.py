@@ -130,6 +130,7 @@ from .const import (
     SENSOR_TYPE_PV_DC_POWER,
     SENSOR_TYPE_PV_AC_POWER,
     CONF_EV_CHARGING_ENABLED,
+    CONF_SIGENERGY_CHARGER_ENABLED,
     CONF_BATTERY_SYSTEM,
     BATTERY_SYSTEM_SUNGROW,
     BATTERY_MODE_STATE_NORMAL,
@@ -1593,11 +1594,16 @@ async def async_setup_entry(
     zaptec_standalone = entry.options.get(
         "zaptec_standalone_enabled", entry.data.get("zaptec_standalone_enabled", False)
     )
+    sigenergy_charger_enabled = entry.options.get(
+        CONF_SIGENERGY_CHARGER_ENABLED,
+        entry.data.get(CONF_SIGENERGY_CHARGER_ENABLED, False),
+    )
     has_ev = (
         ev_enabled
         or ocpp_enabled
         or bool(zaptec_entity)
         or zaptec_standalone
+        or sigenergy_charger_enabled
         or _has_tesla_ev_device(hass)
     )
     if has_ev:
@@ -4638,13 +4644,13 @@ class EVStatusSensor(SensorEntity):
         await super().async_added_to_hass()
         # Also listen to energy coordinator updates for faster refresh
         entry_data = self.hass.data.get(DOMAIN, {}).get(self._entry.entry_id, {})
-        tesla_coordinator = entry_data.get("tesla_coordinator")
-        if tesla_coordinator:
-            self._unsub_coordinator = tesla_coordinator.async_add_listener(
-                self._handle_coordinator_update
-            )
-        else:
-            self._unsub_coordinator = None
+        self._unsub_coordinators = []
+        for key in ("tesla_coordinator", "sigenergy_coordinator"):
+            coordinator = entry_data.get(key)
+            if coordinator:
+                self._unsub_coordinators.append(
+                    coordinator.async_add_listener(self._handle_coordinator_update)
+                )
         # Poll on a 30s timer for non-Tesla sources
         self._unsub_timer = async_track_time_interval(
             self.hass, self._async_update_ev, timedelta(seconds=30)
@@ -4656,21 +4662,33 @@ class EVStatusSensor(SensorEntity):
         """Stop polling when removed."""
         if self._unsub_timer:
             self._unsub_timer()
-        if hasattr(self, '_unsub_coordinator') and self._unsub_coordinator:
-            self._unsub_coordinator()
+        for unsub in getattr(self, "_unsub_coordinators", []):
+            unsub()
 
     @callback
     def _handle_coordinator_update(self) -> None:
-        """Handle energy coordinator update — refresh EV data from Tesla coordinator."""
+        """Handle energy coordinator updates with embedded EV telemetry."""
         entry_data = self.hass.data.get(DOMAIN, {}).get(self._entry.entry_id, {})
-        tesla_coordinator = entry_data.get("tesla_coordinator")
-        if tesla_coordinator and tesla_coordinator.data:
-            coord_data = tesla_coordinator.data
-            ev_power = coord_data.get("ev_power", 0)
-            # Merge coordinator data with polled data
+        for key in ("tesla_coordinator", "sigenergy_coordinator"):
+            coordinator = entry_data.get(key)
+            if not coordinator or not coordinator.data:
+                continue
+            coord_data = coordinator.data
+            ev_power = coord_data.get("ev_power")
+            if ev_power is None:
+                continue
             if self._ev_data is None:
                 self._ev_data = {}
-            if ev_power > 0 or self._ev_data.get("ev_power_kw", 0) <= 0:
+            if coord_data.get("ev_charger_type"):
+                self._ev_data["ev_power_kw"] = ev_power
+                self._ev_data["vehicle_id"] = "sigenergy_charger"
+                self._ev_data["vehicle_name"] = "Sigenergy EVDC"
+                self._ev_data["is_connected"] = coord_data.get("ev_charger_connected", False)
+                self._ev_data["is_charging"] = coord_data.get("ev_charger_charging", False)
+                self._ev_data["is_discharging"] = coord_data.get("ev_charger_discharging", False)
+                if coord_data.get("ev_soc") is not None:
+                    self._ev_data["ev_soc"] = coord_data.get("ev_soc")
+            elif abs(ev_power) > 0.05 or self._ev_data.get("ev_power_kw", 0) == 0:
                 self._ev_data["ev_power_kw"] = ev_power
         self.async_write_ha_state()
 
@@ -4712,12 +4730,13 @@ class EVStatusSensor(SensorEntity):
             ("vehicle_name", "vehicle_name"),
             ("is_connected", "is_connected"),
             ("is_charging", "is_charging"),
+            ("is_discharging", "is_discharging"),
         ):
             if source_key in active_vehicle:
                 self._ev_data[target_key] = active_vehicle.get(source_key)
 
         active_power = active_vehicle.get("ev_power_kw") or 0
-        if active_power > 0 or self._ev_data.get("ev_power_kw", 0) <= 0:
+        if abs(active_power) > 0.05 or self._ev_data.get("ev_power_kw", 0) == 0:
             self._ev_data["ev_power_kw"] = active_power
 
         active_soc = active_vehicle.get("ev_soc")
@@ -4737,6 +4756,23 @@ class EVStatusSensor(SensorEntity):
                 wc_power = tesla_coordinator.data.get("ev_power", 0)
                 if wc_power > 0 and self._ev_data.get("ev_power_kw", 0) <= 0:
                     self._ev_data["ev_power_kw"] = wc_power
+            sigenergy_coordinator = entry_data.get("sigenergy_coordinator")
+            if sigenergy_coordinator and sigenergy_coordinator.data:
+                coord_data = sigenergy_coordinator.data
+                ev_power = coord_data.get("ev_power")
+                if ev_power is not None and coord_data.get("ev_charger_type"):
+                    self._ev_data["ev_power_kw"] = ev_power
+                    self._ev_data["vehicle_id"] = "sigenergy_charger"
+                    self._ev_data["vehicle_name"] = "Sigenergy EVDC"
+                    self._ev_data["is_connected"] = coord_data.get("ev_charger_connected", False)
+                    self._ev_data["is_charging"] = coord_data.get("ev_charger_charging", False)
+                    self._ev_data["is_discharging"] = coord_data.get("ev_charger_discharging", False)
+                    if coord_data.get("ev_soc") is not None:
+                        self._ev_data["ev_soc"] = coord_data.get("ev_soc")
+                elif ev_power is not None and (
+                    abs(ev_power) > 0.05 or self._ev_data.get("ev_power_kw", 0) == 0
+                ):
+                    self._ev_data["ev_power_kw"] = ev_power
         except Exception:
             _LOGGER.debug("Error polling EV status", exc_info=True)
         self.async_write_ha_state()
@@ -4760,6 +4796,7 @@ class EVStatusSensor(SensorEntity):
             "vehicle_name",
             "is_connected",
             "is_charging",
+            "is_discharging",
             "vehicle_count",
         ):
             value = self._ev_data.get(key)

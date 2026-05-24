@@ -46,7 +46,18 @@ from .const import (
     FLOW_POWER_MARKET_AVG,
     CONF_FLEET_API_BASE_URL,
     TESLA_SITE_INFO_CACHE_TTL_SECONDS,
+    CONF_SIGENERGY_CHARGER_ENABLED,
+    CONF_SIGENERGY_CHARGER_HOST,
+    CONF_SIGENERGY_CHARGER_PORT,
+    CONF_SIGENERGY_CHARGER_SLAVE_ID,
+    CONF_SIGENERGY_CHARGER_TYPE,
+    CONF_SIGENERGY_MODBUS_HOST,
+    DEFAULT_SIGENERGY_CHARGER_PORT,
+    DEFAULT_SIGENERGY_CHARGER_SLAVE_ID,
+    SIGENERGY_CHARGER_EVAC,
+    SIGENERGY_CHARGER_EVDC,
 )
+from .sigenergy_model import sigenergy_home_load_kw
 
 _SOLCAST_ESTIMATE_FIELDS = {
     SOLCAST_ESTIMATE: ("pv_estimate", "pv_estimate50"),
@@ -3441,6 +3452,52 @@ class SigenergyEnergyCoordinator(DataUpdateCoordinator):
             update_interval=UPDATE_INTERVAL_ENERGY,
         )
 
+    async def _async_read_evdc_charger_state(self):
+        """Read EVDC charger state when the configured charger is DC-side."""
+        try:
+            entry = self.hass.config_entries.async_get_entry(self._entry_id)
+        except Exception:
+            entry = None
+        if not entry:
+            return None
+
+        opts = {**entry.data, **entry.options}
+        if not opts.get(CONF_SIGENERGY_CHARGER_ENABLED):
+            return None
+        charger_type = str(
+            opts.get(CONF_SIGENERGY_CHARGER_TYPE, SIGENERGY_CHARGER_EVAC)
+        ).lower()
+        if charger_type != SIGENERGY_CHARGER_EVDC:
+            return None
+
+        host = str(
+            opts.get(CONF_SIGENERGY_CHARGER_HOST)
+            or opts.get(CONF_SIGENERGY_MODBUS_HOST)
+            or self.host
+            or ""
+        ).strip()
+        if not host:
+            return None
+
+        from .sigenergy_charger import SigenergyEVChargerController
+
+        controller = SigenergyEVChargerController(
+            host=host,
+            port=opts.get(CONF_SIGENERGY_CHARGER_PORT, DEFAULT_SIGENERGY_CHARGER_PORT),
+            slave_id=opts.get(
+                CONF_SIGENERGY_CHARGER_SLAVE_ID,
+                DEFAULT_SIGENERGY_CHARGER_SLAVE_ID,
+            ),
+            charger_type=SIGENERGY_CHARGER_EVDC,
+        )
+        try:
+            return await controller.read_state()
+        except Exception as err:
+            _LOGGER.debug("Sigenergy EVDC state read failed during energy update: %s", err)
+            return None
+        finally:
+            await controller.disconnect()
+
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch data from Sigenergy system via Modbus."""
         if not self._energy_acc._last_update:
@@ -3474,11 +3531,22 @@ class SigenergyEnergyCoordinator(DataUpdateCoordinator):
             battery_kw_raw = attrs.get("battery_power_kw", 0)
             battery_kw = -battery_kw_raw  # Flip sign to match Tesla convention
 
-            # Calculate home load from energy balance:
-            # Load = Solar + Battery_Discharge + Grid_Import
-            # With sign convention: Load = Solar - Battery_Charging + Grid (where grid negative = export)
-            # Simplified: Load = Solar + Grid + Battery (all with proper signs)
-            load_kw = solar_kw + grid_kw + battery_kw
+            evdc_state = await self._async_read_evdc_charger_state()
+            evdc_power_kw = (
+                evdc_state.power_kw
+                if evdc_state and evdc_state.power_kw is not None
+                else 0.0
+            )
+
+            # Balance-derived Sigenergy load includes DC-side EVDC power. Keep
+            # home load separate so EVDC charging/discharge is modeled as an EV
+            # branch rather than household demand.
+            load_kw = sigenergy_home_load_kw(
+                solar_kw=solar_kw,
+                grid_kw=grid_kw,
+                battery_kw=battery_kw,
+                evdc_power_kw=evdc_power_kw,
+            )
 
             # Accumulate daily energy from power readings (with cost tracking)
             buy, sell = _get_current_prices(self.hass, self._entry_id)
@@ -3511,6 +3579,14 @@ class SigenergyEnergyCoordinator(DataUpdateCoordinator):
                 "grid_power": grid_kw,  # kW, positive = importing, negative = exporting
                 "battery_power": battery_kw,  # kW, positive = discharging, negative = charging
                 "load_power": load_kw,  # kW, calculated from energy balance
+                "ev_power": evdc_power_kw,  # kW, positive = EV charging, negative = V2X discharge
+                "ev_power_kw": evdc_power_kw,
+                "ev_charger_type": evdc_state.charger_type if evdc_state else None,
+                "ev_charger_status": evdc_state.status if evdc_state else None,
+                "ev_charger_connected": evdc_state.is_connected if evdc_state else False,
+                "ev_charger_charging": evdc_state.is_charging if evdc_state else False,
+                "ev_charger_discharging": evdc_state.is_discharging if evdc_state else False,
+                "ev_soc": evdc_state.vehicle_soc if evdc_state else None,
                 "battery_level": attrs.get("battery_soc", 0),  # %
                 "last_update": dt_util.utcnow(),
                 # Extra Sigenergy-specific data
@@ -3537,13 +3613,14 @@ class SigenergyEnergyCoordinator(DataUpdateCoordinator):
             }
 
             _LOGGER.debug(
-                "Sigenergy data: solar=%.2f kW (dc=%.2f, ac=%.2f), grid=%.2f kW, battery=%.2f kW (%.0f%%), load=%.2f kW, curtailed=%s",
+                "Sigenergy data: solar=%.2f kW (dc=%.2f, ac=%.2f), grid=%.2f kW, battery=%.2f kW (%.0f%%), evdc=%.2f kW, load=%.2f kW, curtailed=%s",
                 energy_data["solar_power"],
                 dc_solar_kw,
                 ac_solar_kw,
                 energy_data["grid_power"],
                 energy_data["battery_power"],
                 energy_data["battery_level"],
+                energy_data["ev_power"],
                 energy_data["load_power"],
                 energy_data["is_curtailed"],
             )

@@ -360,6 +360,7 @@ from .const import (
     BATTERY_MANAGEMENT_MODES,
     CONF_MONITORING_MODE,
     CONF_OPTIMIZATION_ENABLED,
+    CONF_OPTIMIZATION_EV_INTEGRATION,
     CONF_OPTIMIZATION_COST_FUNCTION,
     CONF_OPTIMIZATION_BACKUP_RESERVE,
     CONF_HARDWARE_BACKUP_RESERVE,
@@ -2105,6 +2106,9 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     CONF_OPTIMIZATION_ENABLED: bool(
                         user_input.get(CONF_OPTIMIZATION_ENABLED, True)
                     ),
+                    CONF_OPTIMIZATION_EV_INTEGRATION: bool(
+                        user_input.get(CONF_OPTIMIZATION_EV_INTEGRATION, False)
+                    ),
                     CONF_OPTIMIZATION_COST_FUNCTION: COST_FUNCTION_COST,
                     CONF_OPTIMIZATION_BACKUP_RESERVE: user_input.get(
                         CONF_OPTIMIZATION_BACKUP_RESERVE,
@@ -2170,6 +2174,10 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.Required(
                         CONF_OPTIMIZATION_ENABLED,
                         default=True,
+                    ): BooleanSelector(),
+                    vol.Required(
+                        CONF_OPTIMIZATION_EV_INTEGRATION,
+                        default=False,
                     ): BooleanSelector(),
                     vol.Required(
                         CONF_MONITORING_MODE,
@@ -6464,10 +6472,15 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 spread_import_enabled = bool(
                     user_input.get(CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED, False)
                 )
+                ev_integration_enabled = bool(
+                    user_input.get(CONF_OPTIMIZATION_EV_INTEGRATION, False)
+                )
                 new_data[CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED] = spread_export_enabled
                 new_options[CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED] = spread_export_enabled
                 new_data[CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED] = spread_import_enabled
                 new_options[CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED] = spread_import_enabled
+                new_data[CONF_OPTIMIZATION_EV_INTEGRATION] = ev_integration_enabled
+                new_options[CONF_OPTIMIZATION_EV_INTEGRATION] = ev_integration_enabled
                 new_data[CONF_PROFIT_MAX_ENABLED] = profit_max_enabled
                 new_options[CONF_PROFIT_MAX_ENABLED] = profit_max_enabled
                 new_data[CONF_PROFIT_MAX_TARGET_TIME] = profit_max_target_time
@@ -6556,6 +6569,10 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED,
             self.config_entry.data.get(CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED, False),
         )
+        current_ev_integration_enabled = self._get_option(
+            CONF_OPTIMIZATION_EV_INTEGRATION,
+            self.config_entry.data.get(CONF_OPTIMIZATION_EV_INTEGRATION, False),
+        )
         current_profit_max_enabled = self._get_option(
             CONF_PROFIT_MAX_ENABLED,
             self.config_entry.data.get(CONF_PROFIT_MAX_ENABLED, False),
@@ -6593,6 +6610,10 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             vol.Required(
                 CONF_OPTIMIZATION_ENABLED,
                 default=bool(current_optimization_enabled),
+            ): BooleanSelector(),
+            vol.Required(
+                CONF_OPTIMIZATION_EV_INTEGRATION,
+                default=bool(current_ev_integration_enabled),
             ): BooleanSelector(),
             vol.Required(
                 CONF_MONITORING_MODE,

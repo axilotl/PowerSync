@@ -47,6 +47,16 @@ def _install_const_stub() -> None:
     const.FLOW_POWER_MARKET_AVG = "market_avg"
     const.CONF_FLEET_API_BASE_URL = "fleet_api_base_url"
     const.TESLA_SITE_INFO_CACHE_TTL_SECONDS = 3600
+    const.CONF_SIGENERGY_CHARGER_ENABLED = "sigenergy_charger_enabled"
+    const.CONF_SIGENERGY_CHARGER_HOST = "sigenergy_charger_host"
+    const.CONF_SIGENERGY_CHARGER_PORT = "sigenergy_charger_port"
+    const.CONF_SIGENERGY_CHARGER_SLAVE_ID = "sigenergy_charger_slave_id"
+    const.CONF_SIGENERGY_CHARGER_TYPE = "sigenergy_charger_type"
+    const.CONF_SIGENERGY_MODBUS_HOST = "sigenergy_modbus_host"
+    const.DEFAULT_SIGENERGY_CHARGER_PORT = 502
+    const.DEFAULT_SIGENERGY_CHARGER_SLAVE_ID = 1
+    const.SIGENERGY_CHARGER_EVAC = "evac"
+    const.SIGENERGY_CHARGER_EVDC = "evdc"
     sys.modules["power_sync.const"] = const
 
 

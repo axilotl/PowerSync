@@ -323,6 +323,8 @@ def test_optimization_options_exposes_enabled_toggle():
     assert method_source is not None
     assert "CONF_OPTIMIZATION_ENABLED" in method_source
     assert "new_options[CONF_OPTIMIZATION_ENABLED] = optimization_enabled" in method_source
+    assert "CONF_OPTIMIZATION_EV_INTEGRATION" in method_source
+    assert "new_options[CONF_OPTIMIZATION_EV_INTEGRATION] = ev_integration_enabled" in method_source
     assert "CONF_MONITORING_MODE" in method_source
     assert "new_options[CONF_MONITORING_MODE] = monitoring_mode" in method_source
     assert "CONF_HARDWARE_BACKUP_RESERVE" in method_source
@@ -372,6 +374,8 @@ def test_initial_smart_optimization_configuration_exposes_enabled_toggle():
     assert "self._optimization_provider = optimization_provider" in method_source
     assert "CONF_OPTIMIZATION_ENABLED" in method_source
     assert "user_input.get(CONF_OPTIMIZATION_ENABLED, True)" in method_source
+    assert "CONF_OPTIMIZATION_EV_INTEGRATION" in method_source
+    assert "user_input.get(CONF_OPTIMIZATION_EV_INTEGRATION, False)" in method_source
     assert "CONF_MONITORING_MODE" in method_source
     assert "user_input.get(CONF_MONITORING_MODE, False)" in method_source
     assert "CONF_HARDWARE_BACKUP_RESERVE" in method_source
@@ -787,6 +791,8 @@ def test_optimization_enabled_toggle_is_translated_in_config_and_options():
 
             assert step["data"]["optimization_enabled"] == "Enable Smart Optimization"
             assert "LP optimizer" in step["data_description"]["optimization_enabled"]
+            assert step["data"]["optimization_ev_integration"] == "EV Charging Integration"
+            assert "EV charging demand" in step["data_description"]["optimization_ev_integration"]
             assert step["data"]["monitoring_mode"] == "Monitoring mode"
             assert "Block battery and inverter control commands" in step["data_description"]["monitoring_mode"]
             assert step["data"]["hardware_backup_reserve"] == "Hardware backup reserve"
@@ -799,6 +805,8 @@ def test_optimization_enabled_toggle_is_translated_in_config_and_options():
             assert "spreads planned grid charging" in step["data_description"]["optimization_spread_import_enabled"]
             assert step["data"]["profit_max_enabled"] == "Enable Profit Max"
             assert "profitable export opportunities" in step["data_description"]["profit_max_enabled"]
+            assert keys.index("optimization_enabled") < keys.index("optimization_ev_integration")
+            assert keys.index("optimization_ev_integration") < keys.index("monitoring_mode")
             assert keys.index("profit_max_enabled") < keys.index("profit_max_target_time")
 
 

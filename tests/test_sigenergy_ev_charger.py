@@ -55,6 +55,7 @@ def charger_module():
         yield importlib.import_module("power_sync.sigenergy_charger")
     finally:
         sys.modules.pop("power_sync.sigenergy_charger", None)
+        sys.modules.pop("power_sync.sigenergy_model", None)
         for name in _STUB_MODULE_NAMES:
             if saved_modules[name] is _SENTINEL:
                 sys.modules.pop(name, None)
@@ -152,6 +153,55 @@ def test_evdc_uses_inverter_start_stop_register_and_rejects_current_limit(charge
     ]
 
 
+def test_evdc_discharge_state_exports_negative_v2x_power(charger_module):
+    controller = charger_module.SigenergyEVChargerController(
+        host="192.0.2.10",
+        slave_id=2,
+        charger_type="evdc",
+    )
+
+    async def read(address, count):
+        assert address == controller.REG_EVDC_VEHICLE_VOLTAGE
+        assert count == 14
+        return [
+            0,
+            0,
+            0,
+            3200,  # 3.2 kW output, direction comes from running state
+            720,
+            0,
+            123,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0x08,  # discharging
+        ]
+
+    controller._read_input_registers = read
+
+    state = asyncio.run(controller.read_state())
+    loadpoint = charger_module.sigenergy_charger_state_to_loadpoint_observation(state)
+    vehicle = charger_module.sigenergy_charger_state_to_vehicle(
+        state,
+        updated_at="2026-05-24T10:00:00+10:00",
+    )
+
+    assert state.status == "discharging"
+    assert state.is_connected is True
+    assert state.is_charging is False
+    assert state.is_discharging is True
+    assert state.power_kw == -3.2
+    assert charger_module.sigenergy_charger_charging_state(state) == "Discharging"
+    assert loadpoint["ev_power_kw"] == -3.2
+    assert loadpoint["is_discharging"] is True
+    assert loadpoint["blocking_reason"] is None
+    assert vehicle["charger_power"] == -3.2
+    assert vehicle["is_discharging"] is True
+
+
 def test_sigenergy_charger_capabilities_distinguish_evac_and_evdc(charger_module):
     evac = charger_module.sigenergy_charger_capabilities("evac")
     evdc = charger_module.sigenergy_charger_capabilities("evdc")
@@ -229,3 +279,20 @@ def test_sigenergy_charger_offline_placeholder_still_has_visible_status(charger_
     assert loadpoint["include_idle"] is True
     assert loadpoint["blocking_reason"] == "unavailable"
     assert loadpoint["control_strategy"] == "one_shot"
+
+
+def test_sigenergy_home_load_excludes_signed_evdc_branch(charger_module):
+    model = importlib.import_module("power_sync.sigenergy_model")
+
+    assert model.sigenergy_home_load_kw(
+        solar_kw=5.0,
+        grid_kw=4.0,
+        battery_kw=0.0,
+        evdc_power_kw=7.0,
+    ) == 2.0
+    assert model.sigenergy_home_load_kw(
+        solar_kw=0.0,
+        grid_kw=-1.0,
+        battery_kw=0.0,
+        evdc_power_kw=-3.0,
+    ) == 2.0

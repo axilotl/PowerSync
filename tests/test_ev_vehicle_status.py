@@ -55,6 +55,8 @@ def _install_import_stubs() -> None:
     ha_device_registry.async_get = lambda hass: hass.device_registry
     ha_entity_registry.async_get = lambda hass: hass.entity_registry
     ha_event.async_track_utc_time_change = lambda *args, **kwargs: (lambda: None)
+    ha_event.async_track_time_interval = lambda *args, **kwargs: (lambda: None)
+    ha_event.async_track_point_in_time = lambda *args, **kwargs: (lambda: None)
     ha_event.async_track_point_in_utc_time = lambda *args, **kwargs: (lambda: None)
     ha_event.async_call_later = lambda *args, **kwargs: (lambda: None)
     ha_storage.Store = type("Store", (), {})
@@ -125,6 +127,7 @@ def _install_import_stubs() -> None:
         "SungrowEnergyCoordinator",
         "DualSungrowCoordinator",
         "FoxESSEnergyCoordinator",
+        "FoxESSEntityEnergyCoordinator",
         "FoxESSCloudEnergyCoordinator",
         "GoodWeEnergyCoordinator",
         "AlphaESSEnergyCoordinator",

@@ -1497,12 +1497,15 @@ import {
             friendlyEntityName(presenceState) ||
             friendlyEntityName(switchState)
           );
+          const signedPower = toWatt(powerState);
           return {
             key: slot.key,
             configured,
             hasPowerEntity: !!powerState,
             hasBatteryEntity: Number.isFinite(batteryPct) || !!batteryState,
-            power: Math.max(0, toWatt(powerState)),
+            power: signedPower,
+            drawPower: Math.max(0, signedPower),
+            supplyPower: Math.max(0, -signedPower),
             battery: Number.isFinite(batteryPct) ? batteryPct : 0,
             switchOn: switchState?.state === 'on',
             present: isTruthyPresenceState(presenceState),
@@ -1521,13 +1524,14 @@ import {
           : (hasConfiguredSecondaryEv ? 'EV 1' : this._t('card.node.ev', 'EV'))),
         batteryText: vehicle.hasBatteryEntity ? `${Math.round(vehicle.battery)}%` : '--%'
       }));
-      const activeVehicles = normalized.filter((vehicle) => vehicle.present || vehicle.power > 0 || vehicle.switchOn);
+      const activeVehicles = normalized.filter((vehicle) => vehicle.present || Math.abs(vehicle.power) > 0 || vehicle.switchOn);
       const presenceVehicles = normalized.filter((vehicle) => vehicle.present);
-      const chargingVehicles = normalized.filter((vehicle) => vehicle.power > 0 || vehicle.switchOn);
+      const chargingVehicles = normalized.filter((vehicle) => vehicle.drawPower > 0 || vehicle.supplyPower > 0 || vehicle.switchOn);
 
       return {
         vehicles: normalized,
-        totalPower: normalized.reduce((sum, vehicle) => sum + vehicle.power, 0),
+        totalDrawPower: normalized.reduce((sum, vehicle) => sum + vehicle.drawPower, 0),
+        totalSupplyPower: normalized.reduce((sum, vehicle) => sum + vehicle.supplyPower, 0),
         hasConfiguredSecondaryEv,
         hasPresenceEntities,
         activeVehicles,
@@ -2114,7 +2118,8 @@ import {
       const batteryLevel = toPct(this._entityState(cfg.entities.battery_level), 0);
       const batteryConfigured = !!(cfg.entities.battery_power || cfg.entities.battery_level);
       const evData = this._collectEvData();
-      const evPower = evData.totalPower;
+      const evDrawPower = evData.totalDrawPower;
+      const evSupplyPower = evData.totalSupplyPower;
       const solarMin = this._flowThreshold('solar_min_w', FLOW_MIN_W);
       const gridMin = this._flowThreshold('grid_min_w', FLOW_MIN_W);
       const batteryMin = this._flowThreshold('battery_min_w', FLOW_MIN_W);
@@ -2125,9 +2130,10 @@ import {
       const visibleVehicles = evData.activeVehicles.length ? evData.activeVehicles : evData.vehicles;
       const primaryVisibleVehicle = visibleVehicles[0] || null;
       const secondaryVisibleVehicle = visibleVehicles[1] || null;
+      const evActive = evCharging || evSupplyPower > 0;
       const evSceneActive = evData.hasPresenceEntities
-        ? (evCharging || evData.presenceVehicles.length > 0)
-        : evCharging;
+        ? (evActive || evData.presenceVehicles.length > 0)
+        : evActive;
       const useDualScene = evData.hasPresenceEntities
         ? (sceneVehicles.length > 1)
         : evData.hasConfiguredSecondaryEv;
@@ -2140,10 +2146,10 @@ import {
       const ev1 = primaryVisibleVehicle || { power: 0, batteryText: '--%', labelText: this._t('card.node.ev', 'EV'), switchOn: false, configured: false, present: false };
       const ev2 = secondaryVisibleVehicle || { power: 0, batteryText: '--%', labelText: 'EV 2', switchOn: false, configured: false, present: false };
       if (evNodeGroup) {
-        evNodeGroup.classList.toggle('ev-hidden', !ev1.configured || (evHideIdle && !(ev1.power > 0 || ev1.switchOn || ev1.present)));
+        evNodeGroup.classList.toggle('ev-hidden', !ev1.configured || (evHideIdle && !(Math.abs(ev1.power) > 0 || ev1.switchOn || ev1.present)));
       }
       if (ev2NodeGroup) {
-        ev2NodeGroup.classList.toggle('ev-hidden', !ev2.configured || (evHideIdle && !(ev2.power > 0 || ev2.switchOn || ev2.present)));
+        ev2NodeGroup.classList.toggle('ev-hidden', !ev2.configured || (evHideIdle && !(Math.abs(ev2.power) > 0 || ev2.switchOn || ev2.present)));
       }
       if (batteryNodeGroup) {
         batteryNodeGroup.classList.toggle('battery-hidden', !batteryConfigured);
@@ -2243,8 +2249,8 @@ import {
       this._toggleNode('#node-grid-bg', Math.abs(gridPower) > gridMin);
       this._toggleNode('#node-load-bg', loadPower > homeMin);
       this._toggleNode('#node-battery-bg', batteryConfigured && Math.abs(batteryPower) > batteryMin);
-      this._toggleNode('#node-ev-bg', (ev1.power || 0) > 0 || ev1.switchOn || ev1.present);
-      this._toggleNode('#node-ev2-bg', (ev2.power || 0) > 0 || ev2.switchOn || ev2.present);
+      this._toggleNode('#node-ev-bg', Math.abs(ev1.power || 0) > 0 || ev1.switchOn || ev1.present);
+      this._toggleNode('#node-ev2-bg', Math.abs(ev2.power || 0) > 0 || ev2.switchOn || ev2.present);
 
       this._beginFlowUpdate();
 
@@ -2254,9 +2260,12 @@ import {
       const gridExport = Math.max(0, -gridPower);
       const batteryCharge = Math.max(0, batteryPower);
       const batteryDischarge = Math.max(0, -batteryPower);
-      const evDraw = evSceneActive ? Math.max(0, evPower) : 0;
+      const evDraw = evSceneActive ? evDrawPower : 0;
+      const evSupply = evSceneActive ? evSupplyPower : 0;
       const ev1Draw = Math.max(0, ev1.power || 0);
       const ev2Draw = Math.max(0, ev2.power || 0);
+      const ev1Supply = Math.max(0, -(ev1.power || 0));
+      const ev2Supply = Math.max(0, -(ev2.power || 0));
 
       const solarToLoad = Math.min(solarPos, loadPos);
       const remainingLoad = Math.max(0, loadPos - solarToLoad);
@@ -2277,9 +2286,14 @@ import {
       gridImportRemaining = Math.max(0, gridImportRemaining - gridToEv);
       evRemaining = Math.max(0, evRemaining - gridToEv);
 
-      const battToLoad = Math.min(remainingLoad, battDischargeRemaining);
+      let evSupplyRemaining = evSupply;
+      const evToLoad = Math.min(remainingLoad, evSupplyRemaining);
+      evSupplyRemaining = Math.max(0, evSupplyRemaining - evToLoad);
+      const loadAfterEv = Math.max(0, remainingLoad - evToLoad);
+
+      const battToLoad = Math.min(loadAfterEv, battDischargeRemaining);
       battDischargeRemaining = Math.max(0, battDischargeRemaining - battToLoad);
-      let loadRemaining = Math.max(0, remainingLoad - battToLoad);
+      let loadRemaining = Math.max(0, loadAfterEv - battToLoad);
 
       const gridToLoad = Math.min(loadRemaining, gridImportRemaining);
       gridImportRemaining = Math.max(0, gridImportRemaining - gridToLoad);
@@ -2298,6 +2312,8 @@ import {
       const solarExport = Math.min(gridExport, solarRemaining);
       const remainingGridExport = Math.max(0, gridExport - solarExport);
       const batteryToGrid = Math.min(remainingGridExport, battDischargeRemaining);
+      const remainingGridExportAfterBattery = Math.max(0, remainingGridExport - batteryToGrid);
+      const evToGrid = Math.min(remainingGridExportAfterBattery, evSupplyRemaining);
 
       let gridToLoadVisual = gridToLoad;
       // Fallback visuale: se il carico e sostenuto di fatto dalla rete ma il calcolo cade sotto soglia.
@@ -2324,7 +2340,7 @@ import {
 
       const exportCandidates = [
         { id: 'line-solar-grid', cls: 'flow-green', watt: solarExport, min: gridMin, reverse: false },
-        { id: 'line-grid-load', cls: 'flow-green', watt: batteryToGrid, min: Math.max(1, Math.min(gridMin, batteryMin)), reverse: true },
+        { id: 'line-grid-load', cls: 'flow-green', watt: batteryToGrid + evToGrid, min: Math.max(1, Math.min(gridMin, batteryMin)), reverse: true },
       ];
       const gridExportFlow = exportCandidates.reduce(
         (best, candidate) => (candidate.watt > best.watt ? candidate : best),
@@ -2340,8 +2356,9 @@ import {
       }
       this._activatePath('line-battery-load', 'flow-green', Math.max(battToLoad, batteryToGrid), Math.max(1, Math.min(gridMin, batteryMin)));
 
-      const homeTotal = solarToLoad + battToLoad + gridToLoadVisual;
-      const homeCls = this._dominantFlowClass(solarToLoad, battToLoad, gridToLoadVisual, 'flow-solar');
+      const homeTotal = solarToLoad + evToLoad + battToLoad + gridToLoadVisual;
+      const homeGreen = Math.max(evToLoad, battToLoad);
+      const homeCls = this._dominantFlowClass(solarToLoad, homeGreen, gridToLoadVisual, 'flow-solar');
       this._activatePath('line-junction-home-load', homeCls, homeTotal, homeMin);
 
       this._activatePath('line-solar-battery', 'flow-solar', solarToBattery, batteryMin);
@@ -2352,6 +2369,11 @@ import {
       const ev2Share = evDraw > 0 ? ev2Draw / evDraw : 0;
       this._activatePath('line-wallbox-ev', evCls, evTotal * ev1Share, 1);
       this._activatePath('line-wallbox-ev2', evCls, evTotal * ev2Share, 1);
+      const evSupplyTotal = evToLoad + evToGrid;
+      const ev1SupplyShare = evSupply > 0 ? ev1Supply / evSupply : 0;
+      const ev2SupplyShare = evSupply > 0 ? ev2Supply / evSupply : 0;
+      this._activatePath('line-wallbox-ev', 'flow-green', evSupplyTotal * ev1SupplyShare, 1, true);
+      this._activatePath('line-wallbox-ev2', 'flow-green', evSupplyTotal * ev2SupplyShare, 1, true);
       this._commitFlowUpdate();
     }
 

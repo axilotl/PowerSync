@@ -194,7 +194,8 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if self._entry:
             from ..const import CONF_OPTIMIZATION_EV_INTEGRATION
             self._ev_integration_enabled = self._entry.options.get(
-                CONF_OPTIMIZATION_EV_INTEGRATION, False
+                CONF_OPTIMIZATION_EV_INTEGRATION,
+                self._entry.data.get(CONF_OPTIMIZATION_EV_INTEGRATION, False),
             )
 
         # Cached schedule from optimizer

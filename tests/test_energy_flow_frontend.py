@@ -44,3 +44,12 @@ def test_energy_flow_caps_dash_gap_for_short_active_paths():
     assert "Short SVG paths can fall entirely inside a long dash gap" in source
     assert "el.style.setProperty('--flow-seg'" in source
     assert "el.style.setProperty('--flow-gap'" in source
+
+
+def test_energy_flow_models_ev_discharge_as_site_supply():
+    source = ENERGY_FLOW_PATH.read_text()
+
+    assert "supplyPower: Math.max(0, -signedPower)" in source
+    assert "const evToLoad = Math.min(remainingLoad, evSupplyRemaining)" in source
+    assert "const evToGrid = Math.min(remainingGridExportAfterBattery, evSupplyRemaining)" in source
+    assert "this._activatePath('line-wallbox-ev', 'flow-green', evSupplyTotal * ev1SupplyShare, 1, true)" in source

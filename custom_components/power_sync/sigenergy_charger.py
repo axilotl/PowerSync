@@ -11,6 +11,8 @@ from pymodbus.client import AsyncModbusTcpClient
 from pymodbus.exceptions import ModbusException
 import pymodbus
 
+from .sigenergy_model import normalize_evdc_power_kw
+
 _LOGGER = logging.getLogger(__name__)
 
 try:
@@ -33,6 +35,7 @@ class SigenergyChargerState:
     status: str = "unknown"
     is_connected: bool = False
     is_charging: bool = False
+    is_discharging: bool = False
     power_kw: float | None = None
     energy_kwh: float | None = None
     current_a: float | None = None
@@ -89,6 +92,8 @@ def sigenergy_charger_display_name(charger_type: str | None) -> str:
 
 def sigenergy_charger_charging_state(state: SigenergyChargerState) -> str:
     """Map normalized Modbus state to the app's EV charging-state labels."""
+    if state.is_discharging:
+        return "Discharging"
     if state.is_charging:
         return "Charging"
     if state.is_connected:
@@ -117,6 +122,7 @@ def sigenergy_charger_state_to_vehicle(
         "charge_limit_soc": None,
         "is_plugged_in": state.is_connected,
         "charger_power": state.power_kw if state.power_kw is not None else 0.0,
+        "is_discharging": state.is_discharging,
         "is_online": online,
         "data_updated_at": updated_at,
         "source": "sigenergy_charger",
@@ -133,6 +139,8 @@ def sigenergy_charger_state_to_loadpoint_observation(state: SigenergyChargerStat
     """Convert Sigenergy charger telemetry to a normalized loadpoint observation."""
     power_kw = state.power_kw or 0.0
     capabilities = sigenergy_charger_capabilities(state.charger_type)
+    is_charging = state.is_charging or power_kw > 0.05
+    is_discharging = state.is_discharging or power_kw < -0.05
     return {
         "charger_id": "sigenergy_charger",
         "vehicle_id": "sigenergy_charger",
@@ -141,10 +149,11 @@ def sigenergy_charger_state_to_loadpoint_observation(state: SigenergyChargerStat
         "ev_power_kw": power_kw,
         "ev_soc": int(state.vehicle_soc) if state.vehicle_soc is not None else None,
         "is_connected": state.is_connected,
-        "is_charging": state.is_charging or power_kw > 0.05,
+        "is_charging": is_charging,
+        "is_discharging": is_discharging,
         "current_amps": int(state.current_a or 0),
         "target_amps": int(state.current_a or 0),
-        "blocking_reason": None if state.is_charging else state.status,
+        "blocking_reason": None if is_charging or is_discharging else state.status,
         "include_idle": True,
         "supports_rate_control": capabilities.supports_rate_control,
         "supports_restart_while_plugged": capabilities.supports_restart_while_plugged,
@@ -163,12 +172,17 @@ def sigenergy_charger_state_to_widget(
     power_kw = state.power_kw or 0.0
     capabilities = sigenergy_charger_capabilities(state.charger_type)
     source = "idle"
-    if state.is_charging or power_kw > 0.05:
+    is_charging = state.is_charging or power_kw > 0.05
+    is_discharging = state.is_discharging or power_kw < -0.05
+    if is_discharging:
+        source = "v2x"
+    elif is_charging:
         source = "solar" if surplus_kw >= power_kw * 0.8 else "grid"
 
     return {
         "vehicle_name": sigenergy_charger_display_name(state.charger_type),
-        "is_charging": state.is_charging or power_kw > 0.05,
+        "is_charging": is_charging,
+        "is_discharging": is_discharging,
         "is_connected": state.is_connected,
         "current_soc": int(state.vehicle_soc or 0),
         "target_soc": 80,
@@ -413,6 +427,10 @@ class SigenergyEVChargerController:
 
         raw_state = regs[13] if len(regs) >= 14 else None
         power_kw = self._to_signed32(regs[2], regs[3]) / 1000 if len(regs) >= 4 else None
+        power_kw = normalize_evdc_power_kw(power_kw, raw_state=raw_state)
+        is_discharging = (
+            raw_state == 0x08 if raw_state is not None else False
+        ) or bool(power_kw and power_kw < -0.05)
 
         return SigenergyChargerState(
             charger_type=SIGENERGY_CHARGER_EVDC,
@@ -421,6 +439,7 @@ class SigenergyEVChargerController:
             is_connected=raw_state in self.EVDC_CONNECTED_STATES if raw_state is not None else False,
             is_charging=(raw_state in self.EVDC_CHARGING_STATES if raw_state is not None else False)
             or bool(power_kw and power_kw > 0.05),
+            is_discharging=is_discharging,
             power_kw=power_kw,
             energy_kwh=self._to_unsigned32(regs[5], regs[6]) / 100 if len(regs) >= 7 else None,
             current_a=regs[1] / 10 if len(regs) >= 2 else None,
