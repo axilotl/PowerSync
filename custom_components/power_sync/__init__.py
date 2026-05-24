@@ -20588,12 +20588,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         {"source": "optimizer"},
                         blocking=True,
                     )
-                    await hass.services.async_call(
-                        DOMAIN,
-                        "set_self_consumption",
-                        {"source": "optimizer"},
-                        blocking=True,
-                    )
                     _LOGGER.info(
                         "Cleared stale optimizer force %s after restart",
                         mode,

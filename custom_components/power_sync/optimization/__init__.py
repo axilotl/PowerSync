@@ -8,7 +8,7 @@ This module provides:
 - LoadEstimator, SolcastForecaster: Data sources for optimizer
 - EVCoordinator: Smart EV charging coordination
 """
-from .load_estimator import LoadEstimator, SolcastForecaster, HAFOForecaster
+from .load_estimator import LoadEstimator, SolcastForecaster
 from .executor import ScheduleExecutor, BatteryAction, ExecutionStatus, CostFunction
 from .coordinator import OptimizationCoordinator, OptimizationConfig
 
@@ -25,7 +25,6 @@ __all__ = [
     # Core optimization
     "LoadEstimator",
     "SolcastForecaster",
-    "HAFOForecaster",
     "ScheduleExecutor",
     "OptimizationCoordinator",
     "OptimizationConfig",

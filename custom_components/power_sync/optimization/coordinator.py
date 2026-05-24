@@ -1609,6 +1609,9 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if not self._optimizer or not self._enabled:
             return
 
+        if await self._wait_for_restart_force_restore():
+            return
+
         # Skip if another LP solve is already in progress. Three independent
         # triggers (DataUpdateCoordinator, polling loop, price update) can
         # fire at the same 5-min boundary; serialise them so only one runs.
@@ -1868,6 +1871,31 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER.error("Optimization failed: %s", e, exc_info=True)
         finally:
             self._optimization_lock.release()
+
+    async def _wait_for_restart_force_restore(self) -> bool:
+        """Wait for stale optimizer force cleanup before dispatching hardware."""
+        from ..const import DOMAIN as _STARTUP_DOMAIN
+
+        for attempt in range(30):
+            entry_data = self.hass.data.get(_STARTUP_DOMAIN, {}).get(self.entry_id, {})
+            if not entry_data.get("optimizer_force_restart_restore_pending", False):
+                if attempt:
+                    _LOGGER.info(
+                        "Optimizer startup: stale force cleanup completed; running optimization"
+                    )
+                return False
+
+            if attempt == 0:
+                _LOGGER.info(
+                    "Optimizer startup: waiting for stale force cleanup before optimization"
+                )
+            await asyncio.sleep(1)
+
+        _LOGGER.warning(
+            "Optimizer startup: stale force cleanup still pending after 30s; "
+            "skipping this optimization run"
+        )
+        return True
 
     async def _schedule_polling_loop(self) -> None:
         """Periodically re-optimize and execute current action.

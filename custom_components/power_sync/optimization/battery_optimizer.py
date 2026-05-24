@@ -1,8 +1,8 @@
 """
 Built-in LP Battery Optimizer for PowerSync.
 
-Replaces external HAEO dependency with a direct scipy-based Linear Programming
-optimizer. Falls back to a greedy heuristic if scipy is unavailable.
+Uses a direct scipy-based Linear Programming optimizer. Falls back to a greedy
+heuristic if scipy is unavailable.
 
 Action model:
 - CHARGE: Force grid → battery (LP detects grid_import > load)
@@ -55,7 +55,7 @@ DEFAULT_EFFICIENCY = 0.92
 # HiGHS can legitimately need more than 10s for 48h/5min plans on HA hardware.
 LP_SOLVER_TIME_LIMIT_SECONDS = 30.0
 
-# Internal HAEO-style period aggregation. The public schedule remains fixed at
+# Internal tiered period aggregation. The public schedule remains fixed at
 # `interval_minutes`; only the LP model coarsens the far horizon.
 LP_NEAR_HORIZON_HOURS = 6
 LP_MID_HORIZON_HOURS = 24
@@ -391,7 +391,7 @@ class BatteryOptimizer:
         allow_battery_export: list[bool],
         block_battery_charge: list[bool],
     ) -> list[_LpPeriod]:
-        """Aggregate base 5-minute slots into HAEO-style internal LP periods."""
+        """Aggregate base 5-minute slots into internal LP periods."""
         near_slots = int(LP_NEAR_HORIZON_HOURS * 60 / self.interval_minutes)
         mid_slots = int(LP_MID_HORIZON_HOURS * 60 / self.interval_minutes)
         mid_width = max(1, int(LP_MID_PERIOD_MINUTES / self.interval_minutes))
@@ -640,7 +640,7 @@ class BatteryOptimizer:
                 )
                 reserve_floor[t + 1] = max(self_consumption_floor, max_reachable)
 
-        # HAEO-style state model: power variables per period, battery energy
+        # Boundary-energy state model: power variables per period, battery energy
         # variables at period boundaries. This removes the dense cumulative SOC
         # rows that made the 48h/5min model expensive to build and solve.
         energy_offset = 4 * p_n

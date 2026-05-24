@@ -2,11 +2,11 @@
 Load estimation for battery optimization.
 
 Supports multiple forecast sources:
-1. HAFO (Home Assistant Forecaster) - ML-based forecasting from hafo.haeo.io
-2. Local pattern-based estimation from Home Assistant history
+1. Local pattern-based estimation from Home Assistant history
+2. Simple pattern-based fallback
 
-HAFO provides superior forecasting by analyzing historical patterns with ML,
-but falls back to local estimation if HAFO is not installed.
+The historical model uses recorder data grouped by local day and time, with
+recency weighting and outlier handling to avoid overreacting to one unusual day.
 """
 from __future__ import annotations
 
@@ -21,14 +21,22 @@ from homeassistant.util import dt as dt_util
 
 from ..const import (
     DEFAULT_SOLCAST_ESTIMATE_TYPE,
-    HAFO_DOMAIN,
-    HAFO_LOAD_SENSOR_PREFIX,
     SOLCAST_ESTIMATE,
     SOLCAST_ESTIMATE10,
     SOLCAST_ESTIMATE90,
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+HISTORY_LOOKBACK_DAYS = 30
+AWAY_RECOVERY_DAYS = 7
+RECENCY_HALF_LIFE_DAYS = 14
+MIN_EXACT_BUCKET_SAMPLES = 2
+SINGLE_EXACT_BUCKET_WEIGHT = 0.6
+OUTLIER_MIN_SAMPLES = 4
+OUTLIER_MIN_THRESHOLD_W = 500.0
+OUTLIER_MEDIAN_FRACTION = 0.5
+MAD_NORMAL_SCALE = 1.4826
 
 _SOLCAST_ESTIMATE_FIELDS = {
     SOLCAST_ESTIMATE: ("pv_estimate", "pv_estimate50"),
@@ -37,253 +45,13 @@ _SOLCAST_ESTIMATE_FIELDS = {
 }
 
 
-class HAFOForecaster:
-    """
-    HAFO (Home Assistant Forecaster) integration for load prediction.
-
-    HAFO is a Home Assistant integration that creates forecast sensors from
-    entity history using ML-based pattern recognition. It provides superior
-    load forecasting compared to simple historical averaging.
-
-    Reference: https://hafo.haeo.io/
-    """
-
-    def __init__(
-        self,
-        hass: HomeAssistant,
-        load_entity_id: str | None = None,
-        interval_minutes: int = 5,
-    ):
-        """
-        Initialize HAFO forecaster.
-
-        Args:
-            hass: Home Assistant instance
-            load_entity_id: Source entity ID for load (HAFO creates forecast from this)
-            interval_minutes: Forecast interval in minutes
-        """
-        self.hass = hass
-        self.load_entity_id = load_entity_id
-        self.interval_minutes = interval_minutes
-        self._hafo_sensor_id: str | None = None
-
-    def is_available(self) -> bool:
-        """Check if HAFO integration is installed and configured."""
-        # Check if HAFO domain is loaded
-        if HAFO_DOMAIN not in self.hass.config.components:
-            return False
-
-        # Check if we have a HAFO forecast sensor for our load entity
-        if self.load_entity_id:
-            self._hafo_sensor_id = self._find_hafo_sensor()
-            return self._hafo_sensor_id is not None
-
-        return False
-
-    def _find_hafo_sensor(self) -> str | None:
-        """Find the HAFO forecast sensor for the load entity."""
-        if not self.load_entity_id:
-            return None
-
-        # HAFO creates sensors with naming pattern based on source entity
-        # Try common patterns
-        base_name = self.load_entity_id.replace("sensor.", "").replace(".", "_")
-
-        potential_sensors = [
-            f"{HAFO_LOAD_SENSOR_PREFIX}{base_name}_forecast",
-            f"{HAFO_LOAD_SENSOR_PREFIX}{base_name}",
-            f"sensor.{base_name}_forecast",
-            # Also check for PowerSync-specific HAFO sensor
-            f"{HAFO_LOAD_SENSOR_PREFIX}powersync_load_forecast",
-            f"{HAFO_LOAD_SENSOR_PREFIX}home_load_forecast",
-        ]
-
-        for sensor_id in potential_sensors:
-            state = self.hass.states.get(sensor_id)
-            if state and state.state not in ("unknown", "unavailable"):
-                _LOGGER.info(f"Found HAFO load forecast sensor: {sensor_id}")
-                return sensor_id
-
-        # Search all HAFO sensors
-        for state in self.hass.states.async_all():
-            if state.entity_id.startswith(HAFO_LOAD_SENSOR_PREFIX) and "load" in state.entity_id.lower():
-                _LOGGER.info(f"Found HAFO load sensor: {state.entity_id}")
-                return state.entity_id
-
-        return None
-
-    async def get_forecast(
-        self,
-        horizon_hours: int = 48,
-        start_time: datetime | None = None,
-    ) -> list[float] | None:
-        """
-        Get load forecast from HAFO sensor.
-
-        HAFO sensors store forecast data in the 'forecast' attribute as a list of
-        {"datetime": "ISO8601", "value": float} objects.
-
-        Args:
-            horizon_hours: Forecast horizon in hours
-            start_time: Start time for forecast (default: now)
-
-        Returns:
-            List of load values in Watts, or None if unavailable
-        """
-        if not self._hafo_sensor_id:
-            self._hafo_sensor_id = self._find_hafo_sensor()
-
-        if not self._hafo_sensor_id:
-            return None
-
-        if start_time is None:
-            start_time = dt_util.now()
-
-        n_intervals = horizon_hours * 60 // self.interval_minutes
-
-        try:
-            state = self.hass.states.get(self._hafo_sensor_id)
-            if not state or state.state in ("unknown", "unavailable"):
-                return None
-
-            # Get forecast attribute (standard Home Assistant forecast format)
-            forecast_data = state.attributes.get("forecast", [])
-
-            if not forecast_data:
-                # Try alternative attribute names
-                forecast_data = (
-                    state.attributes.get("forecasts", []) or
-                    state.attributes.get("predictions", []) or
-                    state.attributes.get("values", [])
-                )
-
-            if not forecast_data:
-                _LOGGER.debug(f"HAFO sensor {self._hafo_sensor_id} has no forecast data")
-                return None
-
-            return self._parse_hafo_forecast(forecast_data, start_time, n_intervals)
-
-        except Exception as e:
-            _LOGGER.warning(f"Error reading HAFO forecast: {e}")
-            return None
-
-    def _parse_hafo_forecast(
-        self,
-        forecast_data: list[dict[str, Any]],
-        start_time: datetime,
-        n_intervals: int,
-    ) -> list[float]:
-        """
-        Parse HAFO forecast data into interval values.
-
-        HAFO forecast format (standard HA forecast):
-        [
-            {"datetime": "2024-01-01T00:00:00+00:00", "native_value": 1500.0},
-            {"datetime": "2024-01-01T00:30:00+00:00", "native_value": 1450.0},
-            ...
-        ]
-
-        Or alternative format:
-        [
-            {"time": "2024-01-01T00:00:00", "value": 1500.0},
-            ...
-        ]
-        """
-        # Build time-indexed lookup
-        forecast_by_time: dict[datetime, float] = {}
-
-        for item in forecast_data:
-            try:
-                # Try different datetime field names
-                time_str = (
-                    item.get("datetime") or
-                    item.get("time") or
-                    item.get("timestamp") or
-                    item.get("period_end")
-                )
-
-                if not time_str:
-                    continue
-
-                if isinstance(time_str, datetime):
-                    item_time = time_str
-                else:
-                    item_time = datetime.fromisoformat(time_str.replace("Z", "+00:00"))
-
-                # Try different value field names
-                value = (
-                    item.get("native_value") or
-                    item.get("value") or
-                    item.get("load") or
-                    item.get("power") or
-                    0.0
-                )
-
-                if value is not None:
-                    # Ensure value is in Watts
-                    value = float(value)
-                    # If value seems to be in kW (< 50), convert to W
-                    if 0 < value < 50:
-                        value *= 1000
-
-                    forecast_by_time[item_time] = value
-
-            except (ValueError, TypeError, KeyError) as e:
-                _LOGGER.debug(f"Error parsing HAFO forecast item: {e}")
-                continue
-
-        if not forecast_by_time:
-            _LOGGER.warning("HAFO forecast data could not be parsed")
-            return []
-
-        # Generate interval forecast
-        result = []
-        current_time = start_time
-        sorted_times = sorted(forecast_by_time.keys())
-        latest_time = sorted_times[-1]
-
-        for _ in range(n_intervals):
-            # Find the closest forecast time
-            closest_time = None
-            min_diff = float('inf')
-
-            for ft in sorted_times:
-                diff = abs((ft - current_time).total_seconds())
-                if diff < min_diff:
-                    min_diff = diff
-                    closest_time = ft
-
-            if closest_time and min_diff < 3600:  # Within 1 hour
-                result.append(forecast_by_time[closest_time])
-            elif current_time > latest_time + timedelta(hours=1):
-                # Do not hide a short HAFO horizon by flat-padding the rest of
-                # the optimizer window. The caller can fill uncovered slots
-                # from history with the correct day-of-week pattern.
-                break
-            elif result:
-                # Use last known value
-                result.append(result[-1])
-            else:
-                # Default fallback
-                result.append(500.0)
-
-            current_time += timedelta(minutes=self.interval_minutes)
-
-        _LOGGER.debug(f"HAFO forecast: {len(result)} intervals, avg={sum(result)/len(result):.0f}W")
-        return result
-
-
 class LoadEstimator:
     """
     Estimate household load forecast from multiple sources.
 
     Priority order:
-    1. HAFO (Home Assistant Forecaster) - ML-based, most accurate
-    2. Historical pattern matching from Home Assistant recorder
-    3. Simple pattern-based fallback
-
-    The estimator queries HAFO first for ML-based forecasts, then falls back
-    to local pattern matching if HAFO is not available.
+    1. Historical pattern matching from Home Assistant recorder
+    2. Simple pattern-based fallback
     """
 
     def __init__(
@@ -314,13 +82,10 @@ class LoadEstimator:
 
         # Temperature sensitivity cache
         self._temp_alpha: float | None = None
+        self._temp_bucket_averages: dict[tuple[int, int, int], float] | None = None
         self._temp_alpha_fitted: bool = False  # True once fitting has run (even if α=None)
         self._temp_cache_time: datetime | None = None
         self._get_forecasts_unsupported: bool = False  # Latched when service is missing
-
-        # Initialize HAFO forecaster
-        self._hafo = HAFOForecaster(hass, load_entity_id, interval_minutes)
-        self._hafo_available: bool | None = None
 
     @property
     def away_mode(self) -> bool:
@@ -332,14 +97,7 @@ class LoadEstimator:
         """True during the 7-day window after returning from a trip."""
         if not self.away_disabled_at or not self.away_enabled_at:
             return False
-        return (dt_util.utcnow() - self.away_disabled_at) < timedelta(days=7)
-
-    @property
-    def hafo_available(self) -> bool:
-        """Check if HAFO is available for load forecasting."""
-        if self._hafo_available is None:
-            self._hafo_available = self._hafo.is_available()
-        return self._hafo_available
+        return (dt_util.utcnow() - self.away_disabled_at) < timedelta(days=AWAY_RECOVERY_DAYS)
 
     async def get_forecast(
         self,
@@ -349,7 +107,7 @@ class LoadEstimator:
         """
         Generate load forecast in Watts for each interval.
 
-        Tries HAFO first (ML-based), then falls back to historical patterns.
+        Uses historical patterns, then falls back to a simple residential profile.
 
         Args:
             horizon_hours: Forecast horizon in hours
@@ -362,39 +120,6 @@ class LoadEstimator:
             start_time = dt_util.now()
 
         n_intervals = horizon_hours * 60 // self.interval_minutes
-
-        if self.hafo_available and not self._in_recovery:
-            try:
-                hafo_forecast = await self._hafo.get_forecast(horizon_hours, start_time)
-                if hafo_forecast and len(hafo_forecast) >= n_intervals * 0.5:
-                    hafo_forecast = hafo_forecast[:n_intervals]
-                    coverage = len(hafo_forecast)
-                    if coverage >= n_intervals:
-                        _LOGGER.debug("Using HAFO for load forecast")
-                        return hafo_forecast
-
-                    history = await self._get_load_history()
-                    if history:
-                        tail_start = start_time + timedelta(minutes=self.interval_minutes * coverage)
-                        tail = self._forecast_from_history(
-                            history,
-                            tail_start,
-                            n_intervals - coverage,
-                        )
-                        _LOGGER.info(
-                            "Using HAFO load forecast for %d/%d intervals and historical pattern for tail",
-                            coverage,
-                            n_intervals,
-                        )
-                        return hafo_forecast + tail
-
-                    _LOGGER.debug("Using partial HAFO load forecast with last-value tail fallback")
-                    padded = list(hafo_forecast)
-                    while len(padded) < n_intervals:
-                        padded.append(padded[-1] if padded else 500.0)
-                    return padded
-            except Exception as e:
-                _LOGGER.warning(f"HAFO forecast failed: {e}")
 
         # Fallback to historical pattern (with optional temperature adjustment)
         try:
@@ -437,9 +162,8 @@ class LoadEstimator:
     async def _get_load_history(self) -> list[tuple[datetime, float]]:
         """Get historical load data from Home Assistant recorder.
 
-        During recovery (7 days after returning from a trip) the vacation window
-        [away_enabled_at, away_disabled_at] is excluded so the LP uses pre-vacation
-        load patterns. Outside recovery, the most recent 7 days are used as normal.
+        After Away Mode ends, the away window is excluded until it ages out of
+        the 30-day lookback so the LP uses normal household patterns.
         """
         if not self.load_entity_id:
             _LOGGER.debug("No load entity ID configured, skipping history")
@@ -447,18 +171,28 @@ class LoadEstimator:
 
         now = dt_util.utcnow()
 
-        # Auto-clear expired recovery state
-        if self.away_disabled_at and (now - self.away_disabled_at) >= timedelta(days=7):
-            _LOGGER.info("Away mode recovery window expired — clearing timestamps")
+        # Keep away timestamps until the away period is outside the history
+        # window. The user-facing recovery concept remains 7 days via
+        # _in_recovery, but local history still excludes recent away data.
+        if (
+            self.away_disabled_at
+            and (now - self.away_disabled_at) >= timedelta(days=HISTORY_LOOKBACK_DAYS)
+        ):
+            _LOGGER.info("Away mode history window expired — clearing timestamps")
             self.away_enabled_at = None
             self.away_disabled_at = None
 
-        in_recovery = self._in_recovery
-        if in_recovery:
-            vacation_days = max(1, (self.away_disabled_at - self.away_enabled_at).days)
-            days = min(60, vacation_days + 14)
+        away_end = self.away_disabled_at
+        has_away_window = bool(
+            self.away_enabled_at
+            and away_end
+            and away_end >= now - timedelta(days=HISTORY_LOOKBACK_DAYS)
+        )
+        if has_away_window:
+            away_days = max(1, (away_end - self.away_enabled_at).days)
+            days = min(90, away_days + HISTORY_LOOKBACK_DAYS)
         else:
-            days = 7
+            days = HISTORY_LOOKBACK_DAYS
 
         cache_key = f"{self.load_entity_id}:en={self.away_enabled_at}:dis={self.away_disabled_at}"
 
@@ -516,20 +250,20 @@ class LoadEstimator:
                 except (ValueError, TypeError):
                     continue
 
-            # Recovery: exclude the vacation window [enabled_at, disabled_at], then
-            # keep only the most recent 7 days' worth of the remaining data so the
-            # LP sees pre-vacation patterns until new post-return history fills the window.
+            # Away Mode recovery: exclude the completed away window
+            # [enabled_at, disabled_at], then keep the most recent 30 days of
+            # the remaining data.
             excluded = 0
-            if in_recovery:
+            if has_away_window:
                 before = len(result)
                 result = [
                     (ts, w) for (ts, w) in result
-                    if not (self.away_enabled_at <= ts <= self.away_disabled_at)
+                    if not (self.away_enabled_at <= ts <= away_end)
                 ]
                 excluded = before - len(result)
                 if result:
                     result.sort(key=lambda h: h[0])
-                    cutoff = result[-1][0] - timedelta(days=7)
+                    cutoff = result[-1][0] - timedelta(days=HISTORY_LOOKBACK_DAYS)
                     result = [h for h in result if h[0] >= cutoff]
 
             # Cache the result
@@ -541,7 +275,7 @@ class LoadEstimator:
                 _LOGGER.info(
                     "Loaded %d history points for %s (avg %.0fW, %.1f days%s)",
                     len(result), self.load_entity_id, avg_w, days,
-                    f", recovery mode ({excluded} vacation points excluded)" if in_recovery else "",
+                    f", away window excluded ({excluded} points)" if has_away_window else "",
                 )
             else:
                 _LOGGER.warning(
@@ -573,7 +307,8 @@ class LoadEstimator:
         alpha: sensitivity coefficient — load changes alpha*100% per °C deviation
         """
         # Group by (day_of_week, hour, half_hour)
-        pattern: dict[tuple[int, int, int], list[float]] = defaultdict(list)
+        pattern: dict[tuple[int, int, int], list[tuple[datetime, float]]] = defaultdict(list)
+        all_samples: list[tuple[datetime, float]] = []
 
         for timestamp, value in history:
             # Convert UTC timestamps to local time for correct time-of-day matching
@@ -582,13 +317,9 @@ class LoadEstimator:
             hour = local_ts.hour
             half_hour = 0 if local_ts.minute < 30 else 1
             key = (dow, hour, half_hour)
-            pattern[key].append(value)
-
-        # Calculate averages
-        averages: dict[tuple[int, int, int], float] = {}
-        for key, values in pattern.items():
-            if values:
-                averages[key] = sum(values) / len(values)
+            sample = (timestamp, value)
+            pattern[key].append(sample)
+            all_samples.append(sample)
 
         # Build hourly forecast-temp lookup (slot_local_hour -> temp_c) for O(1) per slot
         temp_map: dict[datetime, float] = {}
@@ -609,29 +340,14 @@ class LoadEstimator:
             half_hour = 0 if local_cur.minute < 30 else 1
             key = (dow, hour, half_hour)
 
-            if key in averages:
-                base = averages[key]
-            else:
-                # Fallback: prefer same day type so new installs with partial
-                # history don't produce identical weekday/weekend forecasts.
-                candidate_days = [5, 6] if dow >= 5 else [0, 1, 2, 3, 4]
-                fallback_values = [
-                    averages.get((d, hour, half_hour))
-                    for d in candidate_days
-                    if (d, hour, half_hour) in averages
-                ]
-                if not fallback_values:
-                    fallback_values = [
-                        averages.get((d, hour, half_hour))
-                        for d in range(7)
-                        if (d, hour, half_hour) in averages
-                    ]
-                if fallback_values:
-                    base = sum(fallback_values) / len(fallback_values)
-                elif averages:
-                    base = sum(averages.values()) / len(averages)
-                else:
-                    base = 500.0
+            base = self._history_bucket_forecast(
+                pattern,
+                all_samples,
+                dow,
+                hour,
+                half_hour,
+                current_time,
+            )
 
             # Temperature scaling
             if temp_map and bucket_temp_averages is not None and alpha is not None:
@@ -650,6 +366,137 @@ class LoadEstimator:
         forecast = self._smooth_forecast(forecast)
 
         return forecast
+
+    def _history_bucket_forecast(
+        self,
+        pattern: dict[tuple[int, int, int], list[tuple[datetime, float]]],
+        all_samples: list[tuple[datetime, float]],
+        dow: int,
+        hour: int,
+        half_hour: int,
+        reference_time: datetime,
+    ) -> float:
+        """Return robust weighted load estimate for a day/time bucket."""
+        key = (dow, hour, half_hour)
+        exact_samples = self._clip_outliers(pattern.get(key, []))
+        if len(exact_samples) >= MIN_EXACT_BUCKET_SAMPLES:
+            exact = self._weighted_average(exact_samples, reference_time)
+            if exact is not None:
+                return exact
+
+        same_type_days = [5, 6] if dow >= 5 else [0, 1, 2, 3, 4]
+        if len(exact_samples) == 1:
+            exact = self._weighted_average(exact_samples, reference_time)
+            fallback = self._weighted_average_for_days(
+                pattern,
+                [d for d in same_type_days if d != dow],
+                hour,
+                half_hour,
+                reference_time,
+            )
+            if exact is not None and fallback is not None:
+                return (
+                    exact * SINGLE_EXACT_BUCKET_WEIGHT
+                    + fallback * (1.0 - SINGLE_EXACT_BUCKET_WEIGHT)
+                )
+
+        fallback = self._weighted_average_for_days(
+            pattern,
+            same_type_days,
+            hour,
+            half_hour,
+            reference_time,
+        )
+        if fallback is not None:
+            return fallback
+
+        fallback = self._weighted_average_for_days(
+            pattern,
+            range(7),
+            hour,
+            half_hour,
+            reference_time,
+        )
+        if fallback is not None:
+            return fallback
+
+        global_average = self._weighted_average(all_samples, reference_time)
+        return global_average if global_average is not None else 500.0
+
+    def _weighted_average_for_days(
+        self,
+        pattern: dict[tuple[int, int, int], list[tuple[datetime, float]]],
+        days: list[int] | range,
+        hour: int,
+        half_hour: int,
+        reference_time: datetime,
+    ) -> float | None:
+        """Return robust weighted average for matching days at a time bucket."""
+        samples: list[tuple[datetime, float]] = []
+        for day in days:
+            samples.extend(pattern.get((day, hour, half_hour), []))
+        return self._weighted_average(samples, reference_time)
+
+    def _weighted_average(
+        self,
+        samples: list[tuple[datetime, float]],
+        reference_time: datetime,
+    ) -> float | None:
+        """Calculate a robust recency-weighted average for load samples."""
+        clipped = self._clip_outliers(samples)
+        if not clipped:
+            return None
+
+        ref_time = dt_util.as_local(reference_time) if reference_time.tzinfo else reference_time
+        weighted_total = 0.0
+        weight_total = 0.0
+        for ts, value in clipped:
+            sample_time = dt_util.as_local(ts) if ts.tzinfo else ts
+            if ref_time.tzinfo and not sample_time.tzinfo:
+                sample_time = sample_time.replace(tzinfo=ref_time.tzinfo)
+            elif sample_time.tzinfo and not ref_time.tzinfo:
+                sample_time = sample_time.replace(tzinfo=None)
+            age_days = max(0.0, (ref_time - sample_time).total_seconds() / 86400.0)
+            weight = 0.5 ** (age_days / RECENCY_HALF_LIFE_DAYS)
+            weighted_total += value * weight
+            weight_total += weight
+
+        if weight_total <= 0:
+            return None
+        return weighted_total / weight_total
+
+    def _clip_outliers(
+        self,
+        samples: list[tuple[datetime, float]],
+    ) -> list[tuple[datetime, float]]:
+        """Remove extreme bucket samples using a MAD-style threshold."""
+        if len(samples) < OUTLIER_MIN_SAMPLES:
+            return samples
+
+        values = [value for _, value in samples]
+        median = self._median(values)
+        deviations = [abs(value - median) for value in values]
+        mad = self._median(deviations)
+        threshold = max(
+            OUTLIER_MIN_THRESHOLD_W,
+            abs(median) * OUTLIER_MEDIAN_FRACTION,
+            3.0 * MAD_NORMAL_SCALE * mad,
+        )
+        clipped = [
+            sample
+            for sample in samples
+            if abs(sample[1] - median) <= threshold
+        ]
+        return clipped or samples
+
+    @staticmethod
+    def _median(values: list[float]) -> float:
+        """Return median for a non-empty value list."""
+        ordered = sorted(values)
+        mid = len(ordered) // 2
+        if len(ordered) % 2:
+            return ordered[mid]
+        return (ordered[mid - 1] + ordered[mid]) / 2.0
 
     async def _get_temperature_adjustment(
         self,
@@ -672,23 +519,17 @@ class LoadEstimator:
             if self._temp_alpha is None:
                 return None, None, None
             forecast_temps = await self._fetch_forecast_temperatures(horizon_hours)
-            # Rebuild bucket_temp_averages from cached alpha context isn't available —
-            # return None so scaling is skipped if cache regenerated below
-            return forecast_temps or None, None, None
+            return forecast_temps or None, self._temp_bucket_averages, self._temp_alpha
 
-        # Fetch historical temperatures matching the load history window.
-        # During recovery, use the pre-vacation window for α fitting so the
-        # temperature sensitivity is calibrated against normal household patterns.
-        if self._in_recovery and self.away_enabled_at:
-            hist_end = self.away_enabled_at
-            hist_start = hist_end - timedelta(days=7)
-        else:
-            hist_start = now - timedelta(days=7)
-            hist_end = now
+        # Fetch historical temperatures matching the filtered load history
+        # window used by the forecast model.
+        hist_start = min(ts for ts, _ in history)
+        hist_end = max(ts for ts, _ in history)
 
         temp_history = await self._fetch_historical_temperatures(hist_start, hist_end)
         if not temp_history:
             self._temp_alpha = None
+            self._temp_bucket_averages = None
             self._temp_alpha_fitted = True
             self._temp_cache_time = now
             return None, None, None
@@ -710,6 +551,7 @@ class LoadEstimator:
         )
 
         self._temp_alpha = alpha
+        self._temp_bucket_averages = bucket_temp_avgs
         self._temp_alpha_fitted = True
         self._temp_cache_time = now
 
@@ -921,6 +763,7 @@ class LoadEstimator:
         """Invalidate history and temperature caches (e.g. when away_mode changes)."""
         self._history_cache.clear()
         self._cache_time = None
+        self._temp_bucket_averages = None
         self._temp_alpha_fitted = False
         self._temp_cache_time = None
 

@@ -320,7 +320,7 @@ def test_optimizer_force_modes_are_not_reissued_after_restart():
         1,
     )[1].split("if now >= expires_at:", 1)[0]
     assert "SERVICE_RESTORE_NORMAL" in optimizer_branch
-    assert '"set_self_consumption"' in optimizer_branch
+    assert '"set_self_consumption"' not in optimizer_branch
     assert 'stored_data["force_mode_state"] = None' in optimizer_branch
     assert '"optimizer_force_restart_restore_pending"] = False' in optimizer_branch
     assert "SERVICE_FORCE_DISCHARGE" not in optimizer_branch
@@ -349,6 +349,22 @@ def test_optimizer_startup_ignores_stale_force_restore_window():
     assert '"optimizer_force_restart_restore_pending"' in method_source
     assert "not _restart_restore_pending" in method_source
     assert "stale force restore pending" in method_source
+
+
+def test_optimizer_waits_for_restart_force_restore_before_solving():
+    source = (ROOT / "custom_components" / "power_sync" / "optimization" / "coordinator.py").read_text()
+    tree = ast.parse(source)
+    run_method = _find_class_method(tree, "OptimizationCoordinator", "_run_optimization")
+    wait_method = _find_class_method(tree, "OptimizationCoordinator", "_wait_for_restart_force_restore")
+    run_source = ast.get_source_segment(source, run_method)
+    wait_source = ast.get_source_segment(source, wait_method)
+
+    assert run_source is not None
+    assert wait_source is not None
+    assert "if await self._wait_for_restart_force_restore():" in run_source
+    assert "optimizer_force_restart_restore_pending" in wait_source
+    assert "await asyncio.sleep(1)" in wait_source
+    assert "return True" in wait_source
 
 
 def test_tesla_force_discharge_disables_grid_charging_before_tariff_upload():

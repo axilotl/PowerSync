@@ -1613,13 +1613,6 @@ CONF_OPTIMIZATION_PROVIDER = "optimization_provider"
 OPT_PROVIDER_NATIVE = "native"           # Use battery's built-in optimization
 OPT_PROVIDER_POWERSYNC = "powersync_ml"  # Use PowerSync optimization
 
-# HAFO (Home Assistant Forecaster) Integration for ML-based load prediction
-# HAFO creates forecast sensors from historical entity data
-# Reference: https://hafo.haeo.io/
-HAFO_DOMAIN = "hafo"
-HAFO_INSTALL_URL = "https://hafo.haeo.io/"
-HAFO_LOAD_SENSOR_PREFIX = "sensor.hafo_"
-
 # Map battery system to native optimization name
 OPTIMIZATION_PROVIDER_NATIVE_NAMES = {
     BATTERY_SYSTEM_TESLA: "Tesla Powerwall",

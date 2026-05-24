@@ -2,11 +2,10 @@
 EV Charging Coordinator for PowerSync.
 
 Coordinates EV charging alongside battery optimization.
-Since HAEO doesn't support controllable loads, this module handles
-EV scheduling separately using the same price signals.
+EV scheduling uses the same price and forecast signals as the battery optimizer.
 
 Strategy:
-1. HAEO optimizes battery (charge from cheap grid/solar, discharge during expensive)
+1. The built-in optimizer schedules the battery
 2. EV Coordinator reads price forecasts and battery schedule
 3. Schedules EV charging during cheap periods when battery isn't charging
 4. Avoids conflicts: if battery is charging, EV waits (unless excess solar)
@@ -104,8 +103,8 @@ class EVCoordinator:
     """
     Coordinate EV charging alongside battery optimization.
 
-    Works post-HAEO: reads optimizer schedule and price forecasts,
-    then schedules EV charging in optimal windows with dynamic power sharing.
+    Reads optimizer schedule and price forecasts, then schedules EV charging
+    in optimal windows with dynamic power sharing.
 
     Key concept: Cheap electricity periods are optimal for BOTH battery AND EV.
     Rather than avoiding battery charging windows, we dynamically adjust EV
