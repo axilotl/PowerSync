@@ -700,6 +700,51 @@ def test_zerohero_free_import_window_reports_continuous_force_charge(
     assert result.schedule.charge_w[free_start:free_start + free_slots] == [12000] * 36
 
 
+def test_zerohero_free_import_before_positive_fit_schedules_export(
+    battery_optimizer_module,
+):
+    optimizer = battery_optimizer_module.BatteryOptimizer(
+        capacity_wh=32200,
+        max_charge_w=10500,
+        max_discharge_w=9900,
+        backup_reserve=0.30,
+        interval_minutes=5,
+        horizon_hours=24,
+    )
+    n = 24 * 12
+    free_start = 11 * 12
+    free_slots = 3 * 12
+    export_start = 18 * 12
+    export_slots = 3 * 12
+    import_prices = [0.363] * n
+    export_prices = [0.0] * n
+
+    for idx in range(free_start, free_start + free_slots):
+        import_prices[idx] = 0.0
+    for idx in range(16 * 12, 23 * 12):
+        import_prices[idx] = 0.495
+    for idx in range(export_start, export_start + export_slots):
+        export_prices[idx] = 0.15
+
+    result = optimizer.optimize(
+        import_prices=import_prices,
+        export_prices=export_prices,
+        solar_forecast=[0.0] * n,
+        load_forecast=[0.4] * n,
+        current_soc=0.34,
+        acquisition_cost_kwh=0.363,
+        allow_battery_export=[price > 0 for price in export_prices],
+    )
+
+    free_window = result.schedule.actions[free_start:free_start + free_slots]
+    export_window = result.schedule.actions[export_start:export_start + export_slots]
+
+    assert any(action.action == "charge" for action in free_window)
+    assert max(action.battery_charge_w for action in free_window) > 10000
+    assert any(action.action == "export" for action in export_window)
+    assert max(result.grid_export_w[export_start:export_start + export_slots]) > 1000
+
+
 def test_grid_charge_allowed_by_default_for_profitable_export(
     battery_optimizer_module,
 ):

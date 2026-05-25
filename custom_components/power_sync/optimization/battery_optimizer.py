@@ -381,6 +381,65 @@ class BatteryOptimizer:
 
         return future_values
 
+    @staticmethod
+    def _effective_export_acquisition_costs(
+        n: int,
+        import_prices: list[float],
+        block_battery_charge: list[bool],
+        allow_grid_charge: bool,
+        acquisition_cost_kwh: float,
+    ) -> list[float]:
+        """Return the best known acquisition cost available before each slot."""
+        if acquisition_cost_kwh <= 0:
+            return [0.0] * n
+
+        costs: list[float] = []
+        cheapest_prior_charge: float | None = None
+        for t in range(n):
+            effective_cost = acquisition_cost_kwh
+            if cheapest_prior_charge is not None:
+                effective_cost = min(effective_cost, cheapest_prior_charge)
+            costs.append(effective_cost)
+
+            if allow_grid_charge and not block_battery_charge[t]:
+                try:
+                    import_price = float(import_prices[t] or 0.0)
+                except (TypeError, ValueError):
+                    continue
+                if cheapest_prior_charge is None:
+                    cheapest_prior_charge = import_price
+                else:
+                    cheapest_prior_charge = min(cheapest_prior_charge, import_price)
+
+        return costs
+
+    @staticmethod
+    def _is_export_profitable(
+        export_price: float,
+        import_price: float,
+        acquisition_cost_kwh: float,
+        effective_acquisition_cost_kwh: float,
+    ) -> bool:
+        """Return True when a slot can intentionally export battery energy."""
+        if export_price <= 0.001:
+            return False
+
+        if export_price > import_price:
+            return (
+                acquisition_cost_kwh <= 0
+                or export_price >= effective_acquisition_cost_kwh
+            )
+
+        # Some tariffs fill the battery cheaply before a lower-FIT export
+        # window. The current import price is still relevant to self-consumption,
+        # but it should not completely block exporting surplus charged at the
+        # earlier cheap/free rate.
+        return (
+            acquisition_cost_kwh > 0
+            and effective_acquisition_cost_kwh < acquisition_cost_kwh
+            and export_price >= effective_acquisition_cost_kwh
+        )
+
     def _build_lp_periods(
         self,
         n: int,
@@ -616,6 +675,13 @@ class BatteryOptimizer:
         p_allow_export = [period.allow_battery_export for period in periods]
         p_block_charge = [period.block_battery_charge for period in periods]
         p_dt = [period.slot_count * self.dt_hours for period in periods]
+        p_effective_acquisition = self._effective_export_acquisition_costs(
+            p_n,
+            p_import,
+            p_block_charge,
+            allow_grid_charge,
+            acquisition_cost_kwh,
+        )
         optimizer_reserve = self.backup_reserve
         self_consumption_floor = (
             max(0.0, min(soc_0, self.hardware_reserve))
@@ -894,10 +960,11 @@ class BatteryOptimizer:
         for t in range(p_n):
             export_profitable_slot = (
                 p_allow_export[t]
-                and p_export[t] > p_import[t]
-                and (
-                    acquisition_cost_kwh <= 0
-                    or p_export[t] >= acquisition_cost_kwh
+                and self._is_export_profitable(
+                    p_export[t],
+                    p_import[t],
+                    acquisition_cost_kwh,
+                    p_effective_acquisition[t],
                 )
             )
             future_self_consumption_value = future_self_consumption_values[t]
@@ -915,10 +982,11 @@ class BatteryOptimizer:
         for t in range(p_n):
             export_profitable_slot = (
                 p_allow_export[t]
-                and p_export[t] > p_import[t]
-                and (
-                    acquisition_cost_kwh <= 0
-                    or p_export[t] >= acquisition_cost_kwh
+                and self._is_export_profitable(
+                    p_export[t],
+                    p_import[t],
+                    acquisition_cost_kwh,
+                    p_effective_acquisition[t],
                 )
             )
             future_self_consumption_value = future_self_consumption_values[t]
@@ -942,10 +1010,11 @@ class BatteryOptimizer:
         for t in range(p_n):
             export_profitable_slot = (
                 p_allow_export[t]
-                and p_export[t] > p_import[t]
-                and (
-                    acquisition_cost_kwh <= 0
-                    or p_export[t] >= acquisition_cost_kwh
+                and self._is_export_profitable(
+                    p_export[t],
+                    p_import[t],
+                    acquisition_cost_kwh,
+                    p_effective_acquisition[t],
                 )
             )
             future_self_consumption_value = future_self_consumption_values[t]
@@ -957,7 +1026,10 @@ class BatteryOptimizer:
             restrict_to_self_consumption = (
                 suppress_generic_battery_export
                 or not p_allow_export[t]
-                or (acquisition_cost_kwh > 0 and p_export[t] < acquisition_cost_kwh)
+                or (
+                    acquisition_cost_kwh > 0
+                    and p_export[t] < p_effective_acquisition[t]
+                )
             )
             if restrict_to_self_consumption:
                 # Allow discharge only for self-consumption (serving home load)
@@ -1158,6 +1230,13 @@ class BatteryOptimizer:
         allow_battery_export = allow_battery_export or [True] * n
         block_battery_charge = block_battery_charge or [False] * n
         allow_grid_charge = bool(allow_grid_charge)
+        effective_acquisition_costs = self._effective_export_acquisition_costs(
+            n,
+            import_prices,
+            block_battery_charge,
+            allow_grid_charge,
+            acquisition_cost_kwh,
+        )
         max_grid_export_kw = (
             max(0.0, self.max_grid_export_w / 1000.0)
             if self.max_grid_export_w is not None
@@ -1197,10 +1276,11 @@ class BatteryOptimizer:
             battery_export_allowed = allow_battery_export[t] and not below_optimizer_reserve
             export_profitable_slot = (
                 battery_export_allowed
-                and export_prices[t] > import_prices[t]
-                and (
-                    acquisition_cost_kwh <= 0
-                    or export_prices[t] >= acquisition_cost_kwh
+                and self._is_export_profitable(
+                    export_prices[t],
+                    import_prices[t],
+                    acquisition_cost_kwh,
+                    effective_acquisition_costs[t],
                 )
             )
             future_self_consumption_value = self._has_future_self_consumption_value(
@@ -1231,7 +1311,7 @@ class BatteryOptimizer:
                     not battery_export_allowed
                     or (
                         acquisition_cost_kwh > 0
-                        and export_prices[t] < acquisition_cost_kwh
+                        and export_prices[t] < effective_acquisition_costs[t]
                     )
                 ):
                     discharge_limit = min(discharge_limit, max(0.0, net_load))
@@ -1254,10 +1334,11 @@ class BatteryOptimizer:
             battery_export_allowed = allow_battery_export[t] and not below_optimizer_reserve
             export_profitable_slot = (
                 battery_export_allowed
-                and export_prices[t] > import_prices[t]
-                and (
-                    acquisition_cost_kwh <= 0
-                    or export_prices[t] >= acquisition_cost_kwh
+                and self._is_export_profitable(
+                    export_prices[t],
+                    import_prices[t],
+                    acquisition_cost_kwh,
+                    effective_acquisition_costs[t],
                 )
             )
             future_self_consumption_value = self._has_future_self_consumption_value(
