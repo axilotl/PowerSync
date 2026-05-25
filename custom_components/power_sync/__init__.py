@@ -3626,6 +3626,22 @@ def _calendar_entry_has_energy(entry: dict[str, Any] | None) -> bool:
     return any((entry.get(field) or 0) > 0 for field in _CALENDAR_STATISTIC_FIELDS)
 
 
+def _calendar_time_series_totals_kwh(
+    time_series: list[dict[str, Any]],
+) -> dict[str, float]:
+    """Sum mobile calendar-history rows into kWh for support logging."""
+    totals: dict[str, float] = {}
+    for field in _CALENDAR_STATISTIC_FIELDS:
+        total_wh = 0.0
+        for entry in time_series:
+            try:
+                total_wh += float(entry.get(field) or 0)
+            except (TypeError, ValueError):
+                continue
+        totals[field] = round(total_wh / 1000, 3)
+    return totals
+
+
 def _calendar_energy_state_wh(state: Any) -> float:
     """Convert a Home Assistant energy sensor state to Wh."""
     if state is None:
@@ -3881,6 +3897,7 @@ async def _calendar_result_from_energy_summary(
     coordinator: Any,
     entry_id: str | None = None,
     tariff_schedule: dict | None = None,
+    source_system: str | None = None,
 ) -> dict[str, Any]:
     """Return calendar-history response data for energy-summary based systems."""
     time_series = await _calendar_time_series_from_statistics(
@@ -3924,6 +3941,23 @@ async def _calendar_result_from_energy_summary(
                 4,
             )
         result["cost_summary"] = cost_summary
+
+    totals = _calendar_time_series_totals_kwh(time_series)
+    _LOGGER.info(
+        "Calendar history energy-summary response: source=%s period=%s "
+        "end_date=%s rows=%d totals_kwh solar=%.3f battery_discharge=%.3f "
+        "battery_charge=%.3f grid_import=%.3f grid_export=%.3f home=%.3f",
+        source_system or "unknown",
+        period,
+        end_date,
+        len(time_series),
+        totals["solar_generation"],
+        totals["battery_discharge"],
+        totals["battery_charge"],
+        totals["grid_import"],
+        totals["grid_export"],
+        totals["home_consumption"],
+    )
 
     return result
 
@@ -3988,6 +4022,7 @@ class CalendarHistoryView(HomeAssistantView):
                 summary_coordinator,
                 summary_entry_id,
                 tariff_schedule,
+                summary_system,
             )
             return web.json_response(result)
 
@@ -25891,6 +25926,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     None,
                     summary_coordinator,
                     summary_entry_id,
+                    source_system=summary_system,
                 )
 
             _LOGGER.error("No calendar history coordinator available")

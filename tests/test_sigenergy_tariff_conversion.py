@@ -334,9 +334,11 @@ class _FakeTariffSession:
     def __init__(self, responses: list[_FakeTariffResponse]):
         self.responses = responses
         self.post_calls = 0
+        self.post_kwargs = []
 
     def post(self, *args, **kwargs):
         self.post_calls += 1
+        self.post_kwargs.append(kwargs)
         return self.responses.pop(0)
 
 
@@ -378,6 +380,28 @@ def test_sigenergy_set_tariff_retries_429_with_retry_after(
     assert result == {"success": True, "message": "Tariff updated"}
     assert session.post_calls == 2
     assert sleeps == [0.25]
+
+
+def test_sigenergy_set_tariff_preserves_alphanumeric_station_id(
+    sigenergy_api_module,
+):
+    session = _FakeTariffSession([_FakeTariffResponse(200, payload={"code": 0})])
+    client = sigenergy_api_module.SigenergyAPIClient(
+        access_token="token",
+        token_expires_at=datetime.utcnow() + timedelta(hours=1),
+        session=session,
+    )
+
+    result = asyncio.run(
+        client.set_tariff_rate(
+            station_id=" TUWXW1774845255 ",
+            buy_prices=[{"timeRange": "00:00-00:30", "price": 1.0}],
+            sell_prices=[{"timeRange": "00:00-00:30", "price": 0.0}],
+        )
+    )
+
+    assert result == {"success": True, "message": "Tariff updated"}
+    assert session.post_kwargs[0]["json"]["stationId"] == "TUWXW1774845255"
 
 
 def test_sigenergy_set_tariff_stops_after_repeated_429(

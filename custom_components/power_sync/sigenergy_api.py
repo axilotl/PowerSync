@@ -340,9 +340,11 @@ class SigenergyAPIClient:
             "Content-Type": "application/json",
         }
 
+        station_id = str(station_id).strip()
+
         # Build the payload in Sigenergy's expected format
         payload = {
-            "stationId": int(station_id),
+            "stationId": station_id,
             "priceMode": 1,  # Static pricing mode
             "buyPrice": {
                 "dynamicPricing": None,
