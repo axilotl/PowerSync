@@ -255,6 +255,48 @@ def test_selected_config_entry_falls_back_to_live_suffix_discovery():
     )
 
 
+def test_selected_config_entry_maps_unprefixed_foxess_modbus_entities():
+    states = [
+        _FakeState("sensor.battery_soc_1", "62"),
+        _FakeState("sensor.battery_soh_1", "97"),
+        _FakeState("sensor.battery_1_voltage", "410"),
+        _FakeState("sensor.battery_temp_1", "24"),
+        _FakeState("sensor.invbatpower", "1.4", _kw()),
+        _FakeState("sensor.grid_ct", "0.6", _kw()),
+        _FakeState("sensor.pv_power_now", "4.2", _kw()),
+        _FakeState("sensor.load_power", "2.2", _kw()),
+        _FakeState(
+            "select.work_mode",
+            "Self Use",
+            {
+                "options": [
+                    "Self Use",
+                    "Feed-in First",
+                    "Back-up",
+                    "Force Charge",
+                    "Force Discharge",
+                ],
+            },
+        ),
+        _FakeState("number.force_charge_power", "0", _kw()),
+        _FakeState("number.force_discharge_power", "0", _kw()),
+        _FakeState("number.min_soc_on_grid", "20"),
+    ]
+    registry_ids = [state.entity_id for state in states]
+    hass = _FakeHass(states, registry_entries={"fox-entry": registry_ids})
+    controller = FoxESSEntityController(hass, foxess_entry_id="fox-entry")
+
+    assert asyncio.run(controller.connect())
+    status = controller.get_status()
+
+    assert controller._entity_map["battery_level"] == "sensor.battery_soc_1"
+    assert controller._entity_map["work_mode"] == "select.work_mode"
+    assert controller._entity_map["force_charge_power"] == "number.force_charge_power"
+    assert controller._entity_map["backup_reserve"] == "number.min_soc_on_grid"
+    assert status["battery_level"] == 62.0
+    assert status["grid_power"] == -0.6
+
+
 def test_force_restore_reserve_work_mode_and_limit_controls():
     hass = _FakeHass(_base_states())
     controller = FoxESSEntityController(hass, entity_prefix="foxess")

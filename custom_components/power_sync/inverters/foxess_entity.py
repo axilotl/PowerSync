@@ -325,6 +325,10 @@ class FoxESSEntityController:
 
         domain_prefix = f"{domain}."
         for suffix in suffixes:
+            candidate = f"{domain}.{suffix}"
+            if candidate in entity_ids and self.hass.states.get(candidate) is not None:
+                return candidate
+
             tail = f"_{suffix}"
             matches = [
                 entity_id
