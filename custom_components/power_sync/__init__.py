@@ -8370,6 +8370,72 @@ def get_current_price_from_tariff_schedule(tariff_schedule: dict) -> tuple[float
         )
 
 
+def get_current_prices_for_curtailment(
+    entry_data: dict[str, Any] | None,
+    price_coordinators: tuple[Any, ...] = (),
+) -> tuple[float | None, float | None, str | None]:
+    """Return Amber-style feed-in and import prices in c/kWh for curtailment."""
+
+    def _as_float(value: Any) -> float | None:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    import_price: float | None = None
+    for price_coord in price_coordinators:
+        data = getattr(price_coord, "data", None)
+        if not isinstance(data, dict):
+            continue
+
+        feedin_price: float | None = None
+        current_prices = data.get("current", [])
+        if not isinstance(current_prices, list):
+            continue
+
+        for price_data in current_prices:
+            if not isinstance(price_data, dict):
+                continue
+            price = _as_float(price_data.get("perKwh"))
+            if price is None:
+                continue
+            channel = price_data.get("channelType")
+            if channel == "feedIn":
+                feedin_price = price
+            elif channel == "general":
+                import_price = price
+
+        if feedin_price is not None:
+            return feedin_price, import_price, "price_coordinator"
+
+    tariff_schedule = (entry_data or {}).get("tariff_schedule")
+    if isinstance(tariff_schedule, dict) and tariff_schedule:
+        buy_cents, sell_cents, _ = get_current_price_from_tariff_schedule(tariff_schedule)
+        buy_price = _as_float(buy_cents)
+        sell_price = _as_float(sell_cents)
+        if buy_price is not None:
+            import_price = buy_price
+        if sell_price is not None:
+            # Curtailment uses Amber's feedIn convention:
+            # negative means the customer earns money for export.
+            return -sell_price, import_price, "tariff_schedule"
+
+    return None, import_price, None
+
+
+def should_fetch_tesla_tariff_on_startup(
+    electricity_provider: str,
+    has_tesla_site: bool,
+    token_getter: Any,
+) -> bool:
+    """Return true when startup should fetch a Tesla-app tariff schedule."""
+    return (
+        electricity_provider in ("globird", "aemo_vpp")
+        and has_tesla_site
+        and token_getter is not None
+    )
+
+
 class AutomationsView(HomeAssistantView):
     """HTTP view to manage automations for mobile app."""
 
@@ -19492,17 +19558,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
 
         if feedin_price is None:
-            _price_coord = (
-                amber_coordinator or localvolts_coordinator
-                or aemo_sensor_coordinator or octopus_coordinator
+            feedin_price, import_price, price_source = get_current_prices_for_curtailment(
+                entry_data,
+                (
+                    amber_coordinator,
+                    localvolts_coordinator,
+                    aemo_sensor_coordinator,
+                    octopus_coordinator,
+                ),
             )
-            if _price_coord and _price_coord.data:
-                current_prices = _price_coord.data.get("current", [])
-                for price_data in current_prices:
-                    if price_data.get("channelType") == "feedIn":
-                        feedin_price = price_data.get("perKwh", 0)
-                    elif price_data.get("channelType") == "general":
-                        import_price = price_data.get("perKwh", 0)
+            if price_source == "tariff_schedule":
+                _LOGGER.debug("Sungrow curtailment using feed-in price from tariff schedule")
 
         if feedin_price is None:
             _LOGGER.warning("Sungrow curtailment: no feed-in price available")
@@ -26326,7 +26392,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         CONF_ELECTRICITY_PROVIDER,
         entry.data.get(CONF_ELECTRICITY_PROVIDER, "amber")
     )
-    if electricity_provider in ("globird", "aemo_vpp", "other", "nz"):
+    if should_fetch_tesla_tariff_on_startup(
+        electricity_provider,
+        bool(entry.data.get(CONF_TESLA_ENERGY_SITE_ID)),
+        token_getter,
+    ):
         _LOGGER.info(f"📊 Fetching Tesla tariff schedule for {electricity_provider} user...")
         try:
             # If force charge/discharge is/was active, Tesla API may still have
@@ -27112,7 +27182,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         CONF_ELECTRICITY_PROVIDER,
         entry.data.get(CONF_ELECTRICITY_PROVIDER, "amber")
     )
-    if electricity_provider in ("globird", "aemo_vpp", "other", "nz"):
+    if electricity_provider in ("globird", "aemo_vpp", "other", "tou_only", "nz"):
         # Only apply custom tariff if Tesla tariff wasn't already fetched
         existing_tariff = hass.data[DOMAIN][entry.entry_id].get("tariff_schedule")
         if existing_tariff and existing_tariff.get("tou_periods"):

@@ -186,6 +186,13 @@ def test_aud_monetary_total_keeps_monetary_device_class_and_value():
     assert entity.extra_state_attributes["currency"] == "AUD"
 
 
+def test_daily_load_uses_total_state_class():
+    sensor = _sensor_module()
+    desc = next(d for d in sensor.ENERGY_SENSORS if d.key == "daily_load")
+
+    assert desc.state_class == "total"
+
+
 def test_sungrow_solar_sensor_adds_configured_ac_inverter_output():
     sensor = _sensor_module()
     desc = next(d for d in sensor.ENERGY_SENSORS if d.key == "solar_power")

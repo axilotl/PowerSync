@@ -23,11 +23,23 @@ def _function_source(name: str) -> str:
     raise AssertionError(f"{name} not found")
 
 
+def _top_level_function_source(name: str) -> str:
+    source = INIT_PATH.read_text()
+    module = ast.parse(source)
+    for node in module.body:
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            segment = ast.get_source_segment(source, node)
+            assert segment is not None
+            return segment
+    raise AssertionError(f"{name} not found")
+
+
 def test_sungrow_has_native_export_limit_curtailment_handler():
     handler = _function_source("handle_sungrow_curtailment")
 
     assert "sungrow_curtailment_state" in handler
     assert "sungrow_power_limit_w" in handler
+    assert "get_current_prices_for_curtailment" in handler
     assert "await sungrow_coord.set_export_limit(home_load_w)" in handler
     assert "await sungrow_coord.set_export_limit(None)" in handler
     assert "ac_inverter_is_same_hybrid" in handler
@@ -51,3 +63,30 @@ def test_websocket_solar_curtailment_routes_to_sungrow_with_prices():
         "await handle_sungrow_curtailment("
         "feedin_price=feedin_price, import_price=import_price)"
     ) in pre_tesla_path
+
+
+def test_curtailment_price_fallback_uses_tariff_schedule():
+    namespace = {
+        "Any": object,
+        "get_current_price_from_tariff_schedule": lambda tariff: (31.0, 5.0, "PEAK"),
+    }
+    exec(_top_level_function_source("get_current_prices_for_curtailment"), namespace)
+
+    feedin_price, import_price, source = namespace[
+        "get_current_prices_for_curtailment"
+    ]({"tariff_schedule": {"tou_periods": {"PEAK": []}}}, ())
+
+    assert feedin_price == -5.0
+    assert import_price == 31.0
+    assert source == "tariff_schedule"
+
+
+def test_startup_tesla_tariff_fetch_requires_tesla_site():
+    namespace = {"Any": object}
+    exec(_top_level_function_source("should_fetch_tesla_tariff_on_startup"), namespace)
+    should_fetch = namespace["should_fetch_tesla_tariff_on_startup"]
+
+    assert should_fetch("globird", True, object())
+    assert not should_fetch("globird", False, object())
+    assert not should_fetch("other", True, object())
+    assert not should_fetch("nz", True, object())

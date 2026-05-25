@@ -1616,6 +1616,117 @@ def test_spread_import_free_window_caps_to_available_battery_room(opt_module):
     assert spread_wh == pytest.approx((1.0 - 0.80) * 50000 / 0.92, abs=0.1)
 
 
+def test_spread_import_free_only_smooths_free_window_when_setting_disabled(opt_module):
+    coordinator = _coordinator(opt_module, "octopus")
+    coordinator.battery_system = "sungrow"
+    coordinator._config.spread_import_enabled = False
+    coordinator._config.max_charge_w = 6000
+    coordinator._config.battery_capacity_wh = 20000
+    start = datetime(2026, 5, 3, 11, 0, tzinfo=timezone.utc)
+    actions = [
+        opt_module.ScheduleAction(
+            timestamp=start + idx * timedelta(minutes=5),
+            action="charge" if idx in (0, 2, 4) else "self_consumption",
+            power_w=6000 if idx in (0, 2, 4) else 0,
+            battery_charge_w=6000 if idx in (0, 2, 4) else 0,
+        )
+        for idx in range(6)
+    ]
+    schedule = opt_module.OptimizationSchedule(
+        actions=actions,
+        predicted_cost=0,
+        predicted_savings=0,
+        last_updated=start,
+    )
+
+    spread = coordinator._spread_import_schedule(
+        schedule,
+        [0.0] * 6,
+        [False] * 6,
+        initial_soc=0.20,
+        free_only=True,
+    )
+
+    assert [action.action for action in spread.actions] == ["charge"] * 6
+    assert [action.power_w for action in spread.actions] == [3000.0] * 6
+    original_wh = sum(action.battery_charge_w for action in actions) * (5 / 60)
+    spread_wh = sum(action.battery_charge_w for action in spread.actions) * (5 / 60)
+    assert spread_wh == pytest.approx(original_wh, abs=0.1)
+
+
+def test_spread_import_free_only_leaves_paid_window_unchanged(opt_module):
+    coordinator = _coordinator(opt_module, "octopus")
+    coordinator.battery_system = "sungrow"
+    coordinator._config.spread_import_enabled = False
+    coordinator._config.max_charge_w = 6000
+    coordinator._config.battery_capacity_wh = 20000
+    start = datetime(2026, 5, 3, 11, 0, tzinfo=timezone.utc)
+    actions = [
+        opt_module.ScheduleAction(
+            timestamp=start + idx * timedelta(minutes=5),
+            action="charge" if idx in (0, 2, 4) else "self_consumption",
+            power_w=6000 if idx in (0, 2, 4) else 0,
+            battery_charge_w=6000 if idx in (0, 2, 4) else 0,
+        )
+        for idx in range(6)
+    ]
+    schedule = opt_module.OptimizationSchedule(
+        actions=actions,
+        predicted_cost=0,
+        predicted_savings=0,
+        last_updated=start,
+    )
+
+    spread = coordinator._spread_import_schedule(
+        schedule,
+        [0.12] * 6,
+        [False] * 6,
+        initial_soc=0.20,
+        free_only=True,
+    )
+
+    assert [action.action for action in spread.actions] == [
+        "charge",
+        "self_consumption",
+        "charge",
+        "self_consumption",
+        "charge",
+        "self_consumption",
+    ]
+    assert [action.power_w for action in spread.actions] == [6000, 0, 6000, 0, 6000, 0]
+
+
+def test_spread_import_schedule_ignores_malformed_price_forecast(opt_module):
+    coordinator = _coordinator(opt_module, "octopus")
+    coordinator.battery_system = "sungrow"
+    coordinator._config.max_charge_w = 6000
+    start = datetime(2026, 5, 3, 11, 0, tzinfo=timezone.utc)
+    actions = [
+        opt_module.ScheduleAction(
+            timestamp=start,
+            action="charge",
+            power_w=6000,
+            battery_charge_w=6000,
+        )
+    ]
+    schedule = opt_module.OptimizationSchedule(
+        actions=actions,
+        predicted_cost=0,
+        predicted_savings=0,
+        last_updated=start,
+    )
+
+    spread = coordinator._spread_import_schedule(
+        schedule,
+        [None],
+        [False],
+        initial_soc=0.20,
+        free_only=True,
+    )
+
+    assert spread is schedule
+
+
 def test_spread_import_schedule_does_not_cross_price_boundary(opt_module):
     coordinator = _coordinator(opt_module, "octopus")
     coordinator.battery_system = "goodwe"
@@ -1742,6 +1853,24 @@ def test_spread_import_schedule_requires_enabled_supported_battery(opt_module):
     coordinator.battery_system = "tesla"
 
     assert coordinator._should_spread_import_schedule() is False
+
+
+def test_free_import_smoothing_requires_grid_charge_supported_battery_and_free_price(opt_module):
+    coordinator = _coordinator(opt_module, "octopus")
+    coordinator.battery_system = "sungrow"
+    coordinator._config.spread_import_enabled = False
+    coordinator._config.allow_grid_charge = True
+
+    assert coordinator._should_spread_import_schedule() is False
+    assert coordinator._should_smooth_free_import_schedule([0.14, 0.0]) is True
+    assert coordinator._should_smooth_free_import_schedule([0.14, 0.12]) is False
+
+    coordinator._config.allow_grid_charge = False
+    assert coordinator._should_smooth_free_import_schedule([0.0]) is False
+
+    coordinator._config.allow_grid_charge = True
+    coordinator.battery_system = "tesla"
+    assert coordinator._should_smooth_free_import_schedule([0.0]) is False
 
 
 def test_profit_max_spread_uses_flow_power_export_window(opt_module):

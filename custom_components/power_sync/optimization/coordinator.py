@@ -1799,12 +1799,18 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
             self._last_optimizer_result = result
             self._current_schedule = result.schedule
-            if self._should_spread_import_schedule():
+            spread_all_import = self._should_spread_import_schedule()
+            smooth_free_import = (
+                not spread_all_import
+                and self._should_smooth_free_import_schedule(import_prices)
+            )
+            if spread_all_import or smooth_free_import:
                 self._current_schedule = self._spread_import_schedule(
                     self._current_schedule,
                     import_prices,
                     battery_charge_blocked,
                     soc,
+                    free_only=smooth_free_import,
                 )
                 result.schedule = self._current_schedule
             if self._should_spread_export_schedule():
@@ -2866,12 +2872,35 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             and self._supports_target_charge_power()
         )
 
+    def _should_smooth_free_import_schedule(
+        self,
+        import_prices: list[float] | None,
+    ) -> bool:
+        """Return True when free import windows should be made continuous."""
+        if (
+            not self._config.allow_grid_charge
+            or not self._supports_target_charge_power()
+            or not import_prices
+        ):
+            return False
+
+        for price in import_prices:
+            try:
+                value = float(price)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(value) and value <= 0.001:
+                return True
+        return False
+
     def _spread_import_schedule(
         self,
         schedule: OptimizationSchedule,
         import_prices: list[float] | None,
         blocked_slots: list[bool] | None,
         initial_soc: float,
+        *,
+        free_only: bool = False,
     ) -> OptimizationSchedule:
         """Spread planned grid-charge energy across same-price import windows."""
         actions = list(schedule.actions or [])
@@ -2879,7 +2908,10 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return schedule
 
         n = len(actions)
-        prices = [float(price) for price in import_prices[:n]]
+        try:
+            prices = [float(price) for price in import_prices[:n]]
+        except (TypeError, ValueError):
+            return schedule
         if len(prices) < n:
             return schedule
 
@@ -2923,6 +2955,11 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             ):
                 idx += 1
             end = idx
+            if free_only and not (math.isfinite(price) and price <= 0.001):
+                for pos in range(start, end):
+                    soc_cursor = _advance_soc(soc_cursor, new_actions[pos])
+                continue
+
             window_actions = actions[start:end]
             charge_wh = sum(
                 max(0.0, float(getattr(action, "battery_charge_w", 0.0) or 0.0))
