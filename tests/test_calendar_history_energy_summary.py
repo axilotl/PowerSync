@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import ast
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -29,6 +29,7 @@ def _calendar_namespace() -> dict[str, Any]:
         "_calendar_entry_from_energy_sensor_states",
         "_merge_calendar_energy_entries",
         "_calendar_current_entry",
+        "_calendar_range_includes_today",
     }
     body: list[ast.stmt] = []
     for node in tree.body:
@@ -49,6 +50,7 @@ def _calendar_namespace() -> dict[str, Any]:
 
     namespace: dict[str, Any] = {
         "Any": Any,
+        "datetime": datetime,
         "HomeAssistant": object,
         "dt_util": SimpleNamespace(
             now=lambda: datetime(2026, 5, 16, 12, 0, tzinfo=timezone.utc)
@@ -68,6 +70,25 @@ class _States:
 
 def _state(value: str, unit: str = "kWh") -> SimpleNamespace:
     return SimpleNamespace(state=value, attributes={"unit_of_measurement": unit})
+
+
+def test_calendar_range_includes_today_when_end_is_now_snapshot():
+    namespace = _calendar_namespace()
+    first_now = datetime(2026, 5, 16, 12, 0, tzinfo=timezone.utc)
+    later_now = first_now + timedelta(microseconds=1)
+    today_start = datetime(2026, 5, 16, tzinfo=timezone.utc)
+    yesterday_start = today_start - timedelta(days=1)
+
+    assert namespace["_calendar_range_includes_today"](
+        today_start,
+        first_now,
+        later_now,
+    )
+    assert not namespace["_calendar_range_includes_today"](
+        yesterday_start,
+        today_start,
+        later_now,
+    )
 
 
 def test_current_calendar_entry_uses_live_daily_sensor_states_when_accumulator_is_zero():

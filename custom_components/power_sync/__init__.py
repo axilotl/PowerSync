@@ -3762,6 +3762,17 @@ def _calendar_period_range(period: str, end_date: str | None) -> tuple[datetime,
     return start_dt, end_dt
 
 
+def _calendar_range_includes_today(
+    start_dt: datetime,
+    end_dt: datetime,
+    now: datetime | None = None,
+) -> bool:
+    """Return True when a history range should include today's live row."""
+    now = now or dt_util.now()
+    today_start = datetime(now.year, now.month, now.day, tzinfo=now.tzinfo)
+    return start_dt <= now and end_dt > today_start
+
+
 def _find_calendar_statistic_entity_ids(
     hass: HomeAssistant,
     preferred_entry_id: str | None,
@@ -3811,7 +3822,7 @@ async def _calendar_time_series_from_statistics(
 
     start_dt, end_dt = range_result
     now = dt_util.now()
-    includes_today = start_dt.date() <= now.date() and end_dt >= now
+    includes_today = _calendar_range_includes_today(start_dt, end_dt, now)
 
     statistic_end_dt = end_dt
     if includes_today:
@@ -3909,11 +3920,9 @@ async def _calendar_result_from_energy_summary(
     )
     if not time_series:
         range_result = _calendar_period_range(period, end_date)
-        now = dt_util.now()
         includes_today = bool(
             range_result
-            and range_result[0].date() <= now.date()
-            and range_result[1] >= now
+            and _calendar_range_includes_today(range_result[0], range_result[1])
         )
         time_series = (
             _calendar_time_series_from_energy_summary(
