@@ -559,6 +559,14 @@ from .coordinator import (
 import re
 
 
+def _is_foxess_entity_bridge_startup_failure(coordinator: Any, exc: Exception) -> bool:
+    """Return True when foxess_modbus entities are still restoring at HA startup."""
+    return (
+        isinstance(coordinator, FoxESSEntityEnergyCoordinator)
+        and "foxess_missing_entities:" in str(exc)
+    )
+
+
 def _resolve_ble_prefixes(hass, config: dict) -> list[str]:
     """Resolve Tesla BLE entity prefixes with auto-detection fallback.
 
@@ -15761,9 +15769,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             await foxess_coordinator.async_config_entry_first_refresh()
             _LOGGER.info("FoxESS coordinator initialized successfully")
         except Exception as e:
-            _LOGGER.warning("FoxESS coordinator failed to initialize: %s", e)
-            # Don't fail the entire setup - allow other features to work
-            foxess_coordinator = None
+            if _is_foxess_entity_bridge_startup_failure(foxess_coordinator, e):
+                _LOGGER.warning(
+                    "FoxESS entity bridge entities are not ready yet; "
+                    "keeping coordinator active so it can retry: %s",
+                    e,
+                )
+            else:
+                _LOGGER.warning("FoxESS coordinator failed to initialize: %s", e)
+                # Don't fail the entire setup - allow other features to work
+                foxess_coordinator = None
     if goodwe_coordinator:
         try:
             await goodwe_coordinator.async_config_entry_first_refresh()
