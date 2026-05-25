@@ -190,6 +190,37 @@ class AEMOPriceCoordinator:
         return lambda: None
 
 
+class _State:
+    def __init__(
+        self,
+        entity_id: str,
+        state: str,
+        unit: str = "kW",
+        friendly_name: str | None = None,
+    ) -> None:
+        self.entity_id = entity_id
+        self.state = state
+        self.attributes = {
+            "unit_of_measurement": unit,
+            "friendly_name": friendly_name or entity_id,
+        }
+
+
+class _States:
+    def __init__(self, states: list[_State]) -> None:
+        self._states = states
+        self._by_id = {state.entity_id: state for state in states}
+
+    def get(self, entity_id: str):
+        return self._by_id.get(entity_id)
+
+    def async_all(self, domain: str | None = None):
+        if domain is None:
+            return list(self._states)
+        prefix = f"{domain}."
+        return [state for state in self._states if state.entity_id.startswith(prefix)]
+
+
 def _tariff_schedule() -> dict:
     return {
         "plan_name": "ZEROHERO",
@@ -292,6 +323,53 @@ def test_ev_integration_defaults_to_initial_config_data(opt_module):
     )
 
     assert coordinator._ev_integration_enabled is True
+
+
+def test_load_sensor_auto_discovery_skips_generated_forecast_sensor(opt_module):
+    coordinator = object.__new__(opt_module.OptimizationCoordinator)
+    coordinator.hass = SimpleNamespace(
+        states=_States(
+            [
+                _State(
+                    "sensor.powersync_home_load_forecast",
+                    "0.0",
+                    friendly_name="PowerSync Home Load Forecast",
+                ),
+                _State("sensor.house_load_power", "0.7"),
+            ]
+        )
+    )
+
+    assert coordinator._get_load_entity_id() == "sensor.house_load_power"
+
+
+def test_load_forecast_rediscovers_load_sensor_after_startup(opt_module):
+    class _LoadEstimator:
+        def __init__(self) -> None:
+            self.load_entity_id = None
+            self._history_cache = {"stale": []}
+            self._cache_time = object()
+            self.requested_horizon = None
+
+        async def get_forecast(self, horizon_hours: int):
+            self.requested_horizon = horizon_hours
+            return [525.0]
+
+    estimator = _LoadEstimator()
+    coordinator = object.__new__(opt_module.OptimizationCoordinator)
+    coordinator.hass = SimpleNamespace(
+        states=_States([_State("sensor.power_sync_home_load", "0.52")])
+    )
+    coordinator._load_estimator = estimator
+    coordinator._config = SimpleNamespace(horizon_hours=48)
+
+    forecast = asyncio.run(coordinator._get_load_forecast())
+
+    assert forecast == [525.0]
+    assert estimator.load_entity_id == "sensor.power_sync_home_load"
+    assert estimator._history_cache == {}
+    assert estimator._cache_time is None
+    assert estimator.requested_horizon == 48
 
 
 def test_static_tou_provider_uses_tariff_even_when_aemo_data_exists(opt_module):

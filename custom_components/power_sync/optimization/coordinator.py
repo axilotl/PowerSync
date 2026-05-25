@@ -1129,7 +1129,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         ]
         for entity_id in fallbacks:
             state = self.hass.states.get(entity_id)
-            if state and state.state not in ("unknown", "unavailable"):
+            if self._is_usable_load_sensor_state(state):
                 _LOGGER.info("Using load sensor: %s", entity_id)
                 return entity_id
 
@@ -1138,7 +1138,9 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         for state in self.hass.states.async_all("sensor"):
             eid = state.entity_id
             name_lower = eid.lower()
-            if state.state in ("unknown", "unavailable"):
+            if not self._is_usable_load_sensor_state(state):
+                continue
+            if self._is_generated_load_forecast_sensor(state):
                 continue
             unit = (state.attributes.get("unit_of_measurement") or "").lower()
             if unit not in ("w", "kw"):
@@ -1151,6 +1153,32 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         _LOGGER.warning("No home load sensor found — load forecast will use defaults")
         return None
+
+    @staticmethod
+    def _is_usable_load_sensor_state(state) -> bool:
+        """Return True when a state can be used as a live load source."""
+        if not state or state.state in ("unknown", "unavailable", "None", None):
+            return False
+        try:
+            value = float(state.state)
+        except (ValueError, TypeError):
+            return False
+        return 0 <= value < 100_000
+
+    @staticmethod
+    def _is_generated_load_forecast_sensor(state) -> bool:
+        """Return True for generated forecast sensors, not live load."""
+        friendly_name = str(state.attributes.get("friendly_name") or "")
+        label = f"{state.entity_id} {friendly_name}".lower()
+        return any(
+            marker in label
+            for marker in (
+                "forecast",
+                "prediction",
+                "predicted",
+                "estimated",
+            )
+        )
 
     def _is_octopus_dynamic_tariff(self) -> bool:
         """Return True when the active Octopus tariff is genuinely half-hourly.
@@ -5013,6 +5041,13 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def _get_load_forecast(self) -> list[float] | None:
         """Get load forecast for optimizer."""
         if self._load_estimator:
+            if not self._load_estimator.load_entity_id:
+                load_entity = self._get_load_entity_id()
+                if load_entity:
+                    _LOGGER.info("Load sensor became available: %s", load_entity)
+                    self._load_estimator.load_entity_id = load_entity
+                    self._load_estimator._history_cache.clear()
+                    self._load_estimator._cache_time = None
             return await self._load_estimator.get_forecast(
                 horizon_hours=self._config.horizon_hours
             )

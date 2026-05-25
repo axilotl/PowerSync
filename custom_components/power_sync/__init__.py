@@ -17436,6 +17436,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         return None
 
+    def _record_flow_power_twap_sample(
+        electricity_provider: str,
+        wholesale_cents: float | None,
+    ) -> None:
+        """Record the live Flow Power wholesale price for rolling TWAP."""
+        if electricity_provider != "flow_power" or wholesale_cents is None:
+            return
+        try:
+            price = float(wholesale_cents)
+        except (ValueError, TypeError):
+            return
+        fp_tracker = (
+            hass.data.get(DOMAIN, {})
+            .get(entry.entry_id, {})
+            .get("flow_power_twap_tracker")
+        )
+        if fp_tracker:
+            fp_tracker.record_price(price)
+
     def _apply_provider_tariff_adjustments(tariff: dict, forecast_data: list, electricity_provider: str) -> dict:
         """Apply provider-specific rate adjustments to a raw wholesale tariff.
 
@@ -18374,6 +18393,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             CONF_ELECTRICITY_PROVIDER,
             entry.data.get(CONF_ELECTRICITY_PROVIDER, "amber")
         )
+        _record_flow_power_twap_sample(electricity_provider, general_price)
 
         # Get spike protection setting (Amber only, opt-in feature)
         spike_protection_enabled = entry.options.get(
@@ -18524,11 +18544,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         # Apply Flow Power PEA pricing (works with both AEMO and Amber price sources)
         if electricity_provider == "flow_power":
-            # Record current wholesale price for TWAP tracking
-            fp_tracker = hass.data[DOMAIN][entry.entry_id].get("flow_power_twap_tracker")
-            if fp_tracker and general_price is not None:
-                fp_tracker.record_price(general_price)
-
             # Check if PEA (Price Efficiency Adjustment) is enabled
             pea_enabled = entry.options.get(CONF_PEA_ENABLED, True)  # Default True for Flow Power
 

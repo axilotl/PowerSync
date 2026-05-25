@@ -39,6 +39,15 @@ def test_flow_power_tariff_generation_does_not_substitute_portal_twap():
     assert 'portal_data["twap"]' not in source
 
 
+def test_flow_power_twap_sample_is_recorded_before_battery_route_returns():
+    source = (COMPONENT_ROOT / "__init__.py").read_text()
+    sample_call = "_record_flow_power_twap_sample(electricity_provider, general_price)"
+    route_marker = "# Route to appropriate battery system for tariff sync"
+
+    assert source.index(sample_call) < source.index(route_marker)
+    assert source.count("record_price(") == 1
+
+
 def test_power_sync_requires_aemo_to_tariff_with_endeavour_n73():
     manifest = json.loads((COMPONENT_ROOT / "manifest.json").read_text())
 
