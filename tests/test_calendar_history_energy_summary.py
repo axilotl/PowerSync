@@ -154,7 +154,7 @@ def test_current_calendar_entry_keeps_coordinator_values_and_fills_only_missing_
     assert entry["grid_import"] == 1800
 
 
-def test_current_calendar_entry_exposes_tesla_style_detail_aliases():
+def test_current_calendar_entry_exposes_aggregate_tesla_style_aliases_only():
     namespace = _calendar_namespace()
     namespace["_find_calendar_statistic_entity_ids"] = lambda hass, entry_id: {}
     hass = SimpleNamespace(states=_States({}))
@@ -182,19 +182,19 @@ def test_current_calendar_entry_exposes_tesla_style_detail_aliases():
     assert entry["solar_energy_exported"] == 2500
     assert entry["battery_energy_exported"] == 1200
     assert entry["battery_energy_imported"] == 3400
-    assert entry["battery_energy_imported_from_grid"] == 1600
-    assert entry["battery_energy_imported_from_solar"] == 1800
     assert entry["grid_energy_imported"] == 800
     assert entry["grid_energy_exported"] == 600
-    assert entry["grid_energy_exported_from_solar"] == 600
-    assert entry["grid_energy_exported_from_battery"] == 0
     assert entry["consumer_energy_imported"] == 2100
-    assert entry["consumer_energy_imported_from_grid"] == 800
-    assert entry["consumer_energy_imported_from_solar"] == 100
-    assert entry["consumer_energy_imported_from_battery"] == 1200
+    assert "battery_energy_imported_from_grid" not in entry
+    assert "battery_energy_imported_from_solar" not in entry
+    assert "consumer_energy_imported_from_grid" not in entry
+    assert "consumer_energy_imported_from_solar" not in entry
+    assert "consumer_energy_imported_from_battery" not in entry
+    assert "grid_energy_exported_from_solar" not in entry
+    assert "grid_energy_exported_from_battery" not in entry
 
 
-def test_current_calendar_entry_caps_solar_export_alias_to_solar_generation():
+def test_current_calendar_entry_does_not_invent_solar_or_battery_export_splits():
     namespace = _calendar_namespace()
     namespace["_find_calendar_statistic_entity_ids"] = lambda hass, entry_id: {}
     hass = SimpleNamespace(states=_States({}))
@@ -215,5 +215,7 @@ def test_current_calendar_entry_caps_solar_export_alias_to_solar_generation():
 
     assert entry["solar_generation"] == 10270
     assert entry["grid_export"] == 33730
-    assert entry["grid_energy_exported_from_solar"] == 10270
-    assert entry["grid_energy_exported_from_battery"] == 23460
+    assert entry["solar_energy_exported"] == 10270
+    assert entry["grid_energy_exported"] == 33730
+    assert "grid_energy_exported_from_solar" not in entry
+    assert "grid_energy_exported_from_battery" not in entry

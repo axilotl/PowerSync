@@ -3574,7 +3574,7 @@ def _calendar_entry_from_energy_summary(coordinator: Any) -> dict[str, Any]:
 
 
 def _calendar_entry_with_detail_aliases(entry: dict[str, Any]) -> dict[str, Any]:
-    """Add Tesla-style detail fields for mobile screens that still read them."""
+    """Add aggregate Tesla-style fields without inventing flow splits."""
     enriched = dict(entry)
     solar_wh = enriched.get("solar_generation", 0) or 0
     battery_discharge_wh = enriched.get("battery_discharge", 0) or 0
@@ -3582,36 +3582,13 @@ def _calendar_entry_with_detail_aliases(entry: dict[str, Any]) -> dict[str, Any]
     grid_import_wh = enriched.get("grid_import", 0) or 0
     grid_export_wh = enriched.get("grid_export", 0) or 0
     home_consumption_wh = enriched.get("home_consumption", 0) or 0
-    battery_to_home_wh = min(battery_discharge_wh, home_consumption_wh)
-    remaining_home_wh = max(0, home_consumption_wh - battery_to_home_wh)
-    grid_to_home_wh = min(grid_import_wh, remaining_home_wh)
-    solar_to_home_wh = max(0, remaining_home_wh - grid_to_home_wh)
-    solar_to_battery_wh = min(
-        battery_charge_wh,
-        max(0, solar_wh - solar_to_home_wh - grid_export_wh),
-    )
-    grid_to_battery_wh = max(0, battery_charge_wh - solar_to_battery_wh)
-    available_solar_for_export_wh = max(0, solar_wh - solar_to_home_wh - solar_to_battery_wh)
-    solar_to_grid_wh = min(grid_export_wh, available_solar_for_export_wh)
-    available_battery_for_export_wh = max(0, battery_discharge_wh - battery_to_home_wh)
-    battery_to_grid_wh = min(
-        max(0, grid_export_wh - solar_to_grid_wh),
-        available_battery_for_export_wh,
-    )
 
     enriched.setdefault("solar_energy_exported", solar_wh)
     enriched.setdefault("battery_energy_exported", battery_discharge_wh)
     enriched.setdefault("battery_energy_imported", battery_charge_wh)
-    enriched.setdefault("battery_energy_imported_from_grid", grid_to_battery_wh)
-    enriched.setdefault("battery_energy_imported_from_solar", solar_to_battery_wh)
     enriched.setdefault("consumer_energy_imported", home_consumption_wh)
-    enriched.setdefault("consumer_energy_imported_from_grid", grid_to_home_wh)
-    enriched.setdefault("consumer_energy_imported_from_solar", solar_to_home_wh)
-    enriched.setdefault("consumer_energy_imported_from_battery", battery_to_home_wh)
     enriched.setdefault("grid_energy_imported", grid_import_wh)
     enriched.setdefault("grid_energy_exported", grid_export_wh)
-    enriched.setdefault("grid_energy_exported_from_solar", solar_to_grid_wh)
-    enriched.setdefault("grid_energy_exported_from_battery", battery_to_grid_wh)
     return enriched
 
 
