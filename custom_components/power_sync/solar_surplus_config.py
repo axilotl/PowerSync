@@ -56,3 +56,17 @@ def normalize_solar_surplus_config(config: Mapping[str, Any] | None = None) -> d
     normalized["home_battery_minimum"] = min_battery_soc
     normalized["min_battery_soc"] = min_battery_soc
     return normalized
+
+
+def get_stored_solar_surplus_config(entry_data: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Return normalized solar-surplus config from runtime entry data."""
+    stored_config: Mapping[str, Any] | None = None
+    if entry_data:
+        automation_store = entry_data.get("automation_store")
+        if automation_store:
+            stored_data = getattr(automation_store, "_data", {}) or {}
+            stored_config = stored_data.get("solar_surplus_config")
+        if not stored_config:
+            stored_config = entry_data.get("solar_surplus_config")
+
+    return normalize_solar_surplus_config(stored_config)

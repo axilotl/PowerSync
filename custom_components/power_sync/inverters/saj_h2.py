@@ -83,9 +83,11 @@ _LOGGER = logging.getLogger(__name__)
 _SENSOR_KEYS: dict[str, tuple[str, ...]] = {
     "battery_level":               ("Bat1SOC", "batEnergyPercent"),
     "battery_power":               ("batteryPower",),
-    # CT_GridPowerWatt is the whole-house meter and reflects AC-coupled inverter
-    # contribution; gridPower is only the SAJ's own grid leg. Prefer the CT.
-    "grid_power":                  ("CT_GridPowerWatt", "gridPower", "totalgridPower"),
+    # gridPower is exposed as "Grid Load Power" in Home Assistant and is the
+    # net grid import/export leg. CT_GridPowerWatt can be present but report 0W
+    # on some H2 installs; totalgridPower includes inverter-side power and is
+    # not a net-grid signal.
+    "grid_power":                  ("gridPower", "gridLoadPower", "CT_GridPowerWatt"),
     "solar_power":                 ("CT_PVPowerWatt", "pvPower"),
     "load_power":                  ("TotalLoadPower", "gridPower"),
     "battery_temperature":         ("BatTemp", "Bat1Temperature"),
@@ -99,9 +101,9 @@ _SENSOR_KEYS: dict[str, tuple[str, ...]] = {
     "pv1_power":                   ("PV1Power", "PV1PowerWatt", "pv1Power", "pv1_power"),
     "pv2_power":                   ("PV2Power", "PV2PowerWatt", "pv2Power", "pv2_power"),
     "pv3_power":                   ("PV3Power", "PV3PowerWatt", "pv3Power", "pv3_power"),
-    "daily_solar_energy":          ("powerCurrentDay", "PowerCurrentDay", "power_current_day"),
-    "daily_grid_import":           ("feedInTodayEnergy", "FeedInTodayEnergy", "feed_in_today_energy"),
-    "daily_grid_export":           ("sellTodayEnergy", "SellTodayEnergy", "sell_today_energy"),
+    "daily_solar_energy":          ("todayenergy", "powerCurrentDay", "PowerCurrentDay", "power_current_day"),
+    "daily_grid_import":           ("feedin_today_energy", "feedInTodayEnergy", "FeedInTodayEnergy", "feed_in_today_energy"),
+    "daily_grid_export":           ("sell_today_energy", "sellTodayEnergy", "SellTodayEnergy"),
     # Engagement signals — distinguish "battery converter active" (mode 2, R-phase ~240V)
     # from "low-SOC lockout" (mode 4, R-phase 0V). Without these the controller silently
     # writes Modbus commands that go nowhere because the inverter's converter is offline.

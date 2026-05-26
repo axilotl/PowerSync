@@ -105,6 +105,36 @@ def _is_api_credit_error(error_message: str) -> bool:
     return any(pattern in error_lower for pattern in API_CREDIT_ERROR_PATTERNS)
 
 
+def _is_number_range_error(error_message: str) -> bool:
+    """Return true when HA rejected a number.set_value write as out of range."""
+    error_lower = str(error_message).lower()
+    return "out_of_range" in error_lower or "out of range" in error_lower
+
+
+def _tesla_entity_max_fallback_amps(
+    requested_amps: int,
+    entity_min: int,
+    entity_max: int,
+    *,
+    allow_stale_entity_max_override: bool,
+    configured_max_amps: Optional[int],
+) -> Optional[int]:
+    """Return a lower entity-max fallback after a stale-max override is rejected."""
+    if (
+        not allow_stale_entity_max_override
+        or configured_max_amps is None
+        or entity_max <= 0
+        or configured_max_amps <= entity_max
+    ):
+        return None
+
+    fallback_amps = max(entity_min, entity_max)
+    if requested_amps <= fallback_amps:
+        return None
+
+    return fallback_amps
+
+
 def _mark_api_credits_exhausted(api_name: str = "teslemetry") -> None:
     """Mark that API credits are exhausted, triggering cooldown."""
     _api_credit_exhausted[api_name] = datetime.now()
@@ -745,6 +775,7 @@ async def _set_ev_charging_amps_ble(
     *,
     allow_stale_entity_max_override: bool = False,
     configured_max_amps: Optional[int] = None,
+    params: Optional[dict] = None,
 ) -> bool:
     """Set EV charging amps via Tesla BLE."""
     amps_entity = TESLA_BLE_NUMBER_CHARGING_AMPS.format(prefix=ble_prefix)
@@ -786,6 +817,37 @@ async def _set_ev_charging_amps_ble(
         _LOGGER.info(f"Set EV charging amps to {capped_amps}A via Tesla BLE: {amps_entity}")
         return True
     except Exception as e:
+        fallback_amps = None
+        if _is_number_range_error(str(e)):
+            fallback_amps = _tesla_entity_max_fallback_amps(
+                capped_amps,
+                entity_min,
+                entity_max,
+                allow_stale_entity_max_override=allow_stale_entity_max_override,
+                configured_max_amps=configured_max_amps,
+            )
+        if fallback_amps is not None:
+            try:
+                await hass.services.async_call(
+                    "number",
+                    "set_value",
+                    {"entity_id": amps_entity, "value": fallback_amps},
+                    blocking=True,
+                )
+                _LOGGER.info(
+                    "Set EV charging amps to %dA via Tesla BLE after entity range fallback: %s",
+                    fallback_amps,
+                    amps_entity,
+                )
+                if params is not None:
+                    params["max_charge_amps"] = fallback_amps
+                return True
+            except Exception as fallback_error:
+                _LOGGER.error(
+                    "Failed Tesla BLE entity range fallback to %dA: %s",
+                    fallback_amps,
+                    fallback_error,
+                )
         _LOGGER.error(f"Failed to set EV charging amps via BLE: {e}")
         return False
 
@@ -871,6 +933,7 @@ async def _set_ev_charging_amps_teslemetry_bt(
     *,
     allow_stale_entity_max_override: bool = False,
     configured_max_amps: Optional[int] = None,
+    params: Optional[dict] = None,
 ) -> bool:
     """Set EV charging amps via Teslemetry Bluetooth."""
     entity_id = TESLEMETRY_BT_NUMBER_CHARGE_AMPS.format(prefix=tbt_prefix)
@@ -904,6 +967,37 @@ async def _set_ev_charging_amps_teslemetry_bt(
         _LOGGER.info(f"Set EV charging amps to {capped}A via Teslemetry BT: {entity_id}")
         return True
     except Exception as e:
+        fallback_amps = None
+        if _is_number_range_error(str(e)):
+            fallback_amps = _tesla_entity_max_fallback_amps(
+                capped,
+                min_val,
+                max_val,
+                allow_stale_entity_max_override=allow_stale_entity_max_override,
+                configured_max_amps=configured_max_amps,
+            )
+        if fallback_amps is not None:
+            try:
+                await hass.services.async_call(
+                    "number",
+                    "set_value",
+                    {"entity_id": entity_id, "value": fallback_amps},
+                    blocking=True,
+                )
+                _LOGGER.info(
+                    "Set EV charging amps to %dA via Teslemetry BT after entity range fallback: %s",
+                    fallback_amps,
+                    entity_id,
+                )
+                if params is not None:
+                    params["max_charge_amps"] = fallback_amps
+                return True
+            except Exception as fallback_error:
+                _LOGGER.error(
+                    "Failed Teslemetry BT entity range fallback to %dA: %s",
+                    fallback_amps,
+                    fallback_error,
+                )
         _LOGGER.error(f"Failed to set EV charging amps via Teslemetry BT: {e}")
         return False
 
@@ -3311,6 +3405,7 @@ async def _action_set_ev_charging_amps(
                 amps,
                 allow_stale_entity_max_override=allow_stale_entity_max_override,
                 configured_max_amps=configured_max_amps,
+                params=params,
             )
             if result or ev_provider == EV_PROVIDER_TESLEMETRY_BT:
                 return result
@@ -3325,6 +3420,7 @@ async def _action_set_ev_charging_amps(
                 ble_amps,
                 allow_stale_entity_max_override=allow_stale_entity_max_override,
                 configured_max_amps=configured_max_amps,
+                params=params,
             )
             if result or ev_provider == EV_PROVIDER_TESLA_BLE:
                 return result
@@ -3347,6 +3443,8 @@ async def _action_set_ev_charging_amps(
             _LOGGER.error("Could not find Tesla charge_current/charging_amps number entity")
             return False
 
+        entity_min = 5
+        entity_max = 32
         try:
             # Check entity's actual min/max limits and clamp accordingly
             entity_state = hass.states.get(charging_amps_entity)
@@ -3387,6 +3485,37 @@ async def _action_set_ev_charging_amps(
             _LOGGER.info(f"Set EV charging amps to {amps}A via {charging_amps_entity}")
             return True
         except Exception as e:
+            fallback_amps = None
+            if _is_number_range_error(str(e)):
+                fallback_amps = _tesla_entity_max_fallback_amps(
+                    amps,
+                    entity_min,
+                    entity_max,
+                    allow_stale_entity_max_override=allow_stale_entity_max_override,
+                    configured_max_amps=configured_max_amps,
+                )
+            if fallback_amps is not None:
+                try:
+                    await hass.services.async_call(
+                        "number",
+                        "set_value",
+                        {"entity_id": charging_amps_entity, "value": fallback_amps},
+                        blocking=True,
+                    )
+                    params["max_charge_amps"] = fallback_amps
+                    _LOGGER.info(
+                        "Set EV charging amps to %dA via %s after entity range fallback",
+                        fallback_amps,
+                        charging_amps_entity,
+                    )
+                    return True
+                except Exception as fallback_error:
+                    _LOGGER.error(
+                        "Failed Tesla entity range fallback to %dA: %s",
+                        fallback_amps,
+                        fallback_error,
+                    )
+
             _LOGGER.error(f"Failed to set EV charging amps: {e}")
 
             # Check if this is a credit/payment error
@@ -5072,8 +5201,12 @@ async def _dynamic_ev_update_surplus(
         )
         success = await _set_vehicle_amps(hass, config_entry, vehicle_id, new_amps, params)
         if success:
-            state["current_amps"] = new_amps
-            state["target_amps"] = new_amps
+            applied_amps = new_amps
+            max_after_set = _coerce_positive_int(params.get("max_charge_amps"))
+            if max_after_set is not None and applied_amps > 0:
+                applied_amps = min(applied_amps, max_after_set)
+            state["current_amps"] = applied_amps
+            state["target_amps"] = applied_amps
 
             # End session when transitioning to 0 amps (stopping charging)
             if new_amps == 0 and effective_current_amps > 0:

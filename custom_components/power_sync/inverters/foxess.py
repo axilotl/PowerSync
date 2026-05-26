@@ -7,16 +7,83 @@ Reference: https://github.com/nathanmarlor/foxess_modbus
 """
 import asyncio
 import logging
+import sys
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Optional
 
-from pymodbus.client import AsyncModbusTcpClient
+_LOGGER = logging.getLogger(__name__)
+
+_FOXESS_MODBUS_VENDOR_PYMODBUS = "/foxess_modbus/vendor/pymodbus/"
+
+
+def _is_foxess_modbus_vendor_module(module: Any) -> bool:
+    """Return True when a pymodbus module came from foxess_modbus' vendored copy."""
+    module_file = getattr(module, "__file__", "")
+    if not module_file:
+        return False
+    return _FOXESS_MODBUS_VENDOR_PYMODBUS in str(module_file).replace("\\", "/")
+
+
+def _is_foxess_modbus_vendor_path(path: str) -> bool:
+    return _FOXESS_MODBUS_VENDOR_PYMODBUS in str(path).replace("\\", "/")
+
+
+def _purge_foxess_modbus_vendor_pymodbus() -> None:
+    """Remove foxess_modbus vendored pymodbus modules before direct Modbus imports.
+
+    foxess_modbus vendors pymodbus 3.6.x and can leave submodules such as
+    pymodbus.framer in sys.modules. Mixing those with Home Assistant's current
+    pymodbus package breaks imports before PowerSync can start direct TCP mode.
+    """
+    removed = [
+        name
+        for name, module in list(sys.modules.items())
+        if (name == "pymodbus" or name.startswith("pymodbus."))
+        and _is_foxess_modbus_vendor_module(module)
+    ]
+    for name in removed:
+        sys.modules.pop(name, None)
+
+    if removed:
+        _LOGGER.debug(
+            "Removed foxess_modbus vendored pymodbus modules before FoxESS direct Modbus import: %s",
+            ", ".join(sorted(removed)),
+        )
+
+
+def _import_async_modbus_tcp_client():
+    """Import the TCP client without retaining foxess_modbus vendored sys.path entries."""
+    _purge_foxess_modbus_vendor_pymodbus()
+    original_path = list(sys.path)
+    sys.path[:] = [
+        path for path in sys.path if not _is_foxess_modbus_vendor_path(path)
+    ]
+    try:
+        from pymodbus.client.tcp import AsyncModbusTcpClient as client_cls
+    finally:
+        sys.path[:] = original_path
+    return client_cls
+
+
+def _import_async_modbus_serial_client():
+    """Import the serial client with the same vendored-pymodbus guard as TCP."""
+    _purge_foxess_modbus_vendor_pymodbus()
+    original_path = list(sys.path)
+    sys.path[:] = [
+        path for path in sys.path if not _is_foxess_modbus_vendor_path(path)
+    ]
+    try:
+        from pymodbus.client.serial import AsyncModbusSerialClient as client_cls
+    finally:
+        sys.path[:] = original_path
+    return client_cls
+
+
+AsyncModbusTcpClient = _import_async_modbus_tcp_client()
 from pymodbus.exceptions import ModbusException
 
 from .base import InverterController, InverterState, InverterStatus
-
-_LOGGER = logging.getLogger(__name__)
 
 # pymodbus 3.10+ renamed 'slave' to 'device_id'
 def _detect_slave_kwarg() -> str:
@@ -385,7 +452,7 @@ class FoxESSController(InverterController):
                     self._connected = False
 
                 if self._connection_type == "serial" and self._serial_port:
-                    from pymodbus.client import AsyncModbusSerialClient
+                    AsyncModbusSerialClient = _import_async_modbus_serial_client()
                     self._client = AsyncModbusSerialClient(
                         port=self._serial_port,
                         baudrate=self._baudrate,

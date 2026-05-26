@@ -18,7 +18,9 @@ def _install_stubs() -> None:
     ha_entity_registry = types.ModuleType("homeassistant.helpers.entity_registry")
 
     ha_entity_registry.async_get = lambda hass: hass.entity_registry
-    ha_entity_registry.async_entries_for_config_entry = lambda registry, entry_id: []
+    ha_entity_registry.async_entries_for_config_entry = (
+        lambda registry, entry_id: registry.entries_for(entry_id)
+    )
 
     ha_helpers.entity_registry = ha_entity_registry
     ha_root.helpers = ha_helpers
@@ -91,6 +93,17 @@ class _FakeServices:
             self._states.set(entity_id, "off")
 
 
+class _FakeRegistry:
+    def __init__(self, entries: dict[str, list[tuple[str, str]]] | None = None):
+        self._entries = entries or {}
+
+    def entries_for(self, entry_id: str):
+        return [
+            types.SimpleNamespace(unique_id=unique_id, entity_id=entity_id)
+            for unique_id, entity_id in self._entries.get(entry_id, [])
+        ]
+
+
 class _FakeHass:
     def __init__(
         self,
@@ -99,6 +112,7 @@ class _FakeHass:
         switch_turn_on_sticks: bool = True,
         fail_on: tuple[str, str, str] | None = None,
         mirror_app_mode: bool = True,
+        registry_entries: dict[str, list[tuple[str, str]]] | None = None,
     ):
         self.states = _FakeStates(states)
         self.services = _FakeServices(
@@ -107,7 +121,7 @@ class _FakeHass:
             fail_on=fail_on,
             mirror_app_mode=mirror_app_mode,
         )
-        self.entity_registry = object()
+        self.entity_registry = _FakeRegistry(registry_entries)
 
 
 def _passive_states(
@@ -260,6 +274,50 @@ def test_status_uses_pv_string_sum_when_solar_total_omits_a_string():
     assert status["pv1_power"] == 0.175
     assert status["pv2_power"] == 0.17
     assert status["pv3_power"] == 0.15
+    assert status["daily_solar_energy_kwh"] == 9.9
+    assert status["daily_grid_import_kwh"] == 1.8
+    assert status["daily_grid_export_kwh"] == 0.7
+
+
+def test_config_entry_discovery_prefers_grid_load_power_and_current_daily_keys():
+    hass = _FakeHass(
+        [
+            _FakeState("sensor.saj_battery_soc", "81"),
+            _FakeState("sensor.saj_battery_power", "0"),
+            _FakeState("sensor.saj_fast_grid_load_power", "650"),
+            _FakeState("sensor.saj_fast_ct_grid_power_watt", "0"),
+            _FakeState("sensor.saj_fast_total_grid_power", "2200"),
+            _FakeState("sensor.saj_fast_ct_pv_power_watt", "1200"),
+            _FakeState("sensor.saj_total_load_power", "1800"),
+            _FakeState("sensor.saj_power_current_day", "9.9"),
+            _FakeState("sensor.saj_feed_in_today_energy", "1.8"),
+            _FakeState("sensor.saj_sell_today_energy", "0.7"),
+        ],
+        registry_entries={
+            "saj-entry": [
+                ("saj_Bat1SOC", "sensor.saj_battery_soc"),
+                ("saj_fast_batteryPower", "sensor.saj_battery_power"),
+                ("saj_fast_CT_GridPowerWatt", "sensor.saj_fast_ct_grid_power_watt"),
+                ("saj_fast_totalgridPower", "sensor.saj_fast_total_grid_power"),
+                ("saj_fast_gridPower", "sensor.saj_fast_grid_load_power"),
+                ("saj_fast_CT_PVPowerWatt", "sensor.saj_fast_ct_pv_power_watt"),
+                ("saj_fast_TotalLoadPower", "sensor.saj_total_load_power"),
+                ("saj_todayenergy", "sensor.saj_power_current_day"),
+                ("saj_feedin_today_energy", "sensor.saj_feed_in_today_energy"),
+                ("saj_sell_today_energy", "sensor.saj_sell_today_energy"),
+            ]
+        },
+    )
+    controller = SajH2BatteryController(hass, saj_entry_id="saj-entry")
+
+    assert asyncio.run(controller.connect())
+
+    assert controller._entity_map["grid_power"] == "sensor.saj_fast_grid_load_power"
+    assert controller._entity_map["daily_solar_energy"] == "sensor.saj_power_current_day"
+    assert controller._entity_map["daily_grid_import"] == "sensor.saj_feed_in_today_energy"
+    assert controller._entity_map["daily_grid_export"] == "sensor.saj_sell_today_energy"
+    status = controller.get_status()
+    assert status["grid_power"] == 0.65
     assert status["daily_solar_energy_kwh"] == 9.9
     assert status["daily_grid_import_kwh"] == 1.8
     assert status["daily_grid_export_kwh"] == 0.7

@@ -447,9 +447,10 @@ class FoxESSEntityController:
 
     def _solar_power_kw(self) -> float:
         solar_kw = self._power_kw("solar_power")
-        if solar_kw is not None:
-            return solar_kw
-        return sum(self._power_kw(f"pv{idx}_power") or 0.0 for idx in range(1, 7))
+        pv_string_kw = sum(self._power_kw(f"pv{idx}_power") or 0.0 for idx in range(1, 7))
+        if solar_kw is None:
+            return pv_string_kw
+        return max(solar_kw, pv_string_kw)
 
     def _current_to_power_w(self, amps: float) -> int:
         voltage = self._read_float("battery_voltage") or 500.0

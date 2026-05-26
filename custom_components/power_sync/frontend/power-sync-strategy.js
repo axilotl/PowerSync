@@ -3496,24 +3496,14 @@ function _pvStringSensors(e, hass, findSensor) {
     if (row) extraEntities.push(row);
   };
 
-  addString(
-    resolveSensor(['pv1_power', 'pv_1_power', 'pv_power_1', 'ppv1'], 'pv1_power'),
-    resolveSensor(['pv1_voltage', 'pv_1_voltage', 'pv_voltage_1', 'vpv1'], 'pv1_voltage'),
-    resolveSensor(['pv1_current', 'pv_1_current', 'pv_current_1', 'ipv1'], 'pv1_current'),
-    'PV1',
-  );
-  addString(
-    resolveSensor(['pv2_power', 'pv_2_power', 'pv_power_2', 'ppv2'], 'pv2_power'),
-    resolveSensor(['pv2_voltage', 'pv_2_voltage', 'pv_voltage_2', 'vpv2'], 'pv2_voltage'),
-    resolveSensor(['pv2_current', 'pv_2_current', 'pv_current_2', 'ipv2'], 'pv2_current'),
-    'PV2',
-  );
-  addString(
-    resolveSensor(['pv3_power', 'pv_3_power', 'pv_power_3', 'ppv3'], 'pv3_power'),
-    resolveSensor(['pv3_voltage', 'pv_3_voltage', 'pv_voltage_3', 'vpv3'], 'pv3_voltage'),
-    resolveSensor(['pv3_current', 'pv_3_current', 'pv_current_3', 'ipv3'], 'pv3_current'),
-    'PV3',
-  );
+  for (let idx = 1; idx <= 6; idx += 1) {
+    addString(
+      resolveSensor([`pv${idx}_power`, `pv_${idx}_power`, `pv_power_${idx}`, `ppv${idx}`], `pv${idx}_power`),
+      resolveSensor([`pv${idx}_voltage`, `pv_${idx}_voltage`, `pv_voltage_${idx}`, `vpv${idx}`], `pv${idx}_voltage`),
+      resolveSensor([`pv${idx}_current`, `pv_${idx}_current`, `pv_current_${idx}`, `ipv${idx}`], `pv${idx}_current`),
+      `PV${idx}`,
+    );
+  }
 
   if (pvStringEntities.length === 0) return null;
 

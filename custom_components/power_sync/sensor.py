@@ -102,6 +102,10 @@ from .const import (
     SENSOR_TYPE_BATTERY_MODE,
     SENSOR_TYPE_PV1_POWER,
     SENSOR_TYPE_PV2_POWER,
+    SENSOR_TYPE_PV3_POWER,
+    SENSOR_TYPE_PV4_POWER,
+    SENSOR_TYPE_PV5_POWER,
+    SENSOR_TYPE_PV6_POWER,
     SENSOR_TYPE_CT2_POWER,
     SENSOR_TYPE_WORK_MODE,
     SENSOR_TYPE_MIN_SOC,
@@ -601,26 +605,28 @@ ENERGY_SENSORS: tuple[PowerSyncSensorEntityDescription, ...] = (
     ),
 )
 
+FOXESS_PV_POWER_SENSOR_TYPES = (
+    SENSOR_TYPE_PV1_POWER,
+    SENSOR_TYPE_PV2_POWER,
+    SENSOR_TYPE_PV3_POWER,
+    SENSOR_TYPE_PV4_POWER,
+    SENSOR_TYPE_PV5_POWER,
+    SENSOR_TYPE_PV6_POWER,
+)
+
 FOXESS_SENSORS: tuple[PowerSyncSensorEntityDescription, ...] = (
-    PowerSyncSensorEntityDescription(
-        key=SENSOR_TYPE_PV1_POWER,
-        name="PV1 Power",
-        native_unit_of_measurement=UnitOfPower.KILO_WATT,
-        device_class=SensorDeviceClass.POWER,
-        state_class=SensorStateClass.MEASUREMENT,
-        suggested_display_precision=3,
-        icon="mdi:solar-panel",
-        value_fn=lambda data: data.get("pv1_power") if data else None,
-    ),
-    PowerSyncSensorEntityDescription(
-        key=SENSOR_TYPE_PV2_POWER,
-        name="PV2 Power",
-        native_unit_of_measurement=UnitOfPower.KILO_WATT,
-        device_class=SensorDeviceClass.POWER,
-        state_class=SensorStateClass.MEASUREMENT,
-        suggested_display_precision=3,
-        icon="mdi:solar-panel",
-        value_fn=lambda data: data.get("pv2_power") if data else None,
+    *(
+        PowerSyncSensorEntityDescription(
+            key=sensor_type,
+            name=f"PV{idx} Power",
+            native_unit_of_measurement=UnitOfPower.KILO_WATT,
+            device_class=SensorDeviceClass.POWER,
+            state_class=SensorStateClass.MEASUREMENT,
+            suggested_display_precision=3,
+            icon="mdi:solar-panel",
+            value_fn=lambda data, key=sensor_type: data.get(key) if data else None,
+        )
+        for idx, sensor_type in enumerate(FOXESS_PV_POWER_SENSOR_TYPES, start=1)
     ),
     PowerSyncSensorEntityDescription(
         key=SENSOR_TYPE_CT2_POWER,
@@ -1506,7 +1512,7 @@ async def async_setup_entry(
                     entry=entry,
                 )
             )
-        _LOGGER.info("FoxESS-specific sensors added (PV1, PV2, CT2, work mode, min SOC, daily energy)")
+        _LOGGER.info("FoxESS-specific sensors added (PV1-PV6, CT2, work mode, min SOC, daily energy)")
 
     # Add Solax PV string sensors, including X3 Ultra PV3 and voltage/current detail.
     if is_solax and energy_coordinator:

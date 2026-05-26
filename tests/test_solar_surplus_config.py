@@ -14,6 +14,7 @@ sys.modules["power_sync"] = _ps
 
 from power_sync.solar_surplus_config import (  # noqa: E402
     DEFAULT_SOLAR_SURPLUS_MIN_BATTERY_SOC,
+    get_stored_solar_surplus_config,
     get_solar_surplus_min_battery_soc,
     normalize_solar_surplus_config,
 )
@@ -48,3 +49,39 @@ def test_invalid_primary_threshold_falls_back_to_alias():
         "home_battery_minimum": "nope",
         "min_battery_soc": 45,
     }) == 45
+
+
+def test_stored_solar_config_prefers_automation_store():
+    store = types.SimpleNamespace(
+        _data={
+            "solar_surplus_config": {
+                "household_buffer_kw": 1.5,
+                "home_battery_minimum": 20,
+                "allow_parallel_charging": True,
+                "max_battery_charge_rate_kw": 3.0,
+            }
+        }
+    )
+    config = get_stored_solar_surplus_config({
+        "automation_store": store,
+        "solar_surplus_config": {"household_buffer_kw": 0.5},
+    })
+
+    assert config["household_buffer_kw"] == 1.5
+    assert config["home_battery_minimum"] == 20
+    assert config["min_battery_soc"] == 20
+    assert config["allow_parallel_charging"] is True
+    assert config["max_battery_charge_rate_kw"] == 3.0
+
+
+def test_stored_solar_config_falls_back_to_entry_data():
+    config = get_stored_solar_surplus_config({
+        "solar_surplus_config": {
+            "household_buffer_kw": 1.0,
+            "min_battery_soc": 35,
+        }
+    })
+
+    assert config["household_buffer_kw"] == 1.0
+    assert config["home_battery_minimum"] == 35
+    assert config["min_battery_soc"] == 35

@@ -193,6 +193,14 @@ def test_daily_load_uses_total_state_class():
     assert desc.state_class == "total"
 
 
+def test_foxess_sensor_descriptions_include_pv4_power():
+    sensor = _sensor_module()
+    keys = {description.key for description in sensor.FOXESS_SENSORS}
+
+    assert {"pv1_power", "pv2_power", "pv3_power", "pv4_power", "pv5_power", "pv6_power"} <= keys
+    assert sensor.SENSOR_KEY_TO_FAMILY["pv4_power"] == sensor.SENSOR_FAMILY_SOLAR_INVERTER
+
+
 def test_sungrow_solar_sensor_adds_configured_ac_inverter_output():
     sensor = _sensor_module()
     desc = next(d for d in sensor.ENERGY_SENSORS if d.key == "solar_power")

@@ -11370,6 +11370,7 @@ class SolarSurplusStatusView(HomeAssistantView):
         """Handle GET request for solar surplus status."""
         try:
             from .automations.actions import _dynamic_ev_state, _calculate_solar_surplus
+            from .solar_surplus_config import get_stored_solar_surplus_config
 
             # Get config entry
             entries = self._hass.config_entries.async_entries(DOMAIN)
@@ -11433,7 +11434,8 @@ class SolarSurplusStatusView(HomeAssistantView):
                 "load_power": load_power_kw * 1000,
                 "battery_soc": battery_soc,
             }
-            surplus_kw = _calculate_solar_surplus(live_status, 0, {"surplus_calculation": "grid_based", "household_buffer_kw": 0.5})
+            solar_config = get_stored_solar_surplus_config(entry_data)
+            surplus_kw = _calculate_solar_surplus(live_status, 0, solar_config)
 
             # Get per-vehicle states
             vehicles_state = []
@@ -12967,6 +12969,7 @@ class EVWidgetDataView(HomeAssistantView):
                 _dynamic_ev_state,
                 _calculate_solar_surplus,
             )
+            from .solar_surplus_config import get_stored_solar_surplus_config
 
             entry_id = self._config_entry.entry_id
             entry_data = self._hass.data.get(DOMAIN, {}).get(entry_id, {})
@@ -13018,7 +13021,8 @@ class EVWidgetDataView(HomeAssistantView):
             }
 
             # Calculate current surplus
-            surplus_kw = _calculate_solar_surplus(live_status, 0, {"household_buffer_kw": 0.5})
+            solar_config = get_stored_solar_surplus_config(entry_data)
+            surplus_kw = _calculate_solar_surplus(live_status, 0, solar_config)
 
             # Get actual EV power from Tesla Wall Connector API (ground truth)
             # This prevents showing phantom power when commanded amps > 0 but car isn't
@@ -13643,6 +13647,7 @@ class EVLoadpointStatusView(HomeAssistantView):
                 get_price_level_executor,
                 get_scheduled_charging_executor,
             )
+            from .solar_surplus_config import get_stored_solar_surplus_config
             from .const import (
                 CONF_GENERIC_CHARGER_AMPS_ENTITY,
                 CONF_GENERIC_CHARGER_ENABLED,
@@ -13661,11 +13666,12 @@ class EVLoadpointStatusView(HomeAssistantView):
                 "load_power": site["load_power_kw"] * 1000,
                 "battery_soc": site["battery_soc"],
             }
+            solar_config = get_stored_solar_surplus_config(entry_data)
             site["surplus_kw"] = round(
                 _calculate_solar_surplus(
                     live_status,
                     0,
-                    {"surplus_calculation": "grid_based", "household_buffer_kw": 0.5},
+                    solar_config,
                 ),
                 2,
             )
@@ -13872,7 +13878,7 @@ class PriceRecommendationView(HomeAssistantView):
             )
             from .solar_surplus_config import (
                 get_solar_surplus_min_battery_soc,
-                normalize_solar_surplus_config,
+                get_stored_solar_surplus_config,
             )
 
             entry_id = self._config_entry.entry_id
@@ -13915,15 +13921,7 @@ class PriceRecommendationView(HomeAssistantView):
                 load_power_kw = foxess_coordinator.data.get("load_power", 0)
                 battery_soc = foxess_coordinator.data.get("battery_level", 0)
 
-            # Get solar-surplus config from the automation store where the app saves it.
-            automation_store = entry_data.get("automation_store")
-            stored_solar_config = {}
-            if automation_store:
-                stored_data = getattr(automation_store, '_data', {}) or {}
-                stored_solar_config = stored_data.get("solar_surplus_config", {})
-            if not stored_solar_config:
-                stored_solar_config = entry_data.get("solar_surplus_config", {})
-            solar_config = normalize_solar_surplus_config(stored_solar_config)
+            solar_config = get_stored_solar_surplus_config(entry_data)
             home_battery_minimum = get_solar_surplus_min_battery_soc(solar_config)
 
             # Build live_status dict for surplus calculation (expects watts)

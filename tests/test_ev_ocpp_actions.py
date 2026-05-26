@@ -1288,6 +1288,42 @@ def test_solar_surplus_tesla_set_amps_uses_configured_max_over_idle_entity_cap(m
     ]
 
 
+def test_solar_surplus_tesla_set_amps_falls_back_after_range_rejection(monkeypatch):
+    async def fake_get_tesla_ev_entity(*args, **kwargs):
+        return "number.car_charging_amps"
+
+    async def fake_wake(*args, **kwargs):
+        return True
+
+    class _RejectFirstRangeServices(_Services):
+        async def async_call(self, domain: str, service: str, data: dict, blocking: bool = True):
+            self.calls.append((domain, service, data))
+            if len(self.calls) == 1:
+                raise Exception("out_of_range")
+
+    monkeypatch.setattr(actions, "_get_tesla_ev_entity", fake_get_tesla_ev_entity)
+    monkeypatch.setattr(actions, "_wake_tesla_ev", fake_wake)
+    hass = _Hass([
+        _State("number.car_charging_amps", "16", {"min": 5, "max": 16}),
+    ])
+    hass.services = _RejectFirstRangeServices()
+    params = {
+        "vehicle_vin": "VIN123",
+        "amps": 30,
+        "max_charge_amps": 30,
+        "allow_stale_entity_max_override": True,
+    }
+
+    result = asyncio.run(actions._action_set_ev_charging_amps(hass, _Entry(), params))
+
+    assert result is True
+    assert hass.services.calls == [
+        ("number", "set_value", {"entity_id": "number.car_charging_amps", "value": 30}),
+        ("number", "set_value", {"entity_id": "number.car_charging_amps", "value": 16}),
+    ]
+    assert params["max_charge_amps"] == 16
+
+
 def test_dynamic_start_is_blocked_by_manual_owner():
     hass = _Hass([_State("switch.evse_1_charge_control", "off")])
     actions._dynamic_ev_state.clear()

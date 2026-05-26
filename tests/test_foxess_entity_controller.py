@@ -116,6 +116,10 @@ def _kw() -> dict[str, str]:
     return {"unit_of_measurement": "kW"}
 
 
+def _w() -> dict[str, str]:
+    return {"unit_of_measurement": "W"}
+
+
 def _kwh() -> dict[str, str]:
     return {"unit_of_measurement": "kWh"}
 
@@ -212,6 +216,27 @@ def test_fallback_sensors_normalize_grid_and_battery_signs():
 
     assert status["battery_power"] == pytest.approx(0.5)
     assert status["grid_power"] == pytest.approx(0.9)
+
+
+def test_solar_power_uses_pv_string_sum_when_reported_total_omits_pv4():
+    states = _without_suffix(_base_states(), ("_pv_power_now", "_pv1_power"))
+    states.extend(
+        [
+            _FakeState("sensor.foxess_pv_power_now", "345", _w()),
+            _FakeState("sensor.foxess_pv1_power", "175", _w()),
+            _FakeState("sensor.foxess_pv2_power", "170", _w()),
+            _FakeState("sensor.foxess_pv3_power", "150", _w()),
+            _FakeState("sensor.foxess_pv4_power", "160", _w()),
+        ]
+    )
+    hass = _FakeHass(states)
+    controller = FoxESSEntityController(hass, entity_prefix="foxess")
+
+    assert asyncio.run(controller.connect())
+    status = controller.get_status()
+
+    assert status["solar_power"] == pytest.approx(0.655)
+    assert status["pv4_power"] == pytest.approx(0.16)
 
 
 def test_selected_config_entry_is_preferred_before_suffix_fallback():
