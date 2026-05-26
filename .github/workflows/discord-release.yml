@@ -8,77 +8,120 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Release tag to post, for example v2.12.480
-        required: true
+        description: Release tag to post, for example v2.12.481
+        required: false
         type: string
+  schedule:
+    - cron: '*/30 * * * *'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   notify:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: main
 
-      - name: Build Discord payload
+      - name: Build Discord payloads
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
-          TAG_NAME=$(
-            python3 - <<'PY'
+          python3 - <<'PY'
           import json
           import os
+          import subprocess
           from pathlib import Path
 
+          marker_path = Path(".github/discord-release-last-posted.txt")
           event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
-          tag = (
+          target_tag = (
               (event.get("release") or {}).get("tag_name")
               or (event.get("inputs") or {}).get("tag")
               or (event.get("client_payload") or {}).get("tag")
               or ""
+          ).strip()
+          last_posted = marker_path.read_text().strip() if marker_path.exists() else ""
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          releases = json.loads(
+              subprocess.check_output(
+                  [
+                      "gh",
+                      "api",
+                      f"repos/{repo}/releases?per_page=20",
+                  ],
+                  text=True,
+              )
           )
-          print(str(tag).strip())
-          PY
+          releases = [release for release in releases if not release.get("draft")]
+
+          if not releases:
+              selected = []
+          else:
+              tags = [release["tag_name"] for release in releases]
+              target_index = 0
+              if target_tag:
+                  try:
+                      target_index = tags.index(target_tag)
+                  except ValueError as exc:
+                      raise SystemExit(f"Release tag {target_tag} was not found") from exc
+
+              if last_posted in tags:
+                  marker_index = tags.index(last_posted)
+                  selected = releases[target_index:marker_index] if marker_index > target_index else []
+              else:
+                  # First run or marker aged out of the API page: post the
+                  # requested release, or only the latest scheduled release, to
+                  # avoid spamming historical releases.
+                  selected = [releases[target_index]]
+
+              selected = list(reversed(selected))
+
+          payload_dir = Path("/tmp/discord_release_payloads")
+          payload_dir.mkdir(parents=True, exist_ok=True)
+          tags_to_post: list[str] = []
+
+          for index, release in enumerate(selected):
+              tag = release["tag_name"]
+              name = release.get("name") or tag
+              notes = (release.get("body") or "").strip()
+              url = release["html_url"]
+
+              if not notes:
+                  raise SystemExit(f"Release {tag} has no notes; refusing to post an empty Discord update.")
+
+              if len(notes) > 4000:
+                  notes = notes[:3997] + "..."
+
+              payload = {
+                  "allowed_mentions": {"parse": []},
+                  "embeds": [
+                      {
+                          "title": f"{name} Released",
+                          "description": notes,
+                          "color": 5025616,
+                          "url": url,
+                          "footer": {"text": "Update available via HACS"},
+                      }
+                  ],
+              }
+              (payload_dir / f"{index}.json").write_text(json.dumps(payload))
+              tags_to_post.append(tag)
+
+          Path("/tmp/discord_release_tags.txt").write_text(
+              "\n".join(tags_to_post) + ("\n" if tags_to_post else "")
           )
+          Path("/tmp/discord_release_count.txt").write_text(str(len(tags_to_post)))
 
-          if [ -z "${TAG_NAME:-}" ]; then
-            echo "::error::Release tag is required."
-            exit 1
-          fi
-
-          gh release view "$TAG_NAME" --json tagName,name,body,url,publishedAt > /tmp/release.json
-
-          python3 - <<'PY'
-          import json
-          from pathlib import Path
-
-          release = json.loads(Path("/tmp/release.json").read_text())
-          name = release.get("name") or release["tagName"]
-          notes = (release.get("body") or "").strip()
-          url = release["url"]
-
-          if not notes:
-              raise SystemExit("Release has no notes; refusing to post an empty Discord update.")
-
-          if len(notes) > 4000:
-              notes = notes[:3997] + "..."
-
-          payload = {
-              "allowed_mentions": {"parse": []},
-              "embeds": [
-                  {
-                      "title": f"{name} Released",
-                      "description": notes,
-                      "color": 5025616,
-                      "url": url,
-                      "footer": {"text": "Update available via HACS"},
-                  }
-              ],
-          }
-          Path("/tmp/discord_payload.json").write_text(json.dumps(payload))
+          if tags_to_post:
+              print("Discord releases to post: " + ", ".join(tags_to_post))
+          else:
+              print(f"No Discord release notifications needed; last marker is {last_posted or 'empty'}")
           PY
 
       - name: Notify Discord
@@ -87,14 +130,54 @@ jobs:
         run: |
           set -euo pipefail
 
-          HTTP_CODE=$(curl -sS -o /tmp/discord_response.txt -w "%{http_code}" \
-            -H "Content-Type: application/json" \
-            --data-binary @/tmp/discord_payload.json \
-            "$DISCORD_WEBHOOK")
+          COUNT=$(cat /tmp/discord_release_count.txt)
+          if [ "$COUNT" = "0" ]; then
+            echo "No pending Discord release notifications"
+            exit 0
+          fi
 
-          echo "Discord webhook HTTP status: $HTTP_CODE"
-          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
-            echo "Discord webhook failed:"
-            cat /tmp/discord_response.txt
-            exit 1
+          : > /tmp/discord_release_posted_tags.txt
+          for index in $(seq 0 $((COUNT - 1))); do
+            tag=$(sed -n "$((index + 1))p" /tmp/discord_release_tags.txt)
+            payload="/tmp/discord_release_payloads/$index.json"
+
+            HTTP_CODE=$(curl -sS -o /tmp/discord_response.txt -w "%{http_code}" \
+              -H "Content-Type: application/json" \
+              --data-binary @"$payload" \
+              "$DISCORD_WEBHOOK")
+
+            echo "Discord webhook HTTP status for $tag: $HTTP_CODE"
+            if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+              echo "Discord webhook failed for $tag:"
+              cat /tmp/discord_response.txt
+              exit 1
+            fi
+
+            echo "$tag" >> /tmp/discord_release_posted_tags.txt
+          done
+
+      - name: Record Discord marker
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          if [ ! -s /tmp/discord_release_posted_tags.txt ]; then
+            echo "No Discord marker update needed"
+            exit 0
+          fi
+
+          LAST_TAG=$(tail -n 1 /tmp/discord_release_posted_tags.txt)
+          MARKER_PATH=".github/discord-release-last-posted.txt"
+          echo "$LAST_TAG" > "$MARKER_PATH"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "$MARKER_PATH"
+          if git diff --cached --quiet; then
+            echo "Discord marker already records $LAST_TAG"
+          else
+            git commit -m "ci(release): record Discord notification through $LAST_TAG [skip ci]"
+            git push origin HEAD:main
+            echo "Recorded Discord marker through $LAST_TAG"
           fi
