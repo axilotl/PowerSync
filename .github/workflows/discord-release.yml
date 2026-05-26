@@ -1,10 +1,6 @@
 name: Notify Discord for Release
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - '.github/release-discord-backfill.txt'
   release:
     types: [published]
   repository_dispatch:
@@ -44,10 +40,6 @@ jobs:
               or (event.get("client_payload") or {}).get("tag")
               or ""
           )
-          if not tag:
-              path = Path(".github/release-discord-backfill.txt")
-              if path.exists():
-                  tag = path.read_text().strip()
           print(str(tag).strip())
           PY
           )
