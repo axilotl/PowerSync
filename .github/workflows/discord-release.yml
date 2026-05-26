@@ -1,0 +1,80 @@
+name: Notify Discord for Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to post, for example v2.12.480
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build Discord payload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.event.release.tag_name || github.event.inputs.tag }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${TAG_NAME:-}" ]; then
+            echo "::error::Release tag is required."
+            exit 1
+          fi
+
+          gh release view "$TAG_NAME" --json tagName,name,body,url,publishedAt > /tmp/release.json
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          release = json.loads(Path("/tmp/release.json").read_text())
+          name = release.get("name") or release["tagName"]
+          notes = (release.get("body") or "").strip()
+          url = release["url"]
+
+          if not notes:
+              raise SystemExit("Release has no notes; refusing to post an empty Discord update.")
+
+          if len(notes) > 4000:
+              notes = notes[:3997] + "..."
+
+          payload = {
+              "allowed_mentions": {"parse": []},
+              "embeds": [
+                  {
+                      "title": f"{name} Released",
+                      "description": notes,
+                      "color": 5025616,
+                      "url": url,
+                      "footer": {"text": "Update available via HACS"},
+                  }
+              ],
+          }
+          Path("/tmp/discord_payload.json").write_text(json.dumps(payload))
+          PY
+
+      - name: Notify Discord
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          set -euo pipefail
+
+          HTTP_CODE=$(curl -sS -o /tmp/discord_response.txt -w "%{http_code}" \
+            -H "Content-Type: application/json" \
+            --data-binary @/tmp/discord_payload.json \
+            "$DISCORD_WEBHOOK")
+
+          echo "Discord webhook HTTP status: $HTTP_CODE"
+          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+            echo "Discord webhook failed:"
+            cat /tmp/discord_response.txt
+            exit 1
+          fi
