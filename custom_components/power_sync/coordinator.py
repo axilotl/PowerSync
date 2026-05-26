@@ -400,9 +400,11 @@ def _get_current_prices(hass: HomeAssistant, entry_id: str) -> tuple[float | Non
                         CONF_PEA_CUSTOM_VALUE,
                         CONF_FLOW_POWER_STATE,
                         FLOW_POWER_DEFAULT_BASE_RATE,
-                        FLOW_POWER_MARKET_AVG,
-                        FLOW_POWER_BENCHMARK,
                         FLOW_POWER_HAPPY_HOUR_PERIODS,
+                    )
+                    from .flow_power_pricing import (
+                        calculate_flow_power_pea,
+                        resolve_flow_power_pricing_context,
                     )
                     provider = config_entry.options.get(
                         CONF_ELECTRICITY_PROVIDER,
@@ -414,16 +416,28 @@ def _get_current_prices(hass: HomeAssistant, entry_id: str) -> tuple[float | Non
                             CONF_FLOW_POWER_BASE_RATE, FLOW_POWER_DEFAULT_BASE_RATE
                         )
                         fp_custom_pea = config_entry.options.get(CONF_PEA_CUSTOM_VALUE)
-                        if fp_custom_pea is not None:
-                            pea = fp_custom_pea
-                        elif pea_enabled:
-                            twap_tracker = entry_data.get("flow_power_twap_tracker")
-                            market_avg = (
-                                twap_tracker.twap
-                                if twap_tracker and twap_tracker.twap is not None
-                                else FLOW_POWER_MARKET_AVG
+                        try:
+                            fp_custom_pea_value = (
+                                float(fp_custom_pea)
+                                if fp_custom_pea not in (None, "")
+                                else None
                             )
-                            pea = wholesale_cents - market_avg - FLOW_POWER_BENCHMARK
+                        except (TypeError, ValueError):
+                            fp_custom_pea_value = None
+                        if fp_custom_pea_value is not None:
+                            pea = fp_custom_pea_value
+                        elif pea_enabled:
+                            pricing = resolve_flow_power_pricing_context(
+                                config_entry.options,
+                                config_entry.data,
+                                entry_data,
+                            )
+                            pea = calculate_flow_power_pea(
+                                wholesale_cents,
+                                pricing,
+                                tariff_rate=entry_data.get("fp_tariff_rate"),
+                                avg_daily_tariff=entry_data.get("fp_avg_daily_tariff"),
+                            )
                         else:
                             pea = 0.0
                         buy_cents_fp = max(0.0, fp_base_rate + pea)

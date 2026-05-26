@@ -25,6 +25,11 @@ from .executor import ScheduleExecutor, ExecutionStatus, BatteryAction
 from .load_estimator import LoadEstimator, SolcastForecaster
 from .ev_coordinator import EVCoordinator, EVConfig, EVChargingMode
 from ..const import DEFAULT_OPTIMIZATION_INTERVAL
+from ..flow_power_pricing import (
+    FlowPowerPricingContext,
+    calculate_flow_power_pea,
+    resolve_flow_power_pricing_context,
+)
 from ..tariff_time import find_matching_tou_period, period_entries
 
 _LOGGER = logging.getLogger(__name__)
@@ -4570,7 +4575,9 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     fp_base_rate = 34.0
                     fp_pea_enabled = True
                     fp_custom_pea = None
-                    fp_market_avg = None
+                    fp_pricing_context: FlowPowerPricingContext = (
+                        resolve_flow_power_pricing_context({}, {}, {})
+                    )
                     fp_avg_daily_tariff = None
                     fp_network = None
                     fp_tariff_code = None
@@ -4580,13 +4587,9 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                             CONF_ELECTRICITY_PROVIDER,
                             CONF_FP_NETWORK,
                             CONF_FP_TARIFF_CODE,
-                            CONF_FP_TWAP_OVERRIDE,
                             CONF_PEA_ENABLED,
                             CONF_FLOW_POWER_BASE_RATE,
                             CONF_PEA_CUSTOM_VALUE,
-                            FLOW_POWER_GST,
-                            FLOW_POWER_MARKET_AVG,
-                            FLOW_POWER_BENCHMARK,
                             FLOW_POWER_DEFAULT_BASE_RATE,
                             NETWORK_API_NAME,
                             DOMAIN as _DOMAIN,
@@ -4610,24 +4613,11 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                             domain_data = self.hass.data.get(
                                 _DOMAIN, {}
                             ).get(self._entry.entry_id, {})
-                            twap_override = self._entry.options.get(
-                                CONF_FP_TWAP_OVERRIDE,
-                                self._entry.data.get(CONF_FP_TWAP_OVERRIDE),
+                            fp_pricing_context = resolve_flow_power_pricing_context(
+                                self._entry.options,
+                                self._entry.data,
+                                domain_data,
                             )
-                            if twap_override not in (None, ""):
-                                try:
-                                    fp_market_avg = float(twap_override)
-                                except (ValueError, TypeError):
-                                    fp_market_avg = None
-                            if fp_market_avg is None:
-                                fp_twap_tracker = domain_data.get(
-                                    "flow_power_twap_tracker"
-                                )
-                                fp_market_avg = (
-                                    fp_twap_tracker.twap
-                                    if fp_twap_tracker and fp_twap_tracker.twap is not None
-                                    else FLOW_POWER_MARKET_AVG
-                                )
                             fp_avg_daily_tariff = domain_data.get(
                                 "fp_avg_daily_tariff"
                             )
@@ -4736,18 +4726,16 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                                     tariff_rate is not None
                                     and fp_avg_daily_tariff is not None
                                 ):
-                                    pea = (
-                                        FLOW_POWER_GST * wholesale_cents
-                                        + tariff_rate
-                                        - FLOW_POWER_GST * fp_market_avg
-                                        - fp_avg_daily_tariff
-                                        - FLOW_POWER_BENCHMARK
+                                    pea = calculate_flow_power_pea(
+                                        wholesale_cents,
+                                        fp_pricing_context,
+                                        tariff_rate=tariff_rate,
+                                        avg_daily_tariff=fp_avg_daily_tariff,
                                     )
                                 else:
-                                    pea = (
-                                        wholesale_cents
-                                        - fp_market_avg
-                                        - FLOW_POWER_BENCHMARK
+                                    pea = calculate_flow_power_pea(
+                                        wholesale_cents,
+                                        fp_pricing_context,
                                     )
                                 price_dollar = max(
                                     0, (fp_base_rate + pea) / 100

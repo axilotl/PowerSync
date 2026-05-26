@@ -262,7 +262,6 @@ from .const import (
     # Flow Power v2 tariff configuration
     CONF_FP_NETWORK,
     CONF_FP_TARIFF_CODE,
-    CONF_FP_TWAP_OVERRIDE,
     CONF_FP_AMBER_MARKUP,
     # Export price boost configuration
     CONF_EXPORT_BOOST_ENABLED,
@@ -17525,23 +17524,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         pea_enabled = entry.options.get(CONF_PEA_ENABLED, True)
         if pea_enabled:
+            from .flow_power_pricing import resolve_flow_power_pricing_context
+
             base_rate = entry.options.get(CONF_FLOW_POWER_BASE_RATE, FLOW_POWER_DEFAULT_BASE_RATE)
             custom_pea = entry.options.get(CONF_PEA_CUSTOM_VALUE)
             wholesale_prices = get_wholesale_lookup(forecast_data)
-
-            twap_override = entry.options.get(CONF_FP_TWAP_OVERRIDE)
-            twap_value = None
-            if twap_override not in (None, ""):
-                try:
-                    twap_value = float(twap_override)
-                except (ValueError, TypeError):
-                    pass
-            if twap_value is None:
-                fp_tracker = hass.data[DOMAIN][entry.entry_id].get("flow_power_twap_tracker")
-                twap_value = fp_tracker.twap if fp_tracker else None
+            domain_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+            pricing = resolve_flow_power_pricing_context(
+                entry.options,
+                entry.data,
+                domain_data,
+            )
 
             fp_tariff_rate_lookup = None
-            fp_avg_daily = hass.data[DOMAIN][entry.entry_id].get("fp_avg_daily_tariff")
+            fp_avg_daily = domain_data.get("fp_avg_daily_tariff")
             fp_network_name = entry.options.get(CONF_FP_NETWORK, entry.data.get(CONF_FP_NETWORK))
             fp_tc = entry.options.get(CONF_FP_TARIFF_CODE, entry.data.get(CONF_FP_TARIFF_CODE))
             if fp_network_name and fp_tc and fp_avg_daily is not None:
@@ -17561,9 +17557,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         fp_tariff_rate_lookup[period_key] = rate
 
             tariff = apply_flow_power_pea(
-                tariff, wholesale_prices, base_rate, custom_pea, twap=twap_value,
+                tariff, wholesale_prices, base_rate, custom_pea, twap=pricing.twap,
                 tariff_rate_lookup=fp_tariff_rate_lookup,
                 avg_daily_tariff=fp_avg_daily,
+                bpea=pricing.bpea,
+                gst_multiplier=pricing.gst_multiplier,
+                twap_source=pricing.twap_source,
+                bpea_source=pricing.bpea_source,
             )
 
         flow_power_state = entry.options.get(CONF_FLOW_POWER_STATE, entry.data.get(CONF_FLOW_POWER_STATE, ""))
@@ -18593,6 +18593,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 # Use Flow Power PEA pricing model: Base Rate + PEA
                 # Works with both AEMO (raw wholesale) and Amber (wholesaleKWHPrice forecast)
                 from .tariff_converter import apply_flow_power_pea, get_wholesale_lookup
+                from .flow_power_pricing import resolve_flow_power_pricing_context
 
                 base_rate = entry.options.get(CONF_FLOW_POWER_BASE_RATE, FLOW_POWER_DEFAULT_BASE_RATE)
                 custom_pea = entry.options.get(CONF_PEA_CUSTOM_VALUE)
@@ -18600,23 +18601,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 # Build wholesale price lookup from forecast data
                 # get_wholesale_lookup() handles both AEMO and Amber data formats
                 wholesale_prices = get_wholesale_lookup(forecast_data)
-
-                # Get dynamic TWAP or use override
-                twap_override = entry.options.get(CONF_FP_TWAP_OVERRIDE)
-                if twap_override is not None and twap_override != "":
-                    try:
-                        twap_value = float(twap_override)
-                    except (ValueError, TypeError):
-                        twap_value = None
-                else:
-                    twap_value = None
-
-                if twap_value is None:
-                    twap_value = fp_tracker.twap if fp_tracker else None
+                domain_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+                pricing = resolve_flow_power_pricing_context(
+                    entry.options,
+                    entry.data,
+                    domain_data,
+                )
 
                 # Build per-period tariff rate lookup for v2 formula
                 fp_tariff_rate_lookup = None
-                fp_avg_daily = hass.data[DOMAIN][entry.entry_id].get("fp_avg_daily_tariff")
+                fp_avg_daily = domain_data.get("fp_avg_daily_tariff")
                 fp_network_name = entry.options.get(CONF_FP_NETWORK, entry.data.get(CONF_FP_NETWORK))
                 fp_tc = entry.options.get(CONF_FP_TARIFF_CODE, entry.data.get(CONF_FP_TARIFF_CODE))
 
@@ -18637,16 +18631,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                             fp_tariff_rate_lookup[period_key] = rate
 
                 _LOGGER.info(
-                    "Applying Flow Power PEA (%s): base_rate=%.1fc, custom_pea=%s, twap=%s",
+                    "Applying Flow Power PEA (%s): base_rate=%.1fc, custom_pea=%s, "
+                    "twap=%.2fc (%s), bpea=%.2fc (%s), portal=%s",
                     flow_power_price_source,
                     base_rate,
                     f"{custom_pea:.1f}c" if custom_pea is not None else "auto",
-                    f"{twap_value:.2f}c" if twap_value is not None else "fallback (8.0c)",
+                    pricing.twap,
+                    pricing.twap_source,
+                    pricing.bpea,
+                    pricing.bpea_source,
+                    pricing.portal_active,
                 )
                 tariff = apply_flow_power_pea(
-                    tariff, wholesale_prices, base_rate, custom_pea, twap=twap_value,
+                    tariff, wholesale_prices, base_rate, custom_pea, twap=pricing.twap,
                     tariff_rate_lookup=fp_tariff_rate_lookup,
                     avg_daily_tariff=fp_avg_daily,
+                    bpea=pricing.bpea,
+                    gst_multiplier=pricing.gst_multiplier,
+                    twap_source=pricing.twap_source,
+                    bpea_source=pricing.bpea_source,
                 )
             elif flow_power_price_source in ("aemo_sensor", "aemo"):
                 # PEA disabled + AEMO: fall back to network tariff calculation

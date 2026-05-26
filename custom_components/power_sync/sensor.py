@@ -171,7 +171,6 @@ from .const import (
     CONF_FLOW_POWER_EXPORT_RATE,
     CONF_PEA_CUSTOM_VALUE,
     FLOW_POWER_MARKET_AVG,
-    FLOW_POWER_BENCHMARK,
     FLOW_POWER_DEFAULT_BASE_RATE,
     FLOW_POWER_EXPORT_RATES,
     FLOW_POWER_HAPPY_HOUR_PERIODS,
@@ -209,6 +208,11 @@ from .currency import (
     minor_price_unit,
     money_unit,
     normalize_currency,
+)
+from .flow_power_pricing import (
+    FlowPowerPricingContext,
+    calculate_flow_power_pea,
+    resolve_flow_power_pricing_context,
 )
 from . import get_current_price_from_tariff_schedule
 
@@ -3946,18 +3950,6 @@ class FlowPowerPriceSensor(PowerSyncCurrencyMixin, CoordinatorEntity, SensorEnti
         current_period = f"PERIOD_{hour:02d}_{(minute // 30) * 30:02d}"
         return current_period in FLOW_POWER_HAPPY_HOUR_PERIODS
 
-    def _get_twap_tracker(self):
-        """Get the FlowPowerTWAPTracker from hass.data if available."""
-        domain_data = self.hass.data.get(DOMAIN, {}).get(self._entry.entry_id, {})
-        return domain_data.get("flow_power_twap_tracker")
-
-    def _get_market_avg(self) -> float:
-        """Get the market average (dynamic TWAP or fallback)."""
-        tracker = self._get_twap_tracker()
-        if tracker and tracker.twap is not None:
-            return tracker.twap
-        return FLOW_POWER_MARKET_AVG
-
     def _get_tariff_data(self) -> tuple[float | None, float | None]:
         """Get tariff_rate and avg_daily_tariff from hass.data if available."""
         domain_data = self.hass.data.get(DOMAIN, {}).get(self._entry.entry_id, {})
@@ -3965,25 +3957,22 @@ class FlowPowerPriceSensor(PowerSyncCurrencyMixin, CoordinatorEntity, SensorEnti
         avg_daily_tariff = domain_data.get("fp_avg_daily_tariff")
         return tariff_rate, avg_daily_tariff
 
+    def _get_pricing_context(self) -> FlowPowerPricingContext:
+        """Resolve TWAP/BPEA/GST inputs shared with the optimizer."""
+        domain_data = self.hass.data.get(DOMAIN, {}).get(self._entry.entry_id, {})
+        return resolve_flow_power_pricing_context(
+            self._entry.options,
+            self._entry.data,
+            domain_data,
+        )
+
     def _get_effective_twap(self) -> float:
-        """Get effective TWAP: override -> raw wholesale tracker -> fallback 8c."""
-        override = self._get_config_value(CONF_FP_TWAP_OVERRIDE)
-        if override is not None and override != "":
-            try:
-                return float(override)
-            except (ValueError, TypeError):
-                pass
-        return self._get_market_avg()
+        """Get effective TWAP: override -> portal -> raw wholesale tracker -> fallback."""
+        return self._get_pricing_context().twap
 
     def _get_twap_source(self) -> str:
         """Return a label describing which TWAP source is active."""
-        override = self._get_config_value(CONF_FP_TWAP_OVERRIDE)
-        if override is not None and override != "":
-            return "override"
-        tracker = self._get_twap_tracker()
-        if tracker and not tracker.using_fallback:
-            return "dynamic"
-        return "fallback"
+        return self._get_pricing_context().twap_source
 
     def _calculate_import_price(self) -> float | None:
         """Calculate Flow Power import price with PEA in $/kWh.
@@ -4025,21 +4014,15 @@ class FlowPowerPriceSensor(PowerSyncCurrencyMixin, CoordinatorEntity, SensorEnti
 
     def _calculate_pea_auto(self, wholesale_cents: float) -> float:
         """Calculate PEA automatically using v2 or legacy formula."""
-        twap = self._get_effective_twap()
+        pricing = self._get_pricing_context()
         tariff_rate, avg_daily_tariff = self._get_tariff_data()
 
-        if tariff_rate is not None and avg_daily_tariff is not None:
-            # V2 formula: GST*Spot + Tariff - GST*TWAP - AvgDailyTariff - BPEA
-            return (
-                FLOW_POWER_GST * wholesale_cents
-                + tariff_rate
-                - FLOW_POWER_GST * twap
-                - avg_daily_tariff
-                - FLOW_POWER_BENCHMARK
-            )
-        else:
-            # Legacy formula: Spot - TWAP - BPEA
-            return wholesale_cents - twap - FLOW_POWER_BENCHMARK
+        return calculate_flow_power_pea(
+            wholesale_cents,
+            pricing,
+            tariff_rate=tariff_rate,
+            avg_daily_tariff=avg_daily_tariff,
+        )
 
     def _calculate_export_price(self) -> float:
         """Calculate Flow Power export price in $/kWh."""
@@ -4087,10 +4070,15 @@ class FlowPowerPriceSensor(PowerSyncCurrencyMixin, CoordinatorEntity, SensorEnti
 
         if self._is_import_sensor:
             # Import price attributes
-            tracker = self._get_twap_tracker()
-            twap = self._get_effective_twap()
+            pricing = self._get_pricing_context()
+            twap = pricing.twap
             attributes["twap_used"] = round(twap, 2)
-            attributes["twap_source"] = self._get_twap_source()
+            attributes["twap_source"] = pricing.twap_source
+            attributes["bpea_cents"] = round(pricing.bpea, 2)
+            attributes["bpea_source"] = pricing.bpea_source
+            attributes["gst_multiplier"] = pricing.gst_multiplier
+            attributes["gst_source"] = pricing.gst_source
+            attributes["portal_pricing_active"] = pricing.portal_active
 
             # TWAP override info
             override = self._get_config_value(CONF_FP_TWAP_OVERRIDE)
@@ -4111,7 +4099,6 @@ class FlowPowerPriceSensor(PowerSyncCurrencyMixin, CoordinatorEntity, SensorEnti
             if has_tariff:
                 attributes["network_cents"] = round(tariff_rate, 2)
                 attributes["avg_daily_tariff"] = round(avg_daily_tariff, 2)
-                attributes["gst_multiplier"] = FLOW_POWER_GST
 
             if wholesale_cents is not None:
                 attributes["wholesale_cents"] = round(wholesale_cents, 2)

@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import ast
+import importlib
 import json
+import sys
+import types
 from pathlib import Path
+from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -21,22 +25,75 @@ def _method_source(file_path: Path, class_name: str, method_name: str) -> str:
     raise AssertionError(f"{class_name}.{method_name} not found")
 
 
-def test_flow_power_uses_raw_wholesale_twap_not_portal_twap_for_sensor_pricing():
+def test_flow_power_sensor_uses_shared_pricing_context():
     source = _method_source(
         COMPONENT_ROOT / "sensor.py",
         "FlowPowerPriceSensor",
-        "_get_effective_twap",
+        "_calculate_pea_auto",
     )
 
-    assert "flow_power_portal_data" not in source
-    assert "_get_market_avg" in source
+    assert "_get_pricing_context" in source
+    assert "calculate_flow_power_pea" in source
 
 
-def test_flow_power_tariff_generation_does_not_substitute_portal_twap():
+def test_flow_power_tariff_generation_uses_portal_aware_context():
     source = (COMPONENT_ROOT / "__init__.py").read_text()
 
-    assert "Using portal TWAP" not in source
-    assert 'portal_data["twap"]' not in source
+    assert "resolve_flow_power_pricing_context" in source
+    assert "bpea=pricing.bpea" in source
+    assert "gst_multiplier=pricing.gst_multiplier" in source
+
+
+def test_flow_power_pricing_context_prefers_portal_account_values():
+    saved_power_sync = sys.modules.get("power_sync")
+    saved_const = sys.modules.get("power_sync.const")
+    saved_helper = sys.modules.get("power_sync.flow_power_pricing")
+    try:
+        package = types.ModuleType("power_sync")
+        package.__path__ = [str(COMPONENT_ROOT)]
+        sys.modules["power_sync"] = package
+        sys.modules.pop("power_sync.flow_power_pricing", None)
+        helper = importlib.import_module("power_sync.flow_power_pricing")
+    finally:
+        if saved_power_sync is None:
+            sys.modules.pop("power_sync", None)
+        else:
+            sys.modules["power_sync"] = saved_power_sync
+        if saved_helper is None:
+            sys.modules.pop("power_sync.flow_power_pricing", None)
+        else:
+            sys.modules["power_sync.flow_power_pricing"] = saved_helper
+        if saved_const is None:
+            sys.modules.pop("power_sync.const", None)
+        else:
+            sys.modules["power_sync.const"] = saved_const
+
+    context = helper.resolve_flow_power_pricing_context(
+        options={},
+        data={},
+        domain_data={
+            "flow_power_twap_tracker": SimpleNamespace(twap=8.25),
+            "flow_power_portal_data": {
+                "twap": 21.0,
+                "twap_import": 20.5,
+                "bpea": 2.3,
+                "bpea_import": 2.1,
+                "gst_multiplier": 1.2,
+            },
+        },
+    )
+
+    assert context.twap == 20.5
+    assert context.twap_source == "portal"
+    assert context.bpea == 2.1
+    assert context.bpea_source == "portal"
+    assert context.gst_multiplier == 1.2
+    assert round(helper.calculate_flow_power_pea(
+        20.0,
+        context,
+        tariff_rate=12.0,
+        avg_daily_tariff=5.0,
+    ), 2) == 4.3
 
 
 def test_flow_power_twap_sample_is_recorded_before_battery_route_returns():

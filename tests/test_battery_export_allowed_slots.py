@@ -110,6 +110,7 @@ def _install_power_sync_stubs() -> None:
     const_module.CONF_MONITORING_MODE = "monitoring_mode"
     const_module.CONF_FLOW_POWER_STATE = "flow_power_state"
     const_module.CONF_FLOW_POWER_EXPORT_RATE = "flow_power_export_rate"
+    const_module.CONF_FP_TWAP_OVERRIDE = "fp_twap_override"
     const_module.CONF_HARDWARE_BACKUP_RESERVE = "hardware_backup_reserve"
     const_module.CONF_OPTIMIZATION_BACKUP_RESERVE = "optimization_backup_reserve"
     const_module.CONF_OPTIMIZATION_BATTERY_CAPACITY_WH = "battery_capacity_wh"
@@ -125,7 +126,10 @@ def _install_power_sync_stubs() -> None:
     const_module.DEFAULT_PROFIT_MAX_TARGET_TIME = "17:15"
     const_module.DEFAULT_PROFIT_MAX_TARGET_SOC = 1.0
     const_module.DEFAULT_OPTIMIZATION_INTERVAL = 5
+    const_module.FLOW_POWER_BENCHMARK = 1.7
     const_module.FLOW_POWER_EXPORT_RATES = {"NSW1": 0.45}
+    const_module.FLOW_POWER_GST = 1.1
+    const_module.FLOW_POWER_MARKET_AVG = 8.0
     const_module.CONF_EXPORT_BOOST_ENABLED = "export_boost_enabled"
     const_module.CONF_EXPORT_PRICE_OFFSET = "export_price_offset"
     const_module.CONF_EXPORT_MIN_PRICE = "export_min_price"

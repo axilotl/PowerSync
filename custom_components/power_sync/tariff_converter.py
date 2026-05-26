@@ -1741,6 +1741,10 @@ def apply_flow_power_pea(
     twap: float | None = None,
     tariff_rate_lookup: dict[str, float] | None = None,
     avg_daily_tariff: float | None = None,
+    bpea: float = FLOW_POWER_BENCHMARK,
+    gst_multiplier: float = 1.1,
+    twap_source: str | None = None,
+    bpea_source: str | None = None,
 ) -> dict[str, Any]:
     """
     Apply Flow Power base rate + PEA (Price Efficiency Adjustment) pricing model.
@@ -1761,6 +1765,10 @@ def apply_flow_power_pea(
         twap: Dynamic 30-day rolling TWAP in c/kWh, or None for 8.0c fallback
         tariff_rate_lookup: Dict mapping PERIOD_HH_MM to network tariff rate in c/kWh (v2)
         avg_daily_tariff: 24h average of network tariff rates in c/kWh (v2)
+        bpea: Benchmark PEA in c/kWh
+        gst_multiplier: GST multiplier used by the v2 formula
+        twap_source: Optional label for the TWAP source (portal/dynamic/fallback/override)
+        bpea_source: Optional label for the BPEA source (portal/default)
 
     Returns:
         Modified tariff with Flow Power pricing applied to buy prices
@@ -1772,22 +1780,26 @@ def apply_flow_power_pea(
     market_avg = twap if twap is not None else FLOW_POWER_MARKET_AVG
     has_tariff = tariff_rate_lookup is not None and avg_daily_tariff is not None
     formula = "v2" if has_tariff else "v1"
+    twap_source = twap_source or ("dynamic" if twap is not None else "fallback")
+    bpea_source = bpea_source or "default"
 
     _LOGGER.info(
-        "Applying Flow Power PEA (%s): base_rate=%.1fc/kWh, custom_pea=%s, twap=%.2fc (%s)%s",
+        "Applying Flow Power PEA (%s): base_rate=%.1fc/kWh, custom_pea=%s, "
+        "twap=%.2fc (%s), bpea=%.2fc (%s), gst=%.3g%s",
         formula,
         base_rate,
         f"{custom_pea:.1f}c" if custom_pea is not None else "auto",
         market_avg,
-        "dynamic" if twap is not None else "fallback",
+        twap_source,
+        bpea,
+        bpea_source,
+        gst_multiplier,
         f", avg_daily_tariff=%.2fc" % avg_daily_tariff if avg_daily_tariff is not None else "",
     )
 
     # Track statistics for logging
     pea_values = []
     final_prices = []
-
-    gst = 1.1  # GST multiplier
 
     # Apply to Summer season buy rates (energy_charges)
     for season in ["Summer"]:
@@ -1810,15 +1822,15 @@ def apply_flow_power_pea(
                     # V2 formula: GST*Spot + Tariff - GST*TWAP - AvgDailyTariff - BPEA
                     period_tariff = tariff_rate_lookup.get(period, avg_daily_tariff)
                     pea = (
-                        gst * wholesale_cents
+                        gst_multiplier * wholesale_cents
                         + period_tariff
-                        - gst * market_avg
+                        - gst_multiplier * market_avg
                         - avg_daily_tariff
-                        - FLOW_POWER_BENCHMARK
+                        - bpea
                     )
                 else:
                     # Legacy formula: Spot - TWAP - BPEA
-                    pea = wholesale_cents - market_avg - FLOW_POWER_BENCHMARK
+                    pea = wholesale_cents - market_avg - bpea
 
             pea_values.append(pea)
 
