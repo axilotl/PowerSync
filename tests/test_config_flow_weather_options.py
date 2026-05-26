@@ -360,7 +360,7 @@ def test_globird_plan_strings_are_available_in_setup_and_options():
             assert step["data"]["globird_zerohero_export_cap_kwh"] == "Super Export cap"
             assert step["data"]["globird_zerohero_import_limit_kw"] == "No-import threshold"
             assert "15 kWh" in step["data_description"]["globird_plan"]
-            assert "0.03 kW" in step["data_description"]["globird_zerohero_import_limit_kw"]
+            assert "0.09 kWh total import allowance" in step["data_description"]["globird_zerohero_import_limit_kw"]
 
 
 def test_optimization_options_exposes_enabled_toggle():

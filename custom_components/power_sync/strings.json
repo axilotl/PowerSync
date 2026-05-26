@@ -190,7 +190,7 @@
           "globird_zerohero_export_cap_kwh": "Only used when GloBird plan is ZeroHero custom. This is the daily kWh cap that receives the Super Export rate.",
           "globird_zerohero_super_export_rate": "Only used when GloBird plan is ZeroHero custom. This is the total export rate, not an amount added to the base feed-in tariff.",
           "globird_zerohero_credit_amount": "Only used when GloBird plan is ZeroHero custom.",
-          "globird_zerohero_import_limit_kw": "Only used when GloBird plan is ZeroHero custom. Current ZeroHero uses 0.03 kWh per hour, treated as a 0.03 kW average import threshold."
+          "globird_zerohero_import_limit_kw": "Only used when GloBird plan is ZeroHero custom. Current ZeroHero uses 0.03 kWh per hour over 18:00-21:00, giving a 0.09 kWh total import allowance for the evening credit."
         },
         "submit": "Next"
       },
@@ -1517,7 +1517,7 @@
           "globird_zerohero_export_cap_kwh": "Only used when GloBird plan is ZeroHero custom. This is the daily kWh cap that receives the Super Export rate.",
           "globird_zerohero_super_export_rate": "Only used when GloBird plan is ZeroHero custom. This is the total export rate, not an amount added to the base feed-in tariff.",
           "globird_zerohero_credit_amount": "Only used when GloBird plan is ZeroHero custom.",
-          "globird_zerohero_import_limit_kw": "Only used when GloBird plan is ZeroHero custom. Current ZeroHero uses 0.03 kWh per hour, treated as a 0.03 kW average import threshold.",
+          "globird_zerohero_import_limit_kw": "Only used when GloBird plan is ZeroHero custom. Current ZeroHero uses 0.03 kWh per hour over 18:00-21:00, giving a 0.09 kWh total import allowance for the evening credit.",
           "aemo_spike_enabled": "Required for Globird and AEMO VPP plans that include spike export payments. Disable if your plan does not pay for spike exports.",
           "aemo_region": "Your NEM region determines which AEMO price feed is monitored. Check your electricity bill if unsure.",
           "aemo_spike_threshold": "Battery exports when the AEMO wholesale price exceeds this value. Default 3,000 in the selected market price unit matches most Globird and VPP plans. Only change if your plan specifies a different threshold.",

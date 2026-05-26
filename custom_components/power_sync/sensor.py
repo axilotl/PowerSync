@@ -1981,6 +1981,16 @@ def _pack_label(packs: list[dict[str, Any]], index: int) -> str:
 def _pack_metric_available(packs: list[dict[str, Any]], metric: str) -> bool:
     if metric in ("soc", "capacity", "soh"):
         return any(_pack_float(pack, "nominalFullPackEnergyWh", "nominal_full_pack_energy_wh") for pack in packs)
+    if metric == "current_energy":
+        return any(
+            _pack_float(
+                pack,
+                "nominalEnergyRemainingWh",
+                "nominal_energy_remaining_wh",
+            )
+            is not None
+            for pack in packs
+        )
     if metric == "voltage":
         return any(
             _pack_has_value(
@@ -2010,6 +2020,7 @@ def _pack_metric_available(packs: list[dict[str, Any]], metric: str) -> bool:
 def _pack_sensor_classes_for(packs: list[dict[str, Any]]) -> tuple[type[SensorEntity], ...]:
     classes: list[type[SensorEntity]] = [
         PowerwallBlockSocSensor,
+        PowerwallBlockCurrentEnergySensor,
         PowerwallBlockCapacitySensor,
         PowerwallBlockSohSensor,
     ]
@@ -2577,6 +2588,30 @@ class PowerwallBlockSocSensor(_PowerwallBlockSensorBase):
         if full and rem is not None and full > 0:
             return round(rem / full * 100.0, 1)
         return None
+
+
+class PowerwallBlockCurrentEnergySensor(_PowerwallBlockSensorBase):
+    metric_key = "current_energy"
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+    _attr_device_class = SensorDeviceClass.ENERGY_STORAGE
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_suggested_display_precision = 2
+    _attr_icon = "mdi:battery-50"
+
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry, index: int) -> None:
+        super().__init__(hass, entry, index, "current_energy", "Current Energy")
+
+    @property
+    def native_value(self) -> Any:
+        block = self._block
+        if not block:
+            return None
+        remaining = _pack_float(
+            block,
+            "nominalEnergyRemainingWh",
+            "nominal_energy_remaining_wh",
+        )
+        return round(remaining / 1000.0, 2) if remaining is not None else None
 
 
 class PowerwallBlockCapacitySensor(_PowerwallBlockSensorBase):

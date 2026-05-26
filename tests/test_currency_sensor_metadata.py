@@ -404,12 +404,15 @@ def test_powerwall_pack_sensors_use_bms_health_and_parent_device():
     hass = SimpleNamespace(data={"power_sync": {"entry-1": {"battery_health": health}}})
 
     soc = sensor.PowerwallBlockSocSensor(hass, entry, 1)
+    current_energy = sensor.PowerwallBlockCurrentEnergySensor(hass, entry, 1)
     capacity = sensor.PowerwallBlockCapacitySensor(hass, entry, 1)
     soh = sensor.PowerwallBlockSohSensor(hass, entry, 1)
 
     assert soc.device_info == sensor.powerwall_device_info("entry-1")
     assert soc._attr_name == "Expansion Pack 1 SOC"
     assert soc.native_value == 47.7
+    assert current_energy.native_value == 6.82
+    assert current_energy._attr_name == "Expansion Pack 1 Current Energy"
     assert capacity.native_value == 14.29
     assert soh.native_value == 105.9
     assert soc.extra_state_attributes["pack_label"] == "Expansion Pack 1"
@@ -452,9 +455,11 @@ def test_powerwall_pack_builder_skips_missing_optional_metrics():
 
     assert [entity.metric_key for entity in entities] == [
         "soc",
+        "current_energy",
         "capacity",
         "soh",
         "soc",
+        "current_energy",
         "capacity",
         "soh",
     ]

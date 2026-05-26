@@ -221,6 +221,21 @@ from .const import (
     CONF_AEMO_SPIKE_ENABLED,
     CONF_AEMO_REGION,
     CONF_AEMO_SPIKE_THRESHOLD,
+    CONF_GLOBIRD_PLAN,
+    CONF_GLOBIRD_ZEROHERO_START,
+    CONF_GLOBIRD_ZEROHERO_END,
+    CONF_GLOBIRD_ZEROHERO_EXPORT_CAP_KWH,
+    CONF_GLOBIRD_ZEROHERO_SUPER_EXPORT_RATE,
+    CONF_GLOBIRD_ZEROHERO_CREDIT_AMOUNT,
+    CONF_GLOBIRD_ZEROHERO_IMPORT_LIMIT_KW,
+    GLOBIRD_PLAN_NOT_ZEROHERO,
+    GLOBIRD_PLAN_ZEROHERO_CUSTOM,
+    DEFAULT_GLOBIRD_ZEROHERO_START,
+    DEFAULT_GLOBIRD_ZEROHERO_END,
+    DEFAULT_GLOBIRD_ZEROHERO_EXPORT_CAP_KWH,
+    DEFAULT_GLOBIRD_ZEROHERO_SUPER_EXPORT_RATE,
+    DEFAULT_GLOBIRD_ZEROHERO_CREDIT_AMOUNT,
+    DEFAULT_GLOBIRD_ZEROHERO_IMPORT_LIMIT_KW,
     # Solcast solar forecasting
     CONF_SOLCAST_ENABLED,
     CONF_SOLCAST_API_KEY,
@@ -7449,6 +7464,37 @@ class ProviderConfigView(HomeAssistantView):
                         entry.data.get(CONF_AEMO_SPIKE_ENABLED, True)
                     ),
                 }
+                if electricity_provider == "globird":
+                    config.update({
+                        "globird_plan": entry.options.get(
+                            CONF_GLOBIRD_PLAN,
+                            entry.data.get(CONF_GLOBIRD_PLAN, GLOBIRD_PLAN_NOT_ZEROHERO)
+                        ),
+                        "globird_zerohero_start": entry.options.get(
+                            CONF_GLOBIRD_ZEROHERO_START,
+                            entry.data.get(CONF_GLOBIRD_ZEROHERO_START, DEFAULT_GLOBIRD_ZEROHERO_START)
+                        ),
+                        "globird_zerohero_end": entry.options.get(
+                            CONF_GLOBIRD_ZEROHERO_END,
+                            entry.data.get(CONF_GLOBIRD_ZEROHERO_END, DEFAULT_GLOBIRD_ZEROHERO_END)
+                        ),
+                        "globird_zerohero_export_cap_kwh": entry.options.get(
+                            CONF_GLOBIRD_ZEROHERO_EXPORT_CAP_KWH,
+                            entry.data.get(CONF_GLOBIRD_ZEROHERO_EXPORT_CAP_KWH, DEFAULT_GLOBIRD_ZEROHERO_EXPORT_CAP_KWH)
+                        ),
+                        "globird_zerohero_super_export_rate": entry.options.get(
+                            CONF_GLOBIRD_ZEROHERO_SUPER_EXPORT_RATE,
+                            entry.data.get(CONF_GLOBIRD_ZEROHERO_SUPER_EXPORT_RATE, DEFAULT_GLOBIRD_ZEROHERO_SUPER_EXPORT_RATE)
+                        ),
+                        "globird_zerohero_credit_amount": entry.options.get(
+                            CONF_GLOBIRD_ZEROHERO_CREDIT_AMOUNT,
+                            entry.data.get(CONF_GLOBIRD_ZEROHERO_CREDIT_AMOUNT, DEFAULT_GLOBIRD_ZEROHERO_CREDIT_AMOUNT)
+                        ),
+                        "globird_zerohero_import_limit_kw": entry.options.get(
+                            CONF_GLOBIRD_ZEROHERO_IMPORT_LIMIT_KW,
+                            entry.data.get(CONF_GLOBIRD_ZEROHERO_IMPORT_LIMIT_KW, DEFAULT_GLOBIRD_ZEROHERO_IMPORT_LIMIT_KW)
+                        ),
+                    })
 
             elif electricity_provider == "nz":
                 # NZ TOU settings
@@ -7629,6 +7675,13 @@ class ProviderConfigView(HomeAssistantView):
                 "aemo_region": CONF_AEMO_REGION,
                 "aemo_spike_threshold": CONF_AEMO_SPIKE_THRESHOLD,
                 "aemo_spike_enabled": CONF_AEMO_SPIKE_ENABLED,
+                "globird_plan": CONF_GLOBIRD_PLAN,
+                "globird_zerohero_start": CONF_GLOBIRD_ZEROHERO_START,
+                "globird_zerohero_end": CONF_GLOBIRD_ZEROHERO_END,
+                "globird_zerohero_export_cap_kwh": CONF_GLOBIRD_ZEROHERO_EXPORT_CAP_KWH,
+                "globird_zerohero_super_export_rate": CONF_GLOBIRD_ZEROHERO_SUPER_EXPORT_RATE,
+                "globird_zerohero_credit_amount": CONF_GLOBIRD_ZEROHERO_CREDIT_AMOUNT,
+                "globird_zerohero_import_limit_kw": CONF_GLOBIRD_ZEROHERO_IMPORT_LIMIT_KW,
             }
 
             # Build new options dict starting with existing options
@@ -7638,6 +7691,20 @@ class ProviderConfigView(HomeAssistantView):
             for key, value in data.items():
                 if key in key_mapping:
                     new_options[key_mapping[key]] = value
+
+            if (
+                data.get("globird_plan")
+                and data.get("globird_plan") != GLOBIRD_PLAN_ZEROHERO_CUSTOM
+            ):
+                for key in (
+                    CONF_GLOBIRD_ZEROHERO_START,
+                    CONF_GLOBIRD_ZEROHERO_END,
+                    CONF_GLOBIRD_ZEROHERO_EXPORT_CAP_KWH,
+                    CONF_GLOBIRD_ZEROHERO_SUPER_EXPORT_RATE,
+                    CONF_GLOBIRD_ZEROHERO_CREDIT_AMOUNT,
+                    CONF_GLOBIRD_ZEROHERO_IMPORT_LIMIT_KW,
+                ):
+                    new_options.pop(key, None)
 
             # Update the config entry without triggering a full reload.
             # Set a flag so the update listener knows to skip the reload —
@@ -15748,6 +15815,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             surplus_balancer_mode=str(neovolt_surplus_balancer_mode),
             soc_balance_tolerance_pct=float(neovolt_soc_balance_tolerance),
             battery_capacities_kwh=list(neovolt_battery_capacities_kwh or []),
+        )
+    elif is_solaredge:
+        _LOGGER.info(
+            "Running in SolarEdge mode - Tesla credentials not required; "
+            "active-power curtailment controller will initialize on demand"
         )
     else:
         # Get initial Tesla API token and provider
