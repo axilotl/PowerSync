@@ -18833,9 +18833,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 CONF_FORCE_TARIFF_MODE_TOGGLE,
                 entry.data.get(CONF_FORCE_TARIFF_MODE_TOGGLE, False)
             )
+            _toggle_entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+            suppress_toggle_reason = _toggle_entry_data.pop(
+                "_suppress_force_mode_toggle_once",
+                None,
+            )
+            if suppress_toggle_reason:
+                _LOGGER.info(
+                    "Skipping force mode toggle - %s",
+                    suppress_toggle_reason,
+                )
+                force_mode_toggle = False
             if force_mode_toggle:
                 # Skip toggle if calibration suspected (tariff upload still proceeds)
-                _toggle_entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
                 if _toggle_entry_data.get("calibration_suspected"):
                     _LOGGER.debug("Skipping force mode toggle — calibration suspected")
                     force_mode_toggle = False  # Skip toggle below but don't skip tariff upload
@@ -23440,6 +23450,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         source = call.data.get("source", "user")
         _LOGGER.info(f"🔄 Restore normal service called (context: user_id={context.user_id}, parent_id={context.parent_id}, source={source})")
         _LOGGER.info("🔄 RESTORE NORMAL: Restoring normal operation")
+        optimizer_owned_restore = (
+            source == "optimizer"
+            or force_discharge_state.get("source") == "optimizer"
+            or force_charge_state.get("source") == "optimizer"
+        )
+        restore_was_force_discharging = bool(force_discharge_state.get("active"))
+        restore_was_force_charging = bool(force_charge_state.get("active"))
 
         # Clear user-facing state toggles (Hold SoC and Self-Use buttons).
         # These are mobile-only visual flags; clearing them on user-sourced
@@ -23974,6 +23991,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 # Dynamic pricing users - trigger a fresh sync to get current prices
                 # (sync handler already loops over all site_ids)
                 _LOGGER.info(f"{electricity_provider} user - triggering sync to restore normal operation")
+                if restore_was_force_discharging or restore_was_force_charging:
+                    force_discharge_state["active"] = False
+                    force_charge_state["active"] = False
+                hass.data.setdefault(DOMAIN, {}).setdefault(entry.entry_id, {})[
+                    "_suppress_force_mode_toggle_once"
+                ] = "restore_normal is already controlling Tesla operation mode"
                 await hass.services.async_call(DOMAIN, SERVICE_SYNC_TOU, {}, blocking=True)
             elif saved_tariff:
                 # Non-dynamic users - restore saved tariffs per site
@@ -24046,6 +24069,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     force_charge_state.get("saved_operation_mode") or
                     "autonomous"
                 )
+                if optimizer_owned_restore and restore_mode != "self_consumption":
+                    _LOGGER.info(
+                        "Optimizer restore: leaving Tesla in self_consumption "
+                        "instead of restoring saved mode %s during tariff handoff",
+                        restore_mode,
+                    )
+                    restore_mode = "self_consumption"
                 _LOGGER.info("Restoring operation mode to %s for site %s", restore_mode, site_id)
                 async with session.post(
                     f"{api_base}/api/1/energy_sites/{site_id}/operation",
@@ -24055,6 +24085,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 ) as response:
                     if response.status == 200:
                         _LOGGER.info("Restored operation mode to %s for site %s", restore_mode, site_id)
+                        if restore_mode == "self_consumption":
+                            restore_entry_data = hass.data.setdefault(DOMAIN, {}).setdefault(entry.entry_id, {})
+                            restore_entry_data.pop("last_force_toggle_time", None)
+                            restore_entry_data.pop("retoggle_attempted", None)
                     else:
                         _LOGGER.warning("Could not restore operation mode for site %s: %s", site_id, response.status)
                         try:
@@ -24077,7 +24111,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     saved_backup_reserve = force_discharge_state.get("saved_backup_reserve")
                 if saved_backup_reserve is None:
                     saved_backup_reserve = force_charge_state.get("saved_backup_reserve")
-                was_discharging = force_discharge_state.get("active")
+                was_discharging = restore_was_force_discharging
 
                 if saved_backup_reserve is None:
                     _LOGGER.warning("No saved backup reserve for site %s - will not change current setting", site_id)
@@ -24647,6 +24681,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 return
 
             session = async_get_clientsession(hass)
+            any_ok = False
             for site_id, current_token, provider in site_configs:
                 headers = {
                     "Authorization": f"Bearer {current_token}",
@@ -24662,9 +24697,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 ) as response:
                     if response.status == 200:
                         _LOGGER.info("Tesla site %s set to self_consumption mode", site_id)
+                        any_ok = True
                     else:
                         text = await response.text()
                         _LOGGER.warning("Could not set self_consumption mode for site %s: %s - %s", site_id, response.status, text)
+
+            if any_ok:
+                self_entry_data = hass.data.setdefault(DOMAIN, {}).setdefault(entry.entry_id, {})
+                self_entry_data.pop("last_force_toggle_time", None)
+                self_entry_data.pop("retoggle_attempted", None)
+                tesla_coord_for_cache = self_entry_data.get("tesla_coordinator")
+                if tesla_coord_for_cache is not None:
+                    tesla_coord_for_cache.invalidate_site_info_cache()
 
             # Do NOT clear force_charge_state/force_discharge_state here.
             # If force charge/discharge is active, the expiry timer owns cleanup

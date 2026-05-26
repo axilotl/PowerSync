@@ -175,6 +175,48 @@ def test_restore_normal_filters_force_tariffs_before_upload():
     assert "send_tariff_to_tesla" in function_source
 
 
+def test_restore_normal_suppresses_tesla_force_toggle_during_dynamic_sync():
+    source = INIT_PATH.read_text()
+    tree = ast.parse(source)
+    restore = _find_function(tree, "handle_restore_normal")
+    sync = _find_function(tree, "_handle_sync_tou_internal")
+    restore_source = ast.get_source_segment(source, restore)
+    sync_source = ast.get_source_segment(source, sync)
+
+    assert restore_source is not None
+    assert sync_source is not None
+    assert '"_suppress_force_mode_toggle_once"' in restore_source
+    assert "restore_was_force_discharging" in restore_source
+    assert 'force_discharge_state["active"] = False' in restore_source
+    assert "SERVICE_SYNC_TOU" in restore_source
+    assert '"_suppress_force_mode_toggle_once"' in sync_source
+    assert "Skipping force mode toggle" in sync_source
+
+
+def test_optimizer_restore_keeps_tesla_self_consumption_during_handoff():
+    source = INIT_PATH.read_text()
+    tree = ast.parse(source)
+    function = _find_function(tree, "handle_restore_normal")
+    function_source = ast.get_source_segment(source, function)
+
+    assert function_source is not None
+    assert "optimizer_owned_restore" in function_source
+    assert 'restore_mode = "self_consumption"' in function_source
+    assert "instead of restoring saved mode" in function_source
+
+
+def test_tesla_self_consumption_clears_force_toggle_state():
+    source = INIT_PATH.read_text()
+    tree = ast.parse(source)
+    function = _find_function(tree, "handle_set_self_consumption")
+    function_source = ast.get_source_segment(source, function)
+
+    assert function_source is not None
+    assert 'json={"default_real_mode": "self_consumption"}' in function_source
+    assert 'pop("last_force_toggle_time", None)' in function_source
+    assert 'pop("retoggle_attempted", None)' in function_source
+
+
 def test_aemo_vpp_restore_uses_saved_tariff_not_dynamic_sync():
     source = INIT_PATH.read_text()
     tree = ast.parse(source)
