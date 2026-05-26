@@ -1767,7 +1767,7 @@ def apply_flow_power_pea(
         avg_daily_tariff: 24h average of network tariff rates in c/kWh (v2)
         bpea: Benchmark PEA in c/kWh
         gst_multiplier: GST multiplier used by the v2 formula
-        twap_source: Optional label for the TWAP source (portal/dynamic/fallback/override)
+        twap_source: Optional label for the TWAP source (dynamic/fallback/override)
         bpea_source: Optional label for the BPEA source (portal/default)
 
     Returns:

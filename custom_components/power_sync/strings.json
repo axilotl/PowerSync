@@ -49,12 +49,12 @@
       },
       "flow_power_portal": {
         "title": "Flow Power portal",
-        "description": "Connect your portal account to get actual billing data (PEA, LWAP, TWAP, DLF) instead of estimates. Requires SMS verification.",
+        "description": "Connect your portal account to expose actual billing data (PEA, LWAP, TWAP, DLF) and account-specific pricing inputs. Requires SMS verification.",
         "data": {
           "connect_portal": "Connect Flow Power portal account"
         },
         "data_description": {
-          "connect_portal": "When enabled, PowerSync fetches real billing components from your Flow Power account. Disable to use estimated pricing only."
+          "connect_portal": "When enabled, PowerSync fetches billing components from your Flow Power account while keeping raw wholesale TWAP for PEA pricing."
         },
         "submit": "Next"
       },

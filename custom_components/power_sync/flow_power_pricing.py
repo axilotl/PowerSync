@@ -76,12 +76,13 @@ def resolve_flow_power_pricing_context(
 
     Priority for TWAP is:
       1. explicit PowerSync override,
-      2. Flow Power portal account TWAP when logged in,
-      3. PowerSync rolling raw wholesale TWAP,
-      4. hardcoded fallback.
+      2. PowerSync rolling raw wholesale TWAP,
+      3. hardcoded fallback.
 
-    Portal BPEA/GST values are used whenever available, even when a user has
-    explicitly overridden TWAP.
+    Flow Power's PEA formula expects a raw wholesale TWAP. Portal TWAP fields
+    are account metrics and can include customer/network effects, so they are
+    exposed as sensors but not fed back into the PEA formula. Portal BPEA/GST
+    values are still used whenever available.
     """
     options = options or {}
     data = data or {}
@@ -92,15 +93,11 @@ def resolve_flow_power_pricing_context(
         options.get(CONF_FP_TWAP_OVERRIDE),
         data.get(CONF_FP_TWAP_OVERRIDE),
     )
-    portal_twap = _first_number(portal.get("twap_import"), portal.get("twap"))
     tracker_twap = _tracker_twap(domain_data)
 
     if override is not None:
         twap = override
         twap_source = "override"
-    elif portal_twap is not None:
-        twap = portal_twap
-        twap_source = "portal"
     elif tracker_twap is not None:
         twap = tracker_twap
         twap_source = "dynamic"

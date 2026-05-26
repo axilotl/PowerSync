@@ -4002,7 +4002,7 @@ class FlowPowerPriceSensor(PowerSyncCurrencyMixin, CoordinatorEntity, SensorEnti
         )
 
     def _get_effective_twap(self) -> float:
-        """Get effective TWAP: override -> portal -> raw wholesale tracker -> fallback."""
+        """Get effective raw wholesale TWAP: override -> tracker -> fallback."""
         return self._get_pricing_context().twap
 
     def _get_twap_source(self) -> str:

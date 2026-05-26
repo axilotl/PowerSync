@@ -526,7 +526,7 @@ def test_flow_power_optimizer_uses_v2_pea_formula(opt_module, monkeypatch):
     assert coordinator._last_display_import_prices[0] == pytest.approx(0.525)
 
 
-def test_flow_power_optimizer_prefers_portal_pricing_inputs(opt_module, monkeypatch):
+def test_flow_power_optimizer_uses_raw_twap_with_portal_pricing_inputs(opt_module, monkeypatch):
     async def _executor(fn, *args):
         return fn(*args)
 
@@ -592,9 +592,9 @@ def test_flow_power_optimizer_prefers_portal_pricing_inputs(opt_module, monkeypa
 
     import_prices, _ = asyncio.run(coordinator._get_price_forecast())
 
-    # Base 34c + PEA (1.2*20c + 12c - 1.2*10c - 5c - 2c) = 51c/kWh.
-    assert import_prices[0] == pytest.approx(0.51)
-    assert coordinator._last_display_import_prices[0] == pytest.approx(0.51)
+    # Base 34c + PEA (1.2*20c + 12c - 1.2*8c - 5c - 2c) = 53.4c/kWh.
+    assert import_prices[0] == pytest.approx(0.534)
+    assert coordinator._last_display_import_prices[0] == pytest.approx(0.534)
 
 
 def test_dynamic_price_forecast_preserves_boundaries_after_leading_gap(

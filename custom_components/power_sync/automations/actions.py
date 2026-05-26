@@ -1630,27 +1630,6 @@ async def _action_force_discharge(
     # Web app stores as "minutes", mobile app as "duration_minutes", HA automations as "duration"
     duration = params.get("duration") or params.get("duration_minutes") or params.get("minutes", 30)
 
-    if _is_sigenergy(config_entry):
-        # Sigenergy: Enable Remote EMS + force discharge mode
-        controller = await _get_sigenergy_controller(config_entry)
-        if not controller:
-            _LOGGER.error("force_discharge: Sigenergy Modbus not configured")
-            return False
-        try:
-            power_kw = params.get("power_w", 10000) / 1000 if params.get("power_w") else 10.0
-            result = await controller.force_discharge(power_kw)
-            if result:
-                _LOGGER.info(f"Sigenergy: Force discharge activated at {power_kw}kW for {duration} minutes")
-                return True
-            else:
-                _LOGGER.error("Sigenergy force_discharge() failed")
-                return False
-        except Exception as e:
-            _LOGGER.error(f"Failed to force discharge (Sigenergy): {e}")
-            return False
-        finally:
-            await controller.disconnect()
-
     from ..const import DOMAIN, SERVICE_FORCE_DISCHARGE
 
     try:
@@ -1678,27 +1657,6 @@ async def _action_force_charge(
     """Force battery charge for a specified duration."""
     # Web app stores as "minutes", mobile app as "duration_minutes", HA automations as "duration"
     duration = params.get("duration") or params.get("duration_minutes") or params.get("minutes", 60)
-
-    if _is_sigenergy(config_entry):
-        # Sigenergy: Enable Remote EMS + force charge mode
-        controller = await _get_sigenergy_controller(config_entry)
-        if not controller:
-            _LOGGER.error("force_charge: Sigenergy Modbus not configured")
-            return False
-        try:
-            power_kw = params.get("power_w", 10000) / 1000 if params.get("power_w") else 10.0
-            result = await controller.force_charge(power_kw)
-            if result:
-                _LOGGER.info(f"Sigenergy: Force charge activated at {power_kw}kW for {duration} minutes")
-                return True
-            else:
-                _LOGGER.error("Sigenergy force_charge() failed")
-                return False
-        except Exception as e:
-            _LOGGER.error(f"Failed to force charge (Sigenergy): {e}")
-            return False
-        finally:
-            await controller.disconnect()
 
     from ..const import DOMAIN, SERVICE_FORCE_CHARGE
 
