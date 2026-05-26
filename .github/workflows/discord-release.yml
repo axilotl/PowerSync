@@ -3,6 +3,8 @@ name: Notify Discord for Release
 on:
   release:
     types: [published]
+  repository_dispatch:
+    types: [notify-discord-release]
   workflow_dispatch:
     inputs:
       tag:
@@ -20,9 +22,25 @@ jobs:
       - name: Build Discord payload
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG_NAME: ${{ github.event.release.tag_name || github.event.inputs.tag }}
         run: |
           set -euo pipefail
+
+          TAG_NAME=$(
+            python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
+          tag = (
+              (event.get("release") or {}).get("tag_name")
+              or (event.get("inputs") or {}).get("tag")
+              or (event.get("client_payload") or {}).get("tag")
+              or ""
+          )
+          print(str(tag).strip())
+          PY
+          )
 
           if [ -z "${TAG_NAME:-}" ]; then
             echo "::error::Release tag is required."
