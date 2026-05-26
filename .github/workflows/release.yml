@@ -150,25 +150,40 @@ jobs:
           import json
           import os
           import subprocess
+          import time
           from pathlib import Path
+
+          def gh_json(path: str, attempts: int = 6):
+              for attempt in range(attempts):
+                  try:
+                      return json.loads(
+                          subprocess.check_output(
+                              ["gh", "api", path],
+                              text=True,
+                              stderr=subprocess.STDOUT,
+                          )
+                      )
+                  except subprocess.CalledProcessError as exc:
+                      if attempt == attempts - 1:
+                          raise SystemExit(exc.output) from exc
+                      time.sleep(2)
 
           marker_path = Path(".github/discord-release-last-posted.txt")
           last_posted = marker_path.read_text().strip() if marker_path.exists() else ""
           target_tag = f"v{os.environ['VERSION']}"
+          repo = os.environ["GITHUB_REPOSITORY"]
 
-          releases = json.loads(
-              subprocess.check_output(
-                  [
-                      "gh",
-                      "api",
-                      f"repos/{os.environ['GITHUB_REPOSITORY']}/releases?per_page=20",
-                  ],
-                  text=True,
-              )
-          )
+          releases = gh_json(f"repos/{repo}/releases?per_page=20")
           releases = [release for release in releases if not release.get("draft")]
 
           tags = [release["tag_name"] for release in releases]
+          if target_tag not in tags:
+              # GitHub can return the newly-created release from the direct tag
+              # endpoint before it appears in the releases list.
+              target_release = gh_json(f"repos/{repo}/releases/tags/{target_tag}")
+              releases.insert(0, target_release)
+              tags = [release["tag_name"] for release in releases]
+
           try:
               target_index = tags.index(target_tag)
           except ValueError as exc:

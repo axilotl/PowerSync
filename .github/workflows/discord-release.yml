@@ -11,8 +11,6 @@ on:
         description: Release tag to post, for example v2.12.481
         required: false
         type: string
-  schedule:
-    - cron: '*/30 * * * *'
 
 permissions:
   contents: write
@@ -223,7 +221,7 @@ jobs:
           if sha:
               payload["sha"] = sha
 
-          subprocess.check_call(
+          subprocess.run(
               [
                   "gh",
                   "api",
@@ -235,6 +233,7 @@ jobs:
               ],
               input=json.dumps(payload),
               text=True,
+              check=True,
           )
           print(f"Recorded Discord marker through {tag}")
           PY
