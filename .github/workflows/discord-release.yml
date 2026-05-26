@@ -21,10 +21,6 @@ jobs:
   notify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: main
-
       - name: Build Discord payloads
         env:
           GH_TOKEN: ${{ github.token }}
@@ -32,12 +28,13 @@ jobs:
           set -euo pipefail
 
           python3 - <<'PY'
+          import base64
           import json
           import os
           import subprocess
           from pathlib import Path
 
-          marker_path = Path(".github/discord-release-last-posted.txt")
+          marker_path = ".github/discord-release-last-posted.txt"
           event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
           target_tag = (
               (event.get("release") or {}).get("tag_name")
@@ -45,9 +42,24 @@ jobs:
               or (event.get("client_payload") or {}).get("tag")
               or ""
           ).strip()
-          last_posted = marker_path.read_text().strip() if marker_path.exists() else ""
 
           repo = os.environ["GITHUB_REPOSITORY"]
+          try:
+              marker = json.loads(
+                  subprocess.check_output(
+                      [
+                          "gh",
+                          "api",
+                          f"repos/{repo}/contents/{marker_path}?ref=main",
+                      ],
+                      text=True,
+                      stderr=subprocess.DEVNULL,
+                  )
+              )
+              last_posted = base64.b64decode(marker["content"]).decode().strip()
+          except subprocess.CalledProcessError:
+              last_posted = ""
+
           releases = json.loads(
               subprocess.check_output(
                   [
@@ -168,16 +180,61 @@ jobs:
           fi
 
           LAST_TAG=$(tail -n 1 /tmp/discord_release_posted_tags.txt)
-          MARKER_PATH=".github/discord-release-last-posted.txt"
-          echo "$LAST_TAG" > "$MARKER_PATH"
+          export LAST_TAG
 
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "$MARKER_PATH"
-          if git diff --cached --quiet; then
-            echo "Discord marker already records $LAST_TAG"
-          else
-            git commit -m "ci(release): record Discord notification through $LAST_TAG [skip ci]"
-            git push origin HEAD:main
-            echo "Recorded Discord marker through $LAST_TAG"
-          fi
+          python3 - <<'PY'
+          import base64
+          import json
+          import os
+          import subprocess
+          import sys
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          marker_path = ".github/discord-release-last-posted.txt"
+          tag = os.environ["LAST_TAG"].strip()
+
+          try:
+              current = json.loads(
+                  subprocess.check_output(
+                      [
+                          "gh",
+                          "api",
+                          f"repos/{repo}/contents/{marker_path}?ref=main",
+                      ],
+                      text=True,
+                      stderr=subprocess.DEVNULL,
+                  )
+              )
+              sha = current.get("sha")
+              current_value = base64.b64decode(current["content"]).decode().strip()
+          except subprocess.CalledProcessError:
+              sha = None
+              current_value = ""
+
+          if current_value == tag:
+              print(f"Discord marker already records {tag}")
+              sys.exit(0)
+
+          payload = {
+              "message": f"ci(release): record Discord notification through {tag} [skip ci]",
+              "content": base64.b64encode(f"{tag}\n".encode()).decode(),
+              "branch": "main",
+          }
+          if sha:
+              payload["sha"] = sha
+
+          subprocess.check_call(
+              [
+                  "gh",
+                  "api",
+                  "--method",
+                  "PUT",
+                  f"repos/{repo}/contents/{marker_path}",
+                  "--input",
+                  "-",
+              ],
+              input=json.dumps(payload),
+              text=True,
+          )
+          print(f"Recorded Discord marker through {tag}")
+          PY
