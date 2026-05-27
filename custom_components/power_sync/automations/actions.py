@@ -4884,7 +4884,7 @@ async def _dynamic_ev_update_surplus(
             state["current_amps"] = 0
             return
 
-    # Don't start charging until battery reaches min_soc (unless parallel charging is available)
+    # Don't start charging until battery reaches min_soc (unless strict solar surplus is available)
     if not state.get("charging_started"):
         if battery_soc < min_soc:
             if parallel_charging_available:
@@ -4901,7 +4901,7 @@ async def _dynamic_ev_update_surplus(
                 state["paused"] = True
                 if allow_parallel:
                     state["paused_reason"] = (
-                        f"Waiting for battery to reach {min_soc}% or strict surplus below floor "
+                        f"Waiting for battery to reach {min_soc}% or strict solar surplus "
                         f"(battery charging {battery_charge_kw:.1f}kW, grid {grid_power_kw:.1f}kW, "
                         f"available after {max_battery_charge_kw}kW reserve {raw_surplus_kw:.1f}kW)"
                     )

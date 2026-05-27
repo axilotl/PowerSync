@@ -1702,8 +1702,11 @@ def test_solar_surplus_full_battery_curtailment_ramps_from_visible_headroom(monk
     assert set_amps_calls == [17]
 
 
-def test_solar_surplus_strict_below_floor_can_start_with_battery_charging(monkeypatch):
+def test_solar_surplus_below_floor_can_start_with_strict_surplus(monkeypatch):
+    start_calls = []
+
     async def fake_start(*args, **kwargs):
+        start_calls.append((args, kwargs))
         return True
 
     hass = _Hass([])
@@ -1743,10 +1746,49 @@ def test_solar_surplus_strict_below_floor_can_start_with_battery_charging(monkey
     state = actions._dynamic_ev_state["entry-1"][vehicle_id]
     assert state["charging_started"] is True
     assert state["parallel_charging_mode"] is True
+    assert start_calls
     assert set_amps_calls[-1] > 0
 
 
-def test_solar_surplus_strict_below_floor_pauses_when_battery_discharges(monkeypatch):
+def test_solar_surplus_below_floor_continues_with_strict_surplus(monkeypatch):
+    hass = _Hass([])
+    vehicle_id = "VIN123"
+    actions._dynamic_ev_state.clear()
+    state = _solar_surplus_state(current_amps=7)
+    state["parallel_charging_mode"] = True
+    state["params"].update(
+        {
+            "household_buffer_kw": 1.0,
+            "allow_parallel_charging": True,
+            "max_battery_charge_rate_kw": 5.0,
+            "min_battery_soc": 20,
+            "pause_below_soc": 10,
+        }
+    )
+    actions._dynamic_ev_state["entry-1"] = {vehicle_id: state}
+    set_amps_calls = _install_solar_surplus_runtime_stubs(
+        monkeypatch,
+        {
+            "battery_soc": 15,
+            "grid_power": -4000,
+            "battery_power": -5000,
+            "solar_power": 0,
+            "load_power": 0,
+        },
+    )
+
+    asyncio.run(
+        actions._dynamic_ev_update_surplus(hass, _Entry(), "entry-1", vehicle_id)
+    )
+
+    state = actions._dynamic_ev_state["entry-1"][vehicle_id]
+    assert state.get("paused") is not True
+    assert state["parallel_charging_mode"] is True
+    assert state["current_amps"] > 0
+    assert set_amps_calls[-1] > 0
+
+
+def test_solar_surplus_below_floor_pauses_when_battery_discharges(monkeypatch):
     hass = _Hass([])
     vehicle_id = "VIN123"
     actions._dynamic_ev_state.clear()
@@ -1784,7 +1826,7 @@ def test_solar_surplus_strict_below_floor_pauses_when_battery_discharges(monkeyp
     assert set_amps_calls == [0]
 
 
-def test_solar_surplus_strict_below_floor_pauses_on_grid_import(monkeypatch):
+def test_solar_surplus_below_floor_pauses_on_grid_import(monkeypatch):
     hass = _Hass([])
     vehicle_id = "VIN123"
     actions._dynamic_ev_state.clear()

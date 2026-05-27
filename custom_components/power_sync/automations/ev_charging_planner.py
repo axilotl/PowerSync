@@ -4389,36 +4389,37 @@ class AutoScheduleExecutor:
 
             # Check if battery needs priority (battery below threshold)
             if battery_soc < min_battery_for_ev:
-                # Check if parallel charging is available
+                # Check if strict solar surplus is available after reserving the
+                # configured battery charge rate.
                 parallel_available = allow_parallel and current_surplus_kw > max_battery_charge_kw
 
                 if parallel_available:
-                    # Parallel charging: surplus exceeds battery's max charge rate
-                    # Calculate available surplus for EV (after reserving max for battery)
                     ev_surplus_kw = current_surplus_kw - max_battery_charge_kw
                     min_surplus = settings.get_min_surplus_kw()
 
                     if ev_surplus_kw >= min_surplus:
                         reason = (
-                            f"Parallel charging: surplus {current_surplus_kw:.1f}kW > "
-                            f"battery max {max_battery_charge_kw}kW, EV gets {ev_surplus_kw:.1f}kW"
+                            f"Strict solar surplus: total {current_surplus_kw:.1f}kW, "
+                            f"battery reserve {max_battery_charge_kw:.1f}kW, "
+                            f"EV gets {ev_surplus_kw:.1f}kW"
                         )
                         _LOGGER.info(
-                            f"Auto-schedule: Parallel charging enabled - battery at {battery_soc:.0f}%, "
-                            f"surplus {current_surplus_kw:.1f}kW > battery max {max_battery_charge_kw}kW"
+                            f"Auto-schedule: Strict solar surplus available below battery floor - "
+                            f"battery at {battery_soc:.0f}%, surplus {current_surplus_kw:.1f}kW, "
+                            f"battery reserve {max_battery_charge_kw:.1f}kW"
                         )
                     else:
                         should_charge = False
                         reason = (
-                            f"Parallel surplus {ev_surplus_kw:.1f}kW < min {min_surplus:.1f}kW "
-                            f"(total {current_surplus_kw:.1f}kW - battery {max_battery_charge_kw}kW)"
+                            f"Strict solar surplus {ev_surplus_kw:.1f}kW < min {min_surplus:.1f}kW "
+                            f"(total {current_surplus_kw:.1f}kW - battery reserve {max_battery_charge_kw:.1f}kW)"
                         )
                 else:
                     should_charge = False
                     if allow_parallel:
                         reason = (
                             f"Battery {battery_soc:.0f}% < {min_battery_for_ev}%, "
-                            f"surplus {current_surplus_kw:.1f}kW <= battery max {max_battery_charge_kw}kW"
+                            f"surplus {current_surplus_kw:.1f}kW <= battery reserve {max_battery_charge_kw:.1f}kW"
                         )
                     else:
                         reason = f"Battery {battery_soc:.0f}% < {min_battery_for_ev}% (charging battery first)"
@@ -7224,6 +7225,27 @@ class EVChargingModeCoordinator:
         _LOGGER.info(f"EV Coordinator: Stopped charging - {reason}")
         return True
 
+    async def _stop_external_scheduled_charging(self, reason: str) -> bool:
+        """Stop an externally-started session that violates Scheduled Charging."""
+        success = await _stop_coordinated_charging(
+            self.hass,
+            self._domain,
+            self.config_entry,
+            expected_owner_mode="scheduled",
+            reason=reason,
+            command="stop_scheduled_external",
+            stop_untracked=True,
+            log_prefix="Scheduled charging",
+        )
+        if not success:
+            return False
+
+        self._is_charging = False
+        self._active_modes = []
+        self._last_reason = reason
+        _LOGGER.info("EV Coordinator: Stopped external scheduled charging - %s", reason)
+        return True
+
     async def evaluate(
         self,
         live_status: dict,
@@ -7337,13 +7359,35 @@ class EVChargingModeCoordinator:
 
         else:
             # No mode wants to charge
+            stopped_external_scheduled = False
             if self._is_charging and not any_price_level_charging:
                 reasons = [d.reason for d in decisions if d.reason]
                 combined_reason = " | ".join(reasons) if reasons else "No mode wants to charge"
                 await self._stop_charging(combined_reason)
+            elif (
+                scheduled_exec
+                and decisions
+                and not any_price_level_charging
+                and decisions[0].reason != "Scheduled charging is disabled"
+            ):
+                external_charge = await is_ev_actively_charging(
+                    self.hass,
+                    self.config_entry,
+                )
+                if external_charge:
+                    scheduled_reason = decisions[0].reason or "Scheduled charging inactive"
+                    _LOGGER.info(
+                        "Scheduled charging stopping external session: %s",
+                        scheduled_reason,
+                    )
+                    if await self._stop_external_scheduled_charging(scheduled_reason):
+                        scheduled_exec.update_charging_state(False, scheduled_reason)
+                        scheduled_exec._state.last_decision = "stopped"
+                        scheduled_exec._state.last_decision_reason = scheduled_reason
+                        stopped_external_scheduled = True
 
             # Update executor states
-            if scheduled_exec:
+            if scheduled_exec and not stopped_external_scheduled:
                 scheduled_exec.update_charging_state(False)
 
             if not any_price_level_charging:
