@@ -1023,6 +1023,114 @@ def test_pre_export_fill_target_respects_configured_soc(
     assert result.schedule.actions[5].soc < 0.5
 
 
+def test_pre_export_fill_target_leaves_room_for_forecast_solar(
+    battery_optimizer_module,
+):
+    if not battery_optimizer_module.SCIPY_AVAILABLE:
+        pytest.skip("requires scipy LP solver")
+
+    optimizer = battery_optimizer_module.BatteryOptimizer(
+        capacity_wh=10000,
+        max_charge_w=10000,
+        max_discharge_w=10000,
+        efficiency=1.0,
+        backup_reserve=0.05,
+        interval_minutes=60,
+        horizon_hours=5,
+        terminal_weight=0.0,
+    )
+    optimizer.pre_window_slot = 4
+    optimizer.pre_window_soc_target = 0.90
+    optimizer.pre_window_solar_credit_factor = 0.80
+    optimizer.pre_window_solar_buffer_soc = 0.03
+
+    result = optimizer.optimize(
+        import_prices=[0.05] * 5,
+        export_prices=[0.0, 0.0, 0.0, 0.0, 0.50],
+        solar_forecast=[0.0, 0.0, 2.0, 2.0, 0.0],
+        load_forecast=[0.0] * 5,
+        current_soc=0.50,
+        acquisition_cost_kwh=0.0,
+        allow_battery_export=[False, False, False, False, True],
+        allow_grid_charge=True,
+    )
+
+    assert result.feasible is True
+    assert max(action.soc for action in result.schedule.actions[:2]) <= 0.62
+    assert result.schedule.actions[3].soc >= 0.895
+    early_grid_import_kwh = sum(result.grid_import_w[:2]) / 1000
+    assert early_grid_import_kwh <= 1.2
+
+
+def test_pre_export_fill_target_still_prefills_without_forecast_solar(
+    battery_optimizer_module,
+):
+    if not battery_optimizer_module.SCIPY_AVAILABLE:
+        pytest.skip("requires scipy LP solver")
+
+    optimizer = battery_optimizer_module.BatteryOptimizer(
+        capacity_wh=10000,
+        max_charge_w=10000,
+        max_discharge_w=10000,
+        efficiency=1.0,
+        backup_reserve=0.05,
+        interval_minutes=60,
+        horizon_hours=5,
+        terminal_weight=0.0,
+    )
+    optimizer.pre_window_slot = 4
+    optimizer.pre_window_soc_target = 0.90
+
+    result = optimizer.optimize(
+        import_prices=[0.05] * 5,
+        export_prices=[0.0, 0.0, 0.0, 0.0, 0.50],
+        solar_forecast=[0.0] * 5,
+        load_forecast=[0.0] * 5,
+        current_soc=0.50,
+        acquisition_cost_kwh=0.0,
+        allow_battery_export=[False, False, False, False, True],
+        allow_grid_charge=True,
+    )
+
+    assert result.feasible is True
+    assert result.schedule.actions[0].soc >= 0.895
+
+
+def test_pre_export_solar_ceiling_does_not_force_discharge_for_headroom(
+    battery_optimizer_module,
+):
+    if not battery_optimizer_module.SCIPY_AVAILABLE:
+        pytest.skip("requires scipy LP solver")
+
+    optimizer = battery_optimizer_module.BatteryOptimizer(
+        capacity_wh=10000,
+        max_charge_w=10000,
+        max_discharge_w=10000,
+        efficiency=1.0,
+        backup_reserve=0.05,
+        interval_minutes=60,
+        horizon_hours=5,
+        terminal_weight=0.0,
+    )
+    optimizer.pre_window_slot = 4
+    optimizer.pre_window_soc_target = 0.90
+
+    result = optimizer.optimize(
+        import_prices=[0.05] * 5,
+        export_prices=[0.0, 0.0, 0.0, 0.0, 0.50],
+        solar_forecast=[0.0, 0.0, 2.0, 2.0, 0.0],
+        load_forecast=[0.0] * 5,
+        current_soc=0.80,
+        acquisition_cost_kwh=0.0,
+        allow_battery_export=[False, False, False, False, True],
+        allow_grid_charge=True,
+    )
+
+    assert result.feasible is True
+    assert max(action.battery_discharge_w for action in result.schedule.actions[:4]) <= 1e-6
+    assert min(action.soc for action in result.schedule.actions[:4]) >= 0.80
+
+
 def test_disallow_grid_charge_still_allows_solar_surplus_charging(
     battery_optimizer_module,
 ):

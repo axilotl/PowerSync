@@ -64,6 +64,11 @@ LP_FAR_PERIOD_MINUTES = 60
 LP_PRICE_SPLIT_THRESHOLD = 0.02
 LP_POWER_SPLIT_THRESHOLD_KW = ACTION_THRESHOLD_W / 1000.0
 
+# Profit Max prefill guard: count most, but not all, forecast net solar before
+# the export window and keep a small SOC buffer for forecast error.
+PRE_WINDOW_SOLAR_CREDIT_FACTOR = 0.80
+PRE_WINDOW_SOLAR_BUFFER_SOC = 0.03
+
 _UNSET = object()
 
 
@@ -147,6 +152,8 @@ class BatteryOptimizer:
         # window for today's HH.
         self.pre_window_soc_target: float = 0.0
         self.pre_window_slot: int | None = None
+        self.pre_window_solar_credit_factor: float = PRE_WINDOW_SOLAR_CREDIT_FACTOR
+        self.pre_window_solar_buffer_soc: float = PRE_WINDOW_SOLAR_BUFFER_SOC
 
         # Terminal valuation units. The original LP wrote terminal coefficients
         # as `terminal_price * eff * dt / cap`, which is dimensionally wrong:
@@ -602,6 +609,76 @@ class BatteryOptimizer:
                 return idx + 1 if period.end == base_slot else idx
         return len(periods)
 
+    def _pre_window_solar_prefill_ceilings(
+        self,
+        *,
+        pre_window_boundary: int | None,
+        target_soc: float | None,
+        solar: list[float],
+        load: list[float],
+        dt_hours: list[float],
+        reserve_floor: list[float],
+        current_soc: float,
+    ) -> list[float | None]:
+        """Return SOC upper bounds that leave room for forecast solar."""
+        p_n = len(solar)
+        ceilings: list[float | None] = [None] * (p_n + 1)
+        if (
+            pre_window_boundary is None
+            or target_soc is None
+            or pre_window_boundary <= 1
+            or pre_window_boundary > p_n
+            or self.capacity_kwh <= 0
+            or self.max_charge_kw <= 0
+        ):
+            return ceilings
+
+        credit_factor = max(0.0, min(1.0, self.pre_window_solar_credit_factor))
+        if credit_factor <= 0:
+            return ceilings
+
+        buffer_soc = max(0.0, self.pre_window_solar_buffer_soc)
+        remaining_solar_kwh = [0.0] * (p_n + 1)
+        for idx in range(pre_window_boundary - 1, -1, -1):
+            surplus_kw = max(0.0, solar[idx] - load[idx])
+            usable_kw = min(self.max_charge_kw, surplus_kw)
+            stored_kwh = usable_kw * self.efficiency * dt_hours[idx] * credit_factor
+            remaining_solar_kwh[idx] = remaining_solar_kwh[idx + 1] + stored_kwh
+
+        active_count = 0
+        min_ceiling = 1.0
+        for boundary in range(1, pre_window_boundary):
+            remaining_soc = remaining_solar_kwh[boundary] / self.capacity_kwh
+            if remaining_soc <= 1e-6:
+                continue
+
+            ceiling = target_soc - remaining_soc + buffer_soc
+            # Never force a discharge just to make room. This only limits
+            # additional prefill above the current SOC.
+            ceiling = max(
+                current_soc,
+                reserve_floor[boundary],
+                min(1.0, ceiling),
+            )
+            ceiling = max(0.0, min(1.0, ceiling))
+            if ceiling < 1.0 - 1e-6:
+                ceilings[boundary] = ceiling
+                active_count += 1
+                min_ceiling = min(min_ceiling, ceiling)
+
+        if active_count:
+            _LOGGER.debug(
+                "Solar-aware pre-window ceiling: %d boundaries, min %.1f%% "
+                "(target %.1f%%, credit %.0f%%, buffer %.1f%%)",
+                active_count,
+                min_ceiling * 100,
+                target_soc * 100,
+                credit_factor * 100,
+                buffer_soc * 100,
+            )
+
+        return ceilings
+
     def _expand_period_values(
         self,
         periods: list[_LpPeriod],
@@ -957,6 +1034,7 @@ class BatteryOptimizer:
             A_eq[row, discharge_var(t)] = p_dt[t] / eff
 
         pre_window_boundary: int | None = None
+        pre_window_effective_target: float | None = None
         A_ub_rows = 2 * p_n
         if bonus_export_active:
             A_ub_rows += 2 * len(bonus_export_periods) + 1
@@ -972,6 +1050,16 @@ class BatteryOptimizer:
                 periods, self.pre_window_slot
             )
             if pre_window_boundary > 0:
+                slots_to_window = pre_window_boundary
+                max_soc_gain = (
+                    self.max_charge_kw * eff * sum(p_dt[:slots_to_window]) / cap
+                )
+                max_reachable = min(1.0, soc_0 + max_soc_gain)
+                # 0.5% buffer so a tight LP doesn't flip infeasible from rounding
+                pre_window_effective_target = min(
+                    self.pre_window_soc_target,
+                    max_reachable - 0.005,
+                )
                 A_ub_rows += 1
 
         A_ub = sparse.lil_matrix((A_ub_rows, num_vars), dtype=float)
@@ -1014,30 +1102,35 @@ class BatteryOptimizer:
         # globally cheapest periods, which often misses today's HH entirely.
         # Cap target at what's physically reachable to keep the LP feasible.
         if pre_window_boundary is not None and pre_window_boundary > 0:
-            slots_to_window = pre_window_boundary
-            max_soc_gain = (
-                self.max_charge_kw * eff * sum(p_dt[:slots_to_window]) / cap
-            )
-            max_reachable = min(1.0, soc_0 + max_soc_gain)
-            # 0.5% buffer so a tight LP doesn't flip infeasible from rounding
-            effective_target = min(self.pre_window_soc_target, max_reachable - 0.005)
-
-            if effective_target > soc_0:
-                A_ub[len(b_ub), energy_var(slots_to_window)] = -1.0
-                b_ub.append(-effective_target * cap)
+            if (
+                pre_window_effective_target is not None
+                and pre_window_effective_target > soc_0
+            ):
+                A_ub[len(b_ub), energy_var(pre_window_boundary)] = -1.0
+                b_ub.append(-pre_window_effective_target * cap)
                 _LOGGER.debug(
                     "Pre-window SOC floor: target=%.1f%% (capped from %.1f%%) "
                     "at slot %d (%.1f h ahead), current=%.1f%%",
-                    effective_target * 100,
+                    pre_window_effective_target * 100,
                     self.pre_window_soc_target * 100,
                     self.pre_window_slot,
-                    sum(p_dt[:slots_to_window]),
+                    sum(p_dt[:pre_window_boundary]),
                     soc_0 * 100,
                 )
             else:
                 # Keep A_ub row count aligned with b_ub when the pre-window
                 # request is already satisfied by current SOC.
                 b_ub.append(0.0)
+
+        solar_prefill_ceilings = self._pre_window_solar_prefill_ceilings(
+            pre_window_boundary=pre_window_boundary,
+            target_soc=pre_window_effective_target,
+            solar=p_solar,
+            load=p_load,
+            dt_hours=p_dt,
+            reserve_floor=reserve_floor,
+            current_soc=soc_0,
+        )
 
         # === Variable bounds ===
         # Cap grid at 100 kW by default (generous safety limit; prevents
@@ -1168,7 +1261,10 @@ class BatteryOptimizer:
 
         bounds.append((soc_0 * cap, soc_0 * cap))
         for t in range(1, p_n + 1):
-            bounds.append((reserve_floor[t] * cap, cap))
+            upper_soc = solar_prefill_ceilings[t]
+            upper = cap if upper_soc is None else upper_soc * cap
+            lower = reserve_floor[t] * cap
+            bounds.append((lower, max(lower, upper)))
 
         A_eq = A_eq.tocsr()
         A_ub = A_ub.tocsr()

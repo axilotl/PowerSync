@@ -4649,7 +4649,13 @@ class BatteryHealthView(HomeAssistantView):
         """Initialize the view."""
         self._hass = hass
 
-    async def _sync_live_battery_health_to_sensor(self, entry, payload: dict[str, Any]) -> None:
+    async def _sync_live_battery_health_to_sensor(
+        self,
+        entry,
+        payload: dict[str, Any],
+        *,
+        persist: bool = True,
+    ) -> None:
         """Mirror live Tesla battery-health payloads into the HA sensor state."""
         if not payload or not payload.get("available"):
             return
@@ -4686,7 +4692,7 @@ class BatteryHealthView(HomeAssistantView):
         entry_data["battery_health"] = battery_health_data
 
         store = entry_data.get("store")
-        if store:
+        if persist and store:
             stored_data = await store.async_load() or {}
             stored_data["battery_health"] = battery_health_data
             await store.async_save(stored_data)
@@ -16559,6 +16565,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "manual_export_override": stored_manual_export_override,  # Restored from persistent storage
         "manual_export_rule": stored_manual_export_rule,  # Restored from persistent storage
         "battery_health": battery_health,  # Restored from persistent storage (from mobile app TEDAPI scans)
+        "powerwall_bms_health_poll_cancel": None,  # 5-minute pack energy/BMS refresh timer
         "force_mode_state": force_mode_state,  # Restored force charge/discharge state
         "last_restorable_tesla_tariff": last_restorable_tesla_tariff,
         "store": store,  # Reference to Store for saving updates
@@ -26152,8 +26159,50 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.debug("Powerwall local coordinator warmup skipped: %s", _err)
 
     # Register HTTP endpoint for Battery Health (for mobile app Settings - battery auto-detection section)
-    hass.http.register_view(BatteryHealthView(hass))
+    battery_health_view = BatteryHealthView(hass)
+    hass.http.register_view(battery_health_view)
     _LOGGER.info("🔋 Battery health HTTP endpoint registered at /api/power_sync/battery_health")
+
+    # Pack-level Powerwall energy sensors read battery_health.individual_batteries,
+    # not the 2s system snapshot. Refresh that BMS payload every 5 minutes so
+    # sensor.power_sync_pw*_current_energy does not wait for manual app scans.
+    if entry.data.get(CONF_BATTERY_SYSTEM, "tesla") == "tesla":
+        import time as _time
+
+        from .powerwall_local.bms_health_polling import (
+            POWERWALL_BMS_HEALTH_POLL_INTERVAL,
+            async_start_powerwall_bms_health_polling,
+        )
+
+        async def _fetch_powerwall_bms_health() -> dict[str, Any] | None:
+            if not entry.data.get(CONF_POWERWALL_LOCAL_PAIRED):
+                return None
+            return await battery_health_view._try_fleet_api_bms_fetch(entry)
+
+        async def _sync_powerwall_bms_health(payload: dict[str, Any]) -> None:
+            entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+            entry_data["battery_health_cloud"] = {
+                "value": payload,
+                "expires_at": _time.monotonic() + 3600,
+            }
+            await battery_health_view._sync_live_battery_health_to_sensor(
+                entry,
+                payload,
+                persist=False,
+            )
+
+        hass.data[DOMAIN][entry.entry_id]["powerwall_bms_health_poll_cancel"] = (
+            async_start_powerwall_bms_health_polling(
+                hass,
+                entry.entry_id,
+                _fetch_powerwall_bms_health,
+                _sync_powerwall_bms_health,
+            )
+        )
+        _LOGGER.info(
+            "🔋 Powerwall pack energy polling armed (%s seconds; no-op until paired)",
+            int(POWERWALL_BMS_HEALTH_POLL_INTERVAL.total_seconds()),
+        )
 
     # Register HTTP endpoint for Inverter status (for mobile app Solar controls)
     hass.http.register_view(InverterStatusView(hass))
@@ -28820,6 +28869,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         pack_sensor_unsub()
         entry_data["powerwall_pack_sensor_unsub"] = None
         _LOGGER.debug("Unsubscribed Powerwall pack sensor listener")
+
+    if bms_poll_cancel := entry_data.get("powerwall_bms_health_poll_cancel"):
+        bms_poll_cancel()
+        entry_data["powerwall_bms_health_poll_cancel"] = None
+        _LOGGER.debug("Cancelled Powerwall BMS health polling")
 
     # Cancel the AEMO spike timer if it exists
     if aemo_spike_cancel := entry_data.get("aemo_spike_cancel"):
