@@ -193,6 +193,27 @@ def test_restore_normal_suppresses_tesla_force_toggle_during_dynamic_sync():
     assert "Skipping force mode toggle" in sync_source
 
 
+def test_tesla_tou_upload_waits_for_site_info_readback():
+    source = INIT_PATH.read_text()
+    tree = ast.parse(source)
+    function = _find_function(tree, "send_tariff_to_tesla")
+    confirm = _find_function(tree, "_confirm_tesla_tariff_uploaded")
+    matcher = _find_function(tree, "_tesla_tariff_matches_readback")
+    function_source = ast.get_source_segment(source, function)
+    confirm_source = ast.get_source_segment(source, confirm)
+    matcher_source = ast.get_source_segment(source, matcher)
+
+    assert function_source is not None
+    assert confirm_source is not None
+    assert matcher_source is not None
+    assert "confirm_readback: bool = True" in function_source
+    assert "await _confirm_tesla_tariff_uploaded(" in function_source
+    assert "site_info" in confirm_source
+    assert "tariff_content_v2" in confirm_source
+    assert "_tesla_tariff_matches_readback(tariff_data, observed)" in confirm_source
+    assert "_tariff_charge_rates(expected, sell=False)" in matcher_source
+
+
 def test_optimizer_restore_keeps_tesla_self_consumption_during_handoff():
     source = INIT_PATH.read_text()
     tree = ast.parse(source)
@@ -203,6 +224,19 @@ def test_optimizer_restore_keeps_tesla_self_consumption_during_handoff():
     assert "optimizer_owned_restore" in function_source
     assert 'restore_mode = "self_consumption"' in function_source
     assert "instead of restoring saved mode" in function_source
+
+
+def test_optimizer_restore_does_not_reenable_grid_charging_during_handoff():
+    source = INIT_PATH.read_text()
+    tree = ast.parse(source)
+    function = _find_function(tree, "handle_restore_normal")
+    function_source = ast.get_source_segment(source, function)
+
+    assert function_source is not None
+    skip_index = function_source.index("if optimizer_owned_restore:")
+    reenable_index = function_source.index("set_grid_charging_enabled(True)")
+    assert skip_index < reenable_index
+    assert "the next optimizer charge action will re-enable it if needed" in function_source
 
 
 def test_tesla_self_consumption_clears_force_toggle_state():
@@ -421,6 +455,20 @@ def test_tesla_force_discharge_disables_grid_charging_before_tariff_upload():
     )
     tariff_upload_index = function_source.index("send_tariff_to_tesla(")
     assert grid_disable_index < tariff_upload_index
+
+
+def test_tesla_force_charge_enables_grid_charging_before_tariff_upload():
+    source = INIT_PATH.read_text()
+    tree = ast.parse(source)
+    function = _find_function(tree, "handle_force_charge")
+    function_source = ast.get_source_segment(source, function)
+
+    assert function_source is not None
+    grid_enable_index = function_source.index(
+        '"disallow_charge_from_grid_with_solar_installed": False'
+    )
+    tariff_upload_index = function_source.index("send_tariff_to_tesla(")
+    assert grid_enable_index < tariff_upload_index
 
 
 def test_optimizer_backup_reserve_writes_do_not_persist_as_user_reserve():

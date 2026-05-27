@@ -2880,6 +2880,122 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
     return True
 
 
+def _normalise_tariff_rate_map(rates: Any) -> dict[str, float]:
+    """Return comparable TOU rates rounded to avoid float representation noise."""
+    if not isinstance(rates, dict):
+        return {}
+    normalised: dict[str, float] = {}
+    for period, value in rates.items():
+        try:
+            normalised[str(period)] = round(float(value), 6)
+        except (TypeError, ValueError):
+            continue
+    return normalised
+
+
+def _tariff_charge_rates(tariff: dict[str, Any] | None, *, sell: bool) -> dict[str, float]:
+    """Extract Summer TOU rates from Tesla tariff_content or tariff_content_v2 shapes."""
+    if not isinstance(tariff, dict):
+        return {}
+    source = tariff.get("sell_tariff", {}) if sell else tariff
+    if not isinstance(source, dict):
+        return {}
+    summer = source.get("energy_charges", {}).get("Summer", {})
+    if not isinstance(summer, dict):
+        return {}
+    rates = summer.get("rates")
+    if isinstance(rates, dict):
+        return _normalise_tariff_rate_map(rates)
+    return _normalise_tariff_rate_map(summer)
+
+
+def _tesla_tariff_matches_readback(
+    expected: dict[str, Any],
+    observed: dict[str, Any] | None,
+) -> bool:
+    """Return True when site_info reflects the tariff we just uploaded."""
+    if not isinstance(observed, dict):
+        return False
+
+    expected_buy = _tariff_charge_rates(expected, sell=False)
+    observed_buy = _tariff_charge_rates(observed, sell=False)
+    if expected_buy and observed_buy:
+        if expected_buy != observed_buy:
+            return False
+        expected_sell = _tariff_charge_rates(expected, sell=True)
+        observed_sell = _tariff_charge_rates(observed, sell=True)
+        return not expected_sell or not observed_sell or expected_sell == observed_sell
+
+    matched = 0
+    for field in ("name", "utility", "code"):
+        expected_value = expected.get(field)
+        observed_value = observed.get(field)
+        if expected_value is None or observed_value is None:
+            continue
+        if str(expected_value) != str(observed_value):
+            return False
+        matched += 1
+    return matched > 0
+
+
+async def _confirm_tesla_tariff_uploaded(
+    session: aiohttp.ClientSession,
+    api_base: str,
+    site_id: str,
+    headers: dict[str, str],
+    tariff_data: dict[str, Any],
+    *,
+    attempts: int = 5,
+    delay_seconds: float = 2.0,
+) -> bool:
+    """Poll Tesla site_info until the uploaded TOU tariff is visible."""
+    url = f"{api_base}/api/1/energy_sites/{site_id}/site_info"
+    for attempt in range(1, attempts + 1):
+        if attempt > 1:
+            await asyncio.sleep(delay_seconds)
+        try:
+            async with session.get(
+                url,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as response:
+                if response.status != 200:
+                    text = await response.text()
+                    _LOGGER.warning(
+                        "TOU readback check failed for site %s: %s - %s",
+                        site_id,
+                        response.status,
+                        text[:200],
+                    )
+                    continue
+                data = await response.json()
+                site_info = data.get("response", {})
+                observed = site_info.get("tariff_content_v2") or site_info.get("tariff_content")
+                if _tesla_tariff_matches_readback(tariff_data, observed):
+                    _LOGGER.info(
+                        "Confirmed Tesla TOU tariff readback for site %s (attempt %d/%d)",
+                        site_id,
+                        attempt,
+                        attempts,
+                    )
+                    return True
+                _LOGGER.debug(
+                    "Tesla TOU readback for site %s did not match yet (attempt %d/%d)",
+                    site_id,
+                    attempt,
+                    attempts,
+                )
+        except Exception as err:
+            _LOGGER.warning(
+                "TOU readback check error for site %s (attempt %d/%d): %s",
+                site_id,
+                attempt,
+                attempts,
+                err,
+            )
+    return False
+
+
 async def send_tariff_to_tesla(
     hass: HomeAssistant,
     site_id: str,
@@ -2889,6 +3005,7 @@ async def send_tariff_to_tesla(
     max_retries: int = 3,
     timeout_seconds: int = 60,
     fleet_base_url: str | None = None,
+    confirm_readback: bool = True,
 ) -> bool:
     """Send tariff data to Tesla via the configured provider with retry logic.
 
@@ -2901,6 +3018,7 @@ async def send_tariff_to_tesla(
         max_retries: Maximum number of retry attempts (default: 3)
         timeout_seconds: Request timeout in seconds (default: 60)
         fleet_base_url: Regional Fleet API base URL override for EU/AP users.
+        confirm_readback: Confirm the uploaded tariff appears in site_info before returning success.
 
     Returns:
         True if successful, False otherwise
@@ -3000,7 +3118,21 @@ async def send_tariff_to_tesla(
                         max_retries
                     )
                     _LOGGER.debug("Tesla API response: %s", result)
-                    return True
+                    if not confirm_readback:
+                        return True
+                    if await _confirm_tesla_tariff_uploaded(
+                        session,
+                        api_base,
+                        site_id,
+                        headers,
+                        tariff_data,
+                    ):
+                        return True
+                    _LOGGER.error(
+                        "TOU upload to Tesla was accepted but site_info did not confirm the tariff for site %s",
+                        site_id,
+                    )
+                    return False
 
                 # Log error and potentially retry
                 error_text = await response.text()
@@ -23245,6 +23377,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 }
                 api_base = get_tesla_api_base_url(provider, entry.data.get(CONF_FLEET_API_BASE_URL))
 
+                _LOGGER.info("Enabling grid charging for force charge on site %s...", site_id)
+                async with session.post(
+                    f"{api_base}/api/1/energy_sites/{site_id}/grid_import_export",
+                    headers=headers,
+                    json={"disallow_charge_from_grid_with_solar_installed": False},
+                    timeout=aiohttp.ClientTimeout(total=30),
+                ) as response:
+                    if response.status == 200:
+                        _LOGGER.info("Enabled grid charging for force charge on site %s", site_id)
+                    else:
+                        text = await response.text()
+                        _LOGGER.warning(
+                            "Could not enable grid charging for force charge on site %s: %s - %s",
+                            site_id,
+                            response.status,
+                            text[:200],
+                        )
+
                 _LOGGER.info("Switching to autonomous mode for site %s...", site_id)
                 async with session.post(
                     f"{api_base}/api/1/energy_sites/{site_id}/operation",
@@ -24267,19 +24417,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             dc_coordinator = entry_data.get("demand_charge_coordinator")
             ts_coordinator = entry_data.get("tesla_coordinator")
             if ts_coordinator:
-                in_peak = False
-                if dc_coordinator and not entry_data.get("demand_allow_grid_charging", False):
-                    in_peak = dc_coordinator._is_in_peak_period(dt_util.now())
-                if in_peak:
-                    _LOGGER.info("Restore normal: still in demand peak period — keeping grid charging disabled")
-                    hass.data[DOMAIN][entry.entry_id]["grid_charging_disabled_for_demand"] = True
+                if optimizer_owned_restore:
+                    _LOGGER.info(
+                        "Optimizer restore: leaving Tesla grid charging unchanged after tariff handoff; "
+                        "the next optimizer charge action will re-enable it if needed"
+                    )
                 else:
-                    success = await ts_coordinator.set_grid_charging_enabled(True)
-                    if success:
-                        hass.data[DOMAIN][entry.entry_id]["grid_charging_disabled_for_demand"] = False
-                        _LOGGER.info("Grid charging re-enabled after restore normal")
+                    in_peak = False
+                    if dc_coordinator and not entry_data.get("demand_allow_grid_charging", False):
+                        in_peak = dc_coordinator._is_in_peak_period(dt_util.now())
+                    if in_peak:
+                        _LOGGER.info("Restore normal: still in demand peak period — keeping grid charging disabled")
+                        hass.data[DOMAIN][entry.entry_id]["grid_charging_disabled_for_demand"] = True
                     else:
-                        _LOGGER.warning("Failed to re-enable grid charging during restore normal")
+                        success = await ts_coordinator.set_grid_charging_enabled(True)
+                        if success:
+                            hass.data[DOMAIN][entry.entry_id]["grid_charging_disabled_for_demand"] = False
+                            _LOGGER.info("Grid charging re-enabled after restore normal")
+                        else:
+                            _LOGGER.warning("Failed to re-enable grid charging during restore normal")
 
             # Clear discharge state
             force_discharge_state["active"] = False
