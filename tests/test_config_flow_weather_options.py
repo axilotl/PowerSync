@@ -444,6 +444,32 @@ def test_initial_smart_optimization_configuration_exposes_enabled_toggle():
     )
 
 
+def test_powerwall_smart_optimization_hides_spread_options():
+    source = CONFIG_FLOW_PATH.read_text()
+
+    initial_method = _config_flow_method("async_step_ml_options")
+    initial_source = ast.get_source_segment(source, initial_method)
+    options_method = _options_flow_method("async_step_optimization")
+    options_source = ast.get_source_segment(source, options_method)
+
+    assert initial_source is not None
+    assert options_source is not None
+    assert "is_tesla = battery_system == BATTERY_SYSTEM_TESLA" in initial_source
+    assert "is_tesla = battery_system == BATTERY_SYSTEM_TESLA" in options_source
+
+    for method_source in (initial_source, options_source):
+        assert "False\n                    if is_tesla" in method_source
+        spread_block_start = method_source.index("if not is_tesla:")
+        profit_block_start = method_source.index(
+            "CONF_PROFIT_MAX_ENABLED",
+            spread_block_start,
+        )
+        spread_schema_block = method_source[spread_block_start:profit_block_start]
+
+        assert "CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED" in spread_schema_block
+        assert "CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED" in spread_schema_block
+
+
 def test_initial_setup_routes_to_combined_optimization_options_page():
     source = CONFIG_FLOW_PATH.read_text()
     method = _config_flow_method("async_step_battery_system")

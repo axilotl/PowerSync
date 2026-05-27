@@ -2215,6 +2215,7 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> FlowResult:
         """Configure Smart Optimization options."""
         battery_system = self._selected_battery_system or BATTERY_SYSTEM_TESLA
+        is_tesla = battery_system == BATTERY_SYSTEM_TESLA
         default_capacity_wh, default_charge_w, default_discharge_w = (
             _default_optimizer_specs_for(battery_system)
         )
@@ -2234,8 +2235,20 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 )
             }
             if optimization_provider == OPT_PROVIDER_POWERSYNC:
-                spread_export_enabled = user_input.get(CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED, False)
-                spread_import_enabled = user_input.get(CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED, False)
+                spread_export_enabled = (
+                    False
+                    if is_tesla
+                    else bool(
+                        user_input.get(CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED, False)
+                    )
+                )
+                spread_import_enabled = (
+                    False
+                    if is_tesla
+                    else bool(
+                        user_input.get(CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED, False)
+                    )
+                )
                 self._ml_options.update({
                     CONF_OPTIMIZATION_ENABLED: bool(
                         user_input.get(CONF_OPTIMIZATION_ENABLED, True)
@@ -2288,129 +2301,133 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return await self._route_to_battery_setup()
 
         opt_providers = _optimization_provider_options_for_battery(battery_system)
+        schema_fields: dict[Any, Any] = {
+            vol.Required(
+                CONF_OPTIMIZATION_PROVIDER,
+                default=OPT_PROVIDER_POWERSYNC,
+            ): SelectSelector(
+                SelectSelectorConfig(
+                    options=[
+                        SelectOptionDict(value=k, label=v)
+                        for k, v in opt_providers.items()
+                    ],
+                    mode=SelectSelectorMode.DROPDOWN,
+                )
+            ),
+            vol.Required(
+                CONF_OPTIMIZATION_ENABLED,
+                default=True,
+            ): BooleanSelector(),
+            vol.Required(
+                CONF_OPTIMIZATION_EV_INTEGRATION,
+                default=False,
+            ): BooleanSelector(),
+            vol.Required(
+                CONF_MONITORING_MODE,
+                default=False,
+            ): BooleanSelector(),
+            vol.Required(
+                CONF_OPTIMIZATION_BACKUP_RESERVE,
+                default=int(DEFAULT_OPTIMIZATION_BACKUP_RESERVE * 100),
+            ): NumberSelector(
+                NumberSelectorConfig(
+                    min=0,
+                    max=100,
+                    step=1,
+                    unit_of_measurement="%",
+                    mode=NumberSelectorMode.SLIDER,
+                )
+            ),
+            vol.Required(
+                CONF_HARDWARE_BACKUP_RESERVE,
+                default=int(DEFAULT_OPTIMIZATION_BACKUP_RESERVE * 100),
+            ): NumberSelector(
+                NumberSelectorConfig(
+                    min=0,
+                    max=100,
+                    step=1,
+                    unit_of_measurement="%",
+                    mode=NumberSelectorMode.SLIDER,
+                )
+            ),
+            vol.Required(
+                CONF_OPTIMIZATION_BATTERY_CAPACITY_WH,
+                default=default_capacity_kwh,
+            ): NumberSelector(
+                NumberSelectorConfig(
+                    min=1,
+                    max=200,
+                    step=0.1,
+                    unit_of_measurement="kWh",
+                    mode=NumberSelectorMode.BOX,
+                )
+            ),
+            vol.Required(
+                CONF_OPTIMIZATION_MAX_CHARGE_W,
+                default=default_charge_kw,
+            ): NumberSelector(
+                NumberSelectorConfig(
+                    min=0.1,
+                    max=50,
+                    step=0.1,
+                    unit_of_measurement="kW",
+                    mode=NumberSelectorMode.BOX,
+                )
+            ),
+            vol.Required(
+                CONF_OPTIMIZATION_MAX_DISCHARGE_W,
+                default=default_discharge_kw,
+            ): NumberSelector(
+                NumberSelectorConfig(
+                    min=0.1,
+                    max=50,
+                    step=0.1,
+                    unit_of_measurement="kW",
+                    mode=NumberSelectorMode.BOX,
+                )
+            ),
+            vol.Required(
+                CONF_OPTIMIZATION_ALLOW_GRID_CHARGE,
+                default=True,
+            ): BooleanSelector(),
+        }
+        if not is_tesla:
+            schema_fields.update({
+                vol.Required(
+                    CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED,
+                    default=False,
+                ): BooleanSelector(),
+                vol.Required(
+                    CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED,
+                    default=False,
+                ): BooleanSelector(),
+            })
+        schema_fields.update({
+            vol.Required(
+                CONF_PROFIT_MAX_ENABLED,
+                default=False,
+            ): BooleanSelector(),
+            vol.Required(
+                CONF_PROFIT_MAX_TARGET_TIME,
+                default=DEFAULT_PROFIT_MAX_TARGET_TIME,
+            ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
+            vol.Required(
+                CONF_PROFIT_MAX_TARGET_SOC,
+                default=int(DEFAULT_PROFIT_MAX_TARGET_SOC * 100),
+            ): NumberSelector(
+                NumberSelectorConfig(
+                    min=0,
+                    max=100,
+                    step=1,
+                    unit_of_measurement="%",
+                    mode=NumberSelectorMode.SLIDER,
+                )
+            ),
+        })
 
         return self.async_show_form(
             step_id="ml_options",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(
-                        CONF_OPTIMIZATION_PROVIDER,
-                        default=OPT_PROVIDER_POWERSYNC,
-                    ): SelectSelector(
-                        SelectSelectorConfig(
-                            options=[
-                                SelectOptionDict(value=k, label=v)
-                                for k, v in opt_providers.items()
-                            ],
-                            mode=SelectSelectorMode.DROPDOWN,
-                        )
-                    ),
-                    vol.Required(
-                        CONF_OPTIMIZATION_ENABLED,
-                        default=True,
-                    ): BooleanSelector(),
-                    vol.Required(
-                        CONF_OPTIMIZATION_EV_INTEGRATION,
-                        default=False,
-                    ): BooleanSelector(),
-                    vol.Required(
-                        CONF_MONITORING_MODE,
-                        default=False,
-                    ): BooleanSelector(),
-                    vol.Required(
-                        CONF_OPTIMIZATION_BACKUP_RESERVE,
-                        default=int(DEFAULT_OPTIMIZATION_BACKUP_RESERVE * 100),
-                    ): NumberSelector(
-                        NumberSelectorConfig(
-                            min=0,
-                            max=100,
-                            step=1,
-                            unit_of_measurement="%",
-                            mode=NumberSelectorMode.SLIDER,
-                        )
-                    ),
-                    vol.Required(
-                        CONF_HARDWARE_BACKUP_RESERVE,
-                        default=int(DEFAULT_OPTIMIZATION_BACKUP_RESERVE * 100),
-                    ): NumberSelector(
-                        NumberSelectorConfig(
-                            min=0,
-                            max=100,
-                            step=1,
-                            unit_of_measurement="%",
-                            mode=NumberSelectorMode.SLIDER,
-                        )
-                    ),
-                    vol.Required(
-                        CONF_OPTIMIZATION_BATTERY_CAPACITY_WH,
-                        default=default_capacity_kwh,
-                    ): NumberSelector(
-                        NumberSelectorConfig(
-                            min=1,
-                            max=200,
-                            step=0.1,
-                            unit_of_measurement="kWh",
-                            mode=NumberSelectorMode.BOX,
-                        )
-                    ),
-                    vol.Required(
-                        CONF_OPTIMIZATION_MAX_CHARGE_W,
-                        default=default_charge_kw,
-                    ): NumberSelector(
-                        NumberSelectorConfig(
-                            min=0.1,
-                            max=50,
-                            step=0.1,
-                            unit_of_measurement="kW",
-                            mode=NumberSelectorMode.BOX,
-                        )
-                    ),
-                    vol.Required(
-                        CONF_OPTIMIZATION_MAX_DISCHARGE_W,
-                        default=default_discharge_kw,
-                    ): NumberSelector(
-                        NumberSelectorConfig(
-                            min=0.1,
-                            max=50,
-                            step=0.1,
-                            unit_of_measurement="kW",
-                            mode=NumberSelectorMode.BOX,
-                        )
-                    ),
-                    vol.Required(
-                        CONF_OPTIMIZATION_ALLOW_GRID_CHARGE,
-                        default=True,
-                    ): BooleanSelector(),
-                    vol.Required(
-                        CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED,
-                        default=False,
-                    ): BooleanSelector(),
-                    vol.Required(
-                        CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED,
-                        default=False,
-                    ): BooleanSelector(),
-                    vol.Required(
-                        CONF_PROFIT_MAX_ENABLED,
-                        default=False,
-                    ): BooleanSelector(),
-                    vol.Required(
-                        CONF_PROFIT_MAX_TARGET_TIME,
-                        default=DEFAULT_PROFIT_MAX_TARGET_TIME,
-                    ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
-                    vol.Required(
-                        CONF_PROFIT_MAX_TARGET_SOC,
-                        default=int(DEFAULT_PROFIT_MAX_TARGET_SOC * 100),
-                    ): NumberSelector(
-                        NumberSelectorConfig(
-                            min=0,
-                            max=100,
-                            step=1,
-                            unit_of_measurement="%",
-                            mode=NumberSelectorMode.SLIDER,
-                        )
-                    ),
-                }
-            ),
+            data_schema=vol.Schema(schema_fields),
             description_placeholders={},
         )
 
@@ -6545,6 +6562,7 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
         battery_system = self.config_entry.data.get(
             CONF_BATTERY_SYSTEM, BATTERY_SYSTEM_TESLA
         )
+        is_tesla = battery_system == BATTERY_SYSTEM_TESLA
         if user_input is not None:
             optimization_provider = user_input.get(
                 CONF_OPTIMIZATION_PROVIDER, OPT_PROVIDER_NATIVE
@@ -6644,11 +6662,19 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 new_options[CONF_OPTIMIZATION_MAX_DISCHARGE_W] = discharge_w
                 new_data[CONF_OPTIMIZATION_ALLOW_GRID_CHARGE] = allow_grid_charge
                 new_options[CONF_OPTIMIZATION_ALLOW_GRID_CHARGE] = allow_grid_charge
-                spread_export_enabled = bool(
-                    user_input.get(CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED, False)
+                spread_export_enabled = (
+                    False
+                    if is_tesla
+                    else bool(
+                        user_input.get(CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED, False)
+                    )
                 )
-                spread_import_enabled = bool(
-                    user_input.get(CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED, False)
+                spread_import_enabled = (
+                    False
+                    if is_tesla
+                    else bool(
+                        user_input.get(CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED, False)
+                    )
                 )
                 ev_integration_enabled = bool(
                     user_input.get(CONF_OPTIMIZATION_EV_INTEGRATION, False)
@@ -6858,6 +6884,10 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     CONF_OPTIMIZATION_ALLOW_GRID_CHARGE,
                     default=bool(current_allow_grid_charge),
                 ): BooleanSelector(),
+            }
+        )
+        if not is_tesla:
+            schema_fields.update({
                 vol.Required(
                     CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED,
                     default=bool(current_spread_export_enabled),
@@ -6866,6 +6896,9 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED,
                     default=bool(current_spread_import_enabled),
                 ): BooleanSelector(),
+            })
+        schema_fields.update(
+            {
                 vol.Required(
                     CONF_PROFIT_MAX_ENABLED,
                     default=bool(current_profit_max_enabled),
