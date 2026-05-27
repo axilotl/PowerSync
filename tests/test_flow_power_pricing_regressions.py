@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import ast
 import importlib
+import importlib.util
 import json
 import sys
 import types
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -157,3 +159,47 @@ def test_power_sync_requires_aemo_to_tariff_with_endeavour_n73():
     manifest = json.loads((COMPONENT_ROOT / "manifest.json").read_text())
 
     assert "aemo-to-tariff>=0.7.15" in manifest["requirements"]
+
+
+def test_network_tariff_lookup_uses_dispatch_interval_end(monkeypatch):
+    captured_times = []
+
+    fake_aemo_to_tariff = types.ModuleType("aemo_to_tariff")
+
+    def spot_to_tariff(**kwargs):
+        captured_times.append(kwargs["interval_time"])
+        return 12.34
+
+    fake_aemo_to_tariff.spot_to_tariff = spot_to_tariff
+    monkeypatch.setitem(sys.modules, "aemo_to_tariff", fake_aemo_to_tariff)
+
+    spec = importlib.util.spec_from_file_location(
+        "power_sync_tariff_utils_test",
+        COMPONENT_ROOT / "tariff_utils.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+
+    tz = timezone.utc
+
+    assert module.get_network_tariff_rate(
+        datetime(2026, 5, 27, 10, 0, 5, 123456, tzinfo=tz),
+        "essential",
+        "BLNRSS2",
+    ) == 12.34
+    assert captured_times[-1] == datetime(2026, 5, 27, 10, 5, tzinfo=tz)
+
+    module.get_network_tariff_rate(
+        datetime(2026, 5, 27, 10, 0, 0, tzinfo=tz),
+        "essential",
+        "BLNRSS2",
+    )
+    assert captured_times[-1] == datetime(2026, 5, 27, 10, 5, tzinfo=tz)
+
+    module.get_network_tariff_rate(
+        datetime(2026, 5, 27, 9, 59, 59, 999999, tzinfo=tz),
+        "essential",
+        "BLNRSS2",
+    )
+    assert captured_times[-1] == datetime(2026, 5, 27, 10, 0, tzinfo=tz)
