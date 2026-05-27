@@ -80,3 +80,13 @@ def test_dashboard_layout_drag_starts_from_handle_only():
     ]
     assert "touch-action: none;" in drag_surface_css
     assert "appearance: none;" in drag_surface_css
+
+
+def test_dashboard_entity_resolver_accepts_ha_renamed_powersync_sensors():
+    """HA may compose PowerSync sensor IDs from the integration/device name."""
+    source = STRATEGY_PATH.read_text()
+
+    assert "sensor.powersync_amber_battery_level" in source
+    assert "objectId.startsWith('powersync_')" in source
+    assert "objectId.startsWith('power_sync_')" in source
+    assert "isAvailableState(id)" in source

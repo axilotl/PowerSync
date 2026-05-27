@@ -351,6 +351,26 @@ def test_solaredge_energy_bridge_discovers_control_entities():
     )
 
 
+def test_solaredge_energy_bridge_discovers_remote_command_mode_alias():
+    hass = _SEHass()
+    state = hass.states._states.pop("select.solaredge_storage_command_mode")
+    state.entity_id = "select.solaredge_remote_command_mode"
+    hass.states._states[state.entity_id] = state
+    controller = SolarEdgeEnergyController(hass, entity_prefix="solaredge")
+
+    assert asyncio.run(controller.connect())
+    assert controller.control_available()
+    assert controller._control_entity_map["storage_command_mode"] == (
+        "select.solaredge_remote_command_mode"
+    )
+
+    assert asyncio.run(controller.force_charge(duration_minutes=30, power_w=4200))
+    assert ("select", "select_option", {
+        "entity_id": "select.solaredge_remote_command_mode",
+        "option": "Charge",
+    }) in hass.services.calls
+
+
 def test_solaredge_force_charge_writes_remote_charge_entities_and_restores():
     hass = _SEHass()
     controller = SolarEdgeEnergyController(hass, entity_prefix="solaredge")

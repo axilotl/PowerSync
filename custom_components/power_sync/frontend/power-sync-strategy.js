@@ -1727,22 +1727,54 @@ class PowerSyncStrategy {
     // Built-in energy flow card is always available (power-sync-energy-flow.js)
     const hasTeslaFlow = true;
 
-    // Entity resolver — tries power_sync_ prefixed first, then bare name.
+    const isAvailableState = (id) => {
+      const s = (hass.states || {})[id];
+      return s && s.state !== 'unavailable' && s.state !== 'unknown';
+    };
+
+    // Entity resolver - tries power_sync_ prefixed first, then HA-renamed
+    // PowerSync sensors such as sensor.powersync_amber_battery_level.
     // Handles mixed installs where some entities have the prefix and others don't.
     const e = (name) => {
       const prefixed = `sensor.power_sync_${name}`;
-      if (hass.states[prefixed]) return prefixed;
       const bare = `sensor.${name}`;
-      if (hass.states[bare]) return bare;
-      // Default to prefixed (modern convention)
-      return prefixed;
+      const tail = `_${name}`;
+      const candidates = [];
+      for (const id of [prefixed, bare]) {
+        if (hass.states[id]) candidates.push(id);
+      }
+      for (const id of Object.keys(hass.states || {})) {
+        if (!id.startsWith('sensor.')) continue;
+        const objectId = id.slice('sensor.'.length);
+        if (!objectId.endsWith(tail)) continue;
+        if (!objectId.startsWith('power_sync_') && !objectId.startsWith('powersync_')) continue;
+        candidates.push(id);
+      }
+      const unique = Array.from(new Set(candidates));
+      if (unique.length === 0) return prefixed;
+      return unique.sort((a, b) => {
+        const score = (id) => {
+          if (isAvailableState(id)) return 0;
+          return 1;
+        };
+        const nameScore = (id) => {
+          if (id === prefixed) return 0;
+          if (id.startsWith('sensor.powersync_')) return 1;
+          if (id.startsWith('sensor.power_sync_')) return 2;
+          if (id === bare) return 3;
+          return 4;
+        };
+        return (
+          score(a) - score(b) ||
+          nameScore(a) - nameScore(b) ||
+          a.length - b.length ||
+          a.localeCompare(b)
+        );
+      })[0];
     };
 
     // Entity existence + availability helper
-    const has = (id) => {
-      const s = hass.states[id];
-      return s && s.state !== 'unavailable' && s.state !== 'unknown';
-    };
+    const has = (id) => isAvailableState(id);
 
     // Shorthand: resolve then check
     const hasE = (name) => has(e(name));
