@@ -2861,10 +2861,11 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_solaredge(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Configure SolarEdge Modbus curtailment.
+        """Configure SolarEdge telemetry, battery dispatch, and curtailment.
 
-        SolarEdge v1 support is curtailment-only. Direct Modbus is preferred;
-        entity fallback is allowed for existing SolarEdge Modbus HA integrations.
+        PowerSync reads SolarEdge Home battery telemetry from HA entities and
+        uses writable HA storage-control entities for battery dispatch. Direct
+        Modbus or entity fallback is used for active-power curtailment.
         """
         errors: dict[str, str] = {}
 

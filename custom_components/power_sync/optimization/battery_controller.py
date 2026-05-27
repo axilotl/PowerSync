@@ -222,6 +222,7 @@ class BatteryControllerWrapper:
                     "saj_h2_coordinator",
                     "fronius_reserva_coordinator",
                     "neovolt_coordinator",
+                    "solaredge_coordinator",
                 ):
                     coord = entry_data.get(coord_key)
                     data = getattr(coord, "data", None) or {}
@@ -231,7 +232,7 @@ class BatteryControllerWrapper:
                             return int(float(reserve))
 
                 # Modbus-based batteries: read from controller
-                for coord_key in ("sigenergy_coordinator", "sungrow_coordinator", "foxess_coordinator", "goodwe_coordinator", "esy_sunhome_coordinator", "solax_coordinator", "saj_h2_coordinator", "fronius_reserva_coordinator", "neovolt_coordinator"):
+                for coord_key in ("sigenergy_coordinator", "sungrow_coordinator", "foxess_coordinator", "goodwe_coordinator", "esy_sunhome_coordinator", "solax_coordinator", "saj_h2_coordinator", "fronius_reserva_coordinator", "neovolt_coordinator", "solaredge_coordinator"):
                     coord = entry_data.get(coord_key)
                     if coord and hasattr(coord, "_controller") and hasattr(coord._controller, "get_backup_reserve"):
                         return await coord._controller.get_backup_reserve()

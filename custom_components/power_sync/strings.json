@@ -838,8 +838,8 @@
         "submit": "Connect"
       },
       "solaredge": {
-        "title": "SolarEdge curtailment",
-        "description": "Connect to your SolarEdge inverter for active-power curtailment. Enable Modbus TCP and inverter-side power control in SetApp or the LCD menu first. Some firmware or grid profiles may reject third-party power-control writes.",
+        "title": "SolarEdge battery and curtailment",
+        "description": "Connect to your SolarEdge system for Home Battery telemetry, battery dispatch, and active-power curtailment. Battery telemetry and dispatch are bridged through SolarEdge HA entities; curtailment uses Modbus TCP or entity fallback. Enable Modbus TCP and inverter-side power control in SetApp or the LCD menu first. Some firmware or grid profiles may reject third-party power-control writes.",
         "data": {
           "solaredge_host": "Inverter IP address",
           "solaredge_port": "Modbus port",
@@ -853,14 +853,14 @@
           "solaredge_port": "Default Modbus TCP port is 502.",
           "solaredge_slave_id": "Default is 1. Only change if the inverter uses another Modbus unit ID.",
           "solaredge_rated_power_w": "Rated AC output in watts. Used to convert load-following requests into SolarEdge's 0-100% active power limit.",
-          "solaredge_entity_prefix": "Optional. Used when direct Modbus is unavailable and a SolarEdge Modbus HA integration exposes entities such as number.solaredge_active_power_limit.",
+          "solaredge_entity_prefix": "Optional. Used to match SolarEdge HA telemetry, storage-control, and active-power-limit entities when more than one naming group exists.",
           "solaredge_dc_curtailment_enabled": "When enabled, PowerSync sets SolarEdge active power to 0% during uneconomic export periods and restores it to 100% when export recovers."
         },
         "submit": "Connect"
       },
       "solaredge_connection": {
-        "title": "SolarEdge curtailment",
-        "description": "Configure SolarEdge active-power curtailment. Modbus TCP and inverter-side power control must be enabled on the inverter.",
+        "title": "SolarEdge battery and curtailment",
+        "description": "Configure SolarEdge Home Battery telemetry, battery dispatch, and active-power curtailment. Dispatch uses writable SolarEdge HA storage-control entities; Modbus TCP and inverter-side power control must be enabled on the inverter for curtailment.",
         "data": {
           "solaredge_host": "Inverter IP address",
           "solaredge_port": "Modbus port",

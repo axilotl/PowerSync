@@ -353,6 +353,70 @@ def test_neovolt_energy_coordinator_passes_force_discharge_restore_mode_flag():
     assert "preserve_restore_modes=preserve_restore_modes" in method_source
 
 
+def test_solaredge_dispatch_is_routed_through_services_and_coordinator():
+    source = INIT_PATH.read_text()
+    tree = ast.parse(source)
+    force_discharge = _find_function(tree, "handle_force_discharge")
+    force_charge = _find_function(tree, "handle_force_charge")
+    restore = _find_function(tree, "handle_restore_normal")
+    reserve = _find_function(tree, "handle_set_backup_reserve")
+    hold = _find_function(tree, "handle_hold_battery_soc")
+
+    force_discharge_source = ast.get_source_segment(source, force_discharge)
+    force_charge_source = ast.get_source_segment(source, force_charge)
+    restore_source = ast.get_source_segment(source, restore)
+    reserve_source = ast.get_source_segment(source, reserve)
+    hold_source = ast.get_source_segment(source, hold)
+
+    assert force_discharge_source is not None
+    assert force_charge_source is not None
+    assert restore_source is not None
+    assert reserve_source is not None
+    assert hold_source is not None
+
+    assert 'solaredge_coord = entry_data.get("solaredge_coordinator")' in force_discharge_source
+    assert "await solaredge_coord.force_discharge(duration, power_w=power_w)" in force_discharge_source
+    assert "await solaredge_coord.force_charge(duration, power_w=power_w)" in force_charge_source
+    assert "await solaredge_coord.restore_normal()" in restore_source
+    assert "await solaredge_coord.set_backup_reserve(percent)" in reserve_source
+    assert '("solaredge_coordinator", "solaredge")' in hold_source
+
+
+def test_solaredge_optimizer_wrapper_no_longer_blocks_dispatch():
+    source = (ROOT / "custom_components" / "power_sync" / "optimization" / "battery_controller.py").read_text()
+    tree = ast.parse(source)
+
+    for method_name in (
+        "force_charge",
+        "force_discharge",
+        "restore_normal",
+        "set_self_consumption_mode",
+        "set_autonomous_mode",
+        "set_backup_reserve",
+    ):
+        method = _find_class_method(tree, "BatteryControllerWrapper", method_name)
+        method_source = ast.get_source_segment(source, method)
+        assert method_source is not None
+        assert 'self.battery_system == "solaredge"' not in method_source
+
+
+def test_solaredge_energy_coordinator_exposes_control_surface():
+    tree = ast.parse(COORDINATOR_PATH.read_text())
+    expected_methods = {
+        "force_charge",
+        "force_discharge",
+        "restore_normal",
+        "set_backup_mode",
+        "restore_work_mode_from_idle",
+        "set_backup_reserve",
+        "get_backup_reserve",
+        "set_operation_mode",
+    }
+
+    for method_name in expected_methods:
+        _find_class_method(tree, "SolarEdgeEnergyCoordinator", method_name)
+
+
 def test_dual_sungrow_discharge_max_uses_each_inverter_limit():
     source = COORDINATOR_PATH.read_text()
     tree = ast.parse(source)

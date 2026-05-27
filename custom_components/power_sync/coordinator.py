@@ -5883,6 +5883,133 @@ class SolaxBatteryEnergyCoordinator(DataUpdateCoordinator):
         await self._controller.disconnect()
 
 
+class SolarEdgeEnergyCoordinator(DataUpdateCoordinator):
+    """Bridge coordinator for SolarEdge Home battery telemetry via HA entities."""
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entity_prefix: str = "solaredge",
+        solaredge_entry_id: str | None = None,
+        entry_id: str = "",
+    ) -> None:
+        from .inverters.solaredge import SolarEdgeEnergyController
+
+        self._entry_id = entry_id
+        self._controller = SolarEdgeEnergyController(
+            hass,
+            entity_prefix=entity_prefix,
+            solaredge_entry_id=solaredge_entry_id,
+        )
+        self._energy_acc = EnergyAccumulator(hass, "solaredge")
+        self._validated = False
+
+        super().__init__(
+            hass,
+            _LOGGER,
+            name=f"{DOMAIN}_solaredge_energy",
+            update_interval=timedelta(seconds=30),
+        )
+
+    async def _async_update_data(self) -> dict[str, Any]:
+        """Return SolarEdge data assembled from HA entity states."""
+        if not self._energy_acc._last_update:
+            await self._energy_acc.async_restore()
+
+        try:
+            if not self._validated:
+                await self._controller.connect()
+                self._validated = True
+            status = self._controller.get_status()
+        except Exception as exc:
+            if self.data:
+                _LOGGER.warning(
+                    "SolarEdge entity bridge read failed, returning stale data: %s",
+                    exc,
+                )
+                return self.data
+            raise UpdateFailed(f"SolarEdge entity bridge read failed: {exc}") from exc
+
+        solar_kw = status.get("solar_power", 0.0) or 0.0
+        grid_kw = status.get("grid_power", 0.0) or 0.0
+        battery_kw = status.get("battery_power", 0.0) or 0.0
+        load_kw = status.get("load_power", 0.0) or 0.0
+        soc = status.get("battery_level")
+
+        buy, sell = _get_current_prices(self.hass, self._entry_id)
+        self._energy_acc.update(max(0.0, solar_kw), grid_kw, battery_kw, load_kw, buy, sell)
+        energy_summary = self._energy_acc.as_dict()
+        for status_key, summary_key in (
+            ("daily_solar_energy_kwh", "pv_today_kwh"),
+            ("daily_grid_import_kwh", "grid_import_today_kwh"),
+            ("daily_grid_export_kwh", "grid_export_today_kwh"),
+            ("daily_battery_charge_kwh", "charge_today_kwh"),
+            ("daily_battery_discharge_kwh", "discharge_today_kwh"),
+        ):
+            value = status.get(status_key)
+            if isinstance(value, (int, float)) and value >= 0:
+                energy_summary[summary_key] = round(float(value), 3)
+
+        data = {
+            "solar_power": solar_kw,
+            "grid_power": grid_kw,
+            "battery_power": battery_kw,
+            "load_power": load_kw,
+            "battery_level": soc,
+            "last_update": dt_util.utcnow(),
+            "battery_temperature": status.get("battery_temperature"),
+            "battery_soh": status.get("battery_soh"),
+            "backup_reserve": status.get("backup_reserve"),
+            "min_soc": status.get("min_soc"),
+            "control_available": status.get("control_available", False),
+            "missing_control_entities": status.get("missing_control_entities", []),
+            "control_entities": status.get("control_entities", {}),
+            "energy_summary": energy_summary,
+        }
+        for idx in range(1, 5):
+            key = f"pv{idx}_power"
+            if status.get(key) is not None:
+                data[key] = status[key]
+
+        _LOGGER.debug(
+            "SolarEdge entity data: solar=%.2f kW, grid=%.2f kW, battery=%.2f kW (%s%%), load=%.2f kW",
+            data["solar_power"],
+            data["grid_power"],
+            data["battery_power"],
+            data["battery_level"],
+            data["load_power"],
+        )
+
+        return data
+
+    async def async_shutdown(self) -> None:
+        await self._controller.disconnect()
+
+    async def force_charge(self, duration_minutes: int = 30, power_w: int = 0) -> bool:
+        return await self._controller.force_charge(duration_minutes, power_w)
+
+    async def force_discharge(self, duration_minutes: int = 30, power_w: int = 0) -> bool:
+        return await self._controller.force_discharge(duration_minutes, power_w)
+
+    async def restore_normal(self) -> bool:
+        return await self._controller.restore_normal()
+
+    async def set_backup_mode(self) -> bool:
+        return await self._controller.set_backup_mode()
+
+    async def restore_work_mode_from_idle(self) -> bool:
+        return await self._controller.restore_work_mode_from_idle()
+
+    async def set_backup_reserve(self, percent: int) -> bool:
+        return await self._controller.set_backup_reserve(percent)
+
+    async def get_backup_reserve(self) -> int | None:
+        return await self._controller.get_backup_reserve()
+
+    async def set_operation_mode(self, mode: str) -> bool:
+        return await self._controller.set_operation_mode(mode)
+
+
 class SajH2EnergyCoordinator(DataUpdateCoordinator):
     """Bridge coordinator for SAJ H2 / HS2 via the saj_h2_modbus integration."""
 

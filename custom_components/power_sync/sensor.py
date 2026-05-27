@@ -1376,6 +1376,7 @@ async def async_setup_entry(
     saj_h2_coordinator = domain_data.get("saj_h2_coordinator")
     fronius_reserva_coordinator = domain_data.get("fronius_reserva_coordinator")
     neovolt_coordinator = domain_data.get("neovolt_coordinator")
+    solaredge_coordinator = domain_data.get("solaredge_coordinator")
     demand_charge_coordinator: DemandChargeCoordinator | None = domain_data.get("demand_charge_coordinator")
     aemo_spike_manager = domain_data.get("aemo_spike_manager")
     is_sigenergy = domain_data.get("is_sigenergy", False)
@@ -1388,6 +1389,7 @@ async def async_setup_entry(
     is_saj_h2 = domain_data.get("is_saj_h2", False)
     is_fronius_reserva = domain_data.get("is_fronius_reserva", False)
     is_neovolt = domain_data.get("is_neovolt", False)
+    is_solaredge = domain_data.get("is_solaredge", False)
 
     entities: list[SensorEntity] = []
 
@@ -1481,6 +1483,8 @@ async def async_setup_entry(
         energy_coordinator = fronius_reserva_coordinator
     elif is_neovolt:
         energy_coordinator = neovolt_coordinator
+    elif is_solaredge:
+        energy_coordinator = solaredge_coordinator
     else:
         energy_coordinator = tesla_coordinator
     if energy_coordinator:

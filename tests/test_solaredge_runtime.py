@@ -39,3 +39,14 @@ def test_solaredge_runtime_bypasses_tesla_credentials():
         "Running in SolarEdge mode - Tesla credentials not required"
         in pre_tesla_setup
     )
+
+
+def test_solaredge_runtime_wires_energy_coordinator():
+    setup_source = _async_setup_entry_source()
+
+    assert "solaredge_coordinator = None" in setup_source
+    assert "SolarEdgeEnergyCoordinator(" in setup_source
+    assert '"solaredge_coordinator": solaredge_coordinator' in setup_source
+    assert "elif is_solaredge:" in setup_source
+    assert 'battery_system = "solaredge"' in setup_source
+    assert "energy_coordinator = solaredge_coordinator" in setup_source

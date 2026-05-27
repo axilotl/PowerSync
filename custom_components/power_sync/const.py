@@ -175,7 +175,7 @@ BATTERY_SYSTEMS = {
     BATTERY_SYSTEM_SAJ_H2: "SAJ H2/HS2 — via SAJ H2 Modbus integration",
     BATTERY_SYSTEM_FRONIUS_RESERVA: "Fronius Reserva — via Fronius Modbus integration",
     BATTERY_SYSTEM_NEOVOLT: "Neovolt/Bytewatt — via Neovolt Modbus integration",
-    BATTERY_SYSTEM_SOLAREDGE: "SolarEdge Home / inverter curtailment — Modbus TCP",
+    BATTERY_SYSTEM_SOLAREDGE: "SolarEdge Home Battery / inverter curtailment — HA entity bridge + Modbus TCP",
 }
 
 # Sungrow SH-series Battery System Configuration (Modbus TCP)
@@ -489,8 +489,8 @@ NEOVOLT_SURPLUS_BALANCER_MODES = (
 DEFAULT_NEOVOLT_SURPLUS_BALANCER_MODE = NEOVOLT_SURPLUS_BALANCER_AUTO
 DEFAULT_NEOVOLT_SOC_BALANCE_TOLERANCE = 5.0
 
-# SolarEdge inverter / SolarEdge Home curtailment via Modbus TCP.
-# v1 is curtailment-only: active power limit control, not battery dispatch.
+# SolarEdge Home battery dispatch via HA storage-control entities, plus
+# SolarEdge inverter curtailment via Modbus TCP/entity fallback.
 CONF_SOLAREDGE_HOST = "solaredge_host"
 CONF_SOLAREDGE_PORT = "solaredge_port"
 CONF_SOLAREDGE_SLAVE_ID = "solaredge_slave_id"

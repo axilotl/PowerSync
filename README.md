@@ -37,6 +37,7 @@
 | **ESY Sunhome** (HM series) | Via [ESY Sunhome](https://github.com/branko-lazarevic/esysunhome) companion integration (HACS) | LP optimizer, AEMO spike export, Saving Sessions (mode-only control) |
 | **SAJ H2 / HS2** | Via [SAJ H2 Modbus](https://github.com/stanus74/home-assistant-saj-h2-modbus) companion integration (HACS) | LP optimizer, force charge/discharge, AEMO spike export (no backup reserve write) |
 | **Neovolt / Bytewatt** | Via [Neovolt Modbus](https://github.com/pvandenh/NeovoltBattery_ModbusPlugin) companion integration (HACS) | LP optimizer, force charge/discharge, backup reserve |
+| **SolarEdge Home Battery** | Via SolarEdge HA storage-control entities, plus Modbus TCP/entity fallback for inverter curtailment | Force charge/discharge, restore normal, backup reserve, Hold SOC, Smart Optimization dispatch, mobile controls, telemetry, live flow, usage stats, and active-power curtailment when the writable SolarEdge storage entities are exposed |
 
 ### AC-Coupled Inverter Curtailment
 

@@ -7143,6 +7143,23 @@ def set_scheduled_charging_executor(executor: ScheduledChargingExecutor) -> None
     _scheduled_charging_executor = executor
 
 
+async def _can_stop_external_scheduled_session(
+    hass: "HomeAssistant",
+    config_entry: "ConfigEntry",
+) -> Tuple[bool, str]:
+    """Return whether Scheduled Charging may stop an external session."""
+    opts = {**getattr(config_entry, "data", {}), **getattr(config_entry, "options", {})}
+    charger_type = _configured_charger_type(opts)
+    if charger_type in ("generic", "ocpp", "sigenergy", "zaptec"):
+        return True, f"configured {charger_type} home charger"
+
+    location = await get_ev_location(hass, config_entry)
+    if location == "home":
+        return True, "vehicle is at home"
+
+    return False, f"vehicle location is {location or 'unknown'}"
+
+
 # ============================================================================
 # EV CHARGING MODE COORDINATOR
 # ============================================================================
@@ -7370,10 +7387,21 @@ class EVChargingModeCoordinator:
                 and not any_price_level_charging
                 and decisions[0].reason != "Scheduled charging is disabled"
             ):
-                external_charge = await is_ev_actively_charging(
+                can_stop_external, external_guard_reason = await _can_stop_external_scheduled_session(
                     self.hass,
                     self.config_entry,
                 )
+                if not can_stop_external:
+                    _LOGGER.info(
+                        "Scheduled charging leaving external session alone: %s",
+                        external_guard_reason,
+                    )
+                    external_charge = False
+                else:
+                    external_charge = await is_ev_actively_charging(
+                        self.hass,
+                        self.config_entry,
+                    )
                 if external_charge:
                     scheduled_reason = decisions[0].reason or "Scheduled charging inactive"
                     _LOGGER.info(
