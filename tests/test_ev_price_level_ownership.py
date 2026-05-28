@@ -558,6 +558,52 @@ def test_scheduled_preserve_home_battery_sets_optimizer_intent(fake_actions):
     assert preserve_state["active"] is False
 
 
+def test_scheduled_no_grid_import_passes_dynamic_start_param(fake_actions):
+    fake_actions._action_start_ev_charging_dynamic = AsyncMock(return_value=True)
+
+    hass = _FakeHass()
+    hass.data["power_sync"]["entry-1"]["automation_store"]._data[
+        "scheduled_charging"
+    ] = {"no_grid_import": True}
+
+    executor = ev_planner.ScheduledChargingExecutor(hass, _FakeConfigEntry())
+    result = asyncio.run(executor._start_charging("Scheduled window"))
+
+    assert result is True
+    fake_actions._action_start_ev_charging_dynamic.assert_awaited_once()
+    _hass, _entry, params = fake_actions._action_start_ev_charging_dynamic.await_args.args
+    assert params["no_grid_import"] is True
+
+
+def test_price_level_preserve_home_battery_sets_optimizer_intent(fake_actions):
+    fake_actions._action_start_ev_charging_dynamic = AsyncMock(return_value=True)
+    fake_actions._action_stop_ev_charging_dynamic = AsyncMock(return_value=True)
+
+    hass = _FakeHass(price_settings={"preserve_home_battery": True})
+
+    executor = ev_planner.PriceLevelChargingExecutor(hass, _FakeConfigEntry())
+    result = asyncio.run(
+        executor._start_charging(
+            "price_level_opportunity",
+            "Cheap price",
+            vehicle_vin="generic_ev",
+        )
+    )
+
+    assert result is True
+    preserve_state = hass.data["power_sync"]["entry-1"]["scheduled_ev_preserve_state"]
+    assert preserve_state["active"] is True
+    assert preserve_state["source"] == "price_level_charging"
+    assert preserve_state["mode"] == "no_discharge_charge_allowed"
+
+    result = asyncio.run(executor._stop_charging("Price above threshold", "generic_ev"))
+
+    assert result is True
+    preserve_state = hass.data["power_sync"]["entry-1"]["scheduled_ev_preserve_state"]
+    assert preserve_state["active"] is False
+    assert preserve_state["source"] == "price_level_charging"
+
+
 def test_scheduled_stops_external_charging_outside_window(monkeypatch, fake_actions):
     fake_actions._dynamic_ev_state = {}
     fake_actions._action_stop_ev_charging_dynamic = AsyncMock(return_value=True)

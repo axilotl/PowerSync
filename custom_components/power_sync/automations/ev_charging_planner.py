@@ -6059,6 +6059,7 @@ class PriceLevelChargingExecutor:
         self._domain = DOMAIN
         self._state = PriceLevelChargingState()  # Legacy single-vehicle state
         self._vehicle_states: Dict[str, PriceLevelChargingState] = {}  # Per-VIN state tracking
+        self._preserve_home_battery_active = False
 
     def _get_settings(self) -> dict:
         """Get price-level charging settings from store."""
@@ -6070,6 +6071,7 @@ class PriceLevelChargingExecutor:
             "recovery_soc": 40,
             "recovery_price_cents": 30,
             "opportunity_price_cents": 10,
+            "preserve_home_battery": False,
             "no_grid_import": False,
             "min_battery_to_start": 20,  # Don't charge EV if home battery below this %
             "home_battery_minimum": 20,  # Backward compat alias
@@ -6085,6 +6087,9 @@ class PriceLevelChargingExecutor:
             defaults.update(settings)
         else:
             _LOGGER.warning("Price-level charging: automation_store not found in entry_data")
+
+        if defaults.get("preserve_home_battery") and defaults.get("no_grid_import"):
+            defaults["no_grid_import"] = False
 
         return defaults
 
@@ -6290,6 +6295,60 @@ class PriceLevelChargingExecutor:
             self._vehicle_states[vehicle_vin] = PriceLevelChargingState()
         return self._vehicle_states[vehicle_vin]
 
+    def _set_preserve_home_battery_intent(self, reason: str) -> None:
+        """Publish price-level EV preserve intent for the optimiser to execute."""
+        entry_data = self.hass.data.setdefault(self._domain, {}).setdefault(
+            self.config_entry.entry_id,
+            {},
+        )
+        entry_data["scheduled_ev_preserve_state"] = {
+            "active": True,
+            "mode": "no_discharge_charge_allowed",
+            "source": "price_level_charging",
+            "reason": reason,
+        }
+        self._preserve_home_battery_active = True
+
+    def _clear_preserve_home_battery_intent(self, reason: str = "") -> None:
+        """Clear price-level EV preserve intent without clearing scheduled intent."""
+        entry_data = self.hass.data.get(self._domain, {}).get(
+            self.config_entry.entry_id,
+            {},
+        )
+        state = entry_data.setdefault("scheduled_ev_preserve_state", {})
+        if state.get("source") not in (None, "price_level_charging"):
+            self._preserve_home_battery_active = False
+            return
+        scheduled = get_scheduled_charging_executor()
+        if scheduled and getattr(scheduled, "_preserve_home_battery_active", False):
+            state.update({
+                "active": True,
+                "mode": "no_discharge_charge_allowed",
+                "source": "scheduled_charging",
+                "reason": reason,
+            })
+            self._preserve_home_battery_active = False
+            return
+        state.update({
+            "active": False,
+            "mode": "no_discharge_charge_allowed",
+            "source": "price_level_charging",
+            "reason": reason,
+        })
+        self._preserve_home_battery_active = False
+
+    async def apply_preserve_home_battery(
+        self,
+        wants_charge: bool,
+        reason: str,
+    ) -> None:
+        """Sync preserve-home-battery mode with the price-level decision."""
+        preserve_enabled = self._get_settings().get("preserve_home_battery", False)
+        if wants_charge and preserve_enabled:
+            self._set_preserve_home_battery_intent(reason)
+        else:
+            self._clear_preserve_home_battery_intent(reason)
+
     async def _start_charging(
         self,
         mode: str,
@@ -6316,6 +6375,7 @@ class PriceLevelChargingExecutor:
             log_prefix="Price-level charging",
         )
         if not success:
+            await self.apply_preserve_home_battery(False, reason)
             _LOGGER.warning(f"Price-level charging: Failed to start - {reason}")
             return False
 
@@ -6332,6 +6392,7 @@ class PriceLevelChargingExecutor:
             self._state.last_decision = "started"
             self._state.last_decision_reason = reason
             _LOGGER.info(f"Price-level charging: Started ({mode}) - {reason}")
+        await self.apply_preserve_home_battery(True, reason)
         return True
 
     async def _stop_charging(self, reason: str, vehicle_vin: Optional[str] = None) -> bool:
@@ -6374,6 +6435,7 @@ class PriceLevelChargingExecutor:
             self._state.last_decision = "stopped"
             self._state.last_decision_reason = reason
             _LOGGER.info(f"Price-level charging: Stopped - {reason}")
+        await self.apply_preserve_home_battery(False, reason)
         return True
 
     async def get_charging_decision(self, current_price_cents: Optional[float]) -> Tuple[bool, str, str]:
@@ -6666,6 +6728,7 @@ class PriceLevelChargingExecutor:
                         vehicle_state.managed_by_powersync = False
                         vehicle_state.is_charging = False
                         _LOGGER.info("Price-level disabled: released Zaptec charger control")
+                    await self.apply_preserve_home_battery(False, reason)
                     return results
 
                 if should_charge and not vehicle_state.is_charging:
@@ -6676,6 +6739,7 @@ class PriceLevelChargingExecutor:
                     vehicle_state.last_decision = "charging" if vehicle_state.is_charging else "waiting"
                     vehicle_state.last_decision_reason = reason
 
+                await self.apply_preserve_home_battery(vehicle_state.is_charging, reason)
                 return results
 
             # Also check OCPP
@@ -6711,6 +6775,7 @@ class PriceLevelChargingExecutor:
                     vehicle_state.last_decision = "charging" if vehicle_state.is_charging else "waiting"
                     vehicle_state.last_decision_reason = reason
 
+                await self.apply_preserve_home_battery(vehicle_state.is_charging, reason)
                 return results
 
             if opts.get(CONF_SIGENERGY_CHARGER_ENABLED):
@@ -6732,6 +6797,7 @@ class PriceLevelChargingExecutor:
                     vehicle_state.last_decision = "charging" if vehicle_state.is_charging else "waiting"
                     vehicle_state.last_decision_reason = reason
 
+                await self.apply_preserve_home_battery(vehicle_state.is_charging, reason)
                 return results
 
             # Also check Generic Charger (OCPP via lbbrhzn/ocpp or any switch-based charger)
@@ -6754,9 +6820,11 @@ class PriceLevelChargingExecutor:
                     vehicle_state.last_decision = "charging" if vehicle_state.is_charging else "waiting"
                     vehicle_state.last_decision_reason = reason
 
+                await self.apply_preserve_home_battery(vehicle_state.is_charging, reason)
                 return results
 
             _LOGGER.debug("No Tesla vehicles discovered for multi-vehicle evaluation")
+            await self.apply_preserve_home_battery(False, "No Tesla vehicles discovered")
             return results
 
         for vehicle in vehicles:
@@ -6819,6 +6887,18 @@ class PriceLevelChargingExecutor:
                 vehicle_state.last_decision = "charging" if vehicle_state.is_charging else "waiting"
                 vehicle_state.last_decision_reason = reason
 
+        any_price_level_charging = any(
+            state.is_charging for state in self._vehicle_states.values()
+        )
+        reason = next(
+            (
+                state.last_decision_reason
+                for state in self._vehicle_states.values()
+                if state.is_charging and state.last_decision_reason
+            ),
+            "No price-level charging active",
+        )
+        await self.apply_preserve_home_battery(any_price_level_charging, reason)
         return results
 
     def update_charging_state(self, is_charging: bool, mode: str = "", reason: str = "") -> None:
@@ -6864,6 +6944,7 @@ class PriceLevelChargingExecutor:
             "charging_mode": self._state.charging_mode,
             "last_decision": self._state.last_decision,
             "last_decision_reason": self._state.last_decision_reason,
+            "preserve_home_battery_active": self._preserve_home_battery_active,
             "settings": settings,
             "vehicle_states": vehicle_states,  # Per-vehicle state tracking
         }
@@ -6928,12 +7009,16 @@ class ScheduledChargingExecutor:
             "end_time": "06:00",
             "max_price_cents": 30,
             "preserve_home_battery": False,
+            "no_grid_import": False,
         }
 
         if store:
             stored_data = getattr(store, '_data', {}) or {}
             settings = stored_data.get("scheduled_charging", {})
             defaults.update(settings)
+
+        if defaults.get("preserve_home_battery") and defaults.get("no_grid_import"):
+            defaults["no_grid_import"] = False
 
         return defaults
 
@@ -6963,6 +7048,19 @@ class ScheduledChargingExecutor:
             {},
         )
         state = entry_data.setdefault("scheduled_ev_preserve_state", {})
+        if state.get("source") not in (None, "scheduled_charging"):
+            self._preserve_home_battery_active = False
+            return
+        price_level = get_price_level_executor()
+        if price_level and getattr(price_level, "_preserve_home_battery_active", False):
+            state.update({
+                "active": True,
+                "mode": "no_discharge_charge_allowed",
+                "source": "price_level_charging",
+                "reason": reason,
+            })
+            self._preserve_home_battery_active = False
+            return
         state.update({
             "active": False,
             "mode": "no_discharge_charge_allowed",
@@ -7026,6 +7124,7 @@ class ScheduledChargingExecutor:
             self.config_entry,
             owner_mode="scheduled",
             reason=reason,
+            no_grid_import=self._get_settings().get("no_grid_import", False),
             allow_ownership_takeover=True,
             log_prefix="Scheduled charging",
         )

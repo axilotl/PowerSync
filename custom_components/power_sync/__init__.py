@@ -14607,6 +14607,7 @@ class PriceLevelChargingSettingsView(HomeAssistantView):
                 "recovery_soc": 40,
                 "recovery_price_cents": 30,
                 "opportunity_price_cents": 10,
+                "preserve_home_battery": False,
                 "no_grid_import": False,
                 "home_battery_minimum": 20,
             }
@@ -14615,6 +14616,8 @@ class PriceLevelChargingSettingsView(HomeAssistantView):
                 stored_data = getattr(store, '_data', {}) or {}
                 stored_settings = stored_data.get("price_level_charging", {})
                 settings.update(stored_settings)
+            if settings.get("preserve_home_battery") and settings.get("no_grid_import"):
+                settings["no_grid_import"] = False
 
             return web.json_response({
                 "success": True,
@@ -14646,14 +14649,27 @@ class PriceLevelChargingSettingsView(HomeAssistantView):
                 "recovery_soc": 40,
                 "recovery_price_cents": 30,
                 "opportunity_price_cents": 10,
+                "preserve_home_battery": False,
                 "no_grid_import": False,
                 "home_battery_minimum": 20,
             })
 
             # Update with provided values
-            for key in ["enabled", "recovery_soc", "recovery_price_cents", "opportunity_price_cents", "no_grid_import", "home_battery_minimum"]:
+            for key in [
+                "enabled",
+                "recovery_soc",
+                "recovery_price_cents",
+                "opportunity_price_cents",
+                "preserve_home_battery",
+                "no_grid_import",
+                "home_battery_minimum",
+            ]:
                 if key in data:
                     settings[key] = data[key]
+            if settings.get("preserve_home_battery"):
+                settings["no_grid_import"] = False
+            elif settings.get("no_grid_import"):
+                settings["preserve_home_battery"] = False
 
             stored_data["price_level_charging"] = settings
             store._data = stored_data
@@ -14664,6 +14680,7 @@ class PriceLevelChargingSettingsView(HomeAssistantView):
                 f"recovery_soc={settings.get('recovery_soc')}%, "
                 f"recovery_price={settings.get('recovery_price_cents')}c, "
                 f"opportunity_price={settings.get('opportunity_price_cents')}c, "
+                f"preserve_home_battery={settings.get('preserve_home_battery')}, "
                 f"no_grid_import={settings.get('no_grid_import')}, "
                 f"home_battery_minimum={settings.get('home_battery_minimum')}%"
             )
@@ -14753,12 +14770,15 @@ class ScheduledChargingSettingsView(HomeAssistantView):
                 "end_time": "06:00",
                 "max_price_cents": 30,
                 "preserve_home_battery": False,
+                "no_grid_import": False,
             }
 
             if store:
                 stored_data = getattr(store, '_data', {}) or {}
                 stored_settings = stored_data.get("scheduled_charging", {})
                 settings.update(stored_settings)
+            if settings.get("preserve_home_battery") and settings.get("no_grid_import"):
+                settings["no_grid_import"] = False
 
             return web.json_response({
                 "success": True,
@@ -14791,6 +14811,7 @@ class ScheduledChargingSettingsView(HomeAssistantView):
                 "end_time": "06:00",
                 "max_price_cents": 30,
                 "preserve_home_battery": False,
+                "no_grid_import": False,
             })
 
             # Update with provided values
@@ -14800,9 +14821,14 @@ class ScheduledChargingSettingsView(HomeAssistantView):
                 "end_time",
                 "max_price_cents",
                 "preserve_home_battery",
+                "no_grid_import",
             ]:
                 if key in data:
                     settings[key] = data[key]
+            if settings.get("preserve_home_battery"):
+                settings["no_grid_import"] = False
+            elif settings.get("no_grid_import"):
+                settings["preserve_home_battery"] = False
 
             stored_data["scheduled_charging"] = settings
             store._data = stored_data
