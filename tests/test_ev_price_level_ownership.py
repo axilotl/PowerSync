@@ -128,6 +128,27 @@ def fake_actions(monkeypatch):
     actions = types.ModuleType("power_sync.automations.actions")
     actions.DEFAULT_VEHICLE_ID = "_default"
     actions._dynamic_ev_state = {}
+
+    async def resolve_max_grid_import_kw(hass, config_entry, params=None):
+        explicit = (params or {}).get("max_grid_import_kw")
+        if explicit:
+            return explicit
+
+        entry_data = hass.data["power_sync"][config_entry.entry_id]
+        coordinator = entry_data.get("tesla_coordinator")
+        site_info = getattr(coordinator, "_site_info_cache", None) if coordinator else None
+        if isinstance(site_info, dict) and site_info.get("max_site_meter_power_ac"):
+            return float(site_info["max_site_meter_power_ac"])
+
+        settings = entry_data.get("automation_store")._data.get("home_power_settings", {})
+        amps = int(float(settings.get("max_grid_import_amps") or 0))
+        if amps <= 0:
+            return None
+        phases = 3 if settings.get("phase_type") == "three" else 1
+        voltage = int(float(settings.get("default_voltage") or 240))
+        return round(amps * voltage * phases / 1000.0, 3)
+
+    actions._resolve_max_grid_import_kw = resolve_max_grid_import_kw
     monkeypatch.setitem(sys.modules, "power_sync.automations.actions", actions)
     return actions
 
@@ -914,6 +935,83 @@ def test_auto_schedule_start_allows_solar_surplus_takeover(monkeypatch, fake_act
     assert params["owner_mode"] == "smart_schedule"
     assert params["dynamic_mode"] == "battery_target"
     assert params["allow_ownership_takeover"] is True
+
+
+def test_auto_schedule_grid_start_uses_optimizer_battery_target(monkeypatch, fake_actions):
+    fake_actions._action_start_ev_charging_dynamic = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        ev_planner.dt_util,
+        "now",
+        lambda: SimpleNamespace(weekday=lambda: 0),
+    )
+
+    hass = _FakeHass()
+    hass.data["power_sync"]["entry-1"]["automation_store"]._data["home_power_settings"] = {
+        "phase_type": "single",
+        "max_grid_import_amps": 80,
+        "default_voltage": 240,
+    }
+    hass.data["power_sync"]["entry-1"]["optimization_coordinator"] = SimpleNamespace(
+        _config=SimpleNamespace(max_charge_w=14700, max_discharge_w=10000)
+    )
+    executor = ev_planner.AutoScheduleExecutor(
+        hass,
+        _FakeConfigEntry(),
+        planner=SimpleNamespace(),
+    )
+    settings = ev_planner.AutoScheduleSettings(
+        vehicle_id=VIN,
+        display_name="Model 3",
+    )
+    state = ev_planner.AutoScheduleState(vehicle_id=VIN)
+
+    asyncio.run(executor._start_charging(VIN, settings, state, "grid_offpeak"))
+
+    _hass, _entry, params = fake_actions._action_start_ev_charging_dynamic.await_args.args
+    assert params["dynamic_mode"] == "battery_target"
+    assert params["target_battery_charge_kw"] == 14.7
+    assert params["max_battery_charge_rate_kw"] == 14.7
+    assert params["max_inverter_kw"] == 10.0
+    assert params["max_grid_import_kw"] == 19.2
+
+
+def test_auto_schedule_grid_start_prefers_tesla_site_meter_limit(monkeypatch, fake_actions):
+    fake_actions._action_start_ev_charging_dynamic = AsyncMock(return_value=True)
+    fake_actions._resolve_max_grid_import_kw = AsyncMock(return_value=16.1)
+    monkeypatch.setattr(
+        ev_planner.dt_util,
+        "now",
+        lambda: SimpleNamespace(weekday=lambda: 0),
+    )
+
+    hass = _FakeHass()
+    hass.data["power_sync"]["entry-1"]["automation_store"]._data["home_power_settings"] = {
+        "phase_type": "single",
+        "max_grid_import_amps": 80,
+        "default_voltage": 240,
+    }
+    hass.data["power_sync"]["entry-1"]["optimization_coordinator"] = SimpleNamespace(
+        _config=SimpleNamespace(max_charge_w=14700, max_discharge_w=10000)
+    )
+    executor = ev_planner.AutoScheduleExecutor(
+        hass,
+        _FakeConfigEntry(),
+        planner=SimpleNamespace(),
+    )
+    settings = ev_planner.AutoScheduleSettings(
+        vehicle_id=VIN,
+        display_name="Model 3",
+    )
+    state = ev_planner.AutoScheduleState(vehicle_id=VIN)
+
+    asyncio.run(executor._start_charging(VIN, settings, state, "grid_offpeak"))
+
+    fake_actions._resolve_max_grid_import_kw.assert_awaited_once_with(
+        hass,
+        executor.config_entry,
+    )
+    _hass, _entry, params = fake_actions._action_start_ev_charging_dynamic.await_args.args
+    assert params["max_grid_import_kw"] == 16.1
 
 
 def test_auto_schedule_solar_uses_smart_schedule_battery_floor(monkeypatch, fake_actions):

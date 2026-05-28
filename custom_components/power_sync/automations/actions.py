@@ -175,6 +175,15 @@ def _coerce_positive_int(value: Any, default: Optional[int] = None) -> Optional[
     return result if result > 0 else default
 
 
+def _coerce_positive_float(value: Any) -> Optional[float]:
+    """Return a positive float from user/config input, or None when invalid."""
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return result if result > 0 else None
+
+
 def _kw_from_power_state(state: Any) -> float:
     """Return a power state as kW, accepting W or kW entities."""
     if not state or state.state in ("unknown", "unavailable", ""):
@@ -3493,6 +3502,7 @@ async def _action_set_ev_charging_amps(
 # Structure: { entry_id: { vehicle_id: { state... }, ... }, ... }
 _dynamic_ev_state: Dict[str, Dict[str, Dict[str, Any]]] = {}
 _BATTERY_FULL_RESERVE_BYPASS_SOC = 99.0
+_BATTERY_TAPER_BYPASS_SOC = 95.0
 _ACTIVE_EV_POWER_EPSILON_KW = 0.05
 
 # Lock to prevent duplicate dynamic EV charging sessions from concurrent triggers
@@ -5209,6 +5219,143 @@ def _get_home_power_max_charge_amps(hass, config_entry) -> Optional[int]:
     return _coerce_positive_int(settings.get("max_amps_per_phase"))
 
 
+def _get_home_power_max_grid_import_kw(hass, config_entry) -> Optional[float]:
+    """Return configured site grid import capacity from Home Power settings."""
+    settings = _get_home_power_settings(hass, config_entry)
+    max_grid_import_amps = _coerce_positive_int(settings.get("max_grid_import_amps"))
+    if max_grid_import_amps is None:
+        return None
+
+    phases = 3 if settings.get("phase_type") == "three" else 1
+    voltage = _coerce_positive_int(settings.get("default_voltage"), 240) or 240
+    return round((max_grid_import_amps * voltage * phases) / 1000.0, 3)
+
+
+def _extract_tesla_site_max_meter_power_kw(data: Any) -> Optional[float]:
+    """Return Tesla's max site import limit from site_info/config payloads."""
+    if not isinstance(data, dict):
+        return None
+
+    for key in (
+        "max_site_meter_power_ac",
+        "max_site_meter_power",
+        "maxSiteMeterPowerAc",
+        "MaxSiteMeterPowerAc",
+    ):
+        value_kw = _coerce_positive_float(data.get(key))
+        if value_kw is not None:
+            # Tesla cloud site_info normally reports kW here; local config
+            # variants may report watts, so normalize large values.
+            return round(value_kw / 1000.0 if value_kw > 1000 else value_kw, 3)
+
+    for nested_key in ("site_info", "components", "config"):
+        nested_value = _extract_tesla_site_max_meter_power_kw(data.get(nested_key))
+        if nested_value is not None:
+            return nested_value
+
+    return None
+
+
+def _get_cached_tesla_max_site_meter_power_kw(hass, config_entry) -> Optional[float]:
+    """Return Tesla's cached max site import limit when available."""
+    try:
+        from ..const import DOMAIN
+        entry_data = hass.data.get(DOMAIN, {}).get(config_entry.entry_id, {})
+    except Exception:
+        return None
+
+    for coord_key in ("tesla_coordinator", "coordinator"):
+        coordinator = entry_data.get(coord_key)
+        site_info = getattr(coordinator, "_site_info_cache", None) if coordinator else None
+        value_kw = _extract_tesla_site_max_meter_power_kw(site_info)
+        if value_kw is not None:
+            return value_kw
+
+    local_runtime = entry_data.get("powerwall_local") or {}
+    local_coordinator = local_runtime.get("coordinator")
+    local_snapshot = getattr(local_coordinator, "data", None) if local_coordinator else None
+    raw_snapshot = getattr(local_snapshot, "raw", None) if local_snapshot else None
+    value_kw = _extract_tesla_site_max_meter_power_kw(raw_snapshot)
+    if value_kw is not None:
+        return value_kw
+
+    return _extract_tesla_site_max_meter_power_kw(entry_data.get("site_info"))
+
+
+async def _get_tesla_max_site_meter_power_kw(hass, config_entry) -> Optional[float]:
+    """Return Tesla's max site import limit, preferring cached data."""
+    cached = _get_cached_tesla_max_site_meter_power_kw(hass, config_entry)
+    if cached is not None:
+        return cached
+
+    try:
+        from ..const import DOMAIN
+        entry_data = hass.data.get(DOMAIN, {}).get(config_entry.entry_id, {})
+    except Exception:
+        return None
+
+    for coord_key in ("tesla_coordinator", "coordinator"):
+        coordinator = entry_data.get(coord_key)
+        if not coordinator or not hasattr(coordinator, "async_get_site_info"):
+            continue
+        try:
+            site_info = await coordinator.async_get_site_info()
+        except Exception as err:
+            _LOGGER.debug("Could not fetch Tesla site_info for max site import: %s", err)
+            continue
+        value_kw = _extract_tesla_site_max_meter_power_kw(site_info)
+        if value_kw is not None:
+            return value_kw
+
+    token_getter = entry_data.get("token_getter")
+    site_id = entry_data.get("site_id")
+    if not token_getter or not site_id:
+        return None
+
+    try:
+        current_token, current_provider = token_getter()
+        if not current_token:
+            return None
+
+        import aiohttp
+
+        if current_provider == "teslemetry":
+            url = f"https://api.teslemetry.com/api/energy_sites/{site_id}/site_info"
+        else:
+            url = f"https://fleet-api.prd.na.vn.cloud.tesla.com/api/1/energy_sites/{site_id}/site_info"
+
+        headers = {"Authorization": f"Bearer {current_token}"}
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as response:
+                if response.status != 200:
+                    _LOGGER.debug("Failed to get Tesla site_info for max site import: %s", response.status)
+                    return None
+                data = await response.json()
+                return _extract_tesla_site_max_meter_power_kw(data.get("response", {}))
+    except Exception as err:
+        _LOGGER.debug("Error getting Tesla max site import from site_info: %s", err)
+
+    return None
+
+
+async def _resolve_max_grid_import_kw(
+    hass,
+    config_entry,
+    params: Optional[dict] = None,
+) -> Optional[float]:
+    """Resolve site import capacity: explicit param, Tesla site limit, Home Power."""
+    params = params or {}
+    explicit = _coerce_positive_float(params.get("max_grid_import_kw"))
+    if explicit is not None:
+        return explicit
+
+    tesla_limit = await _get_tesla_max_site_meter_power_kw(hass, config_entry)
+    if tesla_limit is not None:
+        return tesla_limit
+
+    return _get_home_power_max_grid_import_kw(hass, config_entry)
+
+
 def _resolve_dynamic_max_charge_amps(
     hass,
     config_entry,
@@ -5357,7 +5504,10 @@ async def _dynamic_ev_update(
     # target_battery_charge_kw: How much we want the battery to charge (positive = charging into battery)
     # e.g., 5.0 means we want 5kW going INTO the battery
     target_battery_charge_kw = params.get("target_battery_charge_kw", 5.0)
-    max_grid_import_kw = params.get("max_grid_import_kw", 12.5)
+    max_grid_import_kw = (
+        await _resolve_max_grid_import_kw(hass, config_entry, params)
+        or 12.5
+    )
 
     # No grid import mode: prevent ALL grid imports by dynamically adjusting EV charge rate
     no_grid_import = params.get("no_grid_import", False)
@@ -5426,10 +5576,9 @@ async def _dynamic_ev_update(
     # If target_battery_charge_kw = 5, we want battery_power = -5 kW
     target_battery_power_kw = -target_battery_charge_kw
 
-    # When battery is full (>=97%), it tapers charge rate naturally.
-    # Don't treat this taper as a "deficit" — the battery isn't failing to charge,
-    # it's done. Use grid headroom directly instead of penalizing the EV.
-    battery_full = battery_soc >= 97.0
+    # When a Powerwall is nearly full it tapers charge rate naturally before
+    # reaching 100%. Use grid headroom directly instead of penalizing the EV.
+    battery_full = battery_soc >= _BATTERY_TAPER_BYPASS_SOC
 
     # Battery deficit: How much more the battery should be charging
     # Positive deficit = battery is charging MORE than target (surplus available for EV)
@@ -5862,7 +6011,10 @@ async def _action_start_ev_charging_dynamic_locked(
         no_grid_import = params.get("no_grid_import", False)
         mode_params = {
             "target_battery_charge_kw": target_battery_charge_kw,
-            "max_grid_import_kw": params.get("max_grid_import_kw", 12.5),
+            "max_grid_import_kw": (
+                await _resolve_max_grid_import_kw(hass, config_entry, params)
+                or 12.5
+            ),
             "no_grid_import": no_grid_import,
             "grid_import_tolerance_kw": params.get("grid_import_tolerance_kw", 0.1),
             "max_inverter_kw": params.get("max_inverter_kw", 10.0),

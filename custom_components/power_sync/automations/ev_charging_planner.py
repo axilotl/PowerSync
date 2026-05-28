@@ -4687,10 +4687,17 @@ class AutoScheduleExecutor:
                 "phase_type": "single",
                 "max_charge_speed_enabled": False,
                 "max_amps_per_phase": 32,
+                "max_grid_import_amps": 0,
+                "default_voltage": 240,
             }
         except Exception as e:
             _LOGGER.debug(f"Failed to get home power settings: {e}")
-            return {"phase_type": "single", "max_amps_per_phase": 32}
+            return {
+                "phase_type": "single",
+                "max_amps_per_phase": 32,
+                "max_grid_import_amps": 0,
+                "default_voltage": 240,
+            }
 
     async def _get_sigenergy_controller(self):
         """Get a SigEnergy controller instance."""
@@ -5084,9 +5091,29 @@ class AutoScheduleExecutor:
         force_max_rate: bool = False,
     ) -> None:
         """Start dynamic charging for the vehicle."""
-        from .actions import _action_start_ev_charging_dynamic
+        from .actions import (
+            _action_start_ev_charging_dynamic,
+            _resolve_max_grid_import_kw,
+        )
 
         # Determine mode based on source
+        control_battery_target = (
+            source.startswith("grid")
+            and not force_max_rate
+        )
+        battery_params = _get_optimizer_battery_params(
+            self.hass,
+            self.config_entry,
+            include_target=control_battery_target,
+        )
+        target_battery_charge_kw = battery_params.get("target_battery_charge_kw", 0)
+        max_grid_import_kw = None
+        if control_battery_target:
+            max_grid_import_kw = await _resolve_max_grid_import_kw(
+                self.hass,
+                self.config_entry,
+            )
+
         if source == "solar_surplus":
             dynamic_mode = "solar_surplus"
             # Disable curtailment to allow full solar production for EV charging
@@ -5131,9 +5158,11 @@ class AutoScheduleExecutor:
             "pre_charge_wake_on_service_data": settings.pre_charge_wake_on_service_data,
             "pre_charge_wake_off_service_data": settings.pre_charge_wake_off_service_data,
             "no_grid_import": settings.get_effective_limit_grid_import(dt_util.now().weekday()),
-            **_get_optimizer_battery_params(self.hass, self.config_entry),
-            "target_battery_charge_kw": 0,
+            **battery_params,
+            "target_battery_charge_kw": target_battery_charge_kw,
         }
+        if max_grid_import_kw is not None:
+            params["max_grid_import_kw"] = max_grid_import_kw
         params = _with_configured_charger_entities(self.hass, params, opts, charger_type)
         if charger_type != "tesla":
             configured_vehicle_id = None if settings.vehicle_id == "_default" else settings.vehicle_id

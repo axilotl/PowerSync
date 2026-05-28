@@ -508,6 +508,52 @@ def test_dynamic_ocpp_update_leaves_energy_to_ocpp_session_poll(monkeypatch):
     assert manager.updates == []
 
 
+def test_dynamic_battery_target_uses_grid_headroom_when_powerwall_tapers(monkeypatch):
+    set_amps_calls: list[int] = []
+
+    async def not_unplugged(*args, **kwargs):
+        return False
+
+    async def fake_live_status(*args, **kwargs):
+        return {
+            "battery_power": -10000,
+            "grid_power": 12000,
+            "battery_soc": 95.2,
+        }
+
+    async def fake_set_vehicle_amps(hass, config_entry, vehicle_id, amps, params):
+        set_amps_calls.append(amps)
+        return True
+
+    monkeypatch.setattr(actions, "_clear_ble_dynamic_session_if_unplugged", not_unplugged)
+    monkeypatch.setattr(actions, "_get_tesla_live_status", fake_live_status)
+    monkeypatch.setattr(actions, "_set_vehicle_amps", fake_set_vehicle_amps)
+
+    actions._dynamic_ev_state.clear()
+    actions._dynamic_ev_state["entry-1"] = {
+        "VIN123": {
+            "active": True,
+            "current_amps": 5,
+            "target_amps": 5,
+            "params": {
+                "dynamic_mode": "battery_target",
+                "charger_type": "tesla",
+                "target_battery_charge_kw": 14.7,
+                "max_grid_import_kw": 16.0,
+                "min_charge_amps": 5,
+                "max_charge_amps": 32,
+                "voltage": 230,
+                "phases": 1,
+            },
+        }
+    }
+
+    asyncio.run(actions._dynamic_ev_update(_Hass([]), _Entry(), "entry-1", "VIN123"))
+
+    assert set_amps_calls == [22]
+    assert actions._dynamic_ev_state["entry-1"]["VIN123"]["current_amps"] == 22
+
+
 def test_ocpp_amps_falls_back_to_hacs_number_entity():
     entity_id = "number.evse_1_maximum_current"
     hass = _Hass(
@@ -986,6 +1032,91 @@ def test_solar_surplus_dynamic_start_uses_home_power_max_over_idle_tesla_cap(mon
     assert params["max_charge_amps"] == 30
     assert params["max_charge_amps_source"] == "home_power"
     assert params["allow_stale_entity_max_override"] is True
+
+
+def test_dynamic_start_uses_home_power_grid_import_limit(monkeypatch):
+    async def fake_start(*args, **kwargs):
+        return True
+
+    async def fake_set_vehicle_amps(*args, **kwargs):
+        return True
+
+    monkeypatch.setattr(actions, "_action_start_ev_charging", fake_start)
+    monkeypatch.setattr(actions, "_set_vehicle_amps", fake_set_vehicle_amps)
+
+    hass = _Hass([])
+    hass.data["power_sync"]["entry-1"]["automation_store"] = SimpleNamespace(
+        _data={
+            "home_power_settings": {
+                "phase_type": "single",
+                "max_grid_import_amps": 80,
+                "default_voltage": 240,
+            }
+        }
+    )
+    actions._dynamic_ev_state.clear()
+
+    result = asyncio.run(
+        actions._action_start_ev_charging_dynamic(
+            hass,
+            _Entry(),
+            {
+                "vehicle_vin": "VIN123",
+                "dynamic_mode": "battery_target",
+                "owner_mode": "smart_schedule",
+                "charger_type": "tesla",
+            },
+            context=None,
+        )
+    )
+
+    assert result is True
+    params = actions._dynamic_ev_state["entry-1"]["VIN123"]["params"]
+    assert params["max_grid_import_kw"] == 19.2
+
+
+def test_dynamic_start_prefers_tesla_site_meter_limit_over_home_power(monkeypatch):
+    async def fake_start(*args, **kwargs):
+        return True
+
+    async def fake_set_vehicle_amps(*args, **kwargs):
+        return True
+
+    monkeypatch.setattr(actions, "_action_start_ev_charging", fake_start)
+    monkeypatch.setattr(actions, "_set_vehicle_amps", fake_set_vehicle_amps)
+
+    hass = _Hass([])
+    hass.data["power_sync"]["entry-1"]["automation_store"] = SimpleNamespace(
+        _data={
+            "home_power_settings": {
+                "phase_type": "single",
+                "max_grid_import_amps": 80,
+                "default_voltage": 240,
+            }
+        }
+    )
+    hass.data["power_sync"]["entry-1"]["tesla_coordinator"] = SimpleNamespace(
+        _site_info_cache={"max_site_meter_power_ac": 16.1}
+    )
+    actions._dynamic_ev_state.clear()
+
+    result = asyncio.run(
+        actions._action_start_ev_charging_dynamic(
+            hass,
+            _Entry(),
+            {
+                "vehicle_vin": "VIN123",
+                "dynamic_mode": "battery_target",
+                "owner_mode": "smart_schedule",
+                "charger_type": "tesla",
+            },
+            context=None,
+        )
+    )
+
+    assert result is True
+    params = actions._dynamic_ev_state["entry-1"]["VIN123"]["params"]
+    assert params["max_grid_import_kw"] == 16.1
 
 
 def test_dynamic_deadline_start_uses_configured_max_over_idle_tesla_cap(monkeypatch):

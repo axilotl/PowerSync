@@ -14939,6 +14939,8 @@ class HomePowerSettingsView(HomeAssistantView):
                 "phase_type": "single",
                 "max_charge_speed_enabled": False,
                 "max_amps_per_phase": 32,
+                "max_grid_import_amps": 0,
+                "default_voltage": 240,
             }
 
             if store:
@@ -14975,10 +14977,18 @@ class HomePowerSettingsView(HomeAssistantView):
                 "phase_type": "single",
                 "max_charge_speed_enabled": False,
                 "max_amps_per_phase": 32,
+                "max_grid_import_amps": 0,
+                "default_voltage": 240,
             })
 
             # Update with provided values
-            for key in ["phase_type", "max_charge_speed_enabled", "max_amps_per_phase"]:
+            for key in [
+                "phase_type",
+                "max_charge_speed_enabled",
+                "max_amps_per_phase",
+                "max_grid_import_amps",
+                "default_voltage",
+            ]:
                 if key in data:
                     settings[key] = data[key]
 
