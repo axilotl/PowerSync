@@ -29,6 +29,7 @@ def _install_sensor_stubs() -> None:
     ha_update = types.ModuleType("homeassistant.helpers.update_coordinator")
     ha_dispatcher = types.ModuleType("homeassistant.helpers.dispatcher")
     ha_event = types.ModuleType("homeassistant.helpers.event")
+    ha_restore_state = types.ModuleType("homeassistant.helpers.restore_state")
     ha_util = types.ModuleType("homeassistant.util")
     ha_dt = types.ModuleType("homeassistant.util.dt")
 
@@ -48,6 +49,10 @@ def _install_sensor_stubs() -> None:
     class CoordinatorEntity:
         def __init__(self, coordinator):
             self.coordinator = coordinator
+
+    class RestoreEntity:
+        async def async_get_last_state(self):
+            return None
 
     ha_sensor.SensorEntityDescription = SensorEntityDescription
     ha_sensor.SensorEntity = SensorEntity
@@ -87,6 +92,7 @@ def _install_sensor_stubs() -> None:
     ha_dispatcher.async_dispatcher_connect = lambda *args, **kwargs: (lambda: None)
     ha_event.async_track_time_interval = lambda *args, **kwargs: (lambda: None)
     ha_event.async_call_later = lambda *args, **kwargs: (lambda: None)
+    ha_restore_state.RestoreEntity = RestoreEntity
     ha_dt.now = lambda *args, **kwargs: datetime(2026, 5, 3, 12, 0, tzinfo=timezone.utc)
     ha_dt.as_local = lambda value: value
     ha_dt.utcnow = lambda *args, **kwargs: datetime(2026, 5, 3, 12, 0, tzinfo=timezone.utc)
@@ -97,6 +103,7 @@ def _install_sensor_stubs() -> None:
     ha_helpers.update_coordinator = ha_update
     ha_helpers.dispatcher = ha_dispatcher
     ha_helpers.event = ha_event
+    ha_helpers.restore_state = ha_restore_state
     ha_components.sensor = ha_sensor
     ha_root.components = ha_components
     ha_root.config_entries = ha_config_entries
@@ -118,6 +125,7 @@ def _install_sensor_stubs() -> None:
     sys.modules["homeassistant.helpers.update_coordinator"] = ha_update
     sys.modules["homeassistant.helpers.dispatcher"] = ha_dispatcher
     sys.modules["homeassistant.helpers.event"] = ha_event
+    sys.modules["homeassistant.helpers.restore_state"] = ha_restore_state
     sys.modules["homeassistant.util"] = ha_util
     sys.modules["homeassistant.util.dt"] = ha_dt
 
@@ -184,6 +192,29 @@ def test_aud_monetary_total_keeps_monetary_device_class_and_value():
     assert entity.native_unit_of_measurement == "AUD"
     assert entity.device_class == "monetary"
     assert entity.extra_state_attributes["currency"] == "AUD"
+
+
+def test_daily_cost_uses_restored_numeric_state_while_energy_summary_is_missing():
+    sensor = _sensor_module()
+    desc = next(d for d in sensor.ENERGY_SENSORS if d.key == "daily_import_cost")
+    entity = sensor.TeslaEnergySensor(SimpleNamespace(data={}), desc, _entry("amber"))
+    entity.hass = _hass("AUD")
+    entity._restored_native_value = 4.56
+
+    assert entity.native_value == 4.56
+
+
+def test_flow_power_import_price_uses_restored_state_before_coordinator_data():
+    sensor = _sensor_module()
+    entity = sensor.FlowPowerPriceSensor(
+        SimpleNamespace(data=None),
+        _entry("flow_power"),
+        "current_import_price",
+    )
+    entity.hass = _hass("AUD")
+    entity._restored_native_value = 0.321
+
+    assert entity.native_value == 0.321
 
 
 def test_daily_load_uses_total_state_class():

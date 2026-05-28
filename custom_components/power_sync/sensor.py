@@ -26,6 +26,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers import device_registry as dr
 from homeassistant.util import dt as dt_util
 from datetime import timedelta
@@ -286,6 +287,40 @@ class PowerSyncSensorEntityDescription(SensorEntityDescription):
 
 
 RATE_CURRENCY_UNITS = {"major_rate", "market_rate", "minor_rate"}
+_RESTORED_NUMERIC_SENSOR_KEYS = {
+    SENSOR_TYPE_CURRENT_IMPORT_PRICE,
+    SENSOR_TYPE_CURRENT_EXPORT_PRICE,
+    SENSOR_TYPE_DAILY_IMPORT_COST,
+    SENSOR_TYPE_DAILY_EXPORT_EARNINGS,
+    SENSOR_TYPE_DAILY_AVG_COST_PER_KWH,
+    SENSOR_TYPE_MTD_AVG_COST_PER_KWH,
+}
+
+
+def _restored_numeric_state_value(state: Any) -> float | None:
+    """Return a numeric value from a restored HA state, if it is usable."""
+    raw = getattr(state, "state", None)
+    if raw in (None, "", "unknown", "unavailable"):
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+class RestoredNumericStateMixin(RestoreEntity):
+    """Restore the last valid numeric state while startup data is unavailable."""
+
+    _restored_native_value: float | None = None
+
+    async def _async_restore_numeric_state(self) -> None:
+        last_state = await self.async_get_last_state()
+        self._restored_native_value = _restored_numeric_state_value(last_state)
+
+    def _restored_numeric_value(self, sensor_key: str) -> float | None:
+        if sensor_key not in _RESTORED_NUMERIC_SENSOR_KEYS:
+            return None
+        return self._restored_native_value
 
 
 def _currency_unit_for_kind(kind: str | None, currency: str) -> str | None:
@@ -2141,7 +2176,7 @@ def _cleanup_legacy_powerwall_pack_registry(hass: HomeAssistant, entry: ConfigEn
             _LOGGER.debug("Unable to remove legacy Powerwall pack device %s: %s", device_id, err)
 
 
-class AmberPriceSensor(PowerSyncCurrencyMixin, CoordinatorEntity, SensorEntity):
+class AmberPriceSensor(PowerSyncCurrencyMixin, CoordinatorEntity, RestoredNumericStateMixin, SensorEntity):
     """Sensor for Amber electricity prices."""
 
     entity_description: PowerSyncSensorEntityDescription
@@ -2175,8 +2210,13 @@ class AmberPriceSensor(PowerSyncCurrencyMixin, CoordinatorEntity, SensorEntity):
         if self.entity_description.value_fn:
             value = self.entity_description.value_fn(self.coordinator.data)
             _LOGGER.debug("AmberPriceSensor %s native_value: %s", self.entity_description.key, value)
-            return value
+            return value if value is not None else self._restored_numeric_value(self.entity_description.key)
         return None
+
+    async def async_added_to_hass(self) -> None:
+        """Restore the last price while coordinator data warms up."""
+        await super().async_added_to_hass()
+        await self._async_restore_numeric_state()
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -2251,7 +2291,7 @@ def _local_data_is_fresh(local_coord: Any) -> bool:
     return (_time.time() - last_ts) <= _LOCAL_STALE_SECONDS
 
 
-class TeslaEnergySensor(PowerSyncCurrencyMixin, CoordinatorEntity, SensorEntity):
+class TeslaEnergySensor(PowerSyncCurrencyMixin, CoordinatorEntity, RestoredNumericStateMixin, SensorEntity):
     """Sensor for Tesla energy data.
 
     Reads cloud-coordinator data via the entity description's ``value_fn`` by
@@ -2325,12 +2365,13 @@ class TeslaEnergySensor(PowerSyncCurrencyMixin, CoordinatorEntity, SensorEntity)
                 and value is not None
             ):
                 value += _sungrow_ac_inverter_power_kw(self._entry, self.hass)
-            return value
+            return value if value is not None else self._restored_numeric_value(self.entity_description.key)
         return None
 
     async def async_added_to_hass(self) -> None:
         """Subscribe to both cloud and local coordinator updates."""
         await super().async_added_to_hass()
+        await self._async_restore_numeric_state()
         if self.entity_description.key in _LOCAL_OVERRIDABLE:
             local_coord = self._local_coordinator()
             if local_coord is not None:
@@ -3355,7 +3396,7 @@ class TariffScheduleSensor(SensorEntity):
         }
 
 
-class TariffPriceSensor(PowerSyncCurrencyMixin, SensorEntity):
+class TariffPriceSensor(PowerSyncCurrencyMixin, RestoredNumericStateMixin, SensorEntity):
     """Sensor for current price derived from TOU tariff schedule.
 
     This sensor provides current import/export prices for non-Amber users
@@ -3398,6 +3439,7 @@ class TariffPriceSensor(PowerSyncCurrencyMixin, SensorEntity):
     async def async_added_to_hass(self) -> None:
         """Run when entity is added to hass."""
         await super().async_added_to_hass()
+        await self._async_restore_numeric_state()
 
         _LOGGER.info(
             "Tariff price sensor registered: %s (entity_id=%s)",
@@ -3442,7 +3484,7 @@ class TariffPriceSensor(PowerSyncCurrencyMixin, SensorEntity):
         """Return the current price from tariff schedule."""
         tariff_data = self.hass.data.get(DOMAIN, {}).get(self._entry.entry_id, {}).get("tariff_schedule")
         if not tariff_data:
-            return None
+            return self._restored_numeric_value(self._sensor_type)
 
         # Import the function from __init__.py
         from . import get_current_price_from_tariff_schedule
@@ -3903,7 +3945,7 @@ class InverterStatusSensor(SensorEntity):
         return attrs
 
 
-class FlowPowerPriceSensor(PowerSyncCurrencyMixin, CoordinatorEntity, SensorEntity):
+class FlowPowerPriceSensor(PowerSyncCurrencyMixin, CoordinatorEntity, RestoredNumericStateMixin, SensorEntity):
     """Sensor for Flow Power electricity prices with PEA adjustment.
 
     Shows real-time import price calculated as:
@@ -4088,9 +4130,15 @@ class FlowPowerPriceSensor(PowerSyncCurrencyMixin, CoordinatorEntity, SensorEnti
     def native_value(self) -> float | None:
         """Return the current price in $/kWh."""
         if self._is_import_sensor:
-            return self._calculate_import_price()
+            value = self._calculate_import_price()
         else:
-            return self._calculate_export_price()
+            value = self._calculate_export_price()
+        return value if value is not None else self._restored_numeric_value(self._sensor_type)
+
+    async def async_added_to_hass(self) -> None:
+        """Restore the last price while coordinator data warms up."""
+        await super().async_added_to_hass()
+        await self._async_restore_numeric_state()
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
