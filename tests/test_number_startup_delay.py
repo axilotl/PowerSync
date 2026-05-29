@@ -150,3 +150,17 @@ def test_force_power_slider_covers_power_capable_batteries():
         "CONF_NEOVOLT_CONFIG_ENTRY_IDS",
     ):
         assert constant_name in source
+
+
+def test_force_power_slider_max_is_site_relative():
+    """The force-power control should not expose a fixed 50 kW slider first."""
+    source = NUMBER_PATH.read_text()
+
+    assert "FORCE_POWER_FALLBACK_MAX_KW = 50.0" in source
+    assert "def native_max_value(self) -> float:" in source
+    assert "CONF_OPTIMIZATION_MAX_CHARGE_W" in source
+    assert "CONF_OPTIMIZATION_MAX_DISCHARGE_W" in source
+    assert "CONF_SAJ_INVERTER_RATED_KW" in source
+    assert "battery_max_charge_power_w" in source
+    assert "battery_max_discharge_power_w" in source
+    assert "_attr_native_max_value = 50" not in source

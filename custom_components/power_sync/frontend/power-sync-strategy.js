@@ -3454,15 +3454,14 @@ class PowerSyncStrategy {
     // section gracefully scales from a basic Powerwall (4 rows) to a US site
     // with VPP enrollment (8+ rows).
     //
-    // Gated on power_sync_backup_reserve or power_sync_operation_mode — these
-    // are only created for Tesla setups. Without this guard, findEntity's broad
-    // suffix-match fallback picks up unrelated entities from GoodWe, Sigenergy,
-    // etc. and incorrectly renders the Tesla section for non-Tesla users.
+    // Gated through the Tesla-aware entity resolver. HA may compose these IDs
+    // from the device name, or from the newer power_sync_tesla_* object IDs, so
+    // direct power_sync_backup_reserve / power_sync_operation_mode checks miss
+    // valid Tesla controls.
     {
-      const _s = hass.states || {};
       const _hasTesla = !!(
-        _s['number.power_sync_backup_reserve'] ||
-        _s['select.power_sync_operation_mode']
+        findEntity('number', 'backup_reserve') ||
+        findEntity('select', 'operation_mode')
       );
       if (_hasTesla) {
         const teslaSection = _teslaEnergySiteControls(findEntity, findVppSwitches);

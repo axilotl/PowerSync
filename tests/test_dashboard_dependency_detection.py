@@ -134,3 +134,13 @@ def test_dashboard_entity_resolver_accepts_ha_renamed_powersync_sensors():
     assert "objectId.startsWith('powersync_')" in source
     assert "objectId.startsWith('power_sync_')" in source
     assert "isAvailableState(id)" in source
+
+
+def test_tesla_controls_gate_uses_entity_resolver():
+    """The dashboard must detect current power_sync_tesla_* operation controls."""
+    source = STRATEGY_PATH.read_text()
+
+    assert "findEntity('number', 'backup_reserve')" in source
+    assert "findEntity('select', 'operation_mode')" in source
+    assert "_s['select.power_sync_operation_mode']" not in source
+    assert "_s['number.power_sync_backup_reserve']" not in source
