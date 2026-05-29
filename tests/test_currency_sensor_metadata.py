@@ -630,3 +630,55 @@ def test_has_tesla_ev_device_tolerates_extended_identifier_shape():
     )
 
     assert sensor._has_tesla_ev_device(hass) is True
+
+
+def test_has_solaredge_ev_power_detects_reported_charger_entity():
+    sensor = _sensor_module()
+    state = SimpleNamespace(
+        entity_id="sensor.ev_charger_power",
+        attributes={"friendly_name": "SolarEdge EV Charger EV Charger Power"},
+    )
+    hass = SimpleNamespace(states=SimpleNamespace(async_all=lambda domain=None: [state]))
+
+    assert sensor._has_solaredge_ev_power(hass) is True
+
+
+def test_has_solaredge_ev_power_ignores_unrelated_charger_power():
+    sensor = _sensor_module()
+    state = SimpleNamespace(
+        entity_id="sensor.tessy_charger_power",
+        attributes={"friendly_name": "Tessy Charger Power"},
+    )
+    hass = SimpleNamespace(states=SimpleNamespace(async_all=lambda domain=None: [state]))
+
+    assert sensor._has_solaredge_ev_power(hass) is False
+
+
+def test_ev_status_sensor_labels_solaredge_coordinator_power():
+    sensor = _sensor_module()
+    desc = next(d for d in sensor.EV_SENSORS if d.key == "ev_power")
+    entry = SimpleNamespace(entry_id="entry-1", data={}, options={})
+    entity = sensor.EVStatusSensor(SimpleNamespace(data={}), entry, desc)
+    entity.async_write_ha_state = lambda: None
+    entity.hass = SimpleNamespace(
+        data={
+            sensor.DOMAIN: {
+                "entry-1": {
+                    "solaredge_coordinator": SimpleNamespace(
+                        data={
+                            "ev_power": 7.4,
+                            "ev_charger_type": "solaredge",
+                            "ev_charger_connected": True,
+                            "ev_charger_charging": True,
+                        }
+                    )
+                }
+            }
+        }
+    )
+
+    entity._handle_coordinator_update()
+
+    assert entity.native_value == 7.4
+    assert entity.extra_state_attributes["vehicle_name"] == "SolarEdge EV Charger"
+    assert entity.extra_state_attributes["vehicle_id"] == "solaredge_ev_charger"

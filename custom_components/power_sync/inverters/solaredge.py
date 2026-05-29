@@ -241,6 +241,11 @@ _ENERGY_READ_ENTITIES: dict[str, tuple[str, ...]] = {
         "battery_discharge_today",
         "daily_battery_discharge",
     ),
+    "ev_power": (
+        "ev_charger_power",
+        "ev_charging_power",
+        "solaredge_ev_charger_power",
+    ),
 }
 
 _LIFETIME_ENERGY_TOTAL_ENTITIES: dict[str, tuple[str, ...]] = {
@@ -657,6 +662,7 @@ class SolarEdgeEnergyController:
             "grid_power": grid_kw,
             "solar_power": max(0.0, solar_kw),
             "load_power": max(0.0, load_kw),
+            "ev_power": self._power_kw("ev_power"),
             "battery_temperature": self._read_float("battery_temperature"),
             "battery_soh": self._read_float("battery_soh"),
             "backup_reserve": self._read_float("backup_reserve"),

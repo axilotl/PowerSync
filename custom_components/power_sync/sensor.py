@@ -240,6 +240,37 @@ def _has_tesla_ev_device(hass: HomeAssistant) -> bool:
     return False
 
 
+def _has_solaredge_ev_power(hass: HomeAssistant) -> bool:
+    """Return true when the SolarEdge EV charger integration exposes power."""
+    try:
+        states = hass.states.async_all("sensor")
+    except TypeError:
+        states = hass.states.async_all()
+    except Exception:
+        return False
+
+    for state in states:
+        entity_id = str(getattr(state, "entity_id", "")).lower()
+        if not entity_id.startswith("sensor."):
+            continue
+        body = entity_id.split(".", 1)[-1]
+        if body not in {"ev_charger_power", "ev_charging_power"} and not body.endswith(
+            ("_ev_charger_power", "_ev_charging_power")
+        ):
+            continue
+
+        attrs = getattr(state, "attributes", {}) or {}
+        friendly_name = str(attrs.get("friendly_name", "")).lower()
+        if (
+            body in {"ev_charger_power", "ev_charging_power"}
+            or "solaredge" in body
+            or "solar edge" in friendly_name
+            or "solaredge" in friendly_name
+        ):
+            return True
+    return False
+
+
 def _sungrow_ac_inverter_power_kw(entry: ConfigEntry, hass: HomeAssistant) -> float:
     """Return separately configured Sungrow SG inverter output in kW."""
     if entry.data.get(CONF_BATTERY_SYSTEM) != BATTERY_SYSTEM_SUNGROW:
@@ -1654,6 +1685,7 @@ async def async_setup_entry(
         or zaptec_standalone
         or sigenergy_charger_enabled
         or _has_tesla_ev_device(hass)
+        or (is_solaredge and _has_solaredge_ev_power(hass))
     )
     if has_ev:
         for description in EV_SENSORS:
@@ -4725,7 +4757,7 @@ class EVStatusSensor(SensorEntity):
         # Also listen to energy coordinator updates for faster refresh
         entry_data = self.hass.data.get(DOMAIN, {}).get(self._entry.entry_id, {})
         self._unsub_coordinators = []
-        for key in ("tesla_coordinator", "sigenergy_coordinator"):
+        for key in ("tesla_coordinator", "sigenergy_coordinator", "solaredge_coordinator"):
             coordinator = entry_data.get(key)
             if coordinator:
                 self._unsub_coordinators.append(
@@ -4749,7 +4781,7 @@ class EVStatusSensor(SensorEntity):
     def _handle_coordinator_update(self) -> None:
         """Handle energy coordinator updates with embedded EV telemetry."""
         entry_data = self.hass.data.get(DOMAIN, {}).get(self._entry.entry_id, {})
-        for key in ("tesla_coordinator", "sigenergy_coordinator"):
+        for key in ("tesla_coordinator", "sigenergy_coordinator", "solaredge_coordinator"):
             coordinator = entry_data.get(key)
             if not coordinator or not coordinator.data:
                 continue
@@ -4759,7 +4791,20 @@ class EVStatusSensor(SensorEntity):
                 continue
             if self._ev_data is None:
                 self._ev_data = {}
-            if coord_data.get("ev_charger_type"):
+            if key == "solaredge_coordinator":
+                self._ev_data["ev_power_kw"] = ev_power
+                self._ev_data["vehicle_id"] = "solaredge_ev_charger"
+                self._ev_data["vehicle_name"] = "SolarEdge EV Charger"
+                self._ev_data["is_connected"] = coord_data.get(
+                    "ev_charger_connected", ev_power > 0.05
+                )
+                self._ev_data["is_charging"] = coord_data.get(
+                    "ev_charger_charging", ev_power > 0.05
+                )
+                self._ev_data["is_discharging"] = coord_data.get(
+                    "ev_charger_discharging", False
+                )
+            elif coord_data.get("ev_charger_type"):
                 self._ev_data["ev_power_kw"] = ev_power
                 self._ev_data["vehicle_id"] = "sigenergy_charger"
                 self._ev_data["vehicle_name"] = "Sigenergy EVDC"
@@ -4853,6 +4898,23 @@ class EVStatusSensor(SensorEntity):
                     abs(ev_power) > 0.05 or self._ev_data.get("ev_power_kw", 0) == 0
                 ):
                     self._ev_data["ev_power_kw"] = ev_power
+            solaredge_coordinator = entry_data.get("solaredge_coordinator")
+            if solaredge_coordinator and solaredge_coordinator.data:
+                coord_data = solaredge_coordinator.data
+                ev_power = coord_data.get("ev_power")
+                if ev_power is not None:
+                    self._ev_data["ev_power_kw"] = ev_power
+                    self._ev_data["vehicle_id"] = "solaredge_ev_charger"
+                    self._ev_data["vehicle_name"] = "SolarEdge EV Charger"
+                    self._ev_data["is_connected"] = coord_data.get(
+                        "ev_charger_connected", ev_power > 0.05
+                    )
+                    self._ev_data["is_charging"] = coord_data.get(
+                        "ev_charger_charging", ev_power > 0.05
+                    )
+                    self._ev_data["is_discharging"] = coord_data.get(
+                        "ev_charger_discharging", False
+                    )
         except Exception:
             _LOGGER.debug("Error polling EV status", exc_info=True)
         self.async_write_ha_state()

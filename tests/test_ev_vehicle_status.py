@@ -136,6 +136,7 @@ def _install_import_stubs() -> None:
         "SajH2EnergyCoordinator",
         "FroniusReservaEnergyCoordinator",
         "NeovoltEnergyCoordinator",
+        "SolarEdgeEnergyCoordinator",
         "DemandChargeCoordinator",
         "AEMOSensorCoordinator",
         "OctopusPriceCoordinator",

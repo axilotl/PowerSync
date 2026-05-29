@@ -5945,6 +5945,7 @@ class SolarEdgeEnergyCoordinator(DataUpdateCoordinator):
         battery_kw = status.get("battery_power", 0.0) or 0.0
         load_kw = status.get("load_power", 0.0) or 0.0
         soc = status.get("battery_level")
+        ev_power_kw = status.get("ev_power")
 
         buy, sell = _get_current_prices(self.hass, self._entry_id)
         self._energy_acc.update(max(0.0, solar_kw), grid_kw, battery_kw, load_kw, buy, sell)
@@ -5967,6 +5968,12 @@ class SolarEdgeEnergyCoordinator(DataUpdateCoordinator):
             "battery_power": battery_kw,
             "load_power": load_kw,
             "battery_level": soc,
+            "ev_power": ev_power_kw,
+            "ev_power_kw": ev_power_kw,
+            "ev_charger_type": "solaredge" if ev_power_kw is not None else None,
+            "ev_charger_connected": ev_power_kw is not None and ev_power_kw > 0.05,
+            "ev_charger_charging": ev_power_kw is not None and ev_power_kw > 0.05,
+            "ev_charger_discharging": False,
             "last_update": dt_util.utcnow(),
             "battery_temperature": status.get("battery_temperature"),
             "battery_soh": status.get("battery_soh"),

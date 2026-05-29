@@ -294,6 +294,36 @@ def test_solaredge_m1_kwh_counters_are_reported_as_lifetime_totals():
     assert status["total_grid_export_kwh"] == pytest.approx(6543.2)
 
 
+def test_solaredge_energy_bridge_maps_ev_charger_power():
+    class Hass:
+        def __init__(self) -> None:
+            self.states = _SEStates(
+                {
+                    "sensor.solaredge_b1_state_of_energy": _SEState(
+                        "sensor.solaredge_b1_state_of_energy",
+                        "65",
+                        {"unit_of_measurement": "%"},
+                    ),
+                    "sensor.ev_charger_power": _SEState(
+                        "sensor.ev_charger_power",
+                        "7.4",
+                        {
+                            "unit_of_measurement": "kW",
+                            "friendly_name": "SolarEdge EV Charger EV Charger Power",
+                        },
+                    ),
+                }
+            )
+
+    controller = SolarEdgeEnergyController(Hass(), entity_prefix="solaredge")
+
+    assert asyncio.run(controller.connect())
+    status = controller.get_status()
+
+    assert controller._entity_map["ev_power"] == "sensor.ev_charger_power"
+    assert status["ev_power"] == pytest.approx(7.4)
+
+
 class _SEServices:
     def __init__(self, states: _SEStates) -> None:
         self._states = states

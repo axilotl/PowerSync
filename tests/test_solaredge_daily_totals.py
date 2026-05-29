@@ -94,6 +94,17 @@ class _FakeEnergyAccumulator:
         }
 
 
+class _FakeStore:
+    def __init__(self) -> None:
+        self.data = None
+
+    async def async_load(self):
+        return self.data
+
+    async def async_save(self, data):
+        self.data = data
+
+
 class _FakeController:
     def __init__(self, statuses: list[dict]) -> None:
         self.statuses = statuses
@@ -110,9 +121,7 @@ def _new_coordinator(statuses: list[dict]) -> SolarEdgeEnergyCoordinator:
     coordinator._controller = _FakeController(statuses)
     coordinator._energy_acc = _FakeEnergyAccumulator()
     coordinator._validated = True
-    coordinator._daily_total_store = sys.modules[
-        "homeassistant.helpers.storage"
-    ].Store()
+    coordinator._daily_total_store = _FakeStore()
     coordinator._daily_total_baselines_restored = False
     coordinator._daily_total_baseline_date = None
     coordinator._daily_total_import_baseline = None
