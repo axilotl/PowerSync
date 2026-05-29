@@ -42,6 +42,9 @@ def test_optimizer_windows_use_combined_visual_card():
     assert "optimization_force_discharge_windows" in source
     assert "lp_import_price_forecast" in source
     assert "lp_export_price_forecast" in source
+    assert "Planned Battery Windows" in source
+    assert "_batteryWindowsFromActions(actions, model)" in source
+    assert "_socRangeForAction(action, model)" in source
     assert "24-Hour Action Plan" in source
     assert "_actionRangesFromApi()" in source
     assert "_fallbackActionRanges()" in source

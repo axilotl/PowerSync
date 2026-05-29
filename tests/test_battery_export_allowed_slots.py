@@ -1712,10 +1712,10 @@ def test_spread_import_free_window_caps_to_available_battery_room(opt_module):
     assert spread_wh == pytest.approx((1.0 - 0.80) * 50000 / 0.92, abs=0.1)
 
 
-def test_spread_import_free_only_smooths_free_window_when_setting_disabled(opt_module):
+def test_spread_import_free_only_smooths_free_window(opt_module):
     coordinator = _coordinator(opt_module, "octopus")
     coordinator.battery_system = "sungrow"
-    coordinator._config.spread_import_enabled = False
+    coordinator._config.spread_import_enabled = True
     coordinator._config.max_charge_w = 6000
     coordinator._config.battery_capacity_wh = 20000
     start = datetime(2026, 5, 3, 11, 0, tzinfo=timezone.utc)
@@ -1753,7 +1753,7 @@ def test_spread_import_free_only_smooths_free_window_when_setting_disabled(opt_m
 def test_spread_import_free_only_leaves_paid_window_unchanged(opt_module):
     coordinator = _coordinator(opt_module, "octopus")
     coordinator.battery_system = "sungrow"
-    coordinator._config.spread_import_enabled = False
+    coordinator._config.spread_import_enabled = True
     coordinator._config.max_charge_w = 6000
     coordinator._config.battery_capacity_wh = 20000
     start = datetime(2026, 5, 3, 11, 0, tzinfo=timezone.utc)
@@ -1951,22 +1951,23 @@ def test_spread_import_schedule_requires_enabled_supported_battery(opt_module):
     assert coordinator._should_spread_import_schedule() is False
 
 
-def test_free_import_smoothing_requires_grid_charge_supported_battery_and_free_price(opt_module):
+def test_free_import_smoothing_is_not_automatic_when_spread_import_is_disabled(opt_module):
     coordinator = _coordinator(opt_module, "octopus")
     coordinator.battery_system = "sungrow"
     coordinator._config.spread_import_enabled = False
     coordinator._config.allow_grid_charge = True
 
     assert coordinator._should_spread_import_schedule() is False
-    assert coordinator._should_smooth_free_import_schedule([0.14, 0.0]) is True
-    assert coordinator._should_smooth_free_import_schedule([0.14, 0.12]) is False
 
-    coordinator._config.allow_grid_charge = False
-    assert coordinator._should_smooth_free_import_schedule([0.0]) is False
+    coordinator_source = (
+        ROOT / "custom_components" / "power_sync" / "optimization" / "coordinator.py"
+    ).read_text()
+    assert "_should_smooth_free_import_schedule" not in coordinator_source
+    assert "smooth_free_import" not in coordinator_source
+    assert "if self._should_spread_import_schedule():" in coordinator_source
 
-    coordinator._config.allow_grid_charge = True
-    coordinator.battery_system = "tesla"
-    assert coordinator._should_smooth_free_import_schedule([0.0]) is False
+    coordinator._config.spread_import_enabled = True
+    assert coordinator._should_spread_import_schedule() is True
 
 
 def test_profit_max_spread_uses_flow_power_export_window(opt_module):

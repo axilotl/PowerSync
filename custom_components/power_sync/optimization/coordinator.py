@@ -1590,6 +1590,14 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 return
             self._last_aemo_dispatch_file = current_file
 
+        force_state = self._get_active_force_state()
+        if force_state.get("active") and force_state.get("source") == "optimizer":
+            _LOGGER.info(
+                "Price update: skipping LP re-optimization while optimizer force %s is active",
+                force_state.get("type", "mode"),
+            )
+            return
+
         # Rate-limit: Amber/Octopus can fire two coordinator updates per
         # billing window (usage price + spot price). Avoid duplicate LP runs
         # and repeated force mode commands inside the same interval.
@@ -1846,7 +1854,20 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._octopus_gate_listener_unsub = None
 
         if self._executor:
-            await self._executor.stop()
+            from ..const import CONF_MONITORING_MODE
+
+            monitoring_mode = bool(
+                self._entry
+                and self._entry.options.get(
+                    CONF_MONITORING_MODE,
+                    self._entry.data.get(CONF_MONITORING_MODE, False),
+                )
+            )
+            if monitoring_mode:
+                _LOGGER.info(
+                    "Optimizer shutdown: monitoring mode active — skipping battery mode restore"
+                )
+            await self._executor.stop(restore_normal=not monitoring_mode)
 
         if self._ev_coordinator:
             await self._ev_coordinator.stop()
@@ -2054,18 +2075,12 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
             self._last_optimizer_result = result
             self._current_schedule = result.schedule
-            spread_all_import = self._should_spread_import_schedule()
-            smooth_free_import = (
-                not spread_all_import
-                and self._should_smooth_free_import_schedule(import_prices)
-            )
-            if spread_all_import or smooth_free_import:
+            if self._should_spread_import_schedule():
                 self._current_schedule = self._spread_import_schedule(
                     self._current_schedule,
                     import_prices,
                     battery_charge_blocked,
                     soc,
-                    free_only=smooth_free_import,
                 )
                 result.schedule = self._current_schedule
             if self._should_spread_export_schedule():
@@ -3181,27 +3196,6 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._config.spread_import_enabled
             and self._supports_target_charge_power()
         )
-
-    def _should_smooth_free_import_schedule(
-        self,
-        import_prices: list[float] | None,
-    ) -> bool:
-        """Return True when free import windows should be made continuous."""
-        if (
-            not self._config.allow_grid_charge
-            or not self._supports_target_charge_power()
-            or not import_prices
-        ):
-            return False
-
-        for price in import_prices:
-            try:
-                value = float(price)
-            except (TypeError, ValueError):
-                continue
-            if math.isfinite(value) and value <= 0.001:
-                return True
-        return False
 
     def _spread_import_schedule(
         self,

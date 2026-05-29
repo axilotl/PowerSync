@@ -12,6 +12,9 @@ COORDINATOR_PATH = ROOT / "custom_components" / "power_sync" / "coordinator.py"
 OPTIMIZATION_COORDINATOR_PATH = (
     ROOT / "custom_components" / "power_sync" / "optimization" / "coordinator.py"
 )
+OPTIMIZATION_EXECUTOR_PATH = (
+    ROOT / "custom_components" / "power_sync" / "optimization" / "executor.py"
+)
 SELECT_PATH = ROOT / "custom_components" / "power_sync" / "select.py"
 
 
@@ -89,6 +92,27 @@ def test_force_mode_persistence_uses_setup_store_reference():
     assert function_source is not None
     assert 'hass.data[DOMAIN][entry.entry_id]["store"]' not in function_source
     assert "await store.async_load()" in function_source
+
+
+def test_monitoring_mode_optimizer_shutdown_skips_battery_restore():
+    coordinator_source = OPTIMIZATION_COORDINATOR_PATH.read_text()
+    coordinator_tree = ast.parse(coordinator_source)
+    disable = _find_class_method(coordinator_tree, "OptimizationCoordinator", "disable")
+    disable_source = ast.get_source_segment(coordinator_source, disable)
+
+    executor_source = OPTIMIZATION_EXECUTOR_PATH.read_text()
+    executor_tree = ast.parse(executor_source)
+    stop = _find_class_method(executor_tree, "ScheduleExecutor", "stop")
+    stop_source = ast.get_source_segment(executor_source, stop)
+
+    assert disable_source is not None
+    assert stop_source is not None
+    assert "CONF_MONITORING_MODE" in disable_source
+    assert "monitoring_mode = bool(" in disable_source
+    assert "await self._executor.stop(restore_normal=not monitoring_mode)" in disable_source
+    assert "restore_normal: bool = True" in stop_source
+    assert "if restore_normal:" in stop_source
+    assert "await self._restore_normal_operation()" in stop_source
 
 
 def test_force_mode_persistence_keeps_requested_power_setpoint():
@@ -510,17 +534,29 @@ def test_optimizer_waits_for_restart_force_restore_before_solving():
     assert "return True" in wait_source
 
 
-def test_tou_sync_skips_optimizer_owned_force_modes():
+def test_tou_sync_does_not_skip_optimizer_owned_force_modes():
     source = INIT_PATH.read_text()
     tree = ast.parse(source)
     function = _find_function(tree, "_handle_sync_tou_internal")
     function_source = ast.get_source_segment(source, function)
 
     assert function_source is not None
-    assert '"optimization_coordinator"' in function_source
-    assert "get_active_force_state" in function_source
-    assert 'opt_force_state.get("source") == "optimizer"' in function_source
-    assert "Optimizer force %s active" in function_source
+    assert "=== Starting TOU sync ===" in function_source
+    assert "Optimizer force %s active" not in function_source
+    assert 'opt_force_state.get("source") == "optimizer"' not in function_source
+
+
+def test_price_update_skips_optimizer_owned_force_reoptimization():
+    source = OPTIMIZATION_COORDINATOR_PATH.read_text()
+    tree = ast.parse(source)
+    method = _find_class_method(tree, "OptimizationCoordinator", "_on_price_update")
+    method_source = ast.get_source_segment(source, method)
+
+    assert method_source is not None
+    assert "force_state = self._get_active_force_state()" in method_source
+    assert 'force_state.get("source") == "optimizer"' in method_source
+    assert "skipping LP re-optimization" in method_source
+    assert "self.hass.async_create_background_task" in method_source
 
 
 def test_optimization_coordinator_exposes_optimizer_force_state():

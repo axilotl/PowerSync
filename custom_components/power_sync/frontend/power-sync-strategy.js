@@ -1120,6 +1120,7 @@ class PowerSyncOptimizationPlan extends HTMLElement {
     const box = this.getBoundingClientRect();
     const compact = (box.width || 640) < 560;
     const actions = hasSchedule ? this._actionRangesFromApi() : this._fallbackActionRanges();
+    const batteryWindows = this._batteryWindowsFromActions(actions, model);
 
     this.shadowRoot.innerHTML = `
       <style>
@@ -1253,6 +1254,76 @@ class PowerSyncOptimizationPlan extends HTMLElement {
           border-radius: 999px;
           flex: 0 0 auto;
         }
+        .battery-windows {
+          display: grid;
+          gap: 8px;
+        }
+        .window-row {
+          display: grid;
+          grid-template-columns: auto minmax(0, 1fr) minmax(86px, auto);
+          gap: 10px;
+          align-items: center;
+          padding: 10px 11px;
+          border-radius: 10px;
+          border: 1px solid var(--divider-color);
+          background: var(--ha-card-background, var(--card-background-color, #fff));
+          border-left-width: 4px;
+          min-width: 0;
+        }
+        .window-row.charge {
+          border-left-color: #4CAF50;
+        }
+        .window-row.discharge {
+          border-left-color: #FF9800;
+        }
+        .window-row.export {
+          border-left-color: #FFD54F;
+        }
+        .window-pill {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          min-width: 66px;
+          padding: 6px 8px;
+          border-radius: 999px;
+          font-size: 11px;
+          font-weight: 900;
+          line-height: 1;
+          text-transform: uppercase;
+          white-space: nowrap;
+        }
+        .window-row.charge .window-pill {
+          color: #2E7D32;
+          background: rgba(76, 175, 80, 0.14);
+        }
+        .window-row.discharge .window-pill {
+          color: #EF6C00;
+          background: rgba(255, 152, 0, 0.15);
+        }
+        .window-row.export .window-pill {
+          color: #8A6A00;
+          background: rgba(255, 213, 79, 0.22);
+        }
+        .window-main {
+          min-width: 0;
+        }
+        .window-time {
+          color: var(--primary-text-color);
+          font-size: 14px;
+          font-weight: 850;
+          line-height: 1.2;
+          letter-spacing: 0;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        .window-meta {
+          margin-top: 3px;
+          color: var(--secondary-text-color);
+          font-size: 11px;
+          font-weight: 650;
+          line-height: 1.2;
+        }
         .actions {
           display: grid;
           gap: 8px;
@@ -1353,6 +1424,14 @@ class PowerSyncOptimizationPlan extends HTMLElement {
           .price-stats {
             min-width: 78px;
           }
+          .window-row {
+            grid-template-columns: minmax(0, 1fr) minmax(78px, auto);
+          }
+          .window-pill {
+            grid-column: 1 / -1;
+            justify-self: start;
+            min-width: 0;
+          }
         }
       </style>
       <ha-card>
@@ -1367,6 +1446,8 @@ class PowerSyncOptimizationPlan extends HTMLElement {
         </div>
         ${this._renderChips(model, priceMeta)}
         ${this._renderNotice(hasSchedule)}
+        <div class="section-title">Planned Battery Windows</div>
+        ${this._renderBatteryWindows(batteryWindows, priceMeta)}
         ${hasSchedule ? `
           <div class="section-title">SOC and Battery Power</div>
           <div class="chart-wrap">${this._renderPowerChart(model, compact)}</div>
@@ -1585,6 +1666,30 @@ class PowerSyncOptimizationPlan extends HTMLElement {
     </div>`;
   }
 
+  _renderBatteryWindows(windows, priceMeta) {
+    if (!windows.length) {
+      return '<div class="empty">No planned charge, discharge, or export windows in the next 24 hours.</div>';
+    }
+    return `<div class="battery-windows">${windows.slice(0, 8).map(window => {
+      const info = this._actionInfo(window.action);
+      const meta = [
+        this._formatDuration(window.durationMinutes),
+        window.socLabel,
+        window.power_w > 0 ? this._formatPower(window.power_w) : '',
+      ].filter(Boolean).join(' - ');
+      return `
+        <div class="window-row ${this._escHtml(window.action)}">
+          <div class="window-pill">${this._escHtml(info.shortLabel || info.label)}</div>
+          <div class="window-main">
+            <div class="window-time">${this._escHtml(this._timeRange(window.timestamp, window.end_time))}</div>
+            ${meta ? `<div class="window-meta">${this._escHtml(meta)}</div>` : ''}
+          </div>
+          ${this._renderActionPriceStats(window.priceStats, window.action, priceMeta)}
+        </div>
+      `;
+    }).join('')}${windows.length > 8 ? `<div class="empty">+${windows.length - 8} more battery window${windows.length - 8 === 1 ? '' : 's'}</div>` : ''}</div>`;
+  }
+
   _renderActions(actions, model, priceMeta) {
     if (!actions.length) {
       return '<div class="empty">No optimizer actions scheduled in the next 24 hours.</div>';
@@ -1685,6 +1790,47 @@ class PowerSyncOptimizationPlan extends HTMLElement {
     return ranges.sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
   }
 
+  _batteryWindowsFromActions(actions, model) {
+    return (actions || [])
+      .filter(action => this._isBatteryWindowAction(action?.action))
+      .map(action => ({
+        ...action,
+        durationMinutes: this._durationMinutes(action.timestamp, action.end_time, model.intervalMinutes),
+        socLabel: this._socRangeForAction(action, model),
+        priceStats: this._priceStatsForAction(action, model),
+      }));
+  }
+
+  _isBatteryWindowAction(action) {
+    return action === 'charge' || action === 'discharge' || action === 'export';
+  }
+
+  _durationMinutes(startValue, endValue, fallbackMinutes = 5) {
+    const start = Date.parse(startValue);
+    const end = Date.parse(endValue);
+    if (Number.isFinite(start) && Number.isFinite(end) && end > start) {
+      return Math.round((end - start) / 60000);
+    }
+    return Number.isFinite(Number(fallbackMinutes)) ? Number(fallbackMinutes) : 5;
+  }
+
+  _socRangeForAction(action, model) {
+    const start = Date.parse(action?.timestamp);
+    const end = Date.parse(action?.end_time || action?.timestamp);
+    const points = (model?.points || []).filter(point => {
+      const ts = Date.parse(point.timestamp);
+      return Number.isFinite(ts) && Number.isFinite(start) && ts >= start && (!Number.isFinite(end) || ts < end);
+    });
+    const values = points.map(point => Number(point.soc)).filter(Number.isFinite);
+    if (!values.length) {
+      const fallback = Number(action?.soc);
+      return Number.isFinite(fallback) ? `${Math.round(this._percent(fallback))}% SOC` : '';
+    }
+    const first = Math.round(values[0]);
+    const last = Math.round(values[values.length - 1]);
+    return first === last ? `${first}% SOC` : `${first}% -> ${last}% SOC`;
+  }
+
   _demandRanges(points, demandWindow) {
     if (!demandWindow?.start_time || !demandWindow?.end_time || !points.length) return [];
     const start = this._clockMinutes(demandWindow.start_time);
@@ -1769,12 +1915,12 @@ class PowerSyncOptimizationPlan extends HTMLElement {
 
   _actionInfo(action) {
     const map = {
-      idle: { label: 'Idle', color: 'var(--secondary-text-color, #888)' },
-      charge: { label: 'Charging', color: '#4CAF50' },
-      discharge: { label: 'Discharging', color: '#FF9800' },
-      consume: { label: 'Powering Home', color: '#FF9800' },
-      export: { label: 'Exporting', color: '#FFD54F' },
-      self_consumption: { label: 'Self Consumption', color: '#42A5F5' },
+      idle: { label: 'Idle', shortLabel: 'Idle', color: 'var(--secondary-text-color, #888)' },
+      charge: { label: 'Charging', shortLabel: 'Charge', color: '#4CAF50' },
+      discharge: { label: 'Discharging', shortLabel: 'Discharge', color: '#FF9800' },
+      consume: { label: 'Powering Home', shortLabel: 'Home', color: '#FF9800' },
+      export: { label: 'Exporting', shortLabel: 'Export', color: '#FFD54F' },
+      self_consumption: { label: 'Self Consumption', shortLabel: 'Self', color: '#42A5F5' },
     };
     return map[action] || map.idle;
   }
@@ -1787,6 +1933,15 @@ class PowerSyncOptimizationPlan extends HTMLElement {
     const value = Number(watts || 0);
     if (Math.abs(value) >= 1000) return `${(Math.abs(value) / 1000).toFixed(1)} kW`;
     return `${Math.round(Math.abs(value))} W`;
+  }
+
+  _formatDuration(minutes) {
+    const value = Number(minutes || 0);
+    if (!Number.isFinite(value) || value <= 0) return '';
+    if (value < 60) return `${Math.round(value)} min`;
+    const hours = Math.floor(value / 60);
+    const mins = Math.round(value % 60);
+    return mins ? `${hours}h ${mins}m` : `${hours}h`;
   }
 
   _formatMinorPrice(value, minorUnit) {
