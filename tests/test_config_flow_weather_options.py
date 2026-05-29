@@ -396,6 +396,27 @@ def test_optimization_options_exposes_enabled_toggle():
     assert "optimization_provider != OPT_PROVIDER_POWERSYNC" in method_source
 
 
+def test_optimization_options_schedules_reload_after_flow_response():
+    source = CONFIG_FLOW_PATH.read_text()
+    method = _options_flow_method("async_step_optimization")
+    method_source = ast.get_source_segment(source, method)
+
+    assert method_source is not None
+    skip_reload_index = method_source.index('entry_data["_skip_reload"] = True')
+    update_entry_index = method_source.index(
+        "self.hass.config_entries.async_update_entry"
+    )
+    schedule_reload_index = method_source.index("self.hass.async_create_task")
+    create_entry_index = method_source.index("return self.async_create_entry")
+
+    assert skip_reload_index < update_entry_index
+    assert update_entry_index < schedule_reload_index < create_entry_index
+    assert (
+        "self.hass.config_entries.async_reload(self.config_entry.entry_id)"
+        in method_source
+    )
+
+
 def test_neovolt_surplus_balancer_selector_is_in_optimization_options():
     source = CONFIG_FLOW_PATH.read_text()
     method = _options_flow_method("async_step_optimization")

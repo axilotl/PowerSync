@@ -6693,8 +6693,16 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 new_data[CONF_PROFIT_MAX_TARGET_SOC] = profit_max_target_soc
                 new_options[CONF_PROFIT_MAX_TARGET_SOC] = profit_max_target_soc
 
+            entry_data = self.hass.data.get(DOMAIN, {}).get(
+                self.config_entry.entry_id
+            )
+            if isinstance(entry_data, dict):
+                entry_data["_skip_reload"] = True
             self.hass.config_entries.async_update_entry(
                 self.config_entry, data=new_data, options=new_options
+            )
+            self.hass.async_create_task(
+                self.hass.config_entries.async_reload(self.config_entry.entry_id)
             )
             return self.async_create_entry(
                 title="", data=dict(self.config_entry.options)
