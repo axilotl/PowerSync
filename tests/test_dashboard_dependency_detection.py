@@ -94,6 +94,38 @@ def test_dashboard_layout_drag_starts_from_handle_only():
     assert "appearance: none;" in drag_surface_css
 
 
+def test_dashboard_layout_can_hide_cards():
+    """Customize mode should persist hidden dashboard cards and restore them."""
+    source = STRATEGY_PATH.read_text()
+
+    assert "this._hiddenStorageKey = 'power-sync-dashboard-hidden-v1';" in source
+    assert "_loadHiddenKeys()" in source
+    assert "_saveHiddenKeys(keys)" in source
+    assert "_visibleItems()" in source
+    assert "_hideItem(item)" in source
+    assert "_showHiddenItems()" in source
+    assert "const hideSurface = document.createElement('button');" in source
+    assert "hideSurface.setAttribute('aria-label', 'Hide dashboard card')" in source
+    assert "toolbar.querySelector('.restore-hidden').addEventListener('click', () => this._showHiddenItems())" in source
+    assert "this._saveHiddenKeys([]);" in source
+    assert "const visibleItems = this._visibleItems();" in source
+
+
+def test_battery_health_uses_native_dashboard_card():
+    """Battery health should render with the native compact health card."""
+    source = STRATEGY_PATH.read_text()
+
+    assert "customElements.define('power-sync-battery-health', PowerSyncBatteryHealth)" in source
+    assert "type: 'custom:power-sync-battery-health'" in source
+    assert "Measured vs rated capacity" in source
+    assert "Follower capacity is inferred from aggregate gateway data." in source
+    assert "_packRows(attrs)" in source
+    assert "battery_${index}_health_percent" in source
+    assert "battery_${index}_original_kwh" in source
+    assert "state_attr('${healthEntity}'" not in source
+    assert "healthGauge('Overall'" not in source
+
+
 def test_dashboard_entity_resolver_accepts_ha_renamed_powersync_sensors():
     """HA may compose PowerSync sensor IDs from the integration/device name."""
     source = STRATEGY_PATH.read_text()

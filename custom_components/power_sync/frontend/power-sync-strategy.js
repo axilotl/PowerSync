@@ -1026,6 +1026,413 @@ if (!customElements.get('power-sync-forecast-summary')) {
   customElements.define('power-sync-forecast-summary', PowerSyncForecastSummary);
 }
 
+// ─── PowerSyncBatteryHealth Custom Element ──────────────────────
+// A compact, data-dense health card for aggregate and per-pack capacity data.
+
+class PowerSyncBatteryHealth extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode: 'open' });
+    this._config = null;
+    this._hass = null;
+  }
+
+  setConfig(config) {
+    this._config = config || {};
+    this._render();
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    this._render();
+  }
+
+  getCardSize() {
+    return 4;
+  }
+
+  _render() {
+    if (!this._config || !this._hass) return;
+
+    const entity = this._config.entity;
+    const stateObj = this._hass.states?.[entity];
+    const attrs = stateObj?.attributes || {};
+    const health = this._number(stateObj?.state);
+    const original = this._number(attrs.original_capacity_kwh);
+    const current = this._number(attrs.current_capacity_kwh);
+    const soh = this._number(attrs.state_of_health_percent);
+    const source = attrs.source;
+    const sourceLabel = this._sourceLabel(source);
+    const scanLabel = this._dateLabel(attrs.last_scan);
+    const packs = this._packRows(attrs);
+    const hasCapacity = Number.isFinite(current) && Number.isFinite(original);
+    const calculatedHealth = hasCapacity && original > 0 ? (current / original) * 100 : NaN;
+    const displayHealth = Number.isFinite(health) ? health : (Number.isFinite(soh) ? soh : calculatedHealth);
+    const hasFollower = packs.some(pack => pack.role === 'follower' || pack.isFollower);
+    const available = Number.isFinite(displayHealth) || hasCapacity || packs.length > 0;
+
+    this.shadowRoot.innerHTML = `
+      <style>
+        ha-card {
+          overflow: hidden;
+          padding: 0;
+        }
+        .shell {
+          display: grid;
+          gap: 16px;
+          padding: 18px;
+          min-width: 0;
+        }
+        .header {
+          display: grid;
+          grid-template-columns: minmax(0, 1fr) auto;
+          gap: 12px;
+          align-items: center;
+          min-width: 0;
+        }
+        .title {
+          min-width: 0;
+          color: var(--primary-text-color);
+          font-size: 20px;
+          font-weight: 800;
+          line-height: 1.15;
+          letter-spacing: 0;
+        }
+        .subtitle {
+          min-width: 0;
+          margin-top: 3px;
+          color: var(--secondary-text-color);
+          font-size: 12px;
+          font-weight: 700;
+          line-height: 1.25;
+          letter-spacing: 0;
+          text-transform: uppercase;
+        }
+        .header ha-icon {
+          width: 28px;
+          height: 28px;
+          color: var(--primary-color);
+        }
+        .summary {
+          display: grid;
+          grid-template-columns: minmax(118px, 0.72fr) minmax(0, 1fr);
+          gap: 16px;
+          align-items: stretch;
+          min-width: 0;
+        }
+        .score {
+          display: grid;
+          align-content: center;
+          min-width: 0;
+          padding: 16px;
+          border-radius: 8px;
+          background: linear-gradient(135deg, color-mix(in srgb, var(--primary-color, #03a9f4) 20%, transparent), rgba(127, 127, 127, 0.08));
+          border: 1px solid color-mix(in srgb, var(--primary-color, #03a9f4) 28%, var(--divider-color));
+        }
+        .score-value {
+          min-width: 0;
+          overflow-wrap: anywhere;
+          color: var(--primary-text-color);
+          font-size: 40px;
+          font-weight: 850;
+          line-height: 0.95;
+          letter-spacing: 0;
+        }
+        .score-value small {
+          font-size: 20px;
+          font-weight: 800;
+        }
+        .score-label {
+          margin-top: 8px;
+          color: var(--secondary-text-color);
+          font-size: 12px;
+          font-weight: 700;
+          line-height: 1.2;
+          letter-spacing: 0;
+        }
+        .details {
+          display: grid;
+          align-content: center;
+          gap: 12px;
+          min-width: 0;
+        }
+        .capacity-line {
+          display: flex;
+          flex-wrap: wrap;
+          align-items: baseline;
+          gap: 6px;
+          min-width: 0;
+          color: var(--primary-text-color);
+          font-size: 15px;
+          font-weight: 800;
+          line-height: 1.25;
+          letter-spacing: 0;
+        }
+        .capacity-line span {
+          color: var(--secondary-text-color);
+          font-size: 13px;
+          font-weight: 700;
+        }
+        .bar {
+          position: relative;
+          overflow: hidden;
+          height: 12px;
+          border-radius: 999px;
+          background: rgba(127, 127, 127, 0.16);
+        }
+        .bar::after {
+          content: "";
+          position: absolute;
+          inset: 0 auto 0 86.96%;
+          width: 2px;
+          background: color-mix(in srgb, var(--primary-text-color) 42%, transparent);
+        }
+        .fill {
+          position: absolute;
+          inset: 0 auto 0 0;
+          width: var(--fill);
+          max-width: 100%;
+          border-radius: inherit;
+          background: linear-gradient(90deg, #43a047, #f6bf26);
+        }
+        .meta {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 7px;
+          min-width: 0;
+        }
+        .pill {
+          min-width: 0;
+          max-width: 100%;
+          padding: 5px 8px;
+          border-radius: 999px;
+          background: rgba(127, 127, 127, 0.10);
+          color: var(--secondary-text-color);
+          font-size: 12px;
+          font-weight: 700;
+          line-height: 1.15;
+          letter-spacing: 0;
+        }
+        .packs {
+          display: grid;
+          gap: 8px;
+          min-width: 0;
+        }
+        .pack {
+          display: grid;
+          grid-template-columns: minmax(124px, 1fr) minmax(110px, 0.85fr) auto;
+          gap: 10px;
+          align-items: center;
+          min-width: 0;
+          padding: 10px 0;
+          border-top: 1px solid var(--divider-color);
+        }
+        .pack-name {
+          min-width: 0;
+          color: var(--primary-text-color);
+          font-size: 13px;
+          font-weight: 800;
+          line-height: 1.25;
+          letter-spacing: 0;
+          overflow-wrap: anywhere;
+        }
+        .pack-meta {
+          margin-top: 2px;
+          color: var(--secondary-text-color);
+          font-size: 11px;
+          font-weight: 700;
+          line-height: 1.25;
+          letter-spacing: 0;
+        }
+        .pack-bar {
+          min-width: 0;
+        }
+        .pack-value {
+          color: var(--primary-text-color);
+          font-size: 18px;
+          font-weight: 850;
+          line-height: 1;
+          letter-spacing: 0;
+          white-space: nowrap;
+        }
+        .note {
+          color: var(--secondary-text-color);
+          font-size: 12px;
+          font-style: italic;
+          line-height: 1.35;
+          letter-spacing: 0;
+        }
+        .empty {
+          padding: 6px 0 2px;
+          color: var(--secondary-text-color);
+          font-size: 13px;
+          font-weight: 700;
+          line-height: 1.35;
+          letter-spacing: 0;
+        }
+        @media (max-width: 640px) {
+          .shell {
+            padding: 14px;
+            gap: 14px;
+          }
+          .summary {
+            grid-template-columns: 1fr;
+          }
+          .score-value {
+            font-size: 34px;
+          }
+          .pack {
+            grid-template-columns: minmax(0, 1fr) auto;
+          }
+          .pack-bar {
+            grid-column: 1 / -1;
+            grid-row: 2;
+          }
+        }
+      </style>
+      <ha-card>
+        <div class="shell">
+          <div class="header">
+            <div>
+              <div class="title">Battery Health</div>
+              <div class="subtitle">${this._escHtml(this._subtitle(source, packs.length))}</div>
+            </div>
+            <ha-icon icon="mdi:battery-heart-variant"></ha-icon>
+          </div>
+          ${available ? `
+            <div class="summary">
+              <div class="score">
+                <div class="score-value">${this._formatPercent(displayHealth, true)}</div>
+                <div class="score-label">${source === 'inverter_modbus' ? 'State of health' : 'Measured vs rated capacity'}</div>
+              </div>
+              <div class="details">
+                ${hasCapacity ? `
+                  <div class="capacity-line">${this._formatKwh(current)} <span>available of ${this._formatKwh(original)} rated</span></div>
+                  ${this._renderBar(displayHealth)}
+                ` : this._renderBar(displayHealth)}
+                <div class="meta">
+                  ${sourceLabel ? `<div class="pill">Source: ${this._escHtml(sourceLabel)}</div>` : ''}
+                  ${scanLabel ? `<div class="pill">Last scan: ${this._escHtml(scanLabel)}</div>` : ''}
+                  ${packs.length ? `<div class="pill">${packs.length} ${packs.length === 1 ? 'pack' : 'packs'}</div>` : ''}
+                </div>
+              </div>
+            </div>
+            ${packs.length ? `<div class="packs">${packs.map(pack => this._renderPack(pack)).join('')}</div>` : ''}
+            ${hasFollower ? '<div class="note">Follower capacity is inferred from aggregate gateway data.</div>' : ''}
+          ` : '<div class="empty">No battery health data available yet.</div>'}
+        </div>
+      </ha-card>
+    `;
+  }
+
+  _packRows(attrs) {
+    const count = Math.min(Number(attrs.battery_count || 0) || 8, 8);
+    const rows = [];
+    for (let index = 1; index <= count; index++) {
+      const health = this._number(attrs[`battery_${index}_health_percent`]);
+      if (!Number.isFinite(health)) continue;
+      const role = String(attrs[`battery_${index}_role`] || '').toLowerCase();
+      const isFollower = attrs[`battery_${index}_is_follower`] === true;
+      const isExpansion = attrs[`battery_${index}_is_expansion`] === true;
+      rows.push({
+        index,
+        health,
+        label: attrs[`battery_${index}_label`] || this._fallbackPackLabel(index, role, isFollower, isExpansion),
+        role,
+        isFollower,
+        capacityKwh: this._number(attrs[`battery_${index}_original_kwh`]),
+      });
+    }
+    return rows;
+  }
+
+  _fallbackPackLabel(index, role, isFollower, isExpansion) {
+    if (role === 'leader') return 'Leader PW3';
+    if (role === 'follower' || isFollower) return 'Follower PW3';
+    if (role === 'expansion' || isExpansion) return `Expansion Pack ${index}`;
+    return `Powerwall ${index}`;
+  }
+
+  _renderPack(pack) {
+    const capacity = Number.isFinite(pack.capacityKwh)
+      ? `${this._formatKwh(pack.capacityKwh)} measured`
+      : this._roleLabel(pack);
+    return `
+      <div class="pack">
+        <div>
+          <div class="pack-name">${this._escHtml(pack.label)}</div>
+          <div class="pack-meta">${this._escHtml(capacity)}</div>
+        </div>
+        <div class="pack-bar">${this._renderBar(pack.health)}</div>
+        <div class="pack-value">${this._formatPercent(pack.health, false)}</div>
+      </div>
+    `;
+  }
+
+  _renderBar(value) {
+    if (!Number.isFinite(value)) return '';
+    const fill = Math.max(0, Math.min(100, (value / 115) * 100));
+    return `<div class="bar" aria-hidden="true"><div class="fill" style="--fill:${fill.toFixed(2)}%"></div></div>`;
+  }
+
+  _roleLabel(pack) {
+    if (pack.role === 'leader') return 'Leader';
+    if (pack.role === 'follower' || pack.isFollower) return 'Follower';
+    if (pack.role === 'expansion') return 'Expansion';
+    return `Pack ${pack.index}`;
+  }
+
+  _subtitle(source, packCount) {
+    if (source === 'inverter_modbus') return 'Inverter reported state of health';
+    if (packCount > 0) return 'Gateway capacity scan';
+    return 'Capacity summary';
+  }
+
+  _sourceLabel(source) {
+    const labels = {
+      ha_local_tedapi: 'local gateway',
+      ha_fleet_api_relay: 'Fleet API relay',
+      mobile_app_tedapi: 'mobile local scan',
+      mobile_app: 'mobile app',
+      mobile_app_cloud_rsa: 'mobile cloud RSA',
+      fleet_api: 'Fleet API',
+      inverter_modbus: 'inverter Modbus',
+    };
+    return labels[source] || source || '';
+  }
+
+  _dateLabel(value) {
+    if (!value) return '';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return String(value).slice(0, 10);
+    return date.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+  }
+
+  _formatKwh(value) {
+    if (!Number.isFinite(value)) return '-- kWh';
+    return `${value.toFixed(1)} kWh`;
+  }
+
+  _formatPercent(value, includeSmallUnit) {
+    if (!Number.isFinite(value)) return '--';
+    const unit = includeSmallUnit ? '<small>%</small>' : '%';
+    return `${value.toFixed(1)}${unit}`;
+  }
+
+  _number(value) {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : NaN;
+  }
+
+  _escHtml(value) {
+    return String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+}
+
+if (!customElements.get('power-sync-battery-health')) {
+  customElements.define('power-sync-battery-health', PowerSyncBatteryHealth);
+}
+
 // ─── PowerSyncOptimizationPlan Custom Element ───────────────────
 // API-backed Smart Optimization card that mirrors the mobile 24-hour view.
 
@@ -2042,6 +2449,7 @@ class PowerSyncLayout extends HTMLElement {
     this._pointerDrag = null;
     this._dragPlaceholder = null;
     this._storageKey = 'power-sync-dashboard-layout-v2';
+    this._hiddenStorageKey = 'power-sync-dashboard-hidden-v1';
     this._appliedLayoutSignature = '';
   }
 
@@ -2116,6 +2524,81 @@ class PowerSyncLayout extends HTMLElement {
     }
   }
 
+  _loadHiddenKeys() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(this._hiddenStorageKey) || '[]');
+      return new Set(Array.isArray(saved) ? saved.filter(Boolean) : []);
+    } catch (_) {
+      return new Set();
+    }
+  }
+
+  _saveHiddenKeys(keys) {
+    try {
+      const unique = Array.from(new Set(keys)).filter(Boolean);
+      if (unique.length === 0) {
+        localStorage.removeItem(this._hiddenStorageKey);
+      } else {
+        localStorage.setItem(this._hiddenStorageKey, JSON.stringify(unique));
+      }
+    } catch (_) {}
+  }
+
+  _visibleItems() {
+    return this._items.filter(item => item.dataset.hidden !== 'true');
+  }
+
+  _hiddenItems() {
+    return this._items.filter(item => item.dataset.hidden === 'true');
+  }
+
+  _syncHiddenKeys() {
+    const savedKeys = this._loadHiddenKeys();
+    const currentKeys = new Set(this._items.map(item => item.dataset.key));
+    const legacyToCurrent = new Map(this._items
+      .map(item => [item.dataset.legacyKey, item.dataset.key])
+      .filter(([legacyKey]) => legacyKey));
+    const normalized = new Set();
+
+    for (const savedKey of savedKeys) {
+      if (currentKeys.has(savedKey)) {
+        normalized.add(savedKey);
+      } else {
+        const migratedKey = legacyToCurrent.get(savedKey);
+        if (migratedKey) normalized.add(migratedKey);
+      }
+    }
+
+    for (const item of this._items) {
+      if (item.dataset.hidden === 'true') normalized.add(item.dataset.key);
+    }
+    for (const item of this._items) {
+      item.dataset.hidden = normalized.has(item.dataset.key) ? 'true' : 'false';
+    }
+    this._saveHiddenKeys(Array.from(normalized));
+  }
+
+  _updateToolbarState() {
+    const toolbar = this.shadowRoot.querySelector('.toolbar');
+    if (!toolbar) return;
+    toolbar.classList.toggle('active', this._customizing);
+    const toggle = toolbar.querySelector('.toggle');
+    if (toggle) toggle.textContent = this._customizing ? 'Done' : 'Customize layout';
+
+    const hiddenCount = this._hiddenItems().length;
+    const restoreHidden = toolbar.querySelector('.restore-hidden');
+    if (restoreHidden) {
+      restoreHidden.hidden = hiddenCount === 0;
+      restoreHidden.textContent = `Show hidden (${hiddenCount})`;
+    }
+
+    const hideDisabled = this._visibleItems().length <= 1;
+    for (const item of this._items) {
+      const hideSurface = item.querySelector('.hide-surface');
+      if (hideSurface) hideSurface.disabled = hideDisabled;
+    }
+  }
+
   _saveOrder() {
     try {
       const count = String(this._lanes.length || this._columnCount());
@@ -2130,24 +2613,46 @@ class PowerSyncLayout extends HTMLElement {
 
   _setCustomizing(enabled) {
     this._customizing = enabled;
-    this.shadowRoot.querySelector('.toolbar')?.classList.toggle('active', enabled);
-    this.shadowRoot.querySelector('.toggle').textContent = enabled ? 'Done' : 'Customize layout';
     for (const item of this._items) {
       item.draggable = false;
       item.classList.toggle('customizing', enabled);
       const dragSurface = item.querySelector('.drag-surface');
       if (dragSurface) dragSurface.draggable = false;
     }
+    this._updateToolbarState();
   }
 
   _resetOrder() {
     this._cancelActiveDrag();
     try { localStorage.removeItem(this._storageKey); } catch (_) {}
+    this._saveHiddenKeys([]);
+    for (const item of this._items) item.dataset.hidden = 'false';
     this._items.sort((a, b) => Number(a.dataset.defaultIndex) - Number(b.dataset.defaultIndex));
     if (this._lanes.length) {
       this._rebuildLanes(this._lanes.length);
     }
     this._appliedLayoutSignature = '';
+    this._updateToolbarState();
+    this._scheduleLayout();
+  }
+
+  _hideItem(item) {
+    if (this._visibleItems().length <= 1) return;
+    this._cancelActiveDrag();
+    item.dataset.hidden = 'true';
+    item.remove();
+    this._saveHiddenKeys(this._hiddenItems().map(hiddenItem => hiddenItem.dataset.key));
+    this._appliedLayoutSignature = '';
+    this._updateToolbarState();
+    this._scheduleLayout();
+  }
+
+  _showHiddenItems() {
+    this._cancelActiveDrag();
+    for (const item of this._items) item.dataset.hidden = 'false';
+    this._saveHiddenKeys([]);
+    this._appliedLayoutSignature = '';
+    this._updateToolbarState();
     this._scheduleLayout();
   }
 
@@ -2323,8 +2828,9 @@ class PowerSyncLayout extends HTMLElement {
     if (!Array.isArray(layout) || layout.length !== count) return null;
     if (!layout.every(lane => Array.isArray(lane))) return null;
 
-    const currentKeys = new Set(this._items.map(item => item.dataset.key));
-    const legacyToCurrent = new Map(this._items
+    const visibleItems = this._visibleItems();
+    const currentKeys = new Set(visibleItems.map(item => item.dataset.key));
+    const legacyToCurrent = new Map(visibleItems
       .map(item => [item.dataset.legacyKey, item.dataset.key])
       .filter(([legacyKey]) => legacyKey));
     const normalized = Array.from({ length: count }, () => []);
@@ -2352,7 +2858,7 @@ class PowerSyncLayout extends HTMLElement {
       });
     });
 
-    const missingItems = this._items
+    const missingItems = visibleItems
       .filter(item => !placed.has(item.dataset.key))
       .sort((a, b) => Number(a.dataset.defaultIndex) - Number(b.dataset.defaultIndex));
     if (missingItems.length > 0) changed = true;
@@ -2395,7 +2901,7 @@ class PowerSyncLayout extends HTMLElement {
       return;
     }
 
-    const byKey = new Map(this._items.map(item => [item.dataset.key, item]));
+    const byKey = new Map(this._visibleItems().map(item => [item.dataset.key, item]));
     const placed = new Set();
     layout.forEach((keys, laneIndex) => {
       const lane = this._lanes[laneIndex];
@@ -2409,7 +2915,7 @@ class PowerSyncLayout extends HTMLElement {
     });
 
     const heights = this._lanes.map(lane => lane.getBoundingClientRect().height || 0);
-    this._items
+    this._visibleItems()
       .filter(item => !placed.has(item))
       .sort((a, b) => Number(a.dataset.defaultIndex) - Number(b.dataset.defaultIndex))
       .forEach((item) => {
@@ -2421,14 +2927,24 @@ class PowerSyncLayout extends HTMLElement {
   }
 
   _balanceLayout() {
-    if (!this._items.length) return;
-    const count = Math.min(this._columnCount(), this._items.length);
+    const visibleItems = this._visibleItems();
+    if (!visibleItems.length) {
+      const grid = this.shadowRoot.querySelector('.grid');
+      if (grid) {
+        grid.style.setProperty('--ps-lane-count', '1');
+        grid.innerHTML = '<div class="empty">All dashboard sections are hidden.</div>';
+      }
+      this._lanes = [];
+      return;
+    }
+
+    const count = Math.min(this._columnCount(), visibleItems.length);
     if (this._lanes.length !== count) {
       this._rebuildLanes(count);
     }
 
     const renderedItemCount = this._renderedItemCount();
-    if (this._customizing && renderedItemCount === this._items.length) return;
+    if (this._customizing && renderedItemCount === visibleItems.length) return;
 
     const savedLayout = this._savedLayout(count);
     if (savedLayout) {
@@ -2437,7 +2953,7 @@ class PowerSyncLayout extends HTMLElement {
     }
 
     const heights = new Array(count).fill(0);
-    const sortedItems = [...this._items].sort((a, b) => Number(a.dataset.defaultIndex) - Number(b.dataset.defaultIndex));
+    const sortedItems = [...visibleItems].sort((a, b) => Number(a.dataset.defaultIndex) - Number(b.dataset.defaultIndex));
     for (const item of sortedItems) {
       const laneIndex = heights.indexOf(Math.min(...heights));
       this._lanes[laneIndex].appendChild(item);
@@ -2551,8 +3067,38 @@ class PowerSyncLayout extends HTMLElement {
         touch-action: none;
         user-select: none;
       }
+      .hide-surface {
+        display: none;
+        position: absolute;
+        top: 8px;
+        right: 62px;
+        min-width: 44px;
+        min-height: 32px;
+        padding: 0 9px;
+        appearance: none;
+        border-radius: 999px;
+        border: 0;
+        background: color-mix(in srgb, var(--error-color, #db4437) 82%, black);
+        color: white;
+        font: inherit;
+        font-size: 10px;
+        font-weight: 700;
+        line-height: 32px;
+        text-align: center;
+        z-index: 20;
+        cursor: pointer;
+        touch-action: manipulation;
+        user-select: none;
+      }
       .item.customizing .drag-surface {
         display: block;
+      }
+      .item.customizing .hide-surface {
+        display: block;
+      }
+      .hide-surface:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
       }
       .item.dragging {
         opacity: 0.55;
@@ -2571,6 +3117,11 @@ class PowerSyncLayout extends HTMLElement {
         background: color-mix(in srgb, var(--primary-color, #03a9f4) 10%, transparent);
         box-sizing: border-box;
       }
+      .empty {
+        padding: 24px;
+        color: var(--secondary-text-color, #888);
+        text-align: center;
+      }
       @media (max-width: 760px) {
         .grid {
           padding: 6px;
@@ -2583,9 +3134,11 @@ class PowerSyncLayout extends HTMLElement {
     toolbar.className = 'toolbar';
     toolbar.innerHTML = `
       <button class="toggle" type="button">Customize layout</button>
+      <button class="restore-hidden" type="button" hidden>Show hidden (0)</button>
       <button class="reset" type="button">Reset layout</button>
     `;
     toolbar.querySelector('.toggle').addEventListener('click', () => this._setCustomizing(!this._customizing));
+    toolbar.querySelector('.restore-hidden').addEventListener('click', () => this._showHiddenItems());
     toolbar.querySelector('.reset').addEventListener('click', () => this._resetOrder());
     root.appendChild(toolbar);
 
@@ -2602,16 +3155,20 @@ class PowerSyncLayout extends HTMLElement {
     try { helpers = await window.loadCardHelpers(); } catch (_) {}
 
     const keyOccurrences = new Map();
+    const hiddenKeys = this._loadHiddenKeys();
     for (const [index, cardConfig] of this._flattenCards().entries()) {
       const baseKey = this._cardKeyParts(cardConfig).join(':') || 'card';
       const occurrence = keyOccurrences.get(baseKey) || 0;
       keyOccurrences.set(baseKey, occurrence + 1);
+      const cardKey = this._cardKey(cardConfig, occurrence);
+      const legacyKey = this._legacyCardKey(cardConfig, index);
 
       const item = document.createElement('div');
       item.className = 'item';
       item.dataset.defaultIndex = String(index);
-      item.dataset.key = this._cardKey(cardConfig, occurrence);
-      item.dataset.legacyKey = this._legacyCardKey(cardConfig, index);
+      item.dataset.key = cardKey;
+      item.dataset.legacyKey = legacyKey;
+      item.dataset.hidden = hiddenKeys.has(cardKey) || hiddenKeys.has(legacyKey) ? 'true' : 'false';
       item.addEventListener('dragstart', (event) => event.preventDefault());
 
       const dragSurface = document.createElement('button');
@@ -2643,6 +3200,18 @@ class PowerSyncLayout extends HTMLElement {
         event.stopPropagation();
         this._cancelPointerDrag(item);
       });
+
+      const hideSurface = document.createElement('button');
+      hideSurface.className = 'hide-surface';
+      hideSurface.type = 'button';
+      hideSurface.textContent = 'Hide';
+      hideSurface.setAttribute('aria-label', 'Hide dashboard card');
+      hideSurface.addEventListener('click', (event) => {
+        event.stopPropagation();
+        event.preventDefault();
+        this._hideItem(item);
+      });
+
       let card;
       try {
         card = helpers
@@ -2657,10 +3226,13 @@ class PowerSyncLayout extends HTMLElement {
       if (this._hass) card.hass = this._hass;
       this._cards.push(card);
       item.appendChild(card);
+      item.appendChild(hideSurface);
       item.appendChild(dragSurface);
       this._items.push(item);
     }
 
+    this._syncHiddenKeys();
+    this._updateToolbarState();
     this._scheduleLayout();
     setTimeout(() => this._scheduleLayout(), 250);
     setTimeout(() => this._scheduleLayout(), 1000);
@@ -4559,180 +5131,9 @@ function _pvStringSensors(e, hass, findSensor) {
 }
 
 function _batteryHealth(e, hass) {
-  const healthEntity = e('battery_health');
-
-  // Determine how many individual battery gauges to show. Read battery_count from
-  // current state at render time so the grid expands for stacked PW3 systems.
-  const stateObj = hass?.states?.[healthEntity];
-  const batteryCount = Number(stateObj?.attributes?.battery_count || 0);
-  // Show at least 1 individual gauge slot, cap at 8. If we have no count data yet,
-  // default to 3 so the card isn't empty on first load.
-  const numSlots = batteryCount > 0 ? Math.min(batteryCount, 8) : 3;
-
-  const healthGauge = (name, attrPath) => ({
-    type: 'custom:button-card',
-    entity: healthEntity,
-    name,
-    show_icon: false,
-    show_name: true,
-    show_state: true,
-    state_display: `[[[
-      const v = ${attrPath};
-      if (v == null || ['unknown','unavailable','none'].includes(String(v).toLowerCase())) return '';
-      const n = Number(v);
-      if (!Number.isFinite(n)) return '';
-      return n.toFixed(1) + ' %';
-    ]]]`,
-    styles: {
-      card: [
-        { height: '70px' },
-        { 'border-radius': '12px' },
-        { padding: '6px' },
-        {
-          display: `[[[
-            const v = ${attrPath};
-            if (v == null || ['unknown','unavailable','none'].includes(String(v).toLowerCase())) return 'none';
-            const n = Number(v);
-            return Number.isFinite(n) ? 'block' : 'none';
-          ]]]`,
-        },
-      ],
-      name: [
-        { 'font-weight': '700' },
-        { 'font-size': '13px' },
-      ],
-      state: [
-        { 'font-size': '18px' },
-        { 'font-weight': '800' },
-        { 'margin-top': '2px' },
-      ],
-    },
-  });
-
-  // Build individual battery gauge cards using the same reconciled pack labels
-  // as the backend sensors. Legacy follower/expansion attributes are fallback
-  // only for already-restored data that has not been rescanned yet.
-  const individualGauges = [];
-  for (let n = 1; n <= numSlots; n++) {
-    const attrPath = `states['${healthEntity}']?.attributes?.battery_${n}_health_percent`;
-    const labelPath = `states['${healthEntity}']?.attributes?.battery_${n}_label`;
-    const rolePath = `states['${healthEntity}']?.attributes?.battery_${n}_role`;
-    const followerPath = `states['${healthEntity}']?.attributes?.battery_${n}_is_follower`;
-    const expansionPath = `states['${healthEntity}']?.attributes?.battery_${n}_is_expansion`;
-    individualGauges.push({
-      type: 'custom:button-card',
-      entity: healthEntity,
-      show_icon: false,
-      show_name: true,
-      show_state: true,
-      name: `[[[
-        const label = ${labelPath};
-        if (label) return label;
-        const role = String(${rolePath} || '').toLowerCase();
-        const isFollower = ${followerPath};
-        const isExpansion = ${expansionPath};
-        if (role === 'powerwall') return 'Powerwall ${n}';
-        if (role === 'leader') return 'Leader PW3';
-        if (role === 'follower' || isFollower) return 'Follower PW3';
-        if (role === 'expansion' || isExpansion) return 'Expansion Pack ${n}';
-        return 'Powerwall ${n}';
-      ]]]`,
-      state_display: `[[[
-        const v = ${attrPath};
-        if (v == null || ['unknown','unavailable','none'].includes(String(v).toLowerCase())) return '';
-        const n = Number(v);
-        if (!Number.isFinite(n)) return '';
-        return n.toFixed(1) + ' %';
-      ]]]`,
-      styles: {
-        card: [
-          { height: '70px' },
-          { 'border-radius': '12px' },
-          { padding: '6px' },
-          {
-            display: `[[[
-              const v = ${attrPath};
-              if (v == null || ['unknown','unavailable','none'].includes(String(v).toLowerCase())) return 'none';
-              const num = Number(v);
-              return Number.isFinite(num) ? 'block' : 'none';
-            ]]]`,
-          },
-        ],
-        name: [
-          { 'font-weight': '700' },
-          { 'font-size': '13px' },
-        ],
-        state: [
-          { 'font-size': '18px' },
-          { 'font-weight': '800' },
-          { 'margin-top': '2px' },
-        ],
-      },
-    });
-  }
-
-  // Grid columns: Overall + individual gauges. Use 4 columns for ≤3 slots, else match count.
-  const gridColumns = numSlots <= 3 ? 4 : Math.min(numSlots + 1, 5);
-
   return {
-    type: 'vertical-stack',
-    cards: [
-      {
-        type: 'custom:button-card',
-        name: 'Battery Health',
-        show_icon: false,
-        show_name: true,
-        styles: {
-          card: [
-            { height: '36px' },
-            { 'border-radius': '12px' },
-            { padding: '0px 12px' },
-            { background: 'rgba(var(--rgb-primary-color, 3, 169, 244), 0.10)' },
-          ],
-          name: [
-            { 'justify-self': 'start' },
-            { 'font-weight': '800' },
-            { 'font-size': '14px' },
-            { 'letter-spacing': '0.5px' },
-          ],
-        },
-      },
-      {
-        type: 'grid',
-        columns: gridColumns,
-        square: false,
-        cards: [
-          healthGauge('Overall', `states['${healthEntity}']?.state`),
-          ...individualGauges,
-        ],
-      },
-      {
-        type: 'markdown',
-        content: `{% set source = state_attr('${healthEntity}', 'source') %}
-{% set original = state_attr('${healthEntity}', 'original_capacity_kwh') %}
-{% set current = state_attr('${healthEntity}', 'current_capacity_kwh') %}
-{% set scan = state_attr('${healthEntity}', 'last_scan') %}
-{% set soh = state_attr('${healthEntity}', 'state_of_health_percent') %}
-{% set ns = namespace(has_follower=false) %}
-{%- for n in range(1, 9) %}
-{%- set role = state_attr('${healthEntity}', 'battery_' ~ n ~ '_role') %}
-{%- if role == 'follower' or state_attr('${healthEntity}', 'battery_' ~ n ~ '_is_follower') %}
-{%- set ns.has_follower = true %}
-{%- endif %}
-{%- endfor %}
-{% set source_label = 'local gateway' if source == 'ha_local_tedapi' else 'Fleet API relay' if source == 'ha_fleet_api_relay' else 'mobile local scan' if source == 'mobile_app_tedapi' else 'mobile cloud RSA' if source == 'mobile_app_cloud_rsa' else source %}
-{%- if source in ('mobile_app_tedapi', 'mobile_app', 'fleet_api', 'ha_local_tedapi', 'ha_fleet_api_relay', 'mobile_app_cloud_rsa') %}
-**Capacity:** {{ current }} / {{ original }} kWh | **Last scan:** {{ scan[:10] if scan else 'N/A' }} | **Source:** {{ source_label }}
-{%- if ns.has_follower %} *(follower capacity inferred from aggregate)*{%- endif %}
-{%- elif source == 'inverter_modbus' %}
-**State of Health:** {{ soh }}% (from inverter)
-{%- elif states('${healthEntity}') not in ['unavailable', 'unknown'] %}
-**Health:** {{ states('${healthEntity}') }}%
-{%- else %}
-No battery health data available yet.
-{%- endif %}`,
-      },
-    ],
+    type: 'custom:power-sync-battery-health',
+    entity: e('battery_health'),
   };
 }
 
