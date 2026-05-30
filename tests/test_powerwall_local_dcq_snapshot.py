@@ -6,6 +6,7 @@ import importlib.util
 import sys
 import types
 from pathlib import Path
+from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parent.parent / "custom_components" / "power_sync"
@@ -36,6 +37,39 @@ def _load_module(name: str, path: Path):
 
 
 _ensure_test_package()
+# Stub Home Assistant modules for the local coordinator import.
+ha_config_entries = types.ModuleType("homeassistant.config_entries")
+ha_core = types.ModuleType("homeassistant.core")
+ha_update = types.ModuleType("homeassistant.helpers.update_coordinator")
+
+ha_config_entries.ConfigEntry = type("ConfigEntry", (), {})
+ha_core.HomeAssistant = type("HomeAssistant", (), {})
+
+
+class _DataUpdateCoordinator:
+    def __class_getitem__(cls, item):
+        return cls
+
+    def __init__(self, hass, *args, **kwargs):
+        self.hass = hass
+        self.data = None
+
+    def async_add_listener(self, *args, **kwargs):
+        return lambda: None
+
+
+ha_update.DataUpdateCoordinator = _DataUpdateCoordinator
+ha_update.UpdateFailed = Exception
+sys.modules["homeassistant.config_entries"] = ha_config_entries
+sys.modules["homeassistant.core"] = ha_core
+sys.modules["homeassistant.helpers.update_coordinator"] = ha_update
+
+const_stub = types.ModuleType(f"{PKG}.const")
+const_stub.CONF_POWERWALL_LOCAL_PAIRED = "powerwall_local_paired"
+const_stub.DOMAIN = "power_sync"
+const_stub.POWERWALL_LOCAL_POLL_INTERVAL = 5
+sys.modules[f"{PKG}.const"] = const_stub
+
 # Stub modules the client imports but the test doesn't exercise.
 exceptions_stub = types.ModuleType(f"{LOCAL_PKG}.exceptions")
 class _PowerwallLocalError(Exception):
@@ -81,6 +115,51 @@ client_mod = _load_module(
     f"{LOCAL_PKG}.client",
     ROOT / "powerwall_local" / "client.py",
 )
+coordinator_mod = _load_module(
+    f"{LOCAL_PKG}.coordinator",
+    ROOT / "powerwall_local" / "coordinator.py",
+)
+
+
+def _coordinator_with_snapshot(ev_power_kw: float = 0.0):
+    coord = coordinator_mod.PowerwallLocalCoordinator.__new__(
+        coordinator_mod.PowerwallLocalCoordinator
+    )
+    coord.hass = SimpleNamespace(
+        data={
+            "power_sync": {
+                "entry-1": {
+                    "tesla_coordinator": SimpleNamespace(
+                        data={"ev_power": ev_power_kw}
+                    )
+                }
+            }
+        }
+    )
+    coord._entry_id = "entry-1"
+    coord._consecutive_failures = 0
+    coord._last_success_ts = 123.0
+    coord._needs_repair = False
+    coord._client = SimpleNamespace(
+        host="gateway.local",
+        din="DIN123",
+        version=SimpleNamespace(value="tesla-protobuf-v1r2"),
+    )
+    coord.data = client_mod.PowerwallSnapshot(
+        soc=88.0,
+        solar_w=3000.0,
+        battery_w=-8200.0,
+        grid_w=15900.0,
+        load_w=10700.0,
+        grid_status="SystemGridConnected",
+        operation_mode="autonomous",
+        backup_reserve_percent=20,
+        raw={},
+        pw_count=2,
+        battery_blocks=[],
+        alerts=[],
+    )
+    return coord
 
 
 def _sample_dcq() -> dict:
@@ -174,6 +253,20 @@ def test_snapshot_from_dcq_no_config():
     # Other fields still populate from DCQ.
     assert snap.soc == 26.31578947368421
     assert snap.grid_w == 1234.5
+
+
+def test_local_status_api_load_excludes_observed_ev_power():
+    api = _coordinator_with_snapshot(ev_power_kw=7.1).snapshot_as_api()
+
+    assert api["load_w"] == 3600.0
+    assert api["raw_load_w"] == 10700.0
+    assert api["ev_power_w"] == 7100.0
+
+
+def test_local_status_api_load_never_goes_negative_after_ev_subtraction():
+    coord = _coordinator_with_snapshot(ev_power_kw=12.0)
+
+    assert coord.snapshot_as_api()["load_w"] == 0.0
 
 
 def test_snapshot_from_dcq_off_grid_mode():

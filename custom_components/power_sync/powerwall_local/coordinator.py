@@ -18,6 +18,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from ..const import (
     CONF_POWERWALL_LOCAL_PAIRED,
+    DOMAIN,
     POWERWALL_LOCAL_POLL_INTERVAL,
 )
 from .client import PowerwallLocalClient, PowerwallSnapshot
@@ -183,6 +184,11 @@ class PowerwallLocalCoordinator(DataUpdateCoordinator[PowerwallSnapshot | None])
                 "last_success_ts": self._last_success_ts,
                 "needs_repair": self._needs_repair,
             }
+        ev_power_w = self._observed_ev_power_w()
+        load_w = snap.load_w
+        if load_w is not None:
+            load_w = max(0.0, load_w - ev_power_w)
+
         return {
             "available": True,
             "reachable": True,
@@ -192,7 +198,9 @@ class PowerwallLocalCoordinator(DataUpdateCoordinator[PowerwallSnapshot | None])
             "solar_w": snap.solar_w,
             "battery_w": snap.battery_w,
             "grid_w": snap.grid_w,
-            "load_w": snap.load_w,
+            "load_w": load_w,
+            "raw_load_w": snap.load_w,
+            "ev_power_w": ev_power_w,
             "grid_status": snap.grid_status,
             "operation_mode": snap.operation_mode,
             "backup_reserve_percent": snap.backup_reserve_percent,
@@ -200,3 +208,25 @@ class PowerwallLocalCoordinator(DataUpdateCoordinator[PowerwallSnapshot | None])
             "gateway_din": self._client.din,
             "version": self._client.version.value,
         }
+
+    def _observed_ev_power_w(self) -> float:
+        """Return observed EV charging power from the site coordinator in watts."""
+        try:
+            entry_data = self.hass.data.get(DOMAIN, {}).get(self._entry_id, {})
+            for coord_key in (
+                "tesla_coordinator",
+                "sigenergy_coordinator",
+                "sungrow_coordinator",
+                "foxess_coordinator",
+            ):
+                data = getattr(entry_data.get(coord_key), "data", None)
+                if not data:
+                    continue
+                ev_power_kw = data.get("ev_power")
+                if ev_power_kw is None:
+                    ev_power_kw = data.get("ev_power_kw")
+                if ev_power_kw is not None:
+                    return max(0.0, float(ev_power_kw or 0.0) * 1000.0)
+        except (TypeError, ValueError, AttributeError):
+            return 0.0
+        return 0.0

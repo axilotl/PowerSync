@@ -759,7 +759,7 @@ def _apply_wall_connector_observation(
         return False
 
     def update_vehicle(vehicle: dict) -> None:
-        if wc_power_kw > (vehicle.get("ev_power_kw") or 0):
+        if wc_power_kw > 0.05:
             vehicle["ev_power_kw"] = wc_power_kw
         vehicle["is_connected"] = True
         vehicle["is_charging"] = (

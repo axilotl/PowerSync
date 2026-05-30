@@ -4686,6 +4686,30 @@ async def _get_tesla_live_status(hass: HomeAssistant, config_entry: ConfigEntry)
         return None
 
 
+def _live_status_power_kw(live_status: dict, key: str) -> float:
+    """Return a live_status power value in kW."""
+    try:
+        return (float(live_status.get(key) or 0.0)) / 1000.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _non_ev_home_load_kw(live_status: dict, current_ev_power_kw: float) -> float:
+    """Derive non-EV home load from site balance when possible."""
+    ev_kw = max(0.0, current_ev_power_kw)
+    balance_keys = ("solar_power", "grid_power", "battery_power")
+    if all(key in live_status and live_status.get(key) is not None for key in balance_keys):
+        balanced_total_kw = (
+            _live_status_power_kw(live_status, "solar_power")
+            + _live_status_power_kw(live_status, "grid_power")
+            + _live_status_power_kw(live_status, "battery_power")
+        )
+        return max(0.0, balanced_total_kw - ev_kw)
+
+    load_power_kw = _live_status_power_kw(live_status, "load_power")
+    return max(0.0, load_power_kw - ev_kw)
+
+
 async def _dynamic_ev_update_surplus(
     hass: HomeAssistant,
     config_entry: ConfigEntry,
@@ -5558,7 +5582,14 @@ async def _dynamic_ev_update(
     # battery_power: Positive = discharging, Negative = charging
     battery_power_kw = (live_status.get("battery_power", 0) or 0) / 1000
     grid_power_kw = (live_status.get("grid_power", 0) or 0) / 1000
-    current_ev_power_kw = (current_amps * voltage * phases) / 1000
+    observed_ev_power_kw = _live_status_power_kw(live_status, "ev_power")
+    current_ev_power_kw = (
+        observed_ev_power_kw
+        if observed_ev_power_kw > 0.05
+        else (current_amps * voltage * phases) / 1000
+    )
+    solar_power_kw = _live_status_power_kw(live_status, "solar_power")
+    home_load_kw = _non_ev_home_load_kw(live_status, current_ev_power_kw)
     battery_soc = live_status.get("battery_soc", 0) or 0
 
     # Target battery power in same convention (negative = charging)
@@ -5583,14 +5614,23 @@ async def _dynamic_ev_update(
     # - If battery has surplus (deficit > 0.1), use that surplus
     # - Otherwise, use grid headroom
     battery_depleted = False  # Track whether we bypassed no_grid_import due to battery depletion
-    if no_grid_import:
+    battery_charging_kw = max(0.0, -battery_power_kw)  # positive when battery is charging
+    ev_relevant_grid_kw = grid_power_kw - battery_charging_kw
+    if target_battery_charge_kw > 0 and not battery_full:
+        target_ev_power_kw = max(
+            0.0,
+            max_grid_import_kw
+            + solar_power_kw
+            - home_load_kw
+            - target_battery_charge_kw,
+        )
+        available_power_kw = target_ev_power_kw - current_ev_power_kw
+    elif no_grid_import:
         # Exclude intentional home battery grid-charging from the grid import figure.
         # When the LP optimizer force-charges the home battery from grid, battery_power_kw
         # is negative (charging) and grid_power_kw includes that draw.  The EV should not
         # be throttled because of intentional battery charging — only because of the EV's
         # own grid draw and household load.
-        battery_charging_kw = max(0.0, -battery_power_kw)  # positive when battery is charging
-        ev_relevant_grid_kw = grid_power_kw - battery_charging_kw
 
         # Check if battery has effectively depleted (stopped discharging).
         # When battery is not providing power (hit backup_reserve or LP set IDLE),
@@ -5614,11 +5654,6 @@ async def _dynamic_ev_update(
                     f"re-engaging inverter capacity limit"
                 )
                 state["_battery_depleted_logged"] = False
-
-            # Calculate home load using Tesla API's load_power (total behind-the-meter consumption)
-            # load_power includes home + EV + everything; subtract EV estimate for home-only load
-            load_power_kw = (live_status.get("load_power", 0) or 0) / 1000
-            home_load_kw = max(0, load_power_kw - current_ev_power_kw)
 
             # Max power available from inverter for EV = inverter_capacity - home_load
             # This is proactive: we know the limit before hitting it
@@ -5653,11 +5688,10 @@ async def _dynamic_ev_update(
 
     # Calculate new target amps
     raw_new_amps = current_amps + available_amps
-    new_amps = int(round(max(min_amps, min(max_amps, raw_new_amps))))
-
-    # Clamp to 0 if below minimum (stop charging)
-    if new_amps < min_amps:
+    if raw_new_amps < min_amps:
         new_amps = 0
+    else:
+        new_amps = int(round(max(min_amps, min(max_amps, raw_new_amps))))
 
     # In no_grid_import mode, respond immediately to grid imports (don't wait for 1A threshold)
     # Use ev_relevant_grid_kw (excludes battery charging) to avoid throttling due to
@@ -5680,6 +5714,7 @@ async def _dynamic_ev_update(
 
     _LOGGER.debug(
         f"Dynamic EV: battery={battery_power_kw:.1f}kW (target={target_battery_power_kw:.1f}kW), "
+        f"solar={solar_power_kw:.1f}kW, home_load={home_load_kw:.1f}kW, "
         f"deficit={battery_deficit_kw:.1f}kW, grid={grid_power_kw:.1f}kW (max={max_grid_import_kw:.1f}kW), "
         f"headroom={grid_headroom_kw:.1f}kW, available={available_power_kw:.1f}kW, "
         f"current={current_amps}A, target={new_amps}A, no_grid_import={no_grid_import}"
@@ -5692,6 +5727,7 @@ async def _dynamic_ev_update(
         _LOGGER.info(
             f"⚡ Dynamic EV: Adjusting from {current_amps}A to {new_amps}A "
             f"(battery={battery_power_kw:.1f}kW, grid={grid_power_kw:.1f}kW, "
+            f"solar={solar_power_kw:.1f}kW, home_load={home_load_kw:.1f}kW, "
             f"available={available_power_kw:.1f}kW)"
         )
         success = await _set_vehicle_amps(hass, config_entry, vehicle_id, new_amps, params)

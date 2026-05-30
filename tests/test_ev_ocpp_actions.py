@@ -554,6 +554,67 @@ def test_dynamic_battery_target_uses_grid_headroom_when_powerwall_tapers(monkeyp
     assert actions._dynamic_ev_state["entry-1"]["VIN123"]["current_amps"] == 22
 
 
+def test_dynamic_battery_target_uses_solar_and_home_load_to_preserve_grid_charge(monkeypatch):
+    set_amps_calls: list[int] = []
+
+    async def not_unplugged(*args, **kwargs):
+        return False
+
+    async def fake_live_status(*args, **kwargs):
+        return {
+            "battery_power": -8200,
+            "grid_power": 15900,
+            "solar_power": 3000,
+            "load_power": 3600,
+            "ev_power": 7100,
+            "battery_soc": 88.0,
+        }
+
+    async def fake_set_vehicle_amps(hass, config_entry, vehicle_id, amps, params):
+        set_amps_calls.append(amps)
+        return True
+
+    monkeypatch.setattr(actions, "_clear_ble_dynamic_session_if_unplugged", not_unplugged)
+    monkeypatch.setattr(actions, "_get_tesla_live_status", fake_live_status)
+    monkeypatch.setattr(actions, "_set_vehicle_amps", fake_set_vehicle_amps)
+
+    actions._dynamic_ev_state.clear()
+    actions._dynamic_ev_state["entry-1"] = {
+        "VIN123": {
+            "active": True,
+            "current_amps": 32,
+            "target_amps": 32,
+            "params": {
+                "dynamic_mode": "battery_target",
+                "charger_type": "tesla",
+                "target_battery_charge_kw": 14.7,
+                "max_grid_import_kw": 16.0,
+                "no_grid_import": True,
+                "min_charge_amps": 5,
+                "max_charge_amps": 32,
+                "voltage": 240,
+                "phases": 1,
+            },
+        }
+    }
+
+    asyncio.run(actions._dynamic_ev_update(_Hass([]), _Entry(), "entry-1", "VIN123"))
+
+    assert set_amps_calls == [5]
+    assert actions._dynamic_ev_state["entry-1"]["VIN123"]["current_amps"] == 5
+
+
+def test_non_ev_home_load_uses_site_balance_when_load_power_is_already_adjusted():
+    live_status = {
+        "solar_power": 3000,
+        "grid_power": 15900,
+        "battery_power": -8200,
+        "load_power": 3600,
+    }
+
+    assert round(actions._non_ev_home_load_kw(live_status, 7.1), 3) == 3.6
+
+
 def test_ocpp_amps_falls_back_to_hacs_number_entity():
     entity_id = "number.evse_1_maximum_current"
     hass = _Hass(

@@ -261,6 +261,38 @@ def test_ev_vehicle_status_keeps_real_charging_power_when_charging():
     assert vehicles[0]["ev_soc"] == 73
 
 
+def test_ev_vehicle_status_prefers_wall_connector_power_for_single_charging_tesla():
+    power_sync = _power_sync_module()
+    hass = _tesla_hass([
+        _State("sensor.tessy_charger_power_2", "7.0", {"unit_of_measurement": "kW"}),
+        _State("sensor.tessy_charging_2", "charging"),
+        _State("binary_sensor.tessy_charge_cable_2", "on"),
+        _State("device_tracker.tessy_location_2", "home"),
+        _State("sensor.tessy_battery_level_2", "70", {"unit_of_measurement": "%"}),
+    ])
+    hass.data["power_sync"]["entry-1"]["tesla_coordinator"] = SimpleNamespace(
+        data={
+            "wall_connectors_raw": [
+                {
+                    "wall_connector_state": 2,
+                    "wall_connector_power": 3400,
+                }
+            ]
+        }
+    )
+
+    vehicles = power_sync._get_ev_vehicles_status(hass, _Entry())
+
+    assert vehicles == [{
+        "vehicle_id": "LRWYHCEK3PC907290",
+        "vehicle_name": "TESSY",
+        "ev_power_kw": 3.4,
+        "ev_soc": 70,
+        "is_connected": True,
+        "is_charging": True,
+    }]
+
+
 def test_ev_vehicle_status_drops_stale_power_for_connected_idle_state():
     power_sync = _power_sync_module()
     hass = _tesla_hass([
