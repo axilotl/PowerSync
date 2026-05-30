@@ -90,6 +90,7 @@ def _install_homeassistant_stubs() -> None:
 
 
 _install_homeassistant_stubs()
+sys.modules.pop("power_sync.coordinator", None)
 
 from power_sync.coordinator import SolarEdgeEnergyCoordinator  # noqa: E402
 

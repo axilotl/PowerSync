@@ -244,6 +244,7 @@ from .const import (
     DEFAULT_SOLCAST_ESTIMATE_TYPE,
     SOLCAST_ESTIMATE_TYPES,
     AMBER_API_BASE_URL,
+    AMBER_WEBSOCKET_START_TIMEOUT_SECONDS,
     # Flow Power configuration
     CONF_ELECTRICITY_PROVIDER,
     CONF_FLOW_POWER_STATE,
@@ -15808,8 +15809,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 site_id=amber_site_id,
                 sync_callback=None,  # Will be set up after coordinators are initialized
             )
-            await ws_client.start()
+            await asyncio.wait_for(
+                ws_client.start(),
+                timeout=AMBER_WEBSOCKET_START_TIMEOUT_SECONDS,
+            )
             _LOGGER.info("🔌 Amber WebSocket client initialized and started")
+        except asyncio.TimeoutError:
+            _LOGGER.warning(
+                "Amber WebSocket client start timed out after %.0fs - using REST API fallback",
+                AMBER_WEBSOCKET_START_TIMEOUT_SECONDS,
+            )
+            ws_client = None
         except Exception as e:
             _LOGGER.error(f"Failed to initialize WebSocket client: {e}", exc_info=True)
             _LOGGER.warning("WebSocket client not available - will use REST API fallback")
@@ -16984,11 +16994,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _tariff_display_name(last_restorable_tesla_tariff),
         )
 
-    # Store coordinators and WebSocket client in hass.data
-    hass.data.setdefault(DOMAIN, {})
+    # Store coordinators and WebSocket client in hass.data. The Tesla
+    # capability probe can publish early while the first refresh is running, so
+    # preserve those values when replacing the setup entry with the full data.
+    existing_entry_data = hass.data.setdefault(DOMAIN, {}).get(entry.entry_id, {})
+    tesla_capabilities = existing_entry_data.get("tesla_capabilities")
+    if tesla_capabilities is None and tesla_coordinator:
+        tesla_capabilities = dict(getattr(tesla_coordinator, "tesla_capabilities", {}) or {})
+    tesla_site_country = existing_entry_data.get("tesla_site_country")
+    if tesla_site_country is None and tesla_coordinator:
+        tesla_site_country = getattr(tesla_coordinator, "_site_country", None)
     hass.data[DOMAIN][entry.entry_id] = {
         "amber_coordinator": amber_coordinator,
         "tesla_coordinator": tesla_coordinator,
+        "tesla_capabilities": tesla_capabilities or {},
+        "tesla_site_country": tesla_site_country,
         "sigenergy_coordinator": sigenergy_coordinator,  # For Sigenergy Modbus energy data
         "sungrow_coordinator": sungrow_coordinator,  # For Sungrow Modbus energy/battery data
         "foxess_coordinator": foxess_coordinator,  # For FoxESS Modbus energy/battery data

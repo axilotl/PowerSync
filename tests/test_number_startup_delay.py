@@ -1,8 +1,8 @@
 """Regression test: capability-gated task must not be created for non-Tesla installs.
 
 HA's bootstrap wrap-up waits for all tasks registered via hass.async_create_task()
-to drain. The _add_capability_gated_numbers task polls for 120 s when no Tesla
-site is present, causing a visible startup delay for every non-Tesla user.
+to drain. Capability-gated Tesla entity tasks must therefore be both Tesla-only
+and bounded to a short timeout.
 
 The fix gates hass.async_create_task() behind the same tesla_site_id check
 already used for BackupReserveNumber.
@@ -19,6 +19,12 @@ NUMBER_PATH = (
     / "power_sync"
     / "number.py"
 )
+ROOT = Path(__file__).resolve().parent.parent
+BINARY_SENSOR_PATH = ROOT / "custom_components" / "power_sync" / "binary_sensor.py"
+SWITCH_PATH = ROOT / "custom_components" / "power_sync" / "switch.py"
+COORDINATOR_PATH = ROOT / "custom_components" / "power_sync" / "coordinator.py"
+INIT_PATH = ROOT / "custom_components" / "power_sync" / "__init__.py"
+CONST_PATH = ROOT / "custom_components" / "power_sync" / "const.py"
 
 
 def _find_function(tree: ast.AST, name: str) -> ast.AsyncFunctionDef | ast.FunctionDef:
@@ -129,6 +135,51 @@ def test_capability_gated_numbers_inner_function_unchanged():
         "_add_capability_gated_numbers no longer references 'tesla_capabilities' — "
         "the inner polling logic may have been removed unintentionally"
     )
+
+
+def test_capability_gated_waits_use_shared_bounded_timeout():
+    """Tesla capability-gated platforms must not reintroduce 120 s startup waits."""
+    assert "TESLA_CAPABILITY_WAIT_SECONDS = 30.0" in CONST_PATH.read_text()
+
+    for path in (NUMBER_PATH, BINARY_SENSOR_PATH, SWITCH_PATH):
+        source = path.read_text()
+        assert "TESLA_CAPABILITY_WAIT_SECONDS" in source
+        assert "waited < 120.0" not in source
+        assert "within 120s" not in source
+
+
+def test_tesla_capability_probe_writes_to_persistent_entry_data():
+    """Capability probe results must not be written to a throwaway default dict."""
+    source = COORDINATOR_PATH.read_text()
+    tree = ast.parse(source)
+    probe = _find_function(tree, "_async_probe_tesla_capabilities")
+    probe_source = ast.get_source_segment(source, probe)
+
+    assert probe_source is not None
+    assert ".setdefault(DOMAIN, {}).setdefault(self._entry_id, {})" in probe_source
+    assert '.get(self._entry_id, {})' not in probe_source
+
+
+def test_setup_preserves_early_tesla_capability_results():
+    """async_setup_entry replaces hass.data after first refresh; keep early probe results."""
+    source = INIT_PATH.read_text()
+
+    assert "existing_entry_data = hass.data.setdefault(DOMAIN, {}).get(entry.entry_id, {})" in source
+    assert 'existing_entry_data.get("tesla_capabilities")' in source
+    assert '"tesla_capabilities": tesla_capabilities or {}' in source
+    assert 'existing_entry_data.get("tesla_site_country")' in source
+    assert '"tesla_site_country": tesla_site_country' in source
+
+
+def test_amber_websocket_start_is_timeout_bounded():
+    """Amber WebSocket startup must fall back instead of blocking setup indefinitely."""
+    source = INIT_PATH.read_text()
+
+    assert "AMBER_WEBSOCKET_START_TIMEOUT_SECONDS = 15.0" in CONST_PATH.read_text()
+    assert "asyncio.wait_for(" in source
+    assert "ws_client.start()" in source
+    assert "AMBER_WEBSOCKET_START_TIMEOUT_SECONDS" in source
+    assert "except asyncio.TimeoutError:" in source
 
 
 def test_force_power_slider_covers_power_capable_batteries():

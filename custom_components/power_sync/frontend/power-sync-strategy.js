@@ -781,6 +781,7 @@ class PowerSyncChart extends HTMLElement {
         filter_entity_id: entities.join(','),
         end_time: end.toISOString(),
         no_attributes: '1',
+        significant_changes_only: '0',
       });
       const response = await hass.callApi('GET', `history/period/${start.toISOString()}?${query.toString()}`);
       const next = new Map();
@@ -790,7 +791,7 @@ class PowerSyncChart extends HTMLElement {
           const entityId = series[0]?.entity_id;
           if (!entityId) continue;
           const points = series
-            .map((p) => [Date.parse(p.last_changed || p.last_updated), Number(p.state)])
+            .map((p) => [Date.parse(p.last_updated || p.last_changed), Number(p.state)])
             .filter(([t, v]) => Number.isFinite(t) && Number.isFinite(v));
           next.set(entityId, points);
         }

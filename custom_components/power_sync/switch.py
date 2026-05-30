@@ -53,6 +53,7 @@ from .const import (
     SENSOR_FAMILY_BATTERY,
     SENSOR_FAMILY_CONTROLS,
     TESLA_SITE_INFO_CONTROL_MAX_AGE_SECONDS,
+    TESLA_CAPABILITY_WAIT_SECONDS,
     POWERWALL_LOCAL_POLL_INTERVAL,
 )
 
@@ -283,15 +284,16 @@ async def async_setup_entry(
         async def _add_capability_gated_switches() -> None:
             entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
             waited = 0.0
-            while "tesla_capabilities" not in entry_data and waited < 120.0:
+            while "tesla_capabilities" not in entry_data and waited < TESLA_CAPABILITY_WAIT_SECONDS:
                 await asyncio.sleep(2.0)
                 waited += 2.0
                 entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
             caps = entry_data.get("tesla_capabilities", {})
             if not caps:
                 _LOGGER.info(
-                    "Tesla capability probe did not complete within 120s — "
-                    "skipping capability-gated switch creation"
+                    "Tesla capability probe did not complete within %.0fs — "
+                    "skipping capability-gated switch creation",
+                    TESLA_CAPABILITY_WAIT_SECONDS,
                 )
                 return
 

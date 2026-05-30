@@ -21,6 +21,11 @@ DASHBOARD_JS_VERSION = "38"
 # User-Agent for API identification
 POWER_SYNC_USER_AGENT = f"PowerSync/{POWER_SYNC_VERSION} HomeAssistant"
 
+# Startup waits for external services should be bounded so HA startup is not
+# held at wrap-up for minutes when an API cannot publish initial state.
+TESLA_CAPABILITY_WAIT_SECONDS = 30.0
+AMBER_WEBSOCKET_START_TIMEOUT_SECONDS = 15.0
+
 # Configuration keys
 CONF_AMBER_API_TOKEN = "amber_api_token"
 CONF_AMBER_SITE_ID = "amber_site_id"

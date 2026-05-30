@@ -2508,7 +2508,10 @@ class TeslaEnergyCoordinator(DataUpdateCoordinator):
             )
 
         # Notify platforms so entities can be (re)created now that capabilities are known.
-        entry_data = self.hass.data.get(DOMAIN, {}).get(self._entry_id, {})
+        # The probe can complete before async_setup_entry publishes its full
+        # hass.data entry, so create the per-entry dict instead of writing to a
+        # throwaway default.
+        entry_data = self.hass.data.setdefault(DOMAIN, {}).setdefault(self._entry_id, {})
         entry_data["tesla_capabilities"] = dict(self.tesla_capabilities)
         entry_data["tesla_site_country"] = self._site_country
 

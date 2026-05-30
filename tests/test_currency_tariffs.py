@@ -111,6 +111,14 @@ def test_dashboard_history_chart_projects_series_to_now():
     assert "const marker = mode === 'tou'" in source
 
 
+def test_dashboard_history_chart_requests_full_update_history():
+    dashboard = COMPONENT_ROOT / "frontend" / "power-sync-strategy.js"
+    source = dashboard.read_text()
+
+    assert "significant_changes_only: '0'" in source
+    assert "Date.parse(p.last_updated || p.last_changed)" in source
+
+
 def test_dashboard_prefers_backend_matched_ev_label():
     dashboard = COMPONENT_ROOT / "frontend" / "power-sync-strategy.js"
     source = dashboard.read_text()

@@ -78,11 +78,14 @@ class _PowerwallUnreachableError(_PowerwallLocalError):
     pass
 class _PowerwallAuthError(_PowerwallLocalError):
     pass
+class _PowerwallPairingError(_PowerwallLocalError):
+    pass
 class _PowerwallSignatureError(_PowerwallLocalError):
     pass
 exceptions_stub.PowerwallLocalError = _PowerwallLocalError
 exceptions_stub.PowerwallUnreachableError = _PowerwallUnreachableError
 exceptions_stub.PowerwallAuthError = _PowerwallAuthError
+exceptions_stub.PowerwallPairingError = _PowerwallPairingError
 exceptions_stub.PowerwallSignatureError = _PowerwallSignatureError
 sys.modules[f"{LOCAL_PKG}.exceptions"] = exceptions_stub
 
