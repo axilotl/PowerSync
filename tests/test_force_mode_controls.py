@@ -115,6 +115,61 @@ def test_monitoring_mode_optimizer_shutdown_skips_battery_restore():
     assert "await self._restore_normal_operation()" in stop_source
 
 
+def test_monitoring_mode_blocks_service_level_control_writes():
+    source = INIT_PATH.read_text()
+    tree = ast.parse(source)
+
+    force_discharge = ast.get_source_segment(
+        source, _find_function(tree, "handle_force_discharge")
+    )
+    force_charge = ast.get_source_segment(
+        source, _find_function(tree, "handle_force_charge")
+    )
+    restore = ast.get_source_segment(
+        source, _find_function(tree, "handle_restore_normal")
+    )
+    self_consumption = ast.get_source_segment(
+        source, _find_function(tree, "handle_set_self_consumption")
+    )
+
+    assert force_discharge is not None
+    assert force_charge is not None
+    assert restore is not None
+    assert self_consumption is not None
+
+    assert "if _is_monitoring_mode():" in force_discharge
+    assert force_discharge.index("if _is_monitoring_mode():") < force_discharge.index(
+        "extend_hardware = call.data.get"
+    )
+    assert force_discharge.index("if _is_monitoring_mode():") < force_discharge.index(
+        'entry_data.get("goodwe_coordinator")'
+    )
+
+    assert "if _is_monitoring_mode():" in force_charge
+    assert force_charge.index("if _is_monitoring_mode():") < force_charge.index(
+        "extend_hardware = call.data.get"
+    )
+    assert force_charge.index("if _is_monitoring_mode():") < force_charge.index(
+        'entry_data.get("goodwe_coordinator")'
+    )
+
+    assert "if _is_monitoring_mode():" in restore
+    assert restore.index("if _is_monitoring_mode():") < restore.index(
+        '_cancel_all_force_timers("restore_normal")'
+    )
+    assert restore.index("if _is_monitoring_mode():") < restore.index(
+        'entry_data.get("goodwe_coordinator")'
+    )
+
+    assert "if _is_monitoring_mode():" in self_consumption
+    assert self_consumption.index("if _is_monitoring_mode():") < self_consumption.index(
+        'self_consumption_state["active"] = True'
+    )
+    assert self_consumption.index("if _is_monitoring_mode():") < self_consumption.index(
+        'entry_data.get("goodwe_coordinator")'
+    )
+
+
 def test_force_mode_persistence_keeps_requested_power_setpoint():
     source = INIT_PATH.read_text()
     tree = ast.parse(source)

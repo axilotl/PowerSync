@@ -21291,6 +21291,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         duration,
                     )
 
+        if _is_monitoring_mode():
+            _LOGGER.info(
+                "[MONITORING] Would force discharge for %d minutes (source=%s, power_w=%s) — blocked by monitoring mode",
+                duration,
+                source,
+                command_power_w,
+            )
+            return
+
         extend_hardware = call.data.get("_extend_hardware", False)
 
         # Hardware-only path: fires for BOTH (a) optimizer-issued dispatch and
@@ -22552,6 +22561,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         elif duration not in DISCHARGE_DURATIONS:
             _LOGGER.warning(f"Duration {duration} not in allowed values {DISCHARGE_DURATIONS}, using default {DEFAULT_DISCHARGE_DURATION}")
             duration = DEFAULT_DISCHARGE_DURATION
+
+        if _is_monitoring_mode():
+            _LOGGER.info(
+                "[MONITORING] Would force charge for %d minutes (source=%s, power_w=%s) — blocked by monitoring mode",
+                duration,
+                source,
+                command_power_w,
+            )
+            return
 
         extend_hardware = call.data.get("_extend_hardware", False)
 
@@ -23911,6 +23929,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         restore_was_force_discharging = bool(force_discharge_state.get("active"))
         restore_was_force_charging = bool(force_charge_state.get("active"))
 
+        if _is_monitoring_mode():
+            _LOGGER.info(
+                "[MONITORING] Would restore normal operation (source=%s) — blocked by monitoring mode",
+                source,
+            )
+            return
+
         # Clear user-facing state toggles (Hold SoC and Self-Use buttons).
         # These are mobile-only visual flags; clearing them on user-sourced
         # restores keeps the Controls screen in sync without forcing the
@@ -24970,6 +24995,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         source = call.data.get("source", "user")
         _LOGGER.info("Setting pure self-consumption mode (source=%s)", source)
+
+        if _is_monitoring_mode():
+            _LOGGER.info(
+                "[MONITORING] Would set self-consumption mode (source=%s) — blocked by monitoring mode",
+                source,
+            )
+            return
 
         # Mark the mobile toggle on for user-sourced calls. The hardware
         # calls below are idempotent so we set the flag up front; optimizer
