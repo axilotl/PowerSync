@@ -54,6 +54,20 @@ def test_optimizer_windows_use_combined_visual_card():
     assert "Future Force Charge" not in source
 
 
+def test_dashboard_battery_controls_include_self_consumption_action():
+    """Manual battery controls should expose the self-consumption service."""
+    source = STRATEGY_PATH.read_text()
+    battery_controls = source[
+        source.index("function _batteryControls(hass)"):
+        source.index("function _teslaEnergySiteControls", source.index("function _batteryControls(hass)"))
+    ]
+
+    assert "name: 'Self Consumption'" in battery_controls
+    assert "icon: 'mdi:home-battery'" in battery_controls
+    assert "service: 'power_sync.set_self_consumption'" in battery_controls
+    assert "Set battery to self-consumption mode?" in battery_controls
+
+
 def test_dashboard_setup_preserves_user_managed_lovelace_layout():
     """Reloads must not overwrite a dashboard the user has edited manually."""
     source = INIT_PATH.read_text()

@@ -3957,6 +3957,40 @@ function _batteryControls(hass) {
         ],
       },
       {
+        type: 'custom:button-card',
+        name: 'Self Consumption',
+        icon: 'mdi:home-battery',
+        styles: {
+          card: [
+            { height: '40px' },
+            { 'border-radius': '18px' },
+            { padding: '4px 12px' },
+            { background: 'rgba(var(--rgb-green-color, 76, 175, 80), 0.1)' },
+          ],
+          grid: [
+            { 'grid-template-areas': '"i n"' },
+            { 'grid-template-columns': '24px 1fr' },
+          ],
+          icon: [
+            { 'grid-area': 'i' },
+            { width: '24px' },
+            { color: 'var(--green-color, #4CAF50)' },
+          ],
+          name: [
+            { 'grid-area': 'n' },
+            { 'text-align': 'left' },
+            { 'padding-left': '8px' },
+            { 'font-weight': '600' },
+            { 'font-size': '14px' },
+          ],
+        },
+        tap_action: {
+          action: 'call-service',
+          service: 'power_sync.set_self_consumption',
+          confirmation: { text: 'Set battery to self-consumption mode?' },
+        },
+      },
+      {
         square: false,
         type: 'grid',
         columns: 2,

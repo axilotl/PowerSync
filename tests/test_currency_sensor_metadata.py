@@ -520,6 +520,49 @@ def test_powerwall_pack_sensors_use_bms_health_and_parent_device():
     assert soc.extra_state_attributes["source"] == "ha_local_tedapi"
 
 
+def test_powerwall_solar_string_voltage_sensor_metadata_and_value():
+    sensor = _sensor_module()
+    entry = SimpleNamespace(entry_id="entry-1", data={}, options={})
+    diagnostics = {
+        "source": "pw3_components",
+        "transport_source": "ha_fleet_api_relay",
+        "last_scan": "2026-05-30T10:00:00+10:00",
+        "strings": [
+            {
+                "id": "pch:A",
+                "label": "A",
+                "mppt": "A",
+                "voltage_v": 295.24,
+                "current_a": 3.1,
+                "power_w": 915.244,
+                "state": "PV_Active",
+                "connected": True,
+            }
+        ],
+        "groups": [
+            {
+                "id": "gateway:A+B",
+                "label": "MPPT A+B",
+                "string_ids": ["pch:A", "pch:B"],
+                "total_power_w": 1800.0,
+            }
+        ],
+    }
+    hass = SimpleNamespace(
+        data={"power_sync": {"entry-1": {"solar_string_diagnostics": diagnostics}}}
+    )
+
+    entity = sensor.PowerwallSolarStringVoltageSensor(hass, entry, "pch_a", "pch:A", "A")
+
+    assert entity.device_info == sensor.powerwall_device_info("entry-1")
+    assert entity.native_value == 295.2
+    assert entity.available is True
+    assert entity._attr_name == "Solar String A Voltage"
+    assert entity.extra_state_attributes["source"] == "pw3_components"
+    assert entity.extra_state_attributes["transport_source"] == "ha_fleet_api_relay"
+    assert entity.extra_state_attributes["group_label"] == "MPPT A+B"
+
+
 def test_powerwall_pack_builder_skips_missing_optional_metrics():
     sensor = _sensor_module()
     entry = SimpleNamespace(entry_id="entry-1", data={}, options={})

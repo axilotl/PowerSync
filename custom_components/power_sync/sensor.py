@@ -1989,6 +1989,7 @@ async def async_setup_entry(
     # batteryBlocks only contains shallow block identity/count data on PW3 sites.
     if battery_system == "tesla":
         _setup_powerwall_pack_sensor_additions(hass, entry, async_add_entities)
+        _setup_powerwall_solar_string_sensor_additions(hass, entry, async_add_entities)
 
     async_add_entities(entities)
 
@@ -2163,6 +2164,95 @@ def _setup_powerwall_pack_sensor_additions(
         _cleanup_legacy_powerwall_pack_registry(hass, entry)
     except Exception:
         _LOGGER.warning("Could not clean up legacy Powerwall pack registry entries", exc_info=True)
+
+
+def _solar_string_data(diagnostics: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(diagnostics, dict):
+        return []
+    strings = diagnostics.get("strings")
+    if not isinstance(strings, list):
+        return []
+    return [string for string in strings if isinstance(string, dict)]
+
+
+def _solar_string_label(reading: dict[str, Any], index: int) -> str:
+    label = reading.get("label")
+    if isinstance(label, str) and label:
+        return label
+    mppt = reading.get("mppt")
+    if isinstance(mppt, str) and mppt:
+        return mppt
+    return str(index + 1)
+
+
+def _solar_string_key(reading: dict[str, Any], index: int) -> str:
+    raw = reading.get("id") or reading.get("label") or f"string_{index + 1}"
+    key = "".join(ch.lower() if ch.isalnum() else "_" for ch in str(raw)).strip("_")
+    return key or f"string_{index + 1}"
+
+
+def _build_powerwall_solar_string_sensors(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    diagnostics: dict[str, Any] | None,
+    added_keys: set[str],
+) -> list[SensorEntity]:
+    """Build DC string voltage entities for strings reported by TEDAPI scans."""
+    entities: list[SensorEntity] = []
+    for index, reading in enumerate(_solar_string_data(diagnostics)):
+        key = _solar_string_key(reading, index)
+        if key in added_keys:
+            continue
+        added_keys.add(key)
+        entities.append(
+            PowerwallSolarStringVoltageSensor(
+                hass,
+                entry,
+                key,
+                reading.get("id"),
+                _solar_string_label(reading, index),
+            )
+        )
+    return entities
+
+
+def _setup_powerwall_solar_string_sensor_additions(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Create Powerwall string voltage sensors now and after future scans."""
+    domain_data = hass.data[DOMAIN][entry.entry_id]
+    added_keys: set[str] = domain_data.setdefault("powerwall_solar_string_sensor_keys", set())
+
+    def _add_from_diagnostics(diagnostics: dict[str, Any] | None) -> None:
+        new_entities = _build_powerwall_solar_string_sensors(
+            hass,
+            entry,
+            diagnostics,
+            added_keys,
+        )
+        if new_entities:
+            async_add_entities(new_entities)
+            _LOGGER.info(
+                "Added %d Powerwall solar string voltage sensor(s)",
+                len(new_entities),
+            )
+
+    _add_from_diagnostics(domain_data.get("solar_string_diagnostics"))
+
+    if domain_data.get("powerwall_solar_string_sensor_unsub") is not None:
+        return
+
+    @callback
+    def _handle_solar_strings_update(data: dict[str, Any]) -> None:
+        _add_from_diagnostics(data)
+
+    domain_data["powerwall_solar_string_sensor_unsub"] = async_dispatcher_connect(
+        hass,
+        f"{DOMAIN}_solar_strings_update_{entry.entry_id}",
+        _handle_solar_strings_update,
+    )
 
 
 def _cleanup_legacy_powerwall_pack_registry(hass: HomeAssistant, entry: ConfigEntry) -> None:
@@ -2793,6 +2883,122 @@ class PowerwallBlockSohSensor(_PowerwallBlockSensorBase):
         if not full:
             return None
         return round(float(full) / self._NAMEPLATE_WH * 100.0, 1)
+
+
+class PowerwallSolarStringVoltageSensor(SensorEntity):
+    """Voltage for a single Powerwall DC-coupled solar string."""
+
+    _attr_has_entity_name = False
+    _attr_native_unit_of_measurement = "V"
+    _attr_device_class = SensorDeviceClass.VOLTAGE
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_suggested_display_precision = 1
+    _attr_icon = "mdi:solar-power-variant"
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: ConfigEntry,
+        key: str,
+        string_id: Any,
+        label: str,
+    ) -> None:
+        self._hass = hass
+        self._entry = entry
+        self._key = key
+        self._string_id = string_id
+        self._label = label
+        self._attr_unique_id = f"{entry.entry_id}_solar_string_{key}_voltage"
+        self._attr_suggested_object_id = f"powerwall_solar_string_{key}_voltage"
+        self._attr_name = f"Solar String {label} Voltage"
+
+    @property
+    def device_info(self):
+        return powerwall_device_info(self._entry.entry_id)
+
+    @property
+    def _diagnostics(self) -> dict[str, Any] | None:
+        return (
+            self._hass.data.get(DOMAIN, {})
+            .get(self._entry.entry_id, {})
+            .get("solar_string_diagnostics")
+        )
+
+    @property
+    def _reading(self) -> dict[str, Any] | None:
+        strings = _solar_string_data(self._diagnostics)
+        for index, reading in enumerate(strings):
+            if reading.get("id") == self._string_id or _solar_string_key(reading, index) == self._key:
+                return reading
+        return None
+
+    @property
+    def available(self) -> bool:
+        reading = self._reading
+        return reading is not None and reading.get("voltage_v") is not None
+
+    @property
+    def native_value(self) -> Any:
+        reading = self._reading
+        if not reading:
+            return None
+        value = _pack_float(reading, "voltage_v")
+        return round(value, 1) if value is not None else None
+
+    async def async_added_to_hass(self) -> None:
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                f"{DOMAIN}_solar_strings_update_{self._entry.entry_id}",
+                self._handle_solar_strings_update,
+            )
+        )
+
+    @callback
+    def _handle_solar_strings_update(self, data: dict[str, Any]) -> None:
+        reading = self._reading
+        if reading:
+            self._label = str(reading.get("label") or self._label)
+            self._attr_name = f"Solar String {self._label} Voltage"
+        self.async_write_ha_state()
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        reading = self._reading
+        diagnostics = self._diagnostics or {}
+        if not reading:
+            return {
+                "string_id": self._string_id,
+                "source": diagnostics.get("source"),
+                "last_scan": diagnostics.get("last_scan"),
+            }
+
+        attrs: dict[str, Any] = {
+            "string_id": reading.get("id"),
+            "string_label": reading.get("label"),
+            "mppt": reading.get("mppt"),
+            "connected": reading.get("connected"),
+            "source": diagnostics.get("source"),
+            "transport_source": diagnostics.get("transport_source"),
+            "last_scan": diagnostics.get("last_scan"),
+        }
+        for attr_key in ("current_a", "power_w", "state", "device_id"):
+            if reading.get(attr_key) is not None:
+                attrs[attr_key] = reading.get(attr_key)
+
+        string_id = reading.get("id")
+        groups = diagnostics.get("groups") if isinstance(diagnostics, dict) else None
+        if isinstance(groups, list):
+            for group in groups:
+                if not isinstance(group, dict):
+                    continue
+                if string_id in (group.get("string_ids") or []):
+                    attrs["group_id"] = group.get("id")
+                    attrs["group_label"] = group.get("label")
+                    if group.get("total_power_w") is not None:
+                        attrs["group_total_power_w"] = group.get("total_power_w")
+                    break
+        return attrs
 
 
 class OptimizerActionSensor(CoordinatorEntity, SensorEntity):

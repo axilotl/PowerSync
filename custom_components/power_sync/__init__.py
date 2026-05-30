@@ -5350,6 +5350,191 @@ class BatteryHealthView(HomeAssistantView):
         )
         return response
 
+    async def _try_fleet_api_solar_strings_fetch(self, entry) -> dict | None:
+        """Fetch Powerwall DC string diagnostics via signed TEDAPI queries."""
+        import base64 as _b64
+        import aiohttp as _aio
+
+        from .const import (
+            CONF_POWERWALL_LOCAL_PRIVATE_KEY,
+            CONF_POWERWALL_LOCAL_DIN,
+            CONF_POWERWALL_LOCAL_IP,
+        )
+        from .powerwall_local.views import _get_fleet_api_context
+        from .powerwall_local.fleet_api_bms import (
+            build_device_controller_query_envelope,
+            build_pw3_components_query_envelope,
+            build_signed_routable_message,
+            normalize_legacy_pvac_strings,
+            normalize_pw3_components_strings,
+            parse_device_controller_response,
+        )
+
+        private_key_pem = entry.data.get(CONF_POWERWALL_LOCAL_PRIVATE_KEY)
+        din = entry.data.get(CONF_POWERWALL_LOCAL_DIN)
+        if not private_key_pem or not din:
+            return None
+
+        fleet_token, fleet_base, fleet_site_id = _get_fleet_api_context(self._hass, entry)
+        key_bytes = private_key_pem.encode() if isinstance(private_key_pem, str) else private_key_pem
+
+        async def _read_query(envelope_builder, log_label: str) -> tuple[dict | None, str | None]:
+            try:
+                envelope = envelope_builder(din)
+
+                def _sign_in_thread() -> bytes:
+                    return build_signed_routable_message(envelope, din, key_bytes, ttl_seconds=300)
+
+                signed = await self._hass.async_add_executor_job(_sign_in_thread)
+            except Exception as err:
+                _LOGGER.debug("fleet_api_solar_strings: %s signing failed: %s", log_label, err)
+                return None, None
+
+            local_ip = entry.data.get(CONF_POWERWALL_LOCAL_IP)
+            if local_ip:
+                try:
+                    from .powerwall_local.transport import get_insecure_ssl_context
+                    from .powerwall_local import tedapi_combined_pb2 as _pb2
+                    ssl_ctx = await get_insecure_ssl_context(self._hass)
+                    connector = _aio.TCPConnector(ssl=ssl_ctx, limit=2)
+                    async with _aio.ClientSession(
+                        connector=connector,
+                        timeout=_aio.ClientTimeout(total=12),
+                    ) as sess:
+                        async with sess.post(
+                            f"https://{local_ip}/tedapi/v1r",
+                            data=signed,
+                            headers={"Content-Type": "application/octet-stream"},
+                        ) as resp:
+                            if resp.status == 200:
+                                raw = await resp.read()
+                                resp_msg = _pb2.RoutableMessage()
+                                resp_msg.ParseFromString(raw)
+                                fault = resp_msg.signed_message_status.message_fault
+                                if fault == _pb2.MESSAGEFAULT_ERROR_NONE:
+                                    data = parse_device_controller_response(
+                                        resp_msg.protobuf_message_as_bytes
+                                    )
+                                    if data:
+                                        return data, "ha_local_tedapi"
+                                else:
+                                    _LOGGER.debug(
+                                        "fleet_api_solar_strings: local %s fault %s",
+                                        log_label,
+                                        _pb2.MessageFault_E.Name(fault),
+                                    )
+                            else:
+                                body_text = await resp.text()
+                                _LOGGER.debug(
+                                    "fleet_api_solar_strings: local %s HTTP %d - %s",
+                                    log_label, resp.status, body_text[:200],
+                                )
+                except Exception as err:
+                    _LOGGER.debug("fleet_api_solar_strings: local %s unreachable: %s", log_label, err)
+
+            if not fleet_token or not fleet_base or not fleet_site_id:
+                return None, None
+
+            fleet_url = f"{fleet_base}/api/1/energy_sites/{fleet_site_id}/device_command"
+            fleet_headers = {
+                "Authorization": f"Bearer {fleet_token}",
+                "Content-Type": "application/json",
+            }
+            fleet_payload = {
+                "data": {
+                    "target_id": din,
+                    "routable_message": _b64.b64encode(signed).decode(),
+                    "command_timeout_s": 10,
+                    "identifier_type": 1,
+                }
+            }
+            try:
+                async with _aio.ClientSession() as sess:
+                    async with sess.post(
+                        fleet_url,
+                        json=fleet_payload,
+                        headers=fleet_headers,
+                        timeout=_aio.ClientTimeout(total=35),
+                    ) as resp:
+                        if resp.status != 200:
+                            body_text = await resp.text()
+                            _LOGGER.debug(
+                                "fleet_api_solar_strings: %s HTTP %d - %s",
+                                log_label, resp.status, body_text[:400],
+                            )
+                            return None, None
+                        body = await resp.json()
+            except Exception as err:
+                _LOGGER.debug("fleet_api_solar_strings: %s request error: %s", log_label, err)
+                return None, None
+
+            envelope_b64 = (body.get("response") or {}).get("message_envelope_as_bytes")
+            if not envelope_b64:
+                return None, None
+            try:
+                data = parse_device_controller_response(_b64.b64decode(envelope_b64))
+            except Exception as err:
+                _LOGGER.debug("fleet_api_solar_strings: %s decode error: %s", log_label, err)
+                return None, None
+            return data, "ha_fleet_api_relay" if data else None
+
+        data, transport_source = await _read_query(
+            build_pw3_components_query_envelope,
+            "pw3_components",
+        )
+        saw_response = data is not None
+        last_transport_source = transport_source if data is not None else None
+        diagnostics = normalize_pw3_components_strings(data) if data else None
+
+        if diagnostics is None:
+            data, transport_source = await _read_query(
+                build_device_controller_query_envelope,
+                "legacy_pvac",
+            )
+            saw_response = saw_response or data is not None
+            if data is not None:
+                last_transport_source = transport_source
+            diagnostics = normalize_legacy_pvac_strings(data) if data else None
+
+        if diagnostics is None:
+            if saw_response:
+                return {
+                    "success": True,
+                    "available": False,
+                    "brand": "tesla",
+                    "source": None,
+                    "transport_source": last_transport_source,
+                    "strings": [],
+                    "groups": [],
+                    "last_scan": dt_util.now().isoformat(),
+                    "site": {
+                        "gateway_din": din,
+                        "energy_site_id": fleet_site_id,
+                    },
+                }
+            return None
+
+        response = {
+            "success": True,
+            "available": True,
+            "brand": "tesla",
+            "transport_source": transport_source,
+            "last_scan": dt_util.now().isoformat(),
+            "site": {
+                "gateway_din": din,
+                "energy_site_id": fleet_site_id,
+            },
+            **diagnostics,
+        }
+        _LOGGER.debug(
+            "fleet_api_solar_strings: fetched %d string(s), %d group(s) via %s/%s",
+            len(response.get("strings") or []),
+            len(response.get("groups") or []),
+            response.get("source"),
+            transport_source,
+        )
+        return response
+
     async def get(self, request: web.Request) -> web.Response:
         """Handle GET request - return stored battery health data."""
         _LOGGER.info("🔋 Battery health HTTP request")
@@ -16786,6 +16971,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "manual_export_rule": stored_manual_export_rule,  # Restored from persistent storage
         "battery_health": battery_health,  # Restored from persistent storage (from mobile app TEDAPI scans)
         "powerwall_bms_health_poll_cancel": None,  # 5-minute pack energy/BMS refresh timer
+        "powerwall_solar_strings_poll_cancel": None,  # 30-second PW2/PW3 DC string voltage refresh timer
         "force_mode_state": force_mode_state,  # Restored force charge/discharge state
         "last_restorable_tesla_tariff": last_restorable_tesla_tariff,
         "store": store,  # Reference to Store for saving updates
@@ -26716,6 +26902,45 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             int(POWERWALL_BMS_HEALTH_POLL_INTERVAL.total_seconds()),
         )
 
+        from homeassistant.helpers.event import async_track_time_interval as _track_solar_strings_interval
+
+        solar_strings_in_progress = False
+
+        async def _poll_powerwall_solar_strings(now=None) -> None:
+            nonlocal solar_strings_in_progress
+            if solar_strings_in_progress:
+                _LOGGER.debug("Skipping overlapping Powerwall solar string poll for %s", entry.entry_id)
+                return
+            if not entry.data.get(CONF_POWERWALL_LOCAL_PAIRED):
+                return
+
+            solar_strings_in_progress = True
+            try:
+                payload = await battery_health_view._try_fleet_api_solar_strings_fetch(entry)
+                if not payload:
+                    return
+                entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+                entry_data["solar_string_diagnostics"] = payload
+                async_dispatcher_send(
+                    hass,
+                    f"{DOMAIN}_solar_strings_update_{entry.entry_id}",
+                    payload,
+                )
+            except Exception as err:
+                _LOGGER.debug("Powerwall solar string poll failed for %s: %s", entry.entry_id, err)
+            finally:
+                solar_strings_in_progress = False
+
+        hass.async_create_task(_poll_powerwall_solar_strings())
+        hass.data[DOMAIN][entry.entry_id]["powerwall_solar_strings_poll_cancel"] = (
+            _track_solar_strings_interval(
+                hass,
+                _poll_powerwall_solar_strings,
+                timedelta(seconds=30),
+            )
+        )
+        _LOGGER.info("☀️ Powerwall solar string voltage polling armed (30 seconds; no-op until paired)")
+
     # Register HTTP endpoint for Inverter status (for mobile app Solar controls)
     hass.http.register_view(InverterStatusView(hass))
     _LOGGER.info("☀️ Inverter status HTTP endpoint registered at /api/power_sync/inverter_status")
@@ -29385,10 +29610,20 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         entry_data["powerwall_pack_sensor_unsub"] = None
         _LOGGER.debug("Unsubscribed Powerwall pack sensor listener")
 
+    if solar_string_sensor_unsub := entry_data.get("powerwall_solar_string_sensor_unsub"):
+        solar_string_sensor_unsub()
+        entry_data["powerwall_solar_string_sensor_unsub"] = None
+        _LOGGER.debug("Unsubscribed Powerwall solar string sensor listener")
+
     if bms_poll_cancel := entry_data.get("powerwall_bms_health_poll_cancel"):
         bms_poll_cancel()
         entry_data["powerwall_bms_health_poll_cancel"] = None
         _LOGGER.debug("Cancelled Powerwall BMS health polling")
+
+    if solar_strings_poll_cancel := entry_data.get("powerwall_solar_strings_poll_cancel"):
+        solar_strings_poll_cancel()
+        entry_data["powerwall_solar_strings_poll_cancel"] = None
+        _LOGGER.debug("Cancelled Powerwall solar string polling")
 
     # Cancel the AEMO spike timer if it exists
     if aemo_spike_cancel := entry_data.get("aemo_spike_cancel"):
