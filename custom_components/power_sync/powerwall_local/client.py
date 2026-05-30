@@ -23,6 +23,7 @@ from .fleet_api_bms import (
     build_device_controller_query_envelope,
     parse_device_controller_response,
 )
+from .pairing import _authorization_command_payload
 from .signaling import TeslaSignalingClient
 from .transport import TEDAPIv1rTransport
 
@@ -216,17 +217,10 @@ class PowerwallLocalClient:
             "Authorization": f"Bearer {self._fleet_api_token}",
             "Content-Type": "application/json",
         }
-        payload = {
-            "command_type": "grpc_command",
-            "command_properties": {
-                "identifier_type": 1,
-                "message": {
-                    "authorization": {
-                        "list_authorized_clients_request": {}
-                    }
-                },
-            },
-        }
+        payload = _authorization_command_payload(
+            "list_authorized_clients_request",
+            {"list_authorized_clients_request": {}},
+        )
 
         try:
             async with aiohttp.ClientSession() as sess:
