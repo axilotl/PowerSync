@@ -2271,7 +2271,12 @@ _LOCAL_GRID_STATUS_TO_CLOUD = {
 }
 
 
-def _local_value_for(sensor_key: str, snap: Any) -> Any:
+def _local_value_for(
+    sensor_key: str,
+    snap: Any,
+    *,
+    ev_power_kw: float = 0.0,
+) -> Any:
     """Map a sensor key to its equivalent on the local PowerwallSnapshot.
 
     Returns the locally-derived value (in the same units the cloud value_fn
@@ -2286,7 +2291,12 @@ def _local_value_for(sensor_key: str, snap: Any) -> Any:
     if sensor_key == SENSOR_TYPE_SOLAR_POWER:
         return None if snap.solar_w is None else snap.solar_w / 1000.0
     if sensor_key == SENSOR_TYPE_HOME_LOAD:
-        return None if snap.load_w is None else snap.load_w / 1000.0
+        if snap.load_w is None:
+            return None
+        # Powerwall local TEDAPI reports total behind-the-meter load, which
+        # includes EV charging. Keep Home Load aligned with the cloud
+        # coordinator and Tesla app by removing observed EV charging power.
+        return max(0.0, (snap.load_w / 1000.0) - max(0.0, ev_power_kw))
     if sensor_key == SENSOR_TYPE_BATTERY_LEVEL:
         return snap.soc
     if sensor_key == SENSOR_TYPE_GRID_STATUS:
@@ -2386,7 +2396,11 @@ class TeslaEnergySensor(PowerSyncCurrencyMixin, CoordinatorEntity, RestoredNumer
             local_coord = self._local_coordinator()
             if local_coord is not None and _local_data_is_fresh(local_coord):
                 local_v = _local_value_for(
-                    self.entity_description.key, local_coord.data
+                    self.entity_description.key,
+                    local_coord.data,
+                    ev_power_kw=(
+                        (self.coordinator.data or {}).get("ev_power", 0.0) or 0.0
+                    ),
                 )
                 if local_v is not None:
                     return local_v

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import sys
+import time
 import types
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -266,6 +267,72 @@ def test_sungrow_solar_sensor_adds_configured_ac_inverter_output():
     assert entity.extra_state_attributes["battery_inverter_solar_power_kw"] == 4.2
     assert entity.extra_state_attributes["ac_inverter_solar_power_kw"] == 5.1
     assert entity.extra_state_attributes["total_solar_power_kw"] == 9.3
+
+
+def test_local_powerwall_home_load_excludes_observed_ev_power():
+    sensor = _sensor_module()
+    desc = next(d for d in sensor.ENERGY_SENSORS if d.key == "home_load")
+    entry = SimpleNamespace(
+        entry_id="entry-1",
+        data={sensor.CONF_POWERWALL_LOCAL_PAIRED: True},
+        options={},
+    )
+    local_coord = SimpleNamespace(
+        data=SimpleNamespace(load_w=10_700.0),
+        last_success_ts=time.time(),
+    )
+    entity = sensor.TeslaEnergySensor(
+        SimpleNamespace(data={"load_power": 3.6, "ev_power": 7.1}),
+        desc,
+        entry,
+    )
+    entity.hass = SimpleNamespace(
+        config=SimpleNamespace(currency="AUD"),
+        data={
+            sensor.DOMAIN: {
+                "entry-1": {
+                    "powerwall_local": {
+                        "coordinator": local_coord,
+                    },
+                },
+            },
+        },
+    )
+
+    assert round(entity.native_value, 3) == 3.6
+
+
+def test_local_powerwall_home_load_never_goes_negative_after_ev_subtraction():
+    sensor = _sensor_module()
+    desc = next(d for d in sensor.ENERGY_SENSORS if d.key == "home_load")
+    entry = SimpleNamespace(
+        entry_id="entry-1",
+        data={sensor.CONF_POWERWALL_LOCAL_PAIRED: True},
+        options={},
+    )
+    local_coord = SimpleNamespace(
+        data=SimpleNamespace(load_w=2_000.0),
+        last_success_ts=time.time(),
+    )
+    entity = sensor.TeslaEnergySensor(
+        SimpleNamespace(data={"load_power": 0.0, "ev_power": 7.1}),
+        desc,
+        entry,
+    )
+    entity.hass = SimpleNamespace(
+        config=SimpleNamespace(currency="AUD"),
+        data={
+            sensor.DOMAIN: {
+                "entry-1": {
+                    "powerwall_local": {
+                        "coordinator": local_coord,
+                    },
+                },
+            },
+        },
+    )
+
+    assert entity.native_value == 0.0
 
 
 def test_neovolt_surplus_balancer_sensor_exposes_status_and_attributes():
