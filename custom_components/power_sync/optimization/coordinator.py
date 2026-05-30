@@ -41,6 +41,12 @@ from ..zerohero import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+CUSTOM_BATTERY_SYSTEM = "custom"
+CUSTOM_BATTERY_LEVEL_ENTITY = "custom_battery_level_entity"
+CUSTOM_BATTERY_POWER_ENTITY = "custom_battery_power_entity"
+CUSTOM_GRID_POWER_ENTITY = "custom_grid_power_entity"
+CUSTOM_SOLAR_POWER_ENTITY = "custom_solar_power_entity"
+CUSTOM_LOAD_POWER_ENTITY = "custom_load_power_entity"
 
 COST_STORE_VERSION = 1
 COST_STORE_SAVE_DELAY = 300  # Coalesce writes — flush at most every 5 minutes
@@ -179,6 +185,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._config = OptimizationConfig()
         self._cost_function = CostFunction("cost")
         self._provider_config = ProviderPriceConfig()
+        self._last_custom_energy_warning: str | None = None
 
         # Lock to prevent concurrent LP solves. Three independent triggers
         # (DataUpdateCoordinator's _async_update_data, _schedule_polling_loop,
@@ -316,6 +323,8 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     def _monitoring_mode_active(self) -> bool:
         """Return True when monitoring mode should block hardware writes."""
+        if self.battery_system == CUSTOM_BATTERY_SYSTEM:
+            return True
         if not self._entry:
             return False
         from ..const import CONF_MONITORING_MODE
@@ -742,6 +751,99 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return None
         return int(round(kw * 1000))
 
+    def _get_custom_entity_id(self, key: str) -> str:
+        """Return one configured custom telemetry entity ID."""
+        if not self._entry:
+            return ""
+
+        return str(
+            self._entry.options.get(key, self._entry.data.get(key, ""))
+            or ""
+        ).strip()
+
+    @staticmethod
+    def _power_to_kw(value: float | None, unit: str = "") -> float | None:
+        """Normalize a power value to kW using unit metadata or a W/kW heuristic."""
+        if value is None:
+            return None
+        unit = unit.lower()
+        if unit in ("w", "watt", "watts"):
+            return value / 1000.0
+        if unit in ("kw", "kilowatt", "kilowatts"):
+            return value
+        return value / 1000.0 if abs(value) > 100 else value
+
+    def _read_numeric_state(self, entity_id: str) -> tuple[float | None, str]:
+        """Read a numeric HA state and return its value plus unit."""
+        if not entity_id:
+            return None, ""
+        state = self.hass.states.get(entity_id)
+        if not state or state.state in ("unknown", "unavailable", "None", None):
+            if self._last_custom_energy_warning != entity_id:
+                _LOGGER.warning(
+                    "Custom battery telemetry entity %s is unavailable",
+                    entity_id,
+                )
+                self._last_custom_energy_warning = entity_id
+            return None, ""
+        try:
+            value = float(state.state)
+        except (TypeError, ValueError):
+            if self._last_custom_energy_warning != entity_id:
+                _LOGGER.warning(
+                    "Custom battery telemetry entity %s is not numeric",
+                    entity_id,
+                )
+                self._last_custom_energy_warning = entity_id
+            return None, ""
+        return value, str((state.attributes or {}).get("unit_of_measurement") or "")
+
+    def _read_custom_energy_data(self) -> dict[str, Any] | None:
+        """Read custom battery/site telemetry from user-selected entities."""
+        if getattr(self, "battery_system", "") != CUSTOM_BATTERY_SYSTEM:
+            return None
+
+        entity_keys = {
+            "battery_level": CUSTOM_BATTERY_LEVEL_ENTITY,
+            "battery_power": CUSTOM_BATTERY_POWER_ENTITY,
+            "grid_power": CUSTOM_GRID_POWER_ENTITY,
+            "solar_power": CUSTOM_SOLAR_POWER_ENTITY,
+            "load_power": CUSTOM_LOAD_POWER_ENTITY,
+        }
+        source_entities = {
+            name: self._get_custom_entity_id(key)
+            for name, key in entity_keys.items()
+        }
+        if not any(source_entities.values()):
+            return None
+
+        data: dict[str, Any] = {"source_entities": source_entities}
+        battery_level, _battery_level_unit = self._read_numeric_state(
+            source_entities["battery_level"]
+        )
+        if battery_level is not None:
+            data["battery_level"] = max(0.0, min(100.0, battery_level))
+
+        for target in ("battery_power", "grid_power", "solar_power", "load_power"):
+            raw, unit = self._read_numeric_state(source_entities[target])
+            kw = self._power_to_kw(raw, unit)
+            if kw is not None:
+                data[target] = kw
+
+        if len(data) == 1:
+            return None
+
+        self._last_custom_energy_warning = None
+        return data
+
+    def _get_energy_data(self) -> dict[str, Any] | None:
+        """Return custom aggregate telemetry when configured, else coordinator data."""
+        custom_data = self._read_custom_energy_data()
+        if custom_data:
+            return custom_data
+        data = getattr(self.energy_coordinator, "data", None)
+        return data if isinstance(data, dict) else None
+
     def _resolve_max_grid_export_w(self) -> int | None:
         """Return the configured or reported grid export cap for optimizer planning."""
         if self._entry:
@@ -756,7 +858,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if watts is not None:
                     return watts
 
-        data = getattr(self.energy_coordinator, "data", None)
+        data = self._get_energy_data()
         if isinstance(data, dict):
             export_limit = data.get("export_limit_kw")
             if data.get("is_curtailed") and self._kw_to_w(export_limit) == 0:
@@ -774,7 +876,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     def _resolve_physical_max_discharge_w(self) -> int | None:
         """Return the battery/inverter physical discharge limit when available."""
-        data = getattr(self.energy_coordinator, "data", None)
+        data = self._get_energy_data()
         if not isinstance(data, dict):
             return None
 
@@ -4549,10 +4651,10 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # Near-full batteries and curtailment can make measured solar lower
             # than potential production. Don't learn a false cloud signal there.
             return solar_forecast
-        if not self.energy_coordinator or not self.energy_coordinator.data:
+        data = self._get_energy_data()
+        if not data:
             return solar_forecast
 
-        data = self.energy_coordinator.data
         try:
             actual_kw = max(0.0, float(data.get("solar_power", 0) or 0))
         except (TypeError, ValueError):
@@ -5366,6 +5468,23 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     self._load_estimator.load_entity_id = load_entity
                     self._load_estimator._history_cache.clear()
                     self._load_estimator._cache_time = None
+                else:
+                    data = self._get_energy_data() or {}
+                    try:
+                        current_load_kw = float(data.get("load_power"))
+                    except (TypeError, ValueError):
+                        current_load_kw = 0.0
+                    if current_load_kw > 0:
+                        n_intervals = (
+                            self._config.horizon_hours
+                            * 60
+                            // self._config.interval_minutes
+                        )
+                        return self._load_estimator._simple_forecast(
+                            current_load_kw * 1000.0,
+                            dt_util.now(),
+                            n_intervals,
+                        )
             return await self._load_estimator.get_forecast(
                 horizon_hours=self._config.horizon_hours
             )
@@ -5600,8 +5719,8 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         soc = 0.5
         capacity = self._config.battery_capacity_wh
 
-        if self.energy_coordinator and self.energy_coordinator.data:
-            data = self.energy_coordinator.data
+        data = self._get_energy_data()
+        if data:
             soc_value = data.get("battery_level")
             if soc_value is not None:
                 # battery_level is always 0-100 percentage from all coordinators
@@ -5614,8 +5733,9 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     def _get_actual_battery_power_w(self) -> float:
         """Get actual battery power from energy coordinator."""
-        if self.energy_coordinator and self.energy_coordinator.data:
-            power = self.energy_coordinator.data.get("battery_power", 0)
+        data = self._get_energy_data()
+        if data:
+            power = data.get("battery_power", 0)
             if power is not None:
                 return abs(float(power) * 1000) if abs(power) < 100 else abs(power)
         return 0.0
@@ -5917,14 +6037,14 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         dt_hours = min(elapsed_seconds / 3600, 10.0 / 60)
 
         # Need energy coordinator data and cached prices
-        if not self.energy_coordinator or not self.energy_coordinator.data:
+        data = self._get_energy_data()
+        if not data:
             _LOGGER.debug("Cost tracking skipped: no energy coordinator data")
             return
         if not self._last_import_prices or not self._last_export_prices:
             _LOGGER.debug("Cost tracking skipped: no cached prices yet")
             return
 
-        data = self.energy_coordinator.data
         # Energy coordinator stores values in kW
         grid_power_kw = float(data.get("grid_power", 0) or 0)
         solar_power_kw = float(data.get("solar_power", 0) or 0)

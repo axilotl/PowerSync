@@ -85,7 +85,13 @@ from .const import (
     BATTERY_SYSTEM_FRONIUS_RESERVA,
     BATTERY_SYSTEM_NEOVOLT,
     BATTERY_SYSTEM_SOLAREDGE,
+    BATTERY_SYSTEM_CUSTOM,
     BATTERY_SYSTEMS,
+    CONF_CUSTOM_BATTERY_LEVEL_ENTITY,
+    CONF_CUSTOM_BATTERY_POWER_ENTITY,
+    CONF_CUSTOM_GRID_POWER_ENTITY,
+    CONF_CUSTOM_SOLAR_POWER_ENTITY,
+    CONF_CUSTOM_LOAD_POWER_ENTITY,
     CONF_ESY_CONFIG_ENTRY_ID,
     # Solax battery system configuration
     CONF_SOLAX_CONFIG_ENTRY_ID,
@@ -774,6 +780,10 @@ def _optimization_provider_options_for_battery(
     battery_system: str | None,
 ) -> dict[str, str]:
     """Return native and Smart Optimization labels for a battery system."""
+    if battery_system == BATTERY_SYSTEM_CUSTOM:
+        return {
+            OPT_PROVIDER_POWERSYNC: "Smart Optimization planner (monitoring mode)",
+        }
     native_name = OPTIMIZATION_PROVIDER_NATIVE_NAMES.get(
         battery_system or BATTERY_SYSTEM_TESLA,
         "Battery",
@@ -1718,6 +1728,8 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return await self.async_step_neovolt_battery()
         elif self._selected_battery_system == BATTERY_SYSTEM_SOLAREDGE:
             return await self.async_step_solaredge()
+        elif self._selected_battery_system == BATTERY_SYSTEM_CUSTOM:
+            return await self.async_step_custom_battery()
         else:
             return await self.async_step_tesla_provider()
 
@@ -1749,6 +1761,7 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             **getattr(self, "_fronius_reserva_data", {}),
             **getattr(self, "_neovolt_data", {}),
             **getattr(self, "_solaredge_data", {}),
+            **getattr(self, "_custom_battery_data", {}),
             CONF_ELECTRICITY_PROVIDER: self._selected_electricity_provider,
         }
 
@@ -1792,6 +1805,7 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             BATTERY_SYSTEM_FRONIUS_RESERVA: "Fronius GEN24 storage",
             BATTERY_SYSTEM_NEOVOLT: "Neovolt",
             BATTERY_SYSTEM_SOLAREDGE: "SolarEdge",
+            BATTERY_SYSTEM_CUSTOM: "Custom",
         }.get(self._selected_battery_system, "")
 
         if battery_label:
@@ -2138,6 +2152,10 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 CONF_BATTERY_SYSTEM, BATTERY_SYSTEM_TESLA
             )
 
+            if self._selected_battery_system == BATTERY_SYSTEM_CUSTOM:
+                self._optimization_provider = OPT_PROVIDER_POWERSYNC
+                return await self.async_step_custom_battery()
+
             # Keep setup and post-setup optimization pages aligned.
             return await self.async_step_ml_options()
 
@@ -2158,6 +2176,150 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             mode=SelectSelectorMode.DROPDOWN,
                         )
                     ),
+                }
+            ),
+        )
+
+    async def async_step_custom_battery(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Configure a planner-only custom battery system using HA entities."""
+        default_capacity_wh, default_charge_w, default_discharge_w = (
+            _default_optimizer_specs_for(BATTERY_SYSTEM_CUSTOM)
+        )
+        default_capacity_kwh = default_capacity_wh / 1000
+        default_charge_kw = default_charge_w / 1000
+        default_discharge_kw = default_discharge_w / 1000
+
+        if user_input is not None:
+            self._custom_battery_data = {
+                CONF_CUSTOM_BATTERY_LEVEL_ENTITY: user_input[
+                    CONF_CUSTOM_BATTERY_LEVEL_ENTITY
+                ],
+                CONF_CUSTOM_BATTERY_POWER_ENTITY: user_input[
+                    CONF_CUSTOM_BATTERY_POWER_ENTITY
+                ],
+                CONF_CUSTOM_GRID_POWER_ENTITY: user_input[
+                    CONF_CUSTOM_GRID_POWER_ENTITY
+                ],
+                CONF_CUSTOM_SOLAR_POWER_ENTITY: user_input[
+                    CONF_CUSTOM_SOLAR_POWER_ENTITY
+                ],
+                CONF_CUSTOM_LOAD_POWER_ENTITY: user_input[
+                    CONF_CUSTOM_LOAD_POWER_ENTITY
+                ],
+            }
+            backup_reserve = (
+                user_input.get(
+                    CONF_OPTIMIZATION_BACKUP_RESERVE,
+                    int(DEFAULT_OPTIMIZATION_BACKUP_RESERVE * 100),
+                )
+                / 100.0
+            )
+            capacity_wh = _form_kwh_to_wh(
+                user_input.get(CONF_OPTIMIZATION_BATTERY_CAPACITY_WH),
+                default_capacity_kwh,
+            )
+            charge_w = _form_kw_to_w(
+                user_input.get(CONF_OPTIMIZATION_MAX_CHARGE_W),
+                default_charge_kw,
+            )
+            discharge_w = _form_kw_to_w(
+                user_input.get(CONF_OPTIMIZATION_MAX_DISCHARGE_W),
+                default_discharge_kw,
+            )
+            self._optimization_provider = OPT_PROVIDER_POWERSYNC
+            self._ml_options.update(
+                {
+                    CONF_OPTIMIZATION_PROVIDER: OPT_PROVIDER_POWERSYNC,
+                    CONF_OPTIMIZATION_ENABLED: True,
+                    CONF_MONITORING_MODE: True,
+                    CONF_OPTIMIZATION_EV_INTEGRATION: False,
+                    CONF_OPTIMIZATION_COST_FUNCTION: COST_FUNCTION_COST,
+                    CONF_OPTIMIZATION_BACKUP_RESERVE: backup_reserve,
+                    CONF_OPTIMIZATION_BATTERY_CAPACITY_WH: capacity_wh,
+                    CONF_OPTIMIZATION_MAX_CHARGE_W: charge_w,
+                    CONF_OPTIMIZATION_MAX_DISCHARGE_W: discharge_w,
+                    CONF_OPTIMIZATION_ALLOW_GRID_CHARGE: bool(
+                        user_input.get(CONF_OPTIMIZATION_ALLOW_GRID_CHARGE, True)
+                    ),
+                    CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED: False,
+                    CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED: False,
+                }
+            )
+            return self._create_final_entry()
+
+        return self.async_show_form(
+            step_id="custom_battery",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_CUSTOM_BATTERY_LEVEL_ENTITY
+                    ): EntitySelector(EntitySelectorConfig(domain="sensor")),
+                    vol.Required(
+                        CONF_CUSTOM_BATTERY_POWER_ENTITY
+                    ): EntitySelector(EntitySelectorConfig(domain="sensor")),
+                    vol.Required(
+                        CONF_CUSTOM_GRID_POWER_ENTITY
+                    ): EntitySelector(EntitySelectorConfig(domain="sensor")),
+                    vol.Required(
+                        CONF_CUSTOM_SOLAR_POWER_ENTITY
+                    ): EntitySelector(EntitySelectorConfig(domain="sensor")),
+                    vol.Required(
+                        CONF_CUSTOM_LOAD_POWER_ENTITY
+                    ): EntitySelector(EntitySelectorConfig(domain="sensor")),
+                    vol.Required(
+                        CONF_OPTIMIZATION_BACKUP_RESERVE,
+                        default=int(DEFAULT_OPTIMIZATION_BACKUP_RESERVE * 100),
+                    ): NumberSelector(
+                        NumberSelectorConfig(
+                            min=0,
+                            max=100,
+                            step=1,
+                            unit_of_measurement="%",
+                            mode=NumberSelectorMode.SLIDER,
+                        )
+                    ),
+                    vol.Required(
+                        CONF_OPTIMIZATION_BATTERY_CAPACITY_WH,
+                        default=default_capacity_kwh,
+                    ): NumberSelector(
+                        NumberSelectorConfig(
+                            min=1,
+                            max=200,
+                            step=0.1,
+                            unit_of_measurement="kWh",
+                            mode=NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Required(
+                        CONF_OPTIMIZATION_MAX_CHARGE_W,
+                        default=default_charge_kw,
+                    ): NumberSelector(
+                        NumberSelectorConfig(
+                            min=0.1,
+                            max=50,
+                            step=0.1,
+                            unit_of_measurement="kW",
+                            mode=NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Required(
+                        CONF_OPTIMIZATION_MAX_DISCHARGE_W,
+                        default=default_discharge_kw,
+                    ): NumberSelector(
+                        NumberSelectorConfig(
+                            min=0.1,
+                            max=50,
+                            step=0.1,
+                            unit_of_measurement="kW",
+                            mode=NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Required(
+                        CONF_OPTIMIZATION_ALLOW_GRID_CHARGE,
+                        default=True,
+                    ): BooleanSelector(),
                 }
             ),
         )
@@ -6564,10 +6726,13 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             CONF_BATTERY_SYSTEM, BATTERY_SYSTEM_TESLA
         )
         is_tesla = battery_system == BATTERY_SYSTEM_TESLA
+        is_custom = battery_system == BATTERY_SYSTEM_CUSTOM
         if user_input is not None:
             optimization_provider = user_input.get(
                 CONF_OPTIMIZATION_PROVIDER, OPT_PROVIDER_NATIVE
             )
+            if is_custom:
+                optimization_provider = OPT_PROVIDER_POWERSYNC
             optimization_enabled = bool(
                 user_input.get(
                     CONF_OPTIMIZATION_ENABLED,
@@ -6576,11 +6741,15 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             )
             if optimization_provider != OPT_PROVIDER_POWERSYNC:
                 optimization_enabled = False
+            if is_custom:
+                optimization_enabled = True
             new_data = dict(self.config_entry.data)
             new_options = dict(self.config_entry.options)
             new_data[CONF_OPTIMIZATION_PROVIDER] = optimization_provider
             new_options[CONF_OPTIMIZATION_ENABLED] = optimization_enabled
             monitoring_mode = bool(user_input.get(CONF_MONITORING_MODE, False))
+            if is_custom:
+                monitoring_mode = True
             new_data[CONF_MONITORING_MODE] = monitoring_mode
             new_options[CONF_MONITORING_MODE] = monitoring_mode
             if battery_system == BATTERY_SYSTEM_NEOVOLT:

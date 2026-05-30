@@ -167,6 +167,7 @@ BATTERY_SYSTEM_SAJ_H2 = "saj_h2"
 BATTERY_SYSTEM_FRONIUS_RESERVA = "fronius_reserva"
 BATTERY_SYSTEM_NEOVOLT = "neovolt"
 BATTERY_SYSTEM_SOLAREDGE = "solaredge"
+BATTERY_SYSTEM_CUSTOM = "custom"
 
 BATTERY_SYSTEMS = {
     BATTERY_SYSTEM_TESLA: "Tesla Powerwall — Fleet API or Teslemetry",
@@ -181,7 +182,14 @@ BATTERY_SYSTEMS = {
     BATTERY_SYSTEM_FRONIUS_RESERVA: "Fronius GEN24 storage (BYD/Reserva) — via Fronius Modbus integration",
     BATTERY_SYSTEM_NEOVOLT: "Neovolt/Bytewatt — via Neovolt Modbus integration",
     BATTERY_SYSTEM_SOLAREDGE: "SolarEdge Home Battery / inverter curtailment — HA entity bridge + Modbus TCP",
+    BATTERY_SYSTEM_CUSTOM: "Custom / external controller — planner only via Home Assistant entities",
 }
+
+CONF_CUSTOM_BATTERY_LEVEL_ENTITY = "custom_battery_level_entity"
+CONF_CUSTOM_BATTERY_POWER_ENTITY = "custom_battery_power_entity"
+CONF_CUSTOM_GRID_POWER_ENTITY = "custom_grid_power_entity"
+CONF_CUSTOM_SOLAR_POWER_ENTITY = "custom_solar_power_entity"
+CONF_CUSTOM_LOAD_POWER_ENTITY = "custom_load_power_entity"
 
 # Sungrow SH-series Battery System Configuration (Modbus TCP)
 # Hybrid inverters with integrated battery control
@@ -1661,6 +1669,7 @@ OPTIMIZATION_PROVIDER_NATIVE_NAMES = {
     BATTERY_SYSTEM_FRONIUS_RESERVA: "Fronius GEN24 storage",
     BATTERY_SYSTEM_NEOVOLT: "Neovolt",
     BATTERY_SYSTEM_SOLAREDGE: "SolarEdge",
+    BATTERY_SYSTEM_CUSTOM: "Custom / external controller",
 }
 
 OPTIMIZATION_PROVIDERS = {
@@ -1739,6 +1748,7 @@ BATTERY_CAPACITY_DEFAULTS = {
     BATTERY_SYSTEM_FRONIUS_RESERVA: 9600,  # Fronius GEN24 storage varies by module count
     BATTERY_SYSTEM_NEOVOLT: 20100,    # Bytewatt pack is commonly 20.1 kWh
     BATTERY_SYSTEM_SOLAREDGE: 10000,  # SolarEdge Home Battery varies by stack
+    BATTERY_SYSTEM_CUSTOM: 10000,     # User-provided external system
 }
 
 # Max charge/discharge power defaults by system (W)
@@ -1755,6 +1765,7 @@ BATTERY_POWER_DEFAULTS = {
     BATTERY_SYSTEM_FRONIUS_RESERVA: 5000,  # Reserva/GEN24 common operating target
     BATTERY_SYSTEM_NEOVOLT: 5000,      # Configurable in the upstream Neovolt integration
     BATTERY_SYSTEM_SOLAREDGE: 5000,    # Active-power curtailment only in v1
+    BATTERY_SYSTEM_CUSTOM: 5000,       # User-provided external system
 }
 
 # Optimization service

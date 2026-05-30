@@ -398,6 +398,12 @@ from .const import (
     DEFAULT_NEOVOLT_SURPLUS_BALANCER_MODE,
     DEFAULT_NEOVOLT_SOC_BALANCE_TOLERANCE,
     BATTERY_SYSTEM_SOLAREDGE,
+    BATTERY_SYSTEM_CUSTOM,
+    CONF_CUSTOM_BATTERY_LEVEL_ENTITY,
+    CONF_CUSTOM_BATTERY_POWER_ENTITY,
+    CONF_CUSTOM_GRID_POWER_ENTITY,
+    CONF_CUSTOM_SOLAR_POWER_ENTITY,
+    CONF_CUSTOM_LOAD_POWER_ENTITY,
     CONF_SOLAREDGE_HOST,
     CONF_SOLAREDGE_PORT,
     CONF_SOLAREDGE_SLAVE_ID,
@@ -15880,6 +15886,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         or entry.data.get(CONF_SOLAREDGE_HOST)
         or entry.data.get(CONF_SOLAREDGE_ENTITY_PREFIX)
     )
+    is_custom_battery = entry.data.get(CONF_BATTERY_SYSTEM) == BATTERY_SYSTEM_CUSTOM
     tesla_coordinator = None
     sigenergy_coordinator = None
     sungrow_coordinator = None
@@ -16278,6 +16285,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             hass,
             entity_prefix=solaredge_entity_prefix or "solaredge",
             entry_id=entry.entry_id,
+        )
+    elif is_custom_battery:
+        _LOGGER.info(
+            "Running in custom external-controller mode - using selected Home Assistant entities for planner telemetry"
         )
     else:
         # Get initial Tesla API token and provider
@@ -28793,6 +28804,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             elif is_solaredge:
                 battery_system = "solaredge"
                 energy_coordinator = solaredge_coordinator
+            elif is_custom_battery:
+                battery_system = BATTERY_SYSTEM_CUSTOM
+                energy_coordinator = None
             else:
                 battery_system = "tesla"
                 energy_coordinator = tesla_coordinator
