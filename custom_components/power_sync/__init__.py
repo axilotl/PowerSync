@@ -3879,6 +3879,40 @@ def _calendar_time_series_from_energy_summary(
     return [_calendar_current_entry(hass, coordinator, entry_id)]
 
 
+def _calendar_residual_entry(
+    current_entry: dict[str, Any],
+    existing_rows: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Return the current live total minus recorder rows already emitted."""
+    residual = {
+        "timestamp": current_entry.get("timestamp") or dt_util.now().isoformat(),
+        "solar_generation": 0,
+        "battery_discharge": 0,
+        "battery_charge": 0,
+        "grid_import": 0,
+        "grid_export": 0,
+        "home_consumption": 0,
+    }
+    for field in _CALENDAR_STATISTIC_FIELDS:
+        try:
+            current_wh = float(current_entry.get(field) or 0)
+        except (TypeError, ValueError):
+            current_wh = 0
+        emitted_wh = 0.0
+        for row in existing_rows:
+            try:
+                emitted_wh += float(row.get(field) or 0)
+            except (TypeError, ValueError):
+                continue
+        residual[field] = max(0, current_wh - emitted_wh)
+
+    return (
+        _calendar_entry_with_detail_aliases(residual)
+        if _calendar_entry_has_energy(residual)
+        else None
+    )
+
+
 def _calendar_period_range(period: str, end_date: str | None) -> tuple[datetime, datetime] | None:
     """Return local start/end datetimes for a calendar-history request."""
     now = dt_util.now()
@@ -3924,6 +3958,21 @@ def _calendar_range_includes_today(
     now = now or dt_util.now()
     today_start = datetime(now.year, now.month, now.day, tzinfo=now.tzinfo)
     return start_dt <= now and end_dt > today_start
+
+
+def _calendar_statistics_end_dt(
+    period: str,
+    end_dt: datetime,
+    now: datetime,
+    includes_today: bool,
+) -> datetime:
+    """Return the statistics query end while avoiding duplicated live totals."""
+    if not includes_today:
+        return end_dt
+    if period == "day":
+        return end_dt
+    today_start = datetime(now.year, now.month, now.day, tzinfo=now.tzinfo)
+    return min(end_dt, today_start)
 
 
 def _find_calendar_statistic_entity_ids(
@@ -3976,11 +4025,12 @@ async def _calendar_time_series_from_statistics(
     start_dt, end_dt = range_result
     now = dt_util.now()
     includes_today = _calendar_range_includes_today(start_dt, end_dt, now)
-
-    statistic_end_dt = end_dt
-    if includes_today:
-        today_start = datetime(now.year, now.month, now.day, tzinfo=now.tzinfo)
-        statistic_end_dt = min(statistic_end_dt, today_start)
+    statistic_end_dt = _calendar_statistics_end_dt(
+        period,
+        end_dt,
+        now,
+        includes_today,
+    )
 
     entity_ids = _find_calendar_statistic_entity_ids(hass, preferred_entry_id)
     if not entity_ids:
@@ -4049,7 +4099,12 @@ async def _calendar_time_series_from_statistics(
             hass, coordinator, preferred_entry_id
         )
         if _calendar_entry_has_energy(current_entry):
-            rows.append(current_entry)
+            if period == "day" and rows:
+                residual_entry = _calendar_residual_entry(current_entry, rows)
+                if residual_entry:
+                    rows.append(residual_entry)
+            else:
+                rows.append(current_entry)
 
     return rows
 

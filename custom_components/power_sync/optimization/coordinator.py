@@ -3090,13 +3090,33 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                                 and reserve_pct is not None
                                 and current_reserve != reserve_pct
                             ):
-                                _LOGGER.info(
-                                    "Optimizer: backup_reserve is %d%% while target "
-                                    "self-consumption reserve is %d%% — reapplying",
-                                    current_reserve,
-                                    reserve_pct,
-                                )
-                                reapply_backup_reserve = True
+                                if (
+                                    current_reserve > reserve_pct
+                                    and current_reserve <= soc_pct
+                                ):
+                                    previous_reserve_pct = reserve_pct
+                                    self._startup_backup_reserve = current_reserve
+                                    if self._optimizer:
+                                        self._optimizer.update_hardware_reserve(
+                                            current_reserve / 100
+                                        )
+                                    reserve_pct = current_reserve
+                                    _LOGGER.info(
+                                        "Optimizer: detected Tesla backup_reserve=%d%% "
+                                        "above cached target %d%% while SOC=%d%%; "
+                                        "treating it as the current hardware reserve",
+                                        current_reserve,
+                                        previous_reserve_pct,
+                                        soc_pct,
+                                    )
+                                else:
+                                    _LOGGER.info(
+                                        "Optimizer: backup_reserve is %d%% while target "
+                                        "self-consumption reserve is %d%% — reapplying",
+                                        current_reserve,
+                                        reserve_pct,
+                                    )
+                                    reapply_backup_reserve = True
                         if self.battery_system == "goodwe" and self.energy_coordinator:
                             coord_data = getattr(self.energy_coordinator, "data", None) or {}
                             try:
@@ -5324,7 +5344,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             warnings.append({
                 "type": "no_solar_forecast",
                 "title": "No Solar Forecast",
-                "message": "Solcast Solar is not configured. The optimizer is making decisions based on price only, without knowing when solar will be available. Install the Solcast Solar integration for optimal scheduling.",
+                "message": "No supported solar forecast provider is configured. The optimizer is making decisions based on price only, without knowing when solar will be available. Install Solcast Solar or Open-Meteo Solar Forecast for optimal scheduling.",
             })
         return warnings
 

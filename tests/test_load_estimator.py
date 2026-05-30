@@ -35,6 +35,7 @@ def _load_estimator_module(monkeypatch):
     const_module.SOLCAST_ESTIMATE = "estimate"
     const_module.SOLCAST_ESTIMATE10 = "estimate10"
     const_module.SOLCAST_ESTIMATE90 = "estimate90"
+    const_module.DOMAIN = "power_sync"
 
     monkeypatch.setitem(sys.modules, "homeassistant", ha_root)
     monkeypatch.setitem(sys.modules, "homeassistant.core", ha_core)
@@ -253,6 +254,103 @@ def test_active_away_mode_records_departure_without_excluding_history(monkeypatc
 
     assert calls["start_time"] == now - timedelta(days=30)
     assert history == [(during_away.last_changed, 9000.0)]
+
+
+def test_open_meteo_hass_data_watts_are_expanded_to_optimizer_slots(monkeypatch):
+    module = _load_estimator_module(monkeypatch)
+    start = datetime(2026, 5, 9, 10, 0, tzinfo=timezone.utc)
+    watts = {
+        start.isoformat(): 1000,
+        (start + timedelta(minutes=15)).isoformat(): 2000,
+        (start + timedelta(minutes=30)).isoformat(): 0,
+    }
+    hass = SimpleNamespace(
+        data={
+            "open_meteo_solar_forecast": {
+                "entry-1": SimpleNamespace(data=SimpleNamespace(watts=watts)),
+            }
+        },
+        states=_FakeStates(),
+    )
+    forecaster = module.SolcastForecaster(hass, interval_minutes=5)
+
+    forecast = _run(forecaster.get_forecast(horizon_hours=1, start_time=start))
+
+    assert forecast == [
+        1000.0,
+        1000.0,
+        1000.0,
+        2000.0,
+        2000.0,
+        2000.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+    ]
+
+
+def test_open_meteo_multiple_entries_are_summed(monkeypatch):
+    module = _load_estimator_module(monkeypatch)
+    start = datetime(2026, 5, 9, 10, 0, tzinfo=timezone.utc)
+    hass = SimpleNamespace(
+        data={
+            "open_meteo_solar_forecast": {
+                "north": SimpleNamespace(data=SimpleNamespace(watts={start: 1000})),
+                "west": SimpleNamespace(data=SimpleNamespace(watts={start: 500})),
+            }
+        },
+        states=_FakeStates(),
+    )
+    forecaster = module.SolcastForecaster(hass, interval_minutes=5)
+
+    forecast = _run(forecaster.get_forecast(horizon_hours=1, start_time=start))
+
+    assert forecast == [1500.0] * 12
+
+
+def test_open_meteo_sensor_watts_attributes_are_used_without_hass_data(monkeypatch):
+    module = _load_estimator_module(monkeypatch)
+    start = datetime(2026, 5, 9, 10, 0, tzinfo=timezone.utc)
+    state = SimpleNamespace(
+        entity_id="sensor.roof_energy_production_today",
+        state="12000",
+        attributes={
+            "watts": {
+                start.isoformat(): 800,
+                (start + timedelta(minutes=15)).isoformat(): 1200,
+            }
+        },
+    )
+    hass = SimpleNamespace(
+        data={},
+        states=_FakeStates([state]),
+    )
+    forecaster = module.SolcastForecaster(hass, interval_minutes=5)
+
+    forecast = _run(forecaster.get_forecast(horizon_hours=1, start_time=start))
+
+    assert forecast[:6] == [800.0, 800.0, 800.0, 1200.0, 1200.0, 1200.0]
+
+
+class _FakeStates:
+    def __init__(self, states=None, state_map=None):
+        self._states = states or []
+        self._state_map = state_map or {}
+
+    def get(self, entity_id):
+        return self._state_map.get(entity_id)
+
+    def async_all(self, domain=None):
+        if domain is None:
+            return self._states
+        return [
+            state
+            for state in self._states
+            if getattr(state, "entity_id", "").startswith(f"{domain}.")
+        ]
 
 
 def _install_fake_recorder(monkeypatch, history, calls):
