@@ -39,6 +39,7 @@
 | **Fronius GEN24 storage** (BYD Battery-Box / Reserva) | Via [Fronius Modbus](https://github.com/callifo/fronius_modbus) companion integration (HACS) | LP optimizer, force charge/discharge, hold SOC, restore normal, backup reserve |
 | **Neovolt / Bytewatt** | Via [Neovolt Modbus](https://github.com/pvandenh/NeovoltBattery_ModbusPlugin) companion integration (HACS) | LP optimizer, force charge/discharge, backup reserve |
 | **SolarEdge Home Battery** | Via SolarEdge HA storage-control entities, plus Modbus TCP/entity fallback for inverter curtailment | Force charge/discharge, restore normal, backup reserve, Hold SOC, Smart Optimization dispatch, mobile controls, telemetry, live flow, usage stats, and active-power curtailment when the writable SolarEdge storage entities are exposed |
+| **Custom / external controller** | Existing Home Assistant entities for battery SOC, battery power, grid power, solar power, and home load | Planner-only Smart Optimization in monitoring mode. PowerSync exposes optimizer decisions and telemetry; your existing controller or automations keep ownership of hardware dispatch |
 
 ### AC-Coupled Inverter Curtailment
 
@@ -77,7 +78,7 @@ Solar inverters that bypass the battery can be curtailed during negative feed-in
 1. **Install** via [HACS](#installation) (custom repository)
 2. **Add Integration** — Settings > Devices & Services > Add Integration > "PowerSync"
 3. **Pick your electricity provider** and enter API credentials if required
-4. **Connect your battery system** and enter connection details
+4. **Connect your battery system** and enter connection details, or choose **Custom / external controller** and select your existing Home Assistant telemetry entities
 5. **Done!** Sensors appear automatically and a **PowerSync dashboard** is auto-created in your sidebar. Enable [Smart Optimization](https://github.com/bolagnaise/PowerSync/wiki/Smart-Optimization) for automated scheduling, or install the [Mobile App](#mobile-app) for remote control.
 
 > **Tesla Powerwall users — two options:**
@@ -91,7 +92,7 @@ Solar inverters that bypass the battery can be curtailed during negative feed-in
 ### Prerequisites
 
 - Home Assistant with [HACS](https://hacs.xyz/) installed
-- A supported battery system with network access
+- A supported battery system with network access, or existing Home Assistant sensors for a custom/external controller setup
 - Electricity provider credentials where required: Amber API token, Localvolts API key + Partner ID, and optional credentials for Flow Power portal or Octopus Saving Sessions
 
 ### Steps
@@ -112,7 +113,7 @@ Or manually:
 
 | Feature | Description | Wiki |
 |---------|-------------|------|
-| **Battery System Setup** | Tesla, FoxESS, Sigenergy, GoodWe, Sungrow, AlphaESS, ESY Sunhome, Solax Hybrid, SAJ H2/HS2, Fronius GEN24 storage connection guides | [Setup Guide](https://github.com/bolagnaise/PowerSync/wiki/Battery-System-Setup) |
+| **Battery System Setup** | Tesla, FoxESS, Sigenergy, GoodWe, Sungrow, AlphaESS, ESY Sunhome, Solax Hybrid, SAJ H2/HS2, Fronius GEN24 storage, and custom/external controller setup guides | [Setup Guide](https://github.com/bolagnaise/PowerSync/wiki/Battery-System-Setup) |
 | **Smart Optimization** | Built-in LP optimizer calculates optimal charge/discharge schedule using prices, solar, and load. **Solar forecasting via Solcast or Open-Meteo Solar Forecast must be configured for accurate scheduling.** | [Details](https://github.com/bolagnaise/PowerSync/wiki/Smart-Optimization) |
 | **EV Smart Charging** | Coordinate EV charging with battery optimization — Solar, Cheapest, Deadline modes | [Details](https://github.com/bolagnaise/PowerSync/wiki/EV-Smart-Charging) |
 | **Advanced Features** | AEMO spike detection, solar curtailment, spike protection, export boost, **off-grid control** | [Details](https://github.com/bolagnaise/PowerSync/wiki/Advanced-Features) |
