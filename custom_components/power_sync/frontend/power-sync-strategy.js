@@ -216,7 +216,7 @@ class PowerSyncChart extends HTMLElement {
 
     for (const series of chartSeries) {
       if (series.data.length === 0) continue;
-      const step = config.stepLine;
+      const step = config.stepLine !== undefined ? config.stepLine : mode === 'history';
       let pathD = '';
 
       for (let i = 0; i < series.data.length; i++) {
@@ -760,7 +760,7 @@ class PowerSyncChart extends HTMLElement {
   _statePoint(stateObj, now) {
     const value = Number(stateObj?.state);
     if (!Number.isFinite(value)) return [];
-    const changed = Date.parse(stateObj?.last_changed || stateObj?.last_updated || '');
+    const changed = Date.parse(stateObj?.last_updated || stateObj?.last_changed || '');
     const t = Number.isFinite(changed) ? changed : now;
     return [[Math.max(t, now - 3600000), value], [now, value]];
   }
