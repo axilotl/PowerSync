@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import sys
 import types
@@ -122,6 +123,45 @@ coordinator_mod = _load_module(
     f"{LOCAL_PKG}.coordinator",
     ROOT / "powerwall_local" / "coordinator.py",
 )
+
+
+def test_loopback_host_is_not_treated_as_local_access():
+    assert client_mod.is_loopback_host("127.0.0.1")
+    assert client_mod.is_loopback_host("localhost")
+    assert client_mod.is_loopback_host("::1")
+    assert not client_mod.is_loopback_host("192.168.1.50")
+
+
+def test_cloud_only_client_does_not_poll_loopback_gateway():
+    client = client_mod.PowerwallLocalClient(
+        "127.0.0.1",
+        version=client_mod.PowerwallVersion.PW3,
+        private_key_pem=b"dummy",
+        din="DIN123",
+        local_access_enabled=True,
+    )
+
+    try:
+        asyncio.run(client.get_snapshot())
+    except exceptions_stub.PowerwallUnreachableError as err:
+        assert "gateway IP" in str(err)
+    else:
+        raise AssertionError("loopback gateway host should not be polled")
+
+
+def test_coordinator_skips_poll_when_local_access_disabled():
+    class _NoLocalClient:
+        local_access_enabled = False
+
+        async def get_snapshot(self):
+            raise AssertionError("disabled local client should not be polled")
+
+    coord = coordinator_mod.PowerwallLocalCoordinator.__new__(
+        coordinator_mod.PowerwallLocalCoordinator
+    )
+    coord._client = _NoLocalClient()
+
+    assert asyncio.run(coord._async_update_data()) is None
 
 
 def _coordinator_with_snapshot(ev_power_kw: float = 0.0):
@@ -270,6 +310,30 @@ def test_local_status_api_load_never_goes_negative_after_ev_subtraction():
     coord = _coordinator_with_snapshot(ev_power_kw=12.0)
 
     assert coord.snapshot_as_api()["load_w"] == 0.0
+
+
+def test_local_status_api_marks_stale_snapshot_unavailable_when_unreachable():
+    coord = _coordinator_with_snapshot()
+    coord._consecutive_failures = 2
+
+    api = coord.snapshot_as_api()
+
+    assert api["available"] is False
+    assert api["reachable"] is False
+    assert api["snapshot_available"] is True
+    assert api["soc_percent"] == 88.0
+
+
+def test_local_status_api_marks_missing_snapshot_unavailable():
+    coord = _coordinator_with_snapshot()
+    coord.data = None
+    coord._consecutive_failures = 1
+
+    api = coord.snapshot_as_api()
+
+    assert api["available"] is False
+    assert api["reachable"] is False
+    assert api["snapshot_available"] is False
 
 
 def test_snapshot_from_dcq_off_grid_mode():

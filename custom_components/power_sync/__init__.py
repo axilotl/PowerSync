@@ -5041,6 +5041,7 @@ class BatteryHealthView(HomeAssistantView):
             serial_from_din,
             trim_excess_pw3_follower_placeholders,
         )
+        from .powerwall_local.client import is_loopback_host
 
         private_key_pem = entry.data.get(CONF_POWERWALL_LOCAL_PRIVATE_KEY)
         din = entry.data.get(CONF_POWERWALL_LOCAL_DIN)
@@ -5069,8 +5070,8 @@ class BatteryHealthView(HomeAssistantView):
         # gateway is unreachable (e.g. user is away from home).
         data = None
         source = "ha_local_tedapi"
-        local_ip = entry.data.get(CONF_POWERWALL_LOCAL_IP)
-        if local_ip:
+        local_ip = str(entry.data.get(CONF_POWERWALL_LOCAL_IP) or "").strip()
+        if local_ip and not is_loopback_host(local_ip):
             try:
                 from .powerwall_local.transport import get_insecure_ssl_context
                 from .powerwall_local import tedapi_combined_pb2 as _pb2
@@ -5110,6 +5111,11 @@ class BatteryHealthView(HomeAssistantView):
                             )
             except Exception as err:
                 _LOGGER.debug("fleet_api_bms: local gateway unreachable: %s", err)
+        elif local_ip:
+            _LOGGER.debug(
+                "fleet_api_bms: skipping loopback placeholder gateway host %s",
+                local_ip,
+            )
 
         if data is None:
             # Fleet API relay fallback.
@@ -5175,7 +5181,11 @@ class BatteryHealthView(HomeAssistantView):
             else:
                 local_client = local_runtime.get("client") or getattr(local_coordinator, "client", None)
                 local_transport = getattr(local_client, "_transport", None)
-                if local_transport is not None:
+                if (
+                    local_transport is not None
+                    and getattr(local_client, "local_access_enabled", True) is not False
+                    and not is_loopback_host(getattr(local_client, "host", None))
+                ):
                     gateway_config = await local_transport.read_config(din)
         except Exception as err:
             _LOGGER.debug("fleet_api_bms: config.json read for expansion mapping failed: %s", err)
@@ -5330,8 +5340,8 @@ class BatteryHealthView(HomeAssistantView):
                 kept_full_wh = sum(p["nominalFullPackEnergyWh"] for p in kept)
                 if kept_full_wh > 0 and abs(current_wh - kept_full_wh) / current_wh < 0.10:
                     ghost_count = len(ghost_candidates)
-                    _LOGGER.warning(
-                        "fleet_api_bms: Dropping %d ghost expansion pack(s) (no serial + near-empty) — "
+                    _LOGGER.info(
+                        "fleet_api_bms: dropping %d placeholder expansion pack(s) (no serial + near-empty) — "
                         "system %.0f Wh matches real-pack sum %.0f Wh (ratio %.3f); "
                         "expansion slots registered but not physically installed",
                         ghost_count, current_wh, kept_full_wh, kept_full_wh / current_wh,

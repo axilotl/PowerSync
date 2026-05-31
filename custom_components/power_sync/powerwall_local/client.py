@@ -29,6 +29,12 @@ from .transport import TEDAPIv1rTransport
 
 _LOGGER = logging.getLogger(__name__)
 
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]"}
+
+
+def is_loopback_host(host: str | None) -> bool:
+    """Return True for loopback placeholders that are not real gateway hosts."""
+    return str(host or "").strip().lower() in _LOOPBACK_HOSTS
 
 
 class PowerwallVersion(str, Enum):
@@ -170,6 +176,11 @@ class PowerwallLocalClient:
 
     async def get_snapshot(self) -> PowerwallSnapshot:
         """Fetch live status via RSA-signed DCQ + config.json read in parallel."""
+        if not self._local_access_enabled or is_loopback_host(self._host):
+            raise PowerwallUnreachableError(
+                "Powerwall local access disabled; gateway IP is not configured"
+            )
+
         dcq_task = self._fetch_dcq_local()
         cfg_task = self._transport.read_config(self._din)
         dcq, cfg = await asyncio.gather(dcq_task, cfg_task, return_exceptions=True)

@@ -108,6 +108,9 @@ class PowerwallLocalCoordinator(DataUpdateCoordinator[PowerwallSnapshot | None])
         self._consecutive_failures = 0
 
     async def _async_update_data(self) -> PowerwallSnapshot | None:
+        if not self._client.local_access_enabled:
+            return None
+
         try:
             snap = await self._client.get_snapshot()
         except PowerwallSignatureError as err:
@@ -181,6 +184,7 @@ class PowerwallLocalCoordinator(DataUpdateCoordinator[PowerwallSnapshot | None])
             return {
                 "available": False,
                 "reachable": self.reachable,
+                "snapshot_available": False,
                 "last_success_ts": self._last_success_ts,
                 "needs_repair": self._needs_repair,
             }
@@ -189,9 +193,11 @@ class PowerwallLocalCoordinator(DataUpdateCoordinator[PowerwallSnapshot | None])
         if load_w is not None:
             load_w = max(0.0, load_w - ev_power_w)
 
+        local_reachable = self.reachable
         return {
-            "available": True,
-            "reachable": True,
+            "available": local_reachable,
+            "reachable": local_reachable,
+            "snapshot_available": True,
             "last_success_ts": self._last_success_ts,
             "needs_repair": self._needs_repair,
             "soc_percent": snap.soc,

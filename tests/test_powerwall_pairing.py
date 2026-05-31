@@ -76,3 +76,12 @@ def test_list_authorized_clients_payload_uses_same_envelope():
     assert payload["command_properties"]["message"]["authorization"] == {
         "list_authorized_clients_request": {}
     }
+
+
+def test_pairing_success_schedules_local_warmup_without_blocking():
+    views_source = (ROOT / "views.py").read_text()
+    button_source = (ROOT.parent / "button.py").read_text()
+
+    assert "hass.async_create_task(_warm_powerwall_local_coordinator" in views_source
+    assert "_schedule_local_coordinator_warmup(self._hass, entry)" in views_source
+    assert "_schedule_local_coordinator_warmup(hass, entry)" in button_source
