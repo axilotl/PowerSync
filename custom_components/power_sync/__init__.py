@@ -19833,14 +19833,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         # Get prices from any available price coordinator if not provided
         if feedin_price is None:
-            _price_coord = amber_coordinator or localvolts_coordinator or aemo_sensor_coordinator or octopus_coordinator
-            if _price_coord and _price_coord.data:
-                current_prices = _price_coord.data.get("current", [])
-                for price_data in current_prices:
-                    if price_data.get("channelType") == "feedIn":
-                        feedin_price = price_data.get("perKwh", 0)
-                    elif price_data.get("channelType") == "general":
-                        import_price = price_data.get("perKwh", 0)
+            feedin_price, import_price, price_source = get_current_prices_for_curtailment(
+                entry_data,
+                (
+                    amber_coordinator,
+                    localvolts_coordinator,
+                    aemo_sensor_coordinator,
+                    octopus_coordinator,
+                ),
+            )
+            if price_source == "tariff_schedule":
+                _LOGGER.debug("FoxESS curtailment using feed-in price from tariff schedule")
 
         if feedin_price is None:
             _LOGGER.warning("FoxESS curtailment: no feed-in price available")
@@ -19918,14 +19921,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         # Get prices from any available price coordinator if not provided
         if feedin_price is None:
-            _price_coord = amber_coordinator or localvolts_coordinator or aemo_sensor_coordinator or octopus_coordinator
-            if _price_coord and _price_coord.data:
-                current_prices = _price_coord.data.get("current", [])
-                for price_data in current_prices:
-                    if price_data.get("channelType") == "feedIn":
-                        feedin_price = price_data.get("perKwh", 0)
-                    elif price_data.get("channelType") == "general":
-                        import_price = price_data.get("perKwh", 0)
+            feedin_price, import_price, price_source = get_current_prices_for_curtailment(
+                entry_data,
+                (
+                    amber_coordinator,
+                    localvolts_coordinator,
+                    aemo_sensor_coordinator,
+                    octopus_coordinator,
+                ),
+            )
+            if price_source == "tariff_schedule":
+                _LOGGER.debug("Sigenergy curtailment using feed-in price from tariff schedule")
 
         if feedin_price is None:
             _LOGGER.warning("Sigenergy curtailment: no feed-in price available")
@@ -19996,17 +20002,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         current_state = entry_data.get("alphaess_curtailment_state", "normal")
 
         if feedin_price is None:
-            _price_coord = (
-                amber_coordinator or localvolts_coordinator
-                or aemo_sensor_coordinator or octopus_coordinator
+            feedin_price, import_price, price_source = get_current_prices_for_curtailment(
+                entry_data,
+                (
+                    amber_coordinator,
+                    localvolts_coordinator,
+                    aemo_sensor_coordinator,
+                    octopus_coordinator,
+                ),
             )
-            if _price_coord and _price_coord.data:
-                current_prices = _price_coord.data.get("current", [])
-                for price_data in current_prices:
-                    if price_data.get("channelType") == "feedIn":
-                        feedin_price = price_data.get("perKwh", 0)
-                    elif price_data.get("channelType") == "general":
-                        import_price = price_data.get("perKwh", 0)
+            if price_source == "tariff_schedule":
+                _LOGGER.debug("AlphaESS curtailment using feed-in price from tariff schedule")
 
         if feedin_price is None:
             _LOGGER.warning("AlphaESS curtailment: no feed-in price available")
@@ -20069,17 +20075,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         current_state = entry_data.get("solaredge_curtailment_state", "normal")
 
         if feedin_price is None:
-            _price_coord = (
-                amber_coordinator or localvolts_coordinator
-                or aemo_sensor_coordinator or octopus_coordinator
+            feedin_price, import_price, price_source = get_current_prices_for_curtailment(
+                entry_data,
+                (
+                    amber_coordinator,
+                    localvolts_coordinator,
+                    aemo_sensor_coordinator,
+                    octopus_coordinator,
+                ),
             )
-            if _price_coord and _price_coord.data:
-                current_prices = _price_coord.data.get("current", [])
-                for price_data in current_prices:
-                    if price_data.get("channelType") == "feedIn":
-                        feedin_price = price_data.get("perKwh", 0)
-                    elif price_data.get("channelType") == "general":
-                        import_price = price_data.get("perKwh", 0)
+            if price_source == "tariff_schedule":
+                _LOGGER.debug("SolarEdge curtailment using feed-in price from tariff schedule")
 
         if feedin_price is None:
             _LOGGER.warning("SolarEdge curtailment: no feed-in price available")
@@ -20173,17 +20179,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         current_state = entry_data.get("goodwe_curtailment_state", "normal")
 
         if feedin_price is None:
-            _price_coord = (
-                amber_coordinator or localvolts_coordinator
-                or aemo_sensor_coordinator or octopus_coordinator
+            feedin_price, import_price, price_source = get_current_prices_for_curtailment(
+                entry_data,
+                (
+                    amber_coordinator,
+                    localvolts_coordinator,
+                    aemo_sensor_coordinator,
+                    octopus_coordinator,
+                ),
             )
-            if _price_coord and _price_coord.data:
-                current_prices = _price_coord.data.get("current", [])
-                for price_data in current_prices:
-                    if price_data.get("channelType") == "feedIn":
-                        feedin_price = price_data.get("perKwh", 0)
-                    elif price_data.get("channelType") == "general":
-                        import_price = price_data.get("perKwh", 0)
+            if price_source == "tariff_schedule":
+                _LOGGER.debug("GoodWe curtailment using feed-in price from tariff schedule")
 
         if feedin_price is None:
             _LOGGER.warning("GoodWe curtailment: no feed-in price available")
@@ -20454,38 +20460,32 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
             return
 
-        # Find an available price coordinator (Amber, AEMO, or Octopus)
-        _price_coord = amber_coordinator or localvolts_coordinator or aemo_sensor_coordinator or octopus_coordinator
-        if not _price_coord:
-            _LOGGER.debug("Solar curtailment skipped - no price coordinator available")
-            return
-
         _LOGGER.info("=== Starting solar curtailment check ===")
 
         try:
-            # Refresh prices to get latest feed-in price
-            await _price_coord.async_request_refresh()
+            price_coordinators = (
+                amber_coordinator,
+                localvolts_coordinator,
+                aemo_sensor_coordinator,
+                octopus_coordinator,
+            )
 
-            if not _price_coord.data:
-                _LOGGER.error("No price data available for curtailment check")
-                return
+            # Refresh live providers when present, then fall back to tariff_schedule
+            # so static/custom tariffs can drive curtailment for any provider.
+            for price_coord in price_coordinators:
+                if price_coord is None:
+                    continue
+                refresh = getattr(price_coord, "async_request_refresh", None)
+                if callable(refresh):
+                    await refresh()
 
-            # Get feed-in (export) price from current prices
-            current_prices = _price_coord.data.get("current", [])
-            if not current_prices:
-                _LOGGER.warning("No current price data available for curtailment check")
-                return
-
-            feedin_price = None
-            import_price = None  # General/buy price
-            for price_data in current_prices:
-                if price_data.get("channelType") == "feedIn":
-                    feedin_price = price_data.get("perKwh", 0)
-                elif price_data.get("channelType") == "general":
-                    import_price = price_data.get("perKwh", 0)
+            feedin_price, import_price, price_source = get_current_prices_for_curtailment(
+                entry_data,
+                price_coordinators,
+            )
 
             if feedin_price is None:
-                _LOGGER.warning("No feed-in price found in price data")
+                _LOGGER.warning("No feed-in price available for curtailment check")
                 return
 
             # Amber returns feed-in prices as NEGATIVE when you're paid to export
@@ -20493,7 +20493,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             # e.g., feedin_price = +5.00 means you pay 5c/kWh to export (bad!)
             # So we want to curtail when feedin_price > 0 (user would pay to export)
             export_earnings = -feedin_price  # Convert to positive = earnings per kWh
-            _LOGGER.info(f"Current prices from Amber: import={import_price}c/kWh, export earnings={export_earnings:.2f}c/kWh")
+            _LOGGER.info(
+                "Current prices for curtailment from %s: import=%sc/kWh, export earnings=%.2fc/kWh",
+                price_source or "unknown",
+                import_price,
+                export_earnings,
+            )
 
             # Get current grid export settings from Tesla
             # Get fresh token in case it was refreshed by tesla_fleet integration
@@ -20824,26 +20829,40 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         try:
             # Extract feed-in price from WebSocket data
+            price_source = "websocket"
             feedin_data = websocket_data.get('feedIn', {}) if websocket_data else None
-            if not feedin_data:
-                _LOGGER.warning("No feed-in data in WebSocket price update")
-                return
-
-            feedin_price = feedin_data.get('perKwh')
-            if feedin_price is None:
-                _LOGGER.warning("No perKwh in WebSocket feed-in data")
-                return
+            feedin_price = feedin_data.get('perKwh') if feedin_data else None
 
             # Also extract import price for smart AC-coupled curtailment
             general_data = websocket_data.get('general', {}) if websocket_data else None
             import_price = general_data.get('perKwh') if general_data else None
+
+            if feedin_price is None:
+                feedin_price, import_price, price_source = get_current_prices_for_curtailment(
+                    entry_data,
+                    (
+                        amber_coordinator,
+                        localvolts_coordinator,
+                        aemo_sensor_coordinator,
+                        octopus_coordinator,
+                    ),
+                )
+
+            if feedin_price is None:
+                _LOGGER.warning("No feed-in price available for websocket curtailment check")
+                return
 
             # Amber returns feed-in prices as NEGATIVE when you're paid to export
             # e.g., feedin_price = -10.44 means you get paid 10.44c/kWh (good!)
             # e.g., feedin_price = +5.00 means you pay 5c/kWh to export (bad!)
             # So we want to curtail when feedin_price > 0 (user would pay to export)
             export_earnings = -feedin_price  # Convert to positive = earnings per kWh
-            _LOGGER.info(f"Current prices (WebSocket): import={import_price}c/kWh, export earnings={export_earnings:.2f}c/kWh")
+            _LOGGER.info(
+                "Current prices for curtailment from %s: import=%sc/kWh, export earnings=%.2fc/kWh",
+                price_source or "unknown",
+                import_price,
+                export_earnings,
+            )
 
             # Get current grid export settings from Tesla
             # Get fresh token in case it was refreshed by tesla_fleet integration

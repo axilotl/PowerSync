@@ -871,12 +871,30 @@ def test_sungrow_curtailment_options_expose_ac_inverter_path():
     assert method_source is not None
     sungrow_branch = method_source[
         method_source.index("elif is_sungrow:") : method_source.index(
-            "else:\n                # Tesla"
+            "elif is_tesla:"
         )
     ]
 
     assert "CONF_AC_INVERTER_CURTAILMENT_ENABLED" in sungrow_branch
     assert "return await self.async_step_inverter_brand()" in sungrow_branch
+
+
+def test_custom_tariff_export_rates_allow_negative_values():
+    source = CONFIG_FLOW_PATH.read_text()
+    custom_method = _options_flow_method("async_step_custom_tariff_options")
+    period_method = _options_flow_method("async_step_tariff_period_options")
+    custom_source = ast.get_source_segment(source, custom_method)
+    period_source = ast.get_source_segment(source, period_method)
+
+    assert custom_source is not None
+    assert period_source is not None
+
+    assert 'vol.Required("fit_rate", default=default_fit)' in custom_source
+    assert "min=-100, max=100" in custom_source
+    assert 'vol.Required("export_rate", default=5)' in period_source
+    assert "min=-100, max=200" in period_source
+    assert "Default export earnings" in STRINGS_PATH.read_text()
+    assert "Use a negative value when you pay to export" in TRANSLATIONS_PATH.read_text()
 
 
 def test_tesla_curtailment_options_expose_powerwall_offgrid_fallback():
@@ -886,19 +904,39 @@ def test_tesla_curtailment_options_expose_powerwall_offgrid_fallback():
 
     assert method_source is not None
     tesla_branch = method_source[
-        method_source.index("else:\n                # Tesla") : method_source.index(
+        method_source.index("elif is_tesla:\n                # Tesla") : method_source.index(
             "# No AC inverter - route to weather options"
         )
     ]
     tesla_schema_branch = method_source[
-        method_source.index("else:\n            # Tesla") : method_source.index(
-            "return self.async_show_form"
-        )
+        method_source.index("if is_tesla:\n            # Tesla Powerwall")
+        : method_source.index("return self.async_show_form")
     ]
 
     assert "CONF_POWERWALL_OFFGRID_AS_CURTAILMENT" in tesla_branch
     assert "CONF_POWERWALL_OFFGRID_AS_CURTAILMENT" in tesla_schema_branch
+    assert "CONF_AC_INVERTER_CURTAILMENT_ENABLED" in method_source
+    assert "battery_system = self._get_option(" in method_source
     assert "is_tesla = battery_system == BATTERY_SYSTEM_TESLA" in method_source
+
+
+def test_non_tesla_curtailment_options_do_not_expose_powerwall_controls():
+    source = CONFIG_FLOW_PATH.read_text()
+    method = _options_flow_method("async_step_curtailment_options")
+    method_source = ast.get_source_segment(source, method)
+
+    assert method_source is not None
+    non_tesla_submit_branch = method_source[
+        method_source.index("else:\n                ac_enabled = user_input.get(")
+        : method_source.index("# Build schema based on battery system")
+    ]
+
+    assert "CONF_POWERWALL_OFFGRID_AS_CURTAILMENT] = False" in non_tesla_submit_branch
+    assert "battery_system = self._get_option(" in method_source
+    assert "is_tesla = battery_system == BATTERY_SYSTEM_TESLA" in method_source
+    assert "if is_tesla:\n            # Tesla Powerwall" in method_source
+    assert "else:\n                ac_enabled = user_input.get(" in method_source
+    assert "else:\n            # Tesla" not in method_source
 
 
 def test_powerwall_offgrid_fallback_toggle_is_translated():

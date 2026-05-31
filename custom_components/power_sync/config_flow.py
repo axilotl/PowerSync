@@ -8655,7 +8655,7 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         """Dedicated step for Solar Curtailment configuration."""
-        battery_system = self.config_entry.data.get(
+        battery_system = self._get_option(
             CONF_BATTERY_SYSTEM, BATTERY_SYSTEM_TESLA
         )
         is_sigenergy = battery_system == BATTERY_SYSTEM_SIGENERGY
@@ -8693,11 +8693,15 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 ac_enabled = user_input.get(
                     CONF_AC_INVERTER_CURTAILMENT_ENABLED, False
                 )
-                self._curtailment_options[CONF_AC_INVERTER_CURTAILMENT_ENABLED] = ac_enabled
+                self._curtailment_options[CONF_AC_INVERTER_CURTAILMENT_ENABLED] = (
+                    ac_enabled
+                )
                 if is_tesla:
                     self._curtailment_options[CONF_POWERWALL_OFFGRID_AS_CURTAILMENT] = (
                         user_input.get(CONF_POWERWALL_OFFGRID_AS_CURTAILMENT, False)
                     )
+                else:
+                    self._curtailment_options[CONF_POWERWALL_OFFGRID_AS_CURTAILMENT] = False
                 if ac_enabled:
                     return await self.async_step_inverter_brand()
                 return self._save_and_finish(self._curtailment_options)
@@ -8734,7 +8738,7 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 if ac_enabled:
                     return await self.async_step_inverter_brand()
                 return await self.async_step_weather_options()
-            else:
+            elif is_tesla:
                 # Tesla - check if AC inverter curtailment needs configuration
                 ac_enabled = user_input.get(
                     CONF_AC_INVERTER_CURTAILMENT_ENABLED, False
@@ -8752,12 +8756,29 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
 
                 # No AC inverter - route to weather options
                 return await self.async_step_weather_options()
+            else:
+                ac_enabled = user_input.get(
+                    CONF_AC_INVERTER_CURTAILMENT_ENABLED, False
+                )
+                self._curtailment_options[CONF_AC_INVERTER_CURTAILMENT_ENABLED] = (
+                    ac_enabled
+                )
+                self._curtailment_options[CONF_POWERWALL_OFFGRID_AS_CURTAILMENT] = False
+                if ac_enabled:
+                    return await self.async_step_inverter_brand()
+                return await self.async_step_weather_options()
 
         # Build schema based on battery system
         schema_dict: dict[vol.Marker, Any] = {
             vol.Optional(
                 CONF_BATTERY_CURTAILMENT_ENABLED,
                 default=self._get_option(CONF_BATTERY_CURTAILMENT_ENABLED, False),
+            ): BooleanSelector(),
+            vol.Optional(
+                CONF_AC_INVERTER_CURTAILMENT_ENABLED,
+                default=self._get_option(
+                    CONF_AC_INVERTER_CURTAILMENT_ENABLED, False
+                ),
             ): BooleanSelector(),
         }
 
@@ -8771,36 +8792,8 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     ),
                 )
             ] = BooleanSelector()
-            # AC-coupled inverter curtailment (e.g. Enphase microinverters)
-            schema_dict[
-                vol.Optional(
-                    CONF_AC_INVERTER_CURTAILMENT_ENABLED,
-                    default=self._get_option(
-                        CONF_AC_INVERTER_CURTAILMENT_ENABLED, False
-                    ),
-                )
-            ] = BooleanSelector()
-        elif is_sungrow:
-            # Separate SG-series PV inverters are not part of the SH battery
-            # Modbus coordinator, so expose the AC inverter path for them.
-            schema_dict[
-                vol.Optional(
-                    CONF_AC_INVERTER_CURTAILMENT_ENABLED,
-                    default=self._get_option(
-                        CONF_AC_INVERTER_CURTAILMENT_ENABLED, False
-                    ),
-                )
-            ] = BooleanSelector()
-        else:
-            # Tesla AC inverter curtailment option
-            schema_dict[
-                vol.Optional(
-                    CONF_AC_INVERTER_CURTAILMENT_ENABLED,
-                    default=self._get_option(
-                        CONF_AC_INVERTER_CURTAILMENT_ENABLED, False
-                    ),
-                )
-            ] = BooleanSelector()
+        if is_tesla:
+            # Tesla Powerwall off-grid fallback option
             schema_dict[
                 vol.Optional(
                     CONF_POWERWALL_OFFGRID_AS_CURTAILMENT,
@@ -10662,7 +10655,7 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             for k, v in sell_charges.items():
                 if k.startswith("OFF_PEAK") or k == "ALL":
                     if isinstance(v, (int, float)):
-                        default_fit = int(v * 100)
+                        default_fit = round(v * 100, 1)
                         break
 
         tariff_type_options = {
@@ -10700,7 +10693,7 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     ),
                     vol.Required("fit_rate", default=default_fit): NumberSelector(
                         NumberSelectorConfig(
-                            min=0, max=100, step=0.1, unit_of_measurement=self._selector_unit(),
+                            min=-100, max=100, step=0.1, unit_of_measurement=self._selector_unit(),
                             mode=NumberSelectorMode.BOX,
                         )
                     ),
@@ -10824,7 +10817,7 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     ),
                     vol.Required("export_rate", default=5): NumberSelector(
                         NumberSelectorConfig(
-                            min=0, max=200, step=0.1, unit_of_measurement=self._selector_unit(),
+                            min=-100, max=200, step=0.1, unit_of_measurement=self._selector_unit(),
                             mode=NumberSelectorMode.BOX,
                         )
                     ),
