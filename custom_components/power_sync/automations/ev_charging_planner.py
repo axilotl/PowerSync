@@ -75,6 +75,7 @@ _LOGGER.addFilter(SensitiveDataFilter())
 # Default 1.4 kW ≈ 6A @ 230V single-phase. Override per-vehicle
 # via charger settings if your charger has a different minimum.
 MIN_CHARGING_POWER_KW = 1.4
+FULL_EV_SOC = 100
 
 
 def _configured_ble_prefixes(
@@ -6644,6 +6645,11 @@ class PriceLevelChargingExecutor:
         # then a conservative recovery-price fallback.
         ev_soc = await self._get_ev_soc()
         soc_known = ev_soc is not None
+        if soc_known and ev_soc >= FULL_EV_SOC:
+            reason = f"EV {ev_soc}% >= {FULL_EV_SOC}%, already full"
+            self._state.last_decision = "waiting"
+            self._state.last_decision_reason = reason
+            return False, reason, ""
 
         # Get price
         if current_price_cents is None:
@@ -6775,6 +6781,11 @@ class PriceLevelChargingExecutor:
         # conservative recovery-price fallback.
         ev_soc = await self._get_ev_soc(vehicle_vin)
         soc_known = ev_soc is not None
+        if soc_known and ev_soc >= FULL_EV_SOC:
+            reason = f"EV {ev_soc}% >= {FULL_EV_SOC}%, already full"
+            vehicle_state.last_decision = "waiting"
+            vehicle_state.last_decision_reason = reason
+            return False, reason, ""
 
         # Get price
         if current_price_cents is None:

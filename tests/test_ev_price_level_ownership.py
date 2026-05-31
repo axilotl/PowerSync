@@ -1866,6 +1866,52 @@ def test_unknown_soc_uses_recovery_price_fallback(monkeypatch):
     assert executor._state.last_decision == "wants_charge"
 
 
+def test_full_soc_blocks_price_level_opportunity(monkeypatch):
+    async def at_home(*args, **kwargs):
+        return "home"
+
+    async def plugged_in(*args, **kwargs):
+        return True
+
+    async def full_soc(self, vehicle_vin=None):
+        return 100
+
+    async def no_home_battery_limit(self):
+        return None
+
+    monkeypatch.setattr(ev_planner, "get_ev_location", at_home)
+    monkeypatch.setattr(ev_planner, "is_ev_plugged_in", plugged_in)
+    monkeypatch.setattr(
+        ev_planner.PriceLevelChargingExecutor,
+        "_get_ev_soc",
+        full_soc,
+    )
+    monkeypatch.setattr(
+        ev_planner.PriceLevelChargingExecutor,
+        "_get_home_battery_soc",
+        no_home_battery_limit,
+    )
+
+    executor = ev_planner.PriceLevelChargingExecutor(
+        _FakeHass(
+            price_settings={
+                "recovery_soc": 40,
+                "recovery_price_cents": 30,
+                "opportunity_price_cents": 10,
+                "home_battery_minimum": 0,
+            }
+        ),
+        _FakeConfigEntry(),
+    )
+
+    should_charge, reason, mode = asyncio.run(executor.get_charging_decision(1))
+
+    assert should_charge is False
+    assert mode == ""
+    assert "already full" in reason
+    assert executor._state.last_decision == "waiting"
+
+
 def test_unknown_vehicle_soc_uses_recovery_price_fallback(monkeypatch):
     async def at_home(*args, **kwargs):
         return "home"
@@ -1913,6 +1959,55 @@ def test_unknown_vehicle_soc_uses_recovery_price_fallback(monkeypatch):
     assert mode == "price_level_recovery"
     assert "EV SOC unknown" in reason
     assert state.last_decision == "wants_charge"
+
+
+def test_full_vehicle_soc_blocks_price_level_opportunity(monkeypatch):
+    async def at_home(*args, **kwargs):
+        return "home"
+
+    async def plugged_in(*args, **kwargs):
+        return True
+
+    async def full_soc(self, vehicle_vin=None):
+        return 100
+
+    async def no_home_battery_limit(self):
+        return None
+
+    monkeypatch.setattr(ev_planner, "get_ev_location", at_home)
+    monkeypatch.setattr(ev_planner, "is_ev_plugged_in", plugged_in)
+    monkeypatch.setattr(
+        ev_planner.PriceLevelChargingExecutor,
+        "_get_ev_soc",
+        full_soc,
+    )
+    monkeypatch.setattr(
+        ev_planner.PriceLevelChargingExecutor,
+        "_get_home_battery_soc",
+        no_home_battery_limit,
+    )
+
+    executor = ev_planner.PriceLevelChargingExecutor(
+        _FakeHass(
+            price_settings={
+                "recovery_soc": 40,
+                "recovery_price_cents": 30,
+                "opportunity_price_cents": 10,
+                "home_battery_minimum": 0,
+            }
+        ),
+        _FakeConfigEntry(),
+    )
+
+    should_charge, reason, mode = asyncio.run(
+        executor.get_charging_decision_for_vehicle(VIN, 1)
+    )
+
+    state = executor._get_or_create_vehicle_state(VIN)
+    assert should_charge is False
+    assert mode == ""
+    assert "already full" in reason
+    assert state.last_decision == "waiting"
 
 
 def test_price_level_generic_soc_uses_fallback_sensor():
