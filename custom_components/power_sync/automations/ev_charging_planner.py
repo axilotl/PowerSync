@@ -3267,6 +3267,21 @@ class AutoScheduleState:
         }
 
 
+def _vehicle_config_matches(vehicle_id: str | None, config_vehicle_id: str | None) -> bool:
+    """Return True when a stored charger config belongs to this runtime vehicle."""
+    if not vehicle_id or not config_vehicle_id:
+        return False
+    if str(vehicle_id) == str(config_vehicle_id):
+        return True
+    vehicle_norm = str(vehicle_id)
+    config_norm = str(config_vehicle_id)
+    if vehicle_norm.startswith("ble_") and vehicle_norm[4:] == config_norm:
+        return True
+    if config_norm.startswith("ble_") and config_norm[4:] == vehicle_norm:
+        return True
+    return False
+
+
 class AutoScheduleExecutor:
     """
     Automatically executes charging plans based on optimal windows.
@@ -3550,6 +3565,12 @@ class AutoScheduleExecutor:
             for vehicle_id, settings_dict in auto_schedule_data.items():
                 self._settings[vehicle_id] = AutoScheduleSettings.from_dict(settings_dict)
                 self._state[vehicle_id] = AutoScheduleState(vehicle_id=vehicle_id)
+
+            # Physical charger settings are stored in AutomationStore by the app,
+            # while auto_schedule_settings live in the HA Store passed here.
+            # Sync them immediately so restored plans do not fall back to 32A.
+            for vehicle_id, settings in self._settings.items():
+                self._sync_charger_params_from_vehicle_configs(vehicle_id, settings)
 
             # Load cached SoC values
             self._cached_soc = stored_data.get("cached_vehicle_soc", {})
@@ -4147,14 +4168,23 @@ class AutoScheduleExecutor:
         properties (max_amps, voltage, phases) set by the app. AutoScheduleSettings
         defaults to 32A which may not match the user's actual charger.
         """
-        if not self._store:
-            return
         try:
-            stored_data = getattr(self._store, '_data', {}) or {}
-            for vc in stored_data.get("vehicle_charging_configs", []):
-                if vc.get("vehicle_id") == vehicle_id:
-                    settings.apply_charger_config(vc)
-                    return
+            from ..const import DOMAIN
+
+            entry_data = (
+                self.hass.data.get(DOMAIN, {})
+                .get(self.config_entry.entry_id, {})
+                if self.config_entry
+                else {}
+            )
+            automation_store = entry_data.get("automation_store")
+            stores = [automation_store, self._store]
+            for store in stores:
+                stored_data = getattr(store, '_data', {}) or {}
+                for vc in stored_data.get("vehicle_charging_configs", []):
+                    if _vehicle_config_matches(vehicle_id, vc.get("vehicle_id")):
+                        settings.apply_charger_config(vc)
+                        return
         except Exception:
             pass
 
@@ -6006,7 +6036,7 @@ def _get_vehicle_charger_params(
             stored_data = getattr(store, '_data', {}) or {}
             configs = stored_data.get("vehicle_charging_configs", [])
             for vc in configs:
-                if vehicle_vin and vc.get("vehicle_id") == vehicle_vin:
+                if vehicle_vin and _vehicle_config_matches(vehicle_vin, vc.get("vehicle_id")):
                     params = {
                         "_configured_vehicle_id": vc.get("vehicle_id"),
                         "min_charge_amps": vc.get("min_amps", 5),
@@ -6075,7 +6105,7 @@ def _get_vehicle_charger_params(
         if exec_instance:
             if vehicle_vin:
                 for vid, settings in exec_instance._settings.items():
-                    if vid == vehicle_vin:
+                    if _vehicle_config_matches(vehicle_vin, vid):
                         return {
                             "_configured_vehicle_id": vid,
                             "min_charge_amps": settings.min_charge_amps,

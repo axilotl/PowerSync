@@ -1995,9 +1995,10 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if self._executor:
             if monitoring_mode:
                 _LOGGER.info(
-                    "Optimizer shutdown: monitoring mode active — skipping battery mode restore"
+                    "Optimizer shutdown: monitoring mode active — restoring optimizer-owned "
+                    "battery mode before handing off to monitoring mode"
                 )
-            await self._executor.stop(restore_normal=not monitoring_mode)
+            await self._executor.stop(restore_normal=True)
 
         if self._ev_coordinator:
             await self._ev_coordinator.stop()
@@ -5520,6 +5521,22 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         has_any_windows = False
 
         for vehicle_id, state in states.items():
+            configured_power_w = None
+            try:
+                settings = getattr(executor, "_settings", {}).get(vehicle_id)
+                if settings is not None:
+                    executor._sync_charger_params_from_vehicle_configs(
+                        vehicle_id,
+                        settings,
+                    )
+                    configured_power_w = (
+                        float(settings.max_charge_amps)
+                        * float(settings.voltage)
+                        * float(settings.phases)
+                    )
+            except Exception:
+                configured_power_w = None
+
             plan = state.current_plan
             if not plan or not plan.windows:
                 continue
@@ -5542,6 +5559,16 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     continue
 
                 power_w = window.estimated_power_kw * 1000
+                if configured_power_w and configured_power_w > 0:
+                    if power_w > configured_power_w:
+                        _LOGGER.debug(
+                            "EV load overlay: clamping %s planned power %.1fkW "
+                            "to configured charger limit %.1fkW",
+                            vehicle_id,
+                            power_w / 1000,
+                            configured_power_w / 1000,
+                        )
+                    power_w = min(power_w, configured_power_w)
 
                 # Map window to forecast indices
                 start_offset_min = (w_start - now).total_seconds() / 60

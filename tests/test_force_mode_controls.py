@@ -15,6 +15,9 @@ OPTIMIZATION_COORDINATOR_PATH = (
 OPTIMIZATION_EXECUTOR_PATH = (
     ROOT / "custom_components" / "power_sync" / "optimization" / "executor.py"
 )
+OPTIMIZATION_BATTERY_CONTROLLER_PATH = (
+    ROOT / "custom_components" / "power_sync" / "optimization" / "battery_controller.py"
+)
 SELECT_PATH = ROOT / "custom_components" / "power_sync" / "select.py"
 
 
@@ -94,7 +97,7 @@ def test_force_mode_persistence_uses_setup_store_reference():
     assert "await store.async_load()" in function_source
 
 
-def test_monitoring_mode_optimizer_shutdown_skips_battery_restore():
+def test_monitoring_mode_optimizer_shutdown_releases_active_control():
     coordinator_source = OPTIMIZATION_COORDINATOR_PATH.read_text()
     coordinator_tree = ast.parse(coordinator_source)
     monitoring_helper = _find_class_method(
@@ -118,14 +121,30 @@ def test_monitoring_mode_optimizer_shutdown_skips_battery_restore():
     assert stop_source is not None
     assert monitoring_helper_source is not None
     assert "CONF_MONITORING_MODE" in monitoring_helper_source
+    battery_source = OPTIMIZATION_BATTERY_CONTROLLER_PATH.read_text()
+    battery_tree = ast.parse(battery_source)
+    wrapper_restore = _find_class_method(
+        battery_tree,
+        "BatteryControllerWrapper",
+        "restore_normal",
+    )
+    wrapper_restore_source = ast.get_source_segment(
+        battery_source,
+        wrapper_restore,
+    )
+
     assert "monitoring_mode = self._monitoring_mode_active()" in disable_source
     assert 'if not monitoring_mode and self._last_executed_action == "idle":' in disable_source
     assert "skipping IDLE cleanup writes" in disable_source
     assert "skipping scheduled EV no-discharge release" in disable_source
-    assert "await self._executor.stop(restore_normal=not monitoring_mode)" in disable_source
+    assert "before handing off to monitoring mode" in disable_source
+    assert "await self._executor.stop(restore_normal=True)" in disable_source
     assert "restore_normal: bool = True" in stop_source
     assert "if restore_normal:" in stop_source
     assert "await self._restore_normal_operation()" in stop_source
+    assert wrapper_restore_source is not None
+    assert '"source": "optimizer"' in wrapper_restore_source
+    assert '"_allow_monitoring_restore": True' in wrapper_restore_source
 
 
 def test_monitoring_mode_blocks_service_level_control_writes():
@@ -202,11 +221,11 @@ def test_monitoring_mode_blocks_service_level_control_writes():
         'entry_data.get("goodwe_coordinator")'
     )
 
-    assert "if _is_monitoring_mode():" in restore
-    assert restore.index("if _is_monitoring_mode():") < restore.index(
+    assert "if _is_monitoring_mode() and not allow_monitoring_restore:" in restore
+    assert restore.index("if _is_monitoring_mode() and not allow_monitoring_restore:") < restore.index(
         '_cancel_all_force_timers("restore_normal")'
     )
-    assert restore.index("if _is_monitoring_mode():") < restore.index(
+    assert restore.index("if _is_monitoring_mode() and not allow_monitoring_restore:") < restore.index(
         'entry_data.get("goodwe_coordinator")'
     )
 
@@ -389,10 +408,15 @@ def test_restore_normal_suppresses_tesla_force_toggle_during_dynamic_sync():
     assert restore_source is not None
     assert sync_source is not None
     assert '"_suppress_force_mode_toggle_once"' in restore_source
+    assert "allow_monitoring_restore" in restore_source
+    assert '"_allow_monitoring_restore"' in restore_source
+    assert '"_allow_monitoring_tou_sync_once"' in restore_source
     assert "restore_was_force_discharging" in restore_source
     assert 'force_discharge_state["active"] = False' in restore_source
     assert "SERVICE_SYNC_TOU" in restore_source
     assert '"_suppress_force_mode_toggle_once"' in sync_source
+    assert '"_allow_monitoring_tou_sync_once"' in sync_source
+    assert "Allowing one Tesla TOU sync during restore cleanup" in sync_source
     assert "Skipping force mode toggle" in sync_source
 
 

@@ -12175,14 +12175,63 @@ class VehicleChargingConfigView(HomeAssistantView):
 
             # Sync charger params to AutoScheduleSettings so planner uses correct values
             try:
-                from .automations.ev_charging_planner import get_auto_schedule_executor
+                from .automations.ev_charging_planner import (
+                    _vehicle_config_matches,
+                    get_auto_schedule_executor,
+                )
                 executor = get_auto_schedule_executor()
                 if executor:
                     saved_config = next(
                         (c for c in vehicle_configs if c.get("vehicle_id") == vehicle_id),
                         None,
                     )
-                    if saved_config and vehicle_id in executor._settings:
+                    synced_vehicle_ids = [
+                        vid
+                        for vid in executor._settings
+                        if _vehicle_config_matches(vid, vehicle_id)
+                    ]
+                    if saved_config and synced_vehicle_ids:
+                        for synced_vehicle_id in synced_vehicle_ids:
+                            settings = executor._settings[synced_vehicle_id]
+                            if hasattr(settings, "apply_charger_config"):
+                                settings.apply_charger_config(saved_config)
+                            else:
+                                if "max_amps" in saved_config:
+                                    settings.max_charge_amps = saved_config["max_amps"]
+                                if "min_amps" in saved_config:
+                                    settings.min_charge_amps = saved_config["min_amps"]
+                                if "voltage" in saved_config:
+                                    settings.voltage = saved_config["voltage"]
+                                if "phases" in saved_config:
+                                    settings.phases = saved_config["phases"]
+                                if "charger_type" in saved_config:
+                                    settings.charger_type = saved_config["charger_type"]
+                                if "charger_switch_entity" in saved_config:
+                                    settings.charger_switch_entity = saved_config["charger_switch_entity"]
+                                if "charger_amps_entity" in saved_config:
+                                    settings.charger_amps_entity = saved_config["charger_amps_entity"]
+                                if "charger_status_entity" in saved_config:
+                                    settings.charger_status_entity = saved_config["charger_status_entity"]
+                                if "charger_power_entity" in saved_config:
+                                    settings.charger_power_entity = saved_config["charger_power_entity"]
+                                if "ocpp_charger_id" in saved_config:
+                                    settings.ocpp_charger_id = saved_config["ocpp_charger_id"]
+                                if "pre_charge_wake_entity" in saved_config:
+                                    settings.pre_charge_wake_entity = saved_config["pre_charge_wake_entity"]
+                                if "pre_charge_wake_duration_seconds" in saved_config:
+                                    settings.pre_charge_wake_duration_seconds = saved_config["pre_charge_wake_duration_seconds"]
+                            state = executor.get_state(synced_vehicle_id)
+                            state.current_plan = None
+                            state.last_plan_update = None
+                            _LOGGER.debug(
+                                "Synced charger params to auto-schedule for %s: "
+                                "max=%dA, voltage=%dV, phases=%d",
+                                synced_vehicle_id,
+                                settings.max_charge_amps,
+                                settings.voltage,
+                                settings.phases,
+                            )
+                    elif saved_config and vehicle_id in executor._settings:
                         settings = executor._settings[vehicle_id]
                         if hasattr(settings, "apply_charger_config"):
                             settings.apply_charger_config(saved_config)
@@ -12211,6 +12260,9 @@ class VehicleChargingConfigView(HomeAssistantView):
                                 settings.pre_charge_wake_entity = saved_config["pre_charge_wake_entity"]
                             if "pre_charge_wake_duration_seconds" in saved_config:
                                 settings.pre_charge_wake_duration_seconds = saved_config["pre_charge_wake_duration_seconds"]
+                        state = executor.get_state(vehicle_id)
+                        state.current_plan = None
+                        state.last_plan_update = None
                         _LOGGER.debug(
                             "Synced charger params to auto-schedule for %s: "
                             "max=%dA, voltage=%dV, phases=%d",
@@ -19341,10 +19393,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if token_getter is None:
             return
 
-        # Blocked in monitoring mode — tariff_schedule already stored above for display
-        if _is_monitoring_mode():
+        # Blocked in monitoring mode — tariff_schedule already stored above for display.
+        # Exception: optimizer shutdown may need one final sync to replace an
+        # already-uploaded force tariff before monitoring mode takes ownership.
+        _monitoring_sync_override = hass.data.get(DOMAIN, {}).get(entry.entry_id, {}).pop(
+            "_allow_monitoring_tou_sync_once",
+            None,
+        )
+        if _is_monitoring_mode() and not _monitoring_sync_override:
             _LOGGER.info("[MONITORING] Tariff schedule updated for display; Tesla sync blocked by monitoring mode")
             return
+        if _is_monitoring_mode() and _monitoring_sync_override:
+            _LOGGER.info(
+                "[MONITORING] Allowing one Tesla TOU sync during restore cleanup - %s",
+                _monitoring_sync_override,
+            )
 
         # Get fresh token in case it was refreshed by tesla_fleet integration
         current_token, current_provider = token_getter()
@@ -24210,15 +24273,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             or force_discharge_state.get("source") == "optimizer"
             or force_charge_state.get("source") == "optimizer"
         )
+        allow_monitoring_restore = bool(
+            call.data.get("_allow_monitoring_restore")
+            and optimizer_owned_restore
+        )
         restore_was_force_discharging = bool(force_discharge_state.get("active"))
         restore_was_force_charging = bool(force_charge_state.get("active"))
 
-        if _is_monitoring_mode():
+        if _is_monitoring_mode() and not allow_monitoring_restore:
             _LOGGER.info(
                 "[MONITORING] Would restore normal operation (source=%s) — blocked by monitoring mode",
                 source,
             )
             return
+        if _is_monitoring_mode() and allow_monitoring_restore:
+            _LOGGER.info(
+                "[MONITORING] Allowing optimizer shutdown restore so existing hardware control is released"
+            )
 
         # Clear user-facing state toggles (Hold SoC and Self-Use buttons).
         # These are mobile-only visual flags; clearing them on user-sourced
@@ -24800,6 +24871,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 hass.data.setdefault(DOMAIN, {}).setdefault(entry.entry_id, {})[
                     "_suppress_force_mode_toggle_once"
                 ] = "restore_normal is already controlling Tesla operation mode"
+                if allow_monitoring_restore:
+                    hass.data.setdefault(DOMAIN, {}).setdefault(entry.entry_id, {})[
+                        "_allow_monitoring_tou_sync_once"
+                    ] = "optimizer shutdown restore is releasing an active force tariff"
                 await hass.services.async_call(DOMAIN, SERVICE_SYNC_TOU, {}, blocking=True)
             elif saved_tariff:
                 # Non-dynamic users - restore saved tariffs per site
