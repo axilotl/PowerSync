@@ -2580,6 +2580,51 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return False
         return abs(previous - target) > tolerance_w
 
+    def _force_charge_hardware_needs_refresh(self, target_power_w: float) -> bool:
+        """Return True when telemetry shows a stale non-Tesla charge command."""
+        if self.battery_system == "tesla":
+            return False
+
+        data = self._get_energy_data()
+        if not isinstance(data, dict):
+            return False
+
+        try:
+            target_w = float(target_power_w)
+        except (TypeError, ValueError):
+            return False
+        if target_w <= 0:
+            return False
+
+        mode_value = (
+            data.get("work_mode_name")
+            or data.get("mode")
+            or data.get("work_mode")
+        )
+        mode = str(mode_value or "").strip().lower()
+        if not mode or "force charge" in mode:
+            return False
+
+        try:
+            battery_power = float(data.get("battery_power", 0) or 0)
+        except (TypeError, ValueError):
+            return False
+        battery_power_w = battery_power * 1000 if abs(battery_power) < 100 else battery_power
+        charge_power_w = max(0.0, -battery_power_w)
+        minimum_expected_w = max(500.0, target_w * 0.6)
+
+        if charge_power_w >= minimum_expected_w:
+            return False
+
+        _LOGGER.info(
+            "Optimizer: force charge hardware appears inactive "
+            "(mode=%s, charging %.0fW below %.0fW target) — refreshing command",
+            mode_value,
+            charge_power_w,
+            target_w,
+        )
+        return True
+
     async def _execute_optimizer_action(self, action: Any) -> None:
         """Execute an optimizer action on the battery."""
         if not self._executor or not self._executor.battery_controller:
@@ -2741,6 +2786,11 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                             hardware_expiry is None
                             or new_expiry > hardware_expiry - timedelta(minutes=1)
                             or hardware_power_changed
+                        )
+                    elif force_type == "charge":
+                        should_refresh_hardware = (
+                            should_refresh_hardware
+                            or self._force_charge_hardware_needs_refresh(force_power_w)
                         )
 
                     # Re-issue hardware writes when the hardware-side window is

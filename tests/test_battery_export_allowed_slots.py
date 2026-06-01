@@ -1299,6 +1299,37 @@ def test_optimizer_owned_force_charge_restores_when_current_slot_stops_charging(
     assert coordinator._last_executed_action == "self_consumption"
 
 
+def test_optimizer_owned_force_charge_reissues_when_foxess_mode_drops_to_self_use(opt_module):
+    now = datetime(2026, 5, 3, 8, 30, tzinfo=timezone.utc)
+    opt_module.dt_util.utcnow = lambda *args, **kwargs: now
+    battery = _FakeBattery()
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.64)
+    coordinator.battery_system = "foxess"
+    coordinator.energy_coordinator = SimpleNamespace(
+        data={
+            "work_mode_name": "Self Use",
+            "battery_power": -3.4,
+        }
+    )
+    actions = [
+        SimpleNamespace(
+            action="charge",
+            power_w=10000,
+            timestamp=now + idx * timedelta(minutes=5),
+        )
+        for idx in range(6)
+    ]
+    coordinator._current_schedule = SimpleNamespace(actions=actions)
+    coordinator._set_optimizer_force_state("charge", 120, 10000)
+    coordinator._optimizer_force_state["hardware_expires_at"] = now + timedelta(hours=1)
+
+    asyncio.run(coordinator._execute_optimizer_action(actions[0]))
+
+    assert battery.force_charge_calls == [(30, 10000, True)]
+    assert coordinator._optimizer_force_state["active"] is True
+    assert coordinator._optimizer_force_state["type"] == "charge"
+
+
 def test_optimizer_owned_force_charge_does_not_override_idle_with_lookahead_charge(opt_module):
     battery = _FakeBattery()
     coordinator = _execution_coordinator(opt_module, battery, soc=0.50)
