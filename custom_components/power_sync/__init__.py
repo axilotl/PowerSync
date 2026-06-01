@@ -7078,7 +7078,10 @@ class GoodWeSettingsView(HomeAssistantView):
             elif action == "set_backup_reserve":
                 percent = body.get("percent", 20)
                 await self._hass.services.async_call(
-                    DOMAIN, "set_backup_reserve", {"percent": percent}, blocking=True
+                    DOMAIN,
+                    "set_backup_reserve",
+                    {"percent": percent, "source": "user"},
+                    blocking=True,
                 )
                 return web.json_response({"success": True, "action": "set_backup_reserve"})
             else:
@@ -15843,6 +15846,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         """Check if monitoring mode is active (blocks all control commands)."""
         return entry.options.get(CONF_MONITORING_MODE, entry.data.get(CONF_MONITORING_MODE, False))
 
+    def _control_call_source(call: ServiceCall) -> str:
+        """Return the normalized source for a battery control service call."""
+        source = str(call.data.get("source", "")).lower()
+        if source:
+            return source
+        if getattr(call.context, "user_id", None):
+            return "user"
+        return "unknown"
+
+    def _monitoring_mode_should_block_control(call: ServiceCall) -> bool:
+        """Return True when monitoring mode should block this control call."""
+        source = _control_call_source(call)
+        return _is_monitoring_mode() and source not in ("user", "manual")
+
     if has_amber:
         _LOGGER.info("Running in Amber TOU Sync mode (provider: %s)", electricity_provider)
     elif has_localvolts:
@@ -21706,7 +21723,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         raw_duration = call.data.get("duration", DEFAULT_DISCHARGE_DURATION)
         _LOGGER.debug(f"Force discharge raw duration from call.data: {raw_duration!r} (type: {type(raw_duration).__name__})")
-        source = call.data.get("source", "user")
+        source = _control_call_source(call)
         command_power_w = _resolve_force_command_power_w(
             "discharge",
             call.data.get("power_w", 0),
@@ -21751,7 +21768,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         duration,
                     )
 
-        if _is_monitoring_mode():
+        if _monitoring_mode_should_block_control(call):
             _LOGGER.info(
                 "[MONITORING] Would force discharge for %d minutes (source=%s, power_w=%s) — blocked by monitoring mode",
                 duration,
@@ -22998,7 +23015,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         raw_duration = call.data.get("duration", DEFAULT_DISCHARGE_DURATION)
         _LOGGER.debug(f"Force charge raw duration from call.data: {raw_duration!r} (type: {type(raw_duration).__name__})")
-        source = call.data.get("source", "user")
+        source = _control_call_source(call)
         command_power_w = _resolve_force_command_power_w(
             "charge",
             call.data.get("power_w", 0),
@@ -23022,7 +23039,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.warning(f"Duration {duration} not in allowed values {DISCHARGE_DURATIONS}, using default {DEFAULT_DISCHARGE_DURATION}")
             duration = DEFAULT_DISCHARGE_DURATION
 
-        if _is_monitoring_mode():
+        if _monitoring_mode_should_block_control(call):
             _LOGGER.info(
                 "[MONITORING] Would force charge for %d minutes (source=%s, power_w=%s) — blocked by monitoring mode",
                 duration,
@@ -24378,7 +24395,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         """Restore normal operation - restore saved tariff or trigger Amber sync."""
         # Log call context for debugging (helps identify if called by automation)
         context = call.context
-        source = call.data.get("source", "user")
+        source = _control_call_source(call)
         _LOGGER.info(f"🔄 Restore normal service called (context: user_id={context.user_id}, parent_id={context.parent_id}, source={source})")
         _LOGGER.info("🔄 RESTORE NORMAL: Restoring normal operation")
         optimizer_owned_restore = (
@@ -24393,7 +24410,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         restore_was_force_discharging = bool(force_discharge_state.get("active"))
         restore_was_force_charging = bool(force_charge_state.get("active"))
 
-        if _is_monitoring_mode() and not allow_monitoring_restore:
+        if _monitoring_mode_should_block_control(call) and not allow_monitoring_restore:
             _LOGGER.info(
                 "[MONITORING] Would restore normal operation (source=%s) — blocked by monitoring mode",
                 source,
@@ -25331,9 +25348,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if duration not in DISCHARGE_DURATIONS:
             duration = DEFAULT_DISCHARGE_DURATION
 
-        source = call.data.get("source", "user")
+        source = _control_call_source(call)
 
-        if _is_monitoring_mode():
+        if _monitoring_mode_should_block_control(call):
             _LOGGER.info(
                 "[MONITORING] Would hold battery SoC for %d minutes (source=%s) — blocked by monitoring mode",
                 duration,
@@ -25485,9 +25502,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         button. When the caller supplies source='optimizer' (LP executor),
         the handler executes the hardware write only and skips updating
         self_consumption_state — that keeps automated activity out of the
-        user-facing Controls screen toggle. Manual calls (source='user' or
-        omitted) also flip self_consumption_state['active']=True so the
-        mobile UI can render the toggle on.
+        user-facing Controls screen toggle. Manual calls (source='user' or a
+        Home Assistant user context) also flip self_consumption_state['active']=True
+        so the mobile UI can render the toggle on.
 
         Unlike restore_normal, this:
         - Sets mode to self_consumption (not autonomous)
@@ -25495,10 +25512,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         - Does NOT send push notifications
         """
 
-        source = call.data.get("source", "user")
+        source = _control_call_source(call)
         _LOGGER.info("Setting pure self-consumption mode (source=%s)", source)
 
-        if _is_monitoring_mode():
+        if _monitoring_mode_should_block_control(call):
             _LOGGER.info(
                 "[MONITORING] Would set self-consumption mode (source=%s) — blocked by monitoring mode",
                 source,
@@ -25791,9 +25808,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         backup_reserve to act as a hard floor that prevents discharge.
         In self_consumption mode, backup_reserve alone is not reliably enforced.
         """
-        if _is_monitoring_mode():
+        source = _control_call_source(call)
+
+        if _monitoring_mode_should_block_control(call):
             _LOGGER.info(
-                "[MONITORING] Would set autonomous mode — blocked by monitoring mode"
+                "[MONITORING] Would set autonomous mode (source=%s) — blocked by monitoring mode",
+                source or "unknown",
             )
             return
 
@@ -25887,7 +25907,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.error(f"Invalid backup reserve percent: {percent}")
             return
 
-        if _is_monitoring_mode():
+        if _monitoring_mode_should_block_control(call):
             _LOGGER.info(
                 "[MONITORING] Would set backup reserve to %d%% — blocked by monitoring mode",
                 percent,
@@ -26207,7 +26227,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.error(f"Invalid operation mode: {mode}. Must be 'autonomous', 'self_consumption', or 'backup'.")
             return
 
-        if _is_monitoring_mode():
+        if _monitoring_mode_should_block_control(call):
             _LOGGER.info(
                 "[MONITORING] Would set operation mode to %s — blocked by monitoring mode",
                 mode,
@@ -26301,7 +26321,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.error(f"Invalid grid export rule: {rule}. Must be 'never', 'pv_only', or 'battery_ok'.")
             return
 
-        if _is_monitoring_mode():
+        if _monitoring_mode_should_block_control(call):
             _LOGGER.info(
                 "[MONITORING] Would set grid export rule to %s — blocked by monitoring mode",
                 rule,
@@ -26467,7 +26487,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             enabled = enabled.lower() == "true"
         enabled = bool(enabled)
 
-        if _is_monitoring_mode():
+        if _monitoring_mode_should_block_control(call):
             _LOGGER.info(
                 "[MONITORING] Would set grid charging to %s — blocked by monitoring mode",
                 "enabled" if enabled else "disabled",
@@ -26529,7 +26549,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             enabled = enabled.strip().lower() in ("true", "1", "yes", "on")
         enabled = bool(enabled)
 
-        if _is_monitoring_mode():
+        if _monitoring_mode_should_block_control(call):
             _LOGGER.info(
                 "[MONITORING] Would set Storm Watch to %s — blocked by monitoring mode",
                 "enabled" if enabled else "disabled",
@@ -26564,7 +26584,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.error("Off-grid EV reserve percent out of range: %d", percent)
             return
 
-        if _is_monitoring_mode():
+        if _monitoring_mode_should_block_control(call):
             _LOGGER.info(
                 "[MONITORING] Would set off-grid EV reserve to %d%% — blocked by monitoring mode",
                 percent,
@@ -26595,7 +26615,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             enrolled = enrolled.strip().lower() in ("true", "1", "yes", "on")
         enrolled = bool(enrolled)
 
-        if _is_monitoring_mode():
+        if _monitoring_mode_should_block_control(call):
             _LOGGER.info(
                 "[MONITORING] Would %s VPP program %s — blocked by monitoring mode",
                 "enroll in" if enrolled else "unenroll from",
@@ -26690,7 +26710,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         try:
             await hass.services.async_call(
                 DOMAIN, "set_backup_reserve",
-                {"percent": int(target)}, blocking=True,
+                {"percent": int(target), "source": "user"}, blocking=True,
             )
         except Exception as err:
             _LOGGER.error("schedule_max_backup: restore failed: %s", err)
@@ -26751,7 +26771,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         await hass.services.async_call(
             DOMAIN, "set_backup_reserve",
-            {"percent": 100}, blocking=True,
+            {"percent": 100, "source": "user"}, blocking=True,
         )
 
         cancel = async_call_later(hass, duration_minutes * 60, _max_backup_restore)

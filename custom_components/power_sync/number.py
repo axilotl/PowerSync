@@ -218,7 +218,10 @@ class BackupReserveNumber(_TeslaSiteNumberBase):
 
     async def async_set_native_value(self, value: float) -> None:
         await self.hass.services.async_call(
-            DOMAIN, "set_backup_reserve", {"percent": int(value)}, blocking=False,
+            DOMAIN,
+            "set_backup_reserve",
+            {"percent": int(value), "source": "user"},
+            blocking=False,
         )
 
 
@@ -247,7 +250,10 @@ class OffGridEvReserveNumber(_TeslaSiteNumberBase):
 
     async def async_set_native_value(self, value: float) -> None:
         await self.hass.services.async_call(
-            DOMAIN, "set_off_grid_ev_reserve", {"percent": int(value)}, blocking=False,
+            DOMAIN,
+            "set_off_grid_ev_reserve",
+            {"percent": int(value), "source": "user"},
+            blocking=False,
         )
 
 

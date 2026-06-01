@@ -1595,7 +1595,7 @@ async def _action_set_backup_reserve(
             await hass.services.async_call(
                 DOMAIN,
                 SERVICE_SET_BACKUP_RESERVE,
-                {"percent": reserve_percent},
+                {"percent": reserve_percent, "source": "automation"},
                 blocking=True,
             )
             if attempt > 0:
@@ -1640,7 +1640,7 @@ async def _action_preserve_charge(
         await hass.services.async_call(
             DOMAIN,
             SERVICE_SET_GRID_EXPORT,
-            {"rule": "never"},
+            {"rule": "never", "source": "automation"},
             blocking=True,
         )
         return True
@@ -1676,7 +1676,7 @@ async def _action_set_operation_mode(
             await hass.services.async_call(
                 DOMAIN,
                 SERVICE_SET_OPERATION_MODE,
-                {"mode": mode},
+                {"mode": mode, "source": "automation"},
                 blocking=True,
             )
             if attempt > 0:
@@ -1702,7 +1702,7 @@ async def _action_force_discharge(
     from ..const import DOMAIN, SERVICE_FORCE_DISCHARGE
 
     try:
-        service_data: Dict[str, Any] = {"duration": duration}
+        service_data: Dict[str, Any] = {"duration": duration, "source": "automation"}
         power_w = params.get("power_w")
         if power_w is not None:
             service_data["power_w"] = int(power_w)
@@ -1730,7 +1730,7 @@ async def _action_force_charge(
     from ..const import DOMAIN, SERVICE_FORCE_CHARGE
 
     try:
-        service_data: Dict[str, Any] = {"duration": duration}
+        service_data: Dict[str, Any] = {"duration": duration, "source": "automation"}
         power_w = params.get("power_w")
         if power_w is not None:
             service_data["power_w"] = int(power_w)
@@ -1809,7 +1809,12 @@ async def _action_disable_optimizer(
             _LOGGER.info("Optimizer disabled via automation action (direct config path)")
         # Restore normal battery operation so the battery isn't stuck in a forced mode
         try:
-            await hass.services.async_call(DOMAIN, SERVICE_RESTORE_NORMAL, {}, blocking=True)
+            await hass.services.async_call(
+                DOMAIN,
+                SERVICE_RESTORE_NORMAL,
+                {"source": "automation"},
+                blocking=True,
+            )
         except Exception as restore_err:
             _LOGGER.warning(f"disable_optimizer: restore_normal failed (non-fatal): {restore_err}")
         return True
@@ -1985,7 +1990,7 @@ async def _action_set_grid_export(
         await hass.services.async_call(
             DOMAIN,
             SERVICE_SET_GRID_EXPORT,
-            {"rule": rule},
+            {"rule": rule, "source": "automation"},
             blocking=True,
         )
         return True
@@ -2012,7 +2017,7 @@ async def _action_set_grid_charging(
         await hass.services.async_call(
             DOMAIN,
             SERVICE_SET_GRID_CHARGING,
-            {"enabled": enabled},
+            {"enabled": enabled, "source": "automation"},
             blocking=True,
         )
         return True
@@ -2168,7 +2173,7 @@ async def _action_restore_normal(
         await hass.services.async_call(
             DOMAIN,
             SERVICE_RESTORE_NORMAL,
-            {},
+            {"source": "automation"},
             blocking=True,
         )
         return True

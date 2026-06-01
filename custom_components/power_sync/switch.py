@@ -1298,14 +1298,20 @@ class GridChargingSwitch(_TeslaSiteSwitchBase):
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         await self.hass.services.async_call(
-            DOMAIN, "set_grid_charging", {"enabled": True}, blocking=False,
+            DOMAIN,
+            "set_grid_charging",
+            {"enabled": True, "source": "user"},
+            blocking=False,
         )
         self._attr_is_on = True
         self.async_write_ha_state()
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         await self.hass.services.async_call(
-            DOMAIN, "set_grid_charging", {"enabled": False}, blocking=False,
+            DOMAIN,
+            "set_grid_charging",
+            {"enabled": False, "source": "user"},
+            blocking=False,
         )
         self._attr_is_on = False
         self.async_write_ha_state()
@@ -1331,12 +1337,18 @@ class StormWatchSwitch(_TeslaSiteSwitchBase):
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         await self.hass.services.async_call(
-            DOMAIN, "set_storm_watch", {"enabled": True}, blocking=False,
+            DOMAIN,
+            "set_storm_watch",
+            {"enabled": True, "source": "user"},
+            blocking=False,
         )
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         await self.hass.services.async_call(
-            DOMAIN, "set_storm_watch", {"enabled": False}, blocking=False,
+            DOMAIN,
+            "set_storm_watch",
+            {"enabled": False, "source": "user"},
+            blocking=False,
         )
 
 
@@ -1396,14 +1408,14 @@ class VppProgramSwitch(_TeslaSiteSwitchBase):
     async def async_turn_on(self, **kwargs: Any) -> None:
         await self.hass.services.async_call(
             DOMAIN, "set_vpp_enrollment",
-            {"program_id": self._program_id, "enrolled": True},
+            {"program_id": self._program_id, "enrolled": True, "source": "user"},
             blocking=False,
         )
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         await self.hass.services.async_call(
             DOMAIN, "set_vpp_enrollment",
-            {"program_id": self._program_id, "enrolled": False},
+            {"program_id": self._program_id, "enrolled": False, "source": "user"},
             blocking=False,
         )
 
