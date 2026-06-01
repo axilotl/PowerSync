@@ -52,6 +52,8 @@ COST_STORE_VERSION = 1
 COST_STORE_SAVE_DELAY = 300  # Coalesce writes — flush at most every 5 minutes
 FIXED_OPTIMIZATION_INTERVAL_MINUTES = DEFAULT_OPTIMIZATION_INTERVAL
 FLOW_POWER_NEM_TZ = timezone(timedelta(hours=10))
+EXPORT_ACTIONS = {"discharge", "export"}
+SELF_USE_ACTIONS = {"consume", "self_consumption"}
 
 
 def _flow_power_network_tariff_rate(
@@ -2220,6 +2222,11 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     battery_export_allowed,
                 )
                 result.schedule = self._current_schedule
+            self._current_schedule = self._bridge_short_export_gaps(
+                self._current_schedule,
+                export_prices,
+            )
+            result.schedule = self._current_schedule
             self._last_update_time = dt_util.now()
 
             # Apply off-grid curtailment overlay if enabled — converts
@@ -2229,6 +2236,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._current_schedule = self._apply_offgrid_overlay(
                     self._current_schedule, export_prices,
                 )
+                result.schedule = self._current_schedule
 
             # Store forecast data for LP forecast sensors
             self._has_solar_forecast = solar_forecast is not None and any(v > 0 for v in (solar_forecast or []))
@@ -2432,6 +2440,129 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return int(max(supported))
 
         return int(max(1, requested))
+
+    def _bridge_short_export_gaps(
+        self,
+        schedule: OptimizationSchedule,
+        export_prices: list[float] | None = None,
+    ) -> OptimizationSchedule:
+        """Keep export mode through one-slot self-use islands between exports."""
+        actions = getattr(schedule, "actions", None) or []
+        if len(actions) < 3:
+            return schedule
+        if self._dynamic_export_prices_can_have_real_one_slot_gaps():
+            return schedule
+
+        interval = max(1, int(getattr(self._config, "interval_minutes", 5) or 5))
+        max_gap_slots = 1
+        bridged = 0
+        idx = 1
+        while idx < len(actions) - 1:
+            action_name = getattr(actions[idx], "action", None)
+            if action_name not in SELF_USE_ACTIONS:
+                idx += 1
+                continue
+
+            gap_start = idx
+            while idx < len(actions) - 1 and getattr(actions[idx], "action", None) in SELF_USE_ACTIONS:
+                idx += 1
+            gap_end = idx
+            gap_slots = gap_end - gap_start
+
+            previous_action = actions[gap_start - 1]
+            next_action = actions[gap_end] if gap_end < len(actions) else None
+            if (
+                gap_slots > max_gap_slots
+                or getattr(previous_action, "action", None) not in EXPORT_ACTIONS
+                or getattr(next_action, "action", None) not in EXPORT_ACTIONS
+                or not self._short_export_gap_prices_match(
+                    gap_start,
+                    gap_end,
+                    export_prices,
+                )
+            ):
+                continue
+
+            export_action = (
+                "export"
+                if "export" in {
+                    getattr(previous_action, "action", None),
+                    getattr(next_action, "action", None),
+                }
+                else "discharge"
+            )
+            bridge_power_w = self._bridged_export_power_w(
+                previous_action,
+                next_action,
+            )
+
+            for gap_action in actions[gap_start:gap_end]:
+                gap_action.action = export_action
+                gap_action.power_w = bridge_power_w
+                gap_action.battery_charge_w = 0.0
+                gap_action.battery_discharge_w = max(
+                    getattr(gap_action, "battery_discharge_w", 0.0) or 0.0,
+                    bridge_power_w,
+                )
+                bridged += 1
+
+        if bridged:
+            _LOGGER.info(
+                "Optimizer: bridged %dmin self-consumption gap inside export window",
+                bridged * interval,
+            )
+        return schedule
+
+    def _dynamic_export_prices_can_have_real_one_slot_gaps(self) -> bool:
+        """Return True when a one-slot export gap may be a real price signal."""
+        if getattr(self, "_is_dynamic_pricing", False):
+            return True
+        coordinator_name = type(getattr(self, "price_coordinator", None)).__name__
+        return coordinator_name in {"AmberPriceCoordinator", "AEMOPriceCoordinator"}
+
+    @staticmethod
+    def _short_export_gap_prices_match(
+        gap_start: int,
+        gap_end: int,
+        export_prices: list[float] | None,
+        *,
+        tolerance: float = 1e-6,
+    ) -> bool:
+        """Return True when a one-slot gap has the same export price as its neighbours."""
+        if not export_prices:
+            return False
+        if gap_end - gap_start != 1:
+            return False
+        prev_idx = gap_start - 1
+        next_idx = gap_end
+        if prev_idx < 0 or next_idx >= len(export_prices):
+            return False
+        try:
+            previous_price = float(export_prices[prev_idx])
+            gap_price = float(export_prices[gap_start])
+            next_price = float(export_prices[next_idx])
+        except (TypeError, ValueError):
+            return False
+        return (
+            math.isfinite(previous_price)
+            and math.isfinite(gap_price)
+            and math.isfinite(next_price)
+            and abs(previous_price - gap_price) <= tolerance
+            and abs(next_price - gap_price) <= tolerance
+        )
+
+    @staticmethod
+    def _bridged_export_power_w(previous_action: Any, next_action: Any) -> float:
+        """Return a conservative export power for a bridged gap."""
+        powers: list[float] = []
+        for action in (previous_action, next_action):
+            try:
+                power = float(getattr(action, "power_w", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                power = 0.0
+            if power > 0:
+                powers.append(power)
+        return min(powers) if powers else 0.0
 
     def _tesla_tariff_duration_for_force_window(
         self,

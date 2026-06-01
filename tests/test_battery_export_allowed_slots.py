@@ -1500,6 +1500,170 @@ def test_tesla_export_uses_contiguous_export_window_duration(opt_module):
     assert coordinator._last_executed_action == "export"
 
 
+def test_single_slot_self_consumption_gap_between_exports_is_bridged(opt_module):
+    battery = _FakeBattery()
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.80)
+    start = datetime(2026, 5, 3, 18, 30, tzinfo=timezone.utc)
+    actions = [
+        SimpleNamespace(
+            action="export",
+            power_w=9000,
+            battery_charge_w=0,
+            battery_discharge_w=9000,
+            timestamp=start,
+        ),
+        SimpleNamespace(
+            action="self_consumption",
+            power_w=1200,
+            battery_charge_w=0,
+            battery_discharge_w=1200,
+            timestamp=start + timedelta(minutes=5),
+        ),
+        SimpleNamespace(
+            action="export",
+            power_w=7000,
+            battery_charge_w=0,
+            battery_discharge_w=7000,
+            timestamp=start + timedelta(minutes=10),
+        ),
+    ]
+    schedule = SimpleNamespace(actions=actions)
+
+    coordinator._bridge_short_export_gaps(schedule, [0.45, 0.45, 0.45])
+
+    assert [action.action for action in actions] == ["export", "export", "export"]
+    assert actions[1].power_w == 7000
+    assert actions[1].battery_discharge_w == 7000
+
+
+def test_multi_slot_self_consumption_gap_between_exports_is_not_bridged(opt_module):
+    battery = _FakeBattery()
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.80)
+    start = datetime(2026, 5, 3, 18, 30, tzinfo=timezone.utc)
+    actions = [
+        SimpleNamespace(action="export", power_w=9000, timestamp=start),
+        SimpleNamespace(
+            action="self_consumption",
+            power_w=1200,
+            timestamp=start + timedelta(minutes=5),
+        ),
+        SimpleNamespace(
+            action="self_consumption",
+            power_w=1300,
+            timestamp=start + timedelta(minutes=10),
+        ),
+        SimpleNamespace(
+            action="export",
+            power_w=7000,
+            timestamp=start + timedelta(minutes=15),
+        ),
+    ]
+    schedule = SimpleNamespace(actions=actions)
+
+    coordinator._bridge_short_export_gaps(schedule, [0.45, 0.45, 0.45, 0.45])
+
+    assert [action.action for action in actions] == [
+        "export",
+        "self_consumption",
+        "self_consumption",
+        "export",
+    ]
+
+
+def test_single_slot_export_gap_with_price_change_is_not_bridged(opt_module):
+    battery = _FakeBattery()
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.80)
+    start = datetime(2026, 5, 3, 18, 30, tzinfo=timezone.utc)
+    actions = [
+        SimpleNamespace(action="export", power_w=9000, timestamp=start),
+        SimpleNamespace(
+            action="self_consumption",
+            power_w=1200,
+            timestamp=start + timedelta(minutes=5),
+        ),
+        SimpleNamespace(
+            action="export",
+            power_w=7000,
+            timestamp=start + timedelta(minutes=10),
+        ),
+    ]
+    schedule = SimpleNamespace(actions=actions)
+
+    coordinator._bridge_short_export_gaps(schedule, [0.45, 0.05, 0.45])
+
+    assert [action.action for action in actions] == [
+        "export",
+        "self_consumption",
+        "export",
+    ]
+
+
+def test_dynamic_price_provider_single_slot_export_gap_is_not_bridged(opt_module):
+    class AmberPriceCoordinator:
+        pass
+
+    battery = _FakeBattery()
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.80)
+    coordinator.price_coordinator = AmberPriceCoordinator()
+    start = datetime(2026, 5, 3, 18, 30, tzinfo=timezone.utc)
+    actions = [
+        SimpleNamespace(action="export", power_w=9000, timestamp=start),
+        SimpleNamespace(
+            action="self_consumption",
+            power_w=1200,
+            timestamp=start + timedelta(minutes=5),
+        ),
+        SimpleNamespace(
+            action="export",
+            power_w=7000,
+            timestamp=start + timedelta(minutes=10),
+        ),
+    ]
+    schedule = SimpleNamespace(actions=actions)
+
+    coordinator._bridge_short_export_gaps(schedule, [0.45, 0.45, 0.45])
+
+    assert [action.action for action in actions] == [
+        "export",
+        "self_consumption",
+        "export",
+    ]
+
+
+def test_bridged_export_gap_keeps_optimizer_force_active(opt_module):
+    now = datetime(2026, 5, 3, 18, 30, tzinfo=timezone.utc)
+    opt_module.dt_util.now = lambda *args, **kwargs: now
+    opt_module.dt_util.utcnow = lambda *args, **kwargs: now
+    battery = _FakeBattery()
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.80)
+    actions = [
+        SimpleNamespace(action="export", power_w=9000, timestamp=now),
+        SimpleNamespace(
+            action="self_consumption",
+            power_w=1200,
+            timestamp=now + timedelta(minutes=5),
+        ),
+        SimpleNamespace(
+            action="export",
+            power_w=7000,
+            timestamp=now + timedelta(minutes=10),
+        ),
+    ]
+    coordinator._current_schedule = SimpleNamespace(actions=actions)
+    coordinator._bridge_short_export_gaps(
+        coordinator._current_schedule,
+        [0.45, 0.45, 0.45],
+    )
+    coordinator._set_optimizer_force_state("discharge", 30, 5000)
+    coordinator._last_executed_action = "export"
+
+    asyncio.run(coordinator._execute_optimizer_action(actions[1]))
+
+    assert battery.restore_normal_calls == 0
+    assert coordinator._optimizer_force_state["active"] is True
+    assert coordinator._last_executed_action == "export"
+
+
 def test_export_command_power_respects_grid_export_cap(opt_module):
     battery = _FakeBattery()
     coordinator = _execution_coordinator(opt_module, battery, soc=0.80)
