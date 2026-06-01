@@ -3043,7 +3043,9 @@ class AutoScheduleSettings:
         """Apply app-managed physical charger settings to these settings."""
         field_map = {
             "max_amps": "max_charge_amps",
+            "max_charge_amps": "max_charge_amps",
             "min_amps": "min_charge_amps",
+            "min_charge_amps": "min_charge_amps",
             "voltage": "voltage",
             "phases": "phases",
             "charger_type": "charger_type",
@@ -3281,6 +3283,22 @@ def _vehicle_config_matches(vehicle_id: str | None, config_vehicle_id: str | Non
     if config_norm.startswith("ble_") and config_norm[4:] == vehicle_norm:
         return True
     return False
+
+
+def _vehicle_config_value(
+    config: Mapping[str, Any],
+    key: str,
+    legacy_key: str,
+    default: Any,
+) -> Any:
+    """Read a vehicle charger setting across app and legacy storage keys."""
+    value = config.get(key)
+    if value is not None:
+        return value
+    legacy_value = config.get(legacy_key)
+    if legacy_value is not None:
+        return legacy_value
+    return default
 
 
 class AutoScheduleExecutor:
@@ -6040,8 +6058,12 @@ def _get_vehicle_charger_params(
                 if vehicle_vin and _vehicle_config_matches(vehicle_vin, vc.get("vehicle_id")):
                     params = {
                         "_configured_vehicle_id": vc.get("vehicle_id"),
-                        "min_charge_amps": vc.get("min_amps", 5),
-                        "max_charge_amps": vc.get("max_amps", 32),
+                        "min_charge_amps": _vehicle_config_value(
+                            vc, "min_charge_amps", "min_amps", 5
+                        ),
+                        "max_charge_amps": _vehicle_config_value(
+                            vc, "max_charge_amps", "max_amps", 32
+                        ),
                         "voltage": vc.get("voltage", 230),
                         "phases": vc.get("phases", 1),
                     }
@@ -6071,8 +6093,12 @@ def _get_vehicle_charger_params(
                 vc = configs[0]
                 params = {
                     "_configured_vehicle_id": vc.get("vehicle_id"),
-                    "min_charge_amps": vc.get("min_amps", 5),
-                    "max_charge_amps": vc.get("max_amps", 32),
+                    "min_charge_amps": _vehicle_config_value(
+                        vc, "min_charge_amps", "min_amps", 5
+                    ),
+                    "max_charge_amps": _vehicle_config_value(
+                        vc, "max_charge_amps", "max_amps", 32
+                    ),
                     "voltage": vc.get("voltage", 230),
                     "phases": vc.get("phases", 1),
                 }

@@ -12167,8 +12167,8 @@ class VehicleChargingConfigView(HomeAssistantView):
                     "ocpp_charger_id": data.get("ocpp_charger_id"),
                     "pre_charge_wake_entity": data.get("pre_charge_wake_entity"),
                     "pre_charge_wake_duration_seconds": data.get("pre_charge_wake_duration_seconds", 5),
-                    "min_amps": data.get("min_amps", 5),
-                    "max_amps": data.get("max_amps", 32),
+                    "min_amps": data.get("min_amps", data.get("min_charge_amps", 5)),
+                    "max_amps": data.get("max_amps", data.get("max_charge_amps", 32)),
                     "voltage": data.get("voltage", 240),
                     "phases": data.get("phases", 1),
                     "solar_charging_enabled": data.get("solar_charging_enabled", False),
@@ -12206,10 +12206,16 @@ class VehicleChargingConfigView(HomeAssistantView):
                             if hasattr(settings, "apply_charger_config"):
                                 settings.apply_charger_config(saved_config)
                             else:
-                                if "max_amps" in saved_config:
-                                    settings.max_charge_amps = saved_config["max_amps"]
-                                if "min_amps" in saved_config:
-                                    settings.min_charge_amps = saved_config["min_amps"]
+                                if "max_amps" in saved_config or "max_charge_amps" in saved_config:
+                                    settings.max_charge_amps = saved_config.get(
+                                        "max_amps",
+                                        saved_config.get("max_charge_amps"),
+                                    )
+                                if "min_amps" in saved_config or "min_charge_amps" in saved_config:
+                                    settings.min_charge_amps = saved_config.get(
+                                        "min_amps",
+                                        saved_config.get("min_charge_amps"),
+                                    )
                                 if "voltage" in saved_config:
                                     settings.voltage = saved_config["voltage"]
                                 if "phases" in saved_config:
@@ -12246,10 +12252,16 @@ class VehicleChargingConfigView(HomeAssistantView):
                         if hasattr(settings, "apply_charger_config"):
                             settings.apply_charger_config(saved_config)
                         else:
-                            if "max_amps" in saved_config:
-                                settings.max_charge_amps = saved_config["max_amps"]
-                            if "min_amps" in saved_config:
-                                settings.min_charge_amps = saved_config["min_amps"]
+                            if "max_amps" in saved_config or "max_charge_amps" in saved_config:
+                                settings.max_charge_amps = saved_config.get(
+                                    "max_amps",
+                                    saved_config.get("max_charge_amps"),
+                                )
+                            if "min_amps" in saved_config or "min_charge_amps" in saved_config:
+                                settings.min_charge_amps = saved_config.get(
+                                    "min_amps",
+                                    saved_config.get("min_charge_amps"),
+                                )
                             if "voltage" in saved_config:
                                 settings.voltage = saved_config["voltage"]
                             if "phases" in saved_config:
@@ -12821,7 +12833,7 @@ class ChargingScheduleView(HomeAssistantView):
                 stored_data = getattr(store, '_data', {}) or {}
                 for vc in stored_data.get("vehicle_charging_configs", []):
                     if vc.get("vehicle_id") == vehicle_id or vehicle_id == "_default":
-                        max_amps = vc.get("max_amps", 32)
+                        max_amps = vc.get("max_amps", vc.get("max_charge_amps", 32))
                         voltage = vc.get("voltage", 230)
                         phases = vc.get("phases", 1)
                         charger_power_kw = (max_amps * voltage * phases) / 1000
@@ -28679,9 +28691,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                                         for _vid, _settings in _exec._settings.items():
                                             if _vid == vc.get("vehicle_id") and _settings.phases > 1:
                                                 vc_phases = _settings.phases
-                                                if vc.get("min_amps") is None:
+                                                if vc.get("min_amps") is None and vc.get("min_charge_amps") is None:
                                                     vc["min_amps"] = _settings.min_charge_amps
-                                                if vc.get("max_amps") is None:
+                                                if vc.get("max_amps") is None and vc.get("max_charge_amps") is None:
                                                     vc["max_amps"] = _settings.max_charge_amps
                                                 if vc.get("voltage") is None:
                                                     vc["voltage"] = _settings.voltage
@@ -28693,9 +28705,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                                             for _vid, _settings in _exec._settings.items():
                                                 if _settings.phases > 1:
                                                     vc_phases = _settings.phases
-                                                    if vc.get("min_amps") is None:
+                                                    if vc.get("min_amps") is None and vc.get("min_charge_amps") is None:
                                                         vc["min_amps"] = _settings.min_charge_amps
-                                                    if vc.get("max_amps") is None:
+                                                    if vc.get("max_amps") is None and vc.get("max_charge_amps") is None:
                                                         vc["max_amps"] = _settings.max_charge_amps
                                                     if vc.get("voltage") is None:
                                                         vc["voltage"] = _settings.voltage
@@ -28734,8 +28746,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                                 "dynamic_mode": "solar_surplus",
                                 "owner_mode": "solar_surplus",
                                 "charger_type": vc_charger_type,
-                                "min_charge_amps": vc.get("min_amps", 5),
-                                "max_charge_amps": vc.get("max_amps", 32),
+                                "min_charge_amps": vc.get("min_amps", vc.get("min_charge_amps", 5)),
+                                "max_charge_amps": vc.get("max_amps", vc.get("max_charge_amps", 32)),
                                 "voltage": vc.get("voltage", 240),
                                 "phases": vc_phases,
                                 "charger_switch_entity": vc.get("charger_switch_entity"),
@@ -28764,7 +28776,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                             _LOGGER.info(
                                 f"☀️ Solar surplus charging enabled in app — starting dynamic solar surplus session "
                                 f"for {vc.get('display_name', vc.get('vehicle_id', 'EV'))} "
-                                f"(phases={vc_phases}, amps={vc.get('min_amps', 5)}-{vc.get('max_amps', 32)}, "
+                                f"(phases={vc_phases}, amps={vc.get('min_amps', vc.get('min_charge_amps', 5))}-{vc.get('max_amps', vc.get('max_charge_amps', 32))}, "
                                 f"voltage={vc.get('voltage', 240)})"
                             )
                             await _action_start_ev_charging_dynamic(hass, entry, params, context=None)

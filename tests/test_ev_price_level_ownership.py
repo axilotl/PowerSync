@@ -326,6 +326,32 @@ def test_price_level_start_uses_vehicle_charger_config(fake_actions):
     assert params["allow_ownership_takeover"] is True
 
 
+def test_vehicle_charger_params_accept_app_charge_amp_aliases(fake_actions):
+    hass = _FakeHass()
+    hass.data["power_sync"]["entry-1"]["automation_store"]._data[
+        "vehicle_charging_configs"
+    ] = [{
+        "vehicle_id": VIN,
+        "charger_type": "tesla",
+        "min_charge_amps": 6,
+        "max_charge_amps": 15,
+        "voltage": 240,
+        "phases": 1,
+    }]
+
+    params = ev_planner._get_vehicle_charger_params(
+        hass,
+        "power_sync",
+        _FakeConfigEntry(),
+        VIN,
+    )
+
+    assert params["min_charge_amps"] == 6
+    assert params["max_charge_amps"] == 15
+    assert params["voltage"] == 240
+    assert params["phases"] == 1
+
+
 def test_price_level_sigenergy_start_uses_zero_battery_target(fake_actions):
     fake_actions._action_start_ev_charging_dynamic = AsyncMock(return_value=True)
 
