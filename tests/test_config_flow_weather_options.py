@@ -1045,8 +1045,11 @@ def test_optimization_enabled_toggle_is_translated_in_config_and_options():
             assert "Block battery and inverter control commands" in step["data_description"]["monitoring_mode"]
             assert step["data"]["hardware_backup_reserve"] == "Hardware backup reserve"
             assert "temporary hold or force-control modes" in step["data_description"]["hardware_backup_reserve"]
+            assert step["data"]["optimization_max_grid_import_w"] == "Maximum grid import"
+            assert "no site import cap" in step["data_description"]["optimization_max_grid_import_w"]
             keys = list(step["data"])
             assert keys.index("optimization_backup_reserve") < keys.index("hardware_backup_reserve")
+            assert keys.index("optimization_max_discharge_w") < keys.index("optimization_max_grid_import_w")
             assert step["data"]["optimization_spread_export_enabled"] == "Spread export across window"
             assert "spreads planned battery export" in step["data_description"]["optimization_spread_export_enabled"]
             assert step["data"]["optimization_spread_import_enabled"] == "Spread import across window"

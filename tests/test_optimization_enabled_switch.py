@@ -66,3 +66,16 @@ def test_spread_export_setting_is_exposed_through_api_and_coordinator():
     assert '"spread_import_enabled": self._config.spread_import_enabled' in coordinator_source
     assert "def set_spread_export_enabled(self, enabled: bool) -> None:" in coordinator_source
     assert "def set_spread_import_enabled(self, enabled: bool) -> None:" in coordinator_source
+
+
+def test_max_grid_import_setting_is_exposed_through_api_and_coordinator():
+    const_source = CONST_PATH.read_text()
+    init_source = INIT_PATH.read_text()
+    coordinator_source = COORDINATOR_PATH.read_text()
+
+    assert 'CONF_OPTIMIZATION_MAX_GRID_IMPORT_W = "optimization_max_grid_import_w"' in const_source
+    assert '"max_grid_import_w": opt_coordinator._config.max_grid_import_w' in init_source
+    assert '"max_grid_import_w": self._config.max_grid_import_w' in coordinator_source
+    assert '"max_grid_import_w",' in coordinator_source
+    assert "CONF_OPTIMIZATION_MAX_GRID_IMPORT_W" in init_source
+    assert "CONF_OPTIMIZATION_MAX_GRID_IMPORT_W" in coordinator_source

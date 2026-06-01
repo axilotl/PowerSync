@@ -393,6 +393,7 @@ from .const import (
     CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED,
     CONF_OPTIMIZATION_MAX_CHARGE_W,
     CONF_OPTIMIZATION_MAX_DISCHARGE_W,
+    CONF_OPTIMIZATION_MAX_GRID_IMPORT_W,
     CONF_PROFIT_MAX_ENABLED,
     CONF_PROFIT_MAX_TARGET_TIME,
     CONF_PROFIT_MAX_TARGET_SOC,
@@ -2230,6 +2231,10 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 user_input.get(CONF_OPTIMIZATION_MAX_DISCHARGE_W),
                 default_discharge_kw,
             )
+            max_grid_import_w = _form_kw_to_w(
+                user_input.get(CONF_OPTIMIZATION_MAX_GRID_IMPORT_W),
+                0,
+            )
             self._optimization_provider = OPT_PROVIDER_POWERSYNC
             self._ml_options.update(
                 {
@@ -2242,6 +2247,7 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     CONF_OPTIMIZATION_BATTERY_CAPACITY_WH: capacity_wh,
                     CONF_OPTIMIZATION_MAX_CHARGE_W: charge_w,
                     CONF_OPTIMIZATION_MAX_DISCHARGE_W: discharge_w,
+                    CONF_OPTIMIZATION_MAX_GRID_IMPORT_W: max_grid_import_w,
                     CONF_OPTIMIZATION_ALLOW_GRID_CHARGE: bool(
                         user_input.get(CONF_OPTIMIZATION_ALLOW_GRID_CHARGE, True)
                     ),
@@ -2313,6 +2319,18 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         NumberSelectorConfig(
                             min=0.1,
                             max=50,
+                            step=0.1,
+                            unit_of_measurement="kW",
+                            mode=NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Required(
+                        CONF_OPTIMIZATION_MAX_GRID_IMPORT_W,
+                        default=0,
+                    ): NumberSelector(
+                        NumberSelectorConfig(
+                            min=0,
+                            max=100,
                             step=0.1,
                             unit_of_measurement="kW",
                             mode=NumberSelectorMode.BOX,
@@ -2443,6 +2461,10 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         user_input.get(CONF_OPTIMIZATION_MAX_DISCHARGE_W),
                         default_discharge_kw,
                     ),
+                    CONF_OPTIMIZATION_MAX_GRID_IMPORT_W: _form_kw_to_w(
+                        user_input.get(CONF_OPTIMIZATION_MAX_GRID_IMPORT_W),
+                        0,
+                    ),
                     CONF_OPTIMIZATION_ALLOW_GRID_CHARGE: user_input.get(
                         CONF_OPTIMIZATION_ALLOW_GRID_CHARGE,
                         True,
@@ -2545,6 +2567,18 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 NumberSelectorConfig(
                     min=0.1,
                     max=50,
+                    step=0.1,
+                    unit_of_measurement="kW",
+                    mode=NumberSelectorMode.BOX,
+                )
+            ),
+            vol.Required(
+                CONF_OPTIMIZATION_MAX_GRID_IMPORT_W,
+                default=0,
+            ): NumberSelector(
+                NumberSelectorConfig(
+                    min=0,
+                    max=100,
                     step=0.1,
                     unit_of_measurement="kW",
                     mode=NumberSelectorMode.BOX,
@@ -6857,6 +6891,10 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     user_input.get(CONF_OPTIMIZATION_MAX_DISCHARGE_W),
                     default_discharge_kw,
                 )
+                max_grid_import_w = _form_kw_to_w(
+                    user_input.get(CONF_OPTIMIZATION_MAX_GRID_IMPORT_W),
+                    0,
+                )
                 allow_grid_charge = user_input.get(
                     CONF_OPTIMIZATION_ALLOW_GRID_CHARGE,
                     True,
@@ -6885,6 +6923,8 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 new_options[CONF_OPTIMIZATION_MAX_CHARGE_W] = charge_w
                 new_data[CONF_OPTIMIZATION_MAX_DISCHARGE_W] = discharge_w
                 new_options[CONF_OPTIMIZATION_MAX_DISCHARGE_W] = discharge_w
+                new_data[CONF_OPTIMIZATION_MAX_GRID_IMPORT_W] = max_grid_import_w
+                new_options[CONF_OPTIMIZATION_MAX_GRID_IMPORT_W] = max_grid_import_w
                 new_data[CONF_OPTIMIZATION_ALLOW_GRID_CHARGE] = allow_grid_charge
                 new_options[CONF_OPTIMIZATION_ALLOW_GRID_CHARGE] = allow_grid_charge
                 spread_export_enabled = (
@@ -6993,6 +7033,16 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 ),
             ),
             default_discharge_w,
+        )
+        current_max_grid_import_kw = _stored_w_to_kw(
+            self._get_option(
+                CONF_OPTIMIZATION_MAX_GRID_IMPORT_W,
+                self.config_entry.data.get(
+                    CONF_OPTIMIZATION_MAX_GRID_IMPORT_W,
+                    0,
+                ),
+            ),
+            0,
         )
         current_allow_grid_charge = self._get_option(
             CONF_OPTIMIZATION_ALLOW_GRID_CHARGE,
@@ -7111,6 +7161,13 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     default=current_discharge_kw,
                 ): NumberSelector(NumberSelectorConfig(
                     min=0.1, max=50, step=0.1, unit_of_measurement="kW",
+                    mode=NumberSelectorMode.BOX,
+                )),
+                vol.Required(
+                    CONF_OPTIMIZATION_MAX_GRID_IMPORT_W,
+                    default=current_max_grid_import_kw,
+                ): NumberSelector(NumberSelectorConfig(
+                    min=0, max=100, step=0.1, unit_of_measurement="kW",
                     mode=NumberSelectorMode.BOX,
                 )),
                 vol.Required(

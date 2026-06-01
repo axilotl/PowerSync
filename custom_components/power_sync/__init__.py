@@ -538,6 +538,7 @@ from .const import (
     CONF_OPTIMIZATION_ALLOW_GRID_CHARGE,
     CONF_OPTIMIZATION_MAX_CHARGE_W,
     CONF_OPTIMIZATION_MAX_DISCHARGE_W,
+    CONF_OPTIMIZATION_MAX_GRID_IMPORT_W,
     CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED,
     CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED,
     CONF_PROFIT_MAX_ENABLED,
@@ -29165,6 +29166,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             saved_max_discharge_w = _positive_int_setting(
                 CONF_OPTIMIZATION_MAX_DISCHARGE_W
             )
+            saved_max_grid_import_w = _positive_int_setting(
+                CONF_OPTIMIZATION_MAX_GRID_IMPORT_W
+            )
 
             optimization_coordinator = OptimizationCoordinator(
                 hass=hass,
@@ -29195,6 +29199,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 optimizer_config_updates["max_charge_w"] = saved_max_charge_w
             if saved_max_discharge_w is not None:
                 optimizer_config_updates["max_discharge_w"] = saved_max_discharge_w
+            optimizer_config_updates["max_grid_import_w"] = saved_max_grid_import_w
             optimization_coordinator.update_config(**optimizer_config_updates)
             if any(v is not None for v in (saved_capacity_wh, saved_max_charge_w, saved_max_discharge_w)):
                 optimization_coordinator._battery_specs_source = "manual"
@@ -29703,6 +29708,11 @@ class OptimizationSettingsView(HomeAssistantView):
                         CONF_OPTIMIZATION_MAX_DISCHARGE_W,
                         default_power_w,
                     ),
+                    "max_grid_import_w": (
+                        _entry_int_setting(CONF_OPTIMIZATION_MAX_GRID_IMPORT_W, 0)
+                        if config_entry
+                        else 0
+                    ),
                     "allow_grid_charge": bool(
                         config_entry.options.get(
                             CONF_OPTIMIZATION_ALLOW_GRID_CHARGE,
@@ -29771,6 +29781,7 @@ class OptimizationSettingsView(HomeAssistantView):
                 "battery_capacity_wh": opt_coordinator._config.battery_capacity_wh,
                 "max_charge_w": opt_coordinator._config.max_charge_w,
                 "max_discharge_w": opt_coordinator._config.max_discharge_w,
+                "max_grid_import_w": opt_coordinator._config.max_grid_import_w,
                 "allow_grid_charge": opt_coordinator._config.allow_grid_charge,
                 "spread_export_enabled": opt_coordinator._config.spread_export_enabled,
                 "spread_import_enabled": opt_coordinator._config.spread_import_enabled,
@@ -29927,6 +29938,7 @@ class OptimizationSettingsView(HomeAssistantView):
                 "battery_capacity_wh": CONF_OPTIMIZATION_BATTERY_CAPACITY_WH,
                 "max_charge_w": CONF_OPTIMIZATION_MAX_CHARGE_W,
                 "max_discharge_w": CONF_OPTIMIZATION_MAX_DISCHARGE_W,
+                "max_grid_import_w": CONF_OPTIMIZATION_MAX_GRID_IMPORT_W,
             }
             for payload_key, option_key in spec_key_map.items():
                 if payload_key not in settings:

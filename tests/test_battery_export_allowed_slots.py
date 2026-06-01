@@ -119,6 +119,7 @@ def _install_power_sync_stubs() -> None:
     const_module.CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED = "optimization_spread_import_enabled"
     const_module.CONF_OPTIMIZATION_MAX_CHARGE_W = "max_charge_w"
     const_module.CONF_OPTIMIZATION_MAX_DISCHARGE_W = "max_discharge_w"
+    const_module.CONF_OPTIMIZATION_MAX_GRID_IMPORT_W = "max_grid_import_w"
     const_module.CONF_SIGENERGY_EXPORT_LIMIT_KW = "sigenergy_export_limit_kw"
     const_module.CONF_ALPHAESS_EXPORT_LIMIT_KW = "alphaess_export_limit_kw"
     const_module.CONF_PROFIT_MAX_TARGET_TIME = "profit_max_target_time"
@@ -1923,6 +1924,89 @@ def test_spread_import_free_window_caps_to_available_battery_room(opt_module):
     assert [action.power_w for action in spread.actions] == [expected_power_w] * 36
     spread_wh = sum(action.battery_charge_w for action in spread.actions) * (5 / 60)
     assert spread_wh == pytest.approx((1.0 - 0.80) * 50000 / 0.92, abs=0.1)
+
+
+def test_spread_import_schedule_respects_site_import_headroom(opt_module):
+    coordinator = _coordinator(opt_module, "octopus")
+    coordinator.battery_system = "goodwe"
+    coordinator._config.spread_import_enabled = True
+    coordinator._config.max_charge_w = 15000
+    coordinator._config.max_grid_import_w = 11100
+    coordinator._config.battery_capacity_wh = 50000
+    start = datetime(2026, 5, 3, 11, 0, tzinfo=timezone.utc)
+    actions = [
+        opt_module.ScheduleAction(
+            timestamp=start + idx * timedelta(minutes=5),
+            action="charge",
+            power_w=15000,
+            battery_charge_w=15000,
+        )
+        for idx in range(36)
+    ]
+    schedule = opt_module.OptimizationSchedule(
+        actions=actions,
+        predicted_cost=0,
+        predicted_savings=0,
+        last_updated=start,
+    )
+
+    spread = coordinator._spread_import_schedule(
+        schedule,
+        [0.12] * 36,
+        [False] * 36,
+        initial_soc=0.35,
+        solar_forecast=[0.0] * 36,
+        load_forecast=[1.0] * 36,
+    )
+
+    assert max(action.battery_charge_w for action in spread.actions) == pytest.approx(
+        10100.0,
+        abs=0.1,
+    )
+    assert all(
+        action.battery_charge_w + 1000 <= 11100.1
+        for action in spread.actions
+        if action.action == "charge"
+    )
+
+
+def test_spread_import_schedule_uses_solar_headroom_above_site_import_cap(opt_module):
+    coordinator = _coordinator(opt_module, "octopus")
+    coordinator.battery_system = "goodwe"
+    coordinator._config.spread_import_enabled = True
+    coordinator._config.max_charge_w = 15000
+    coordinator._config.max_grid_import_w = 11100
+    coordinator._config.battery_capacity_wh = 50000
+    start = datetime(2026, 5, 3, 11, 0, tzinfo=timezone.utc)
+    actions = [
+        opt_module.ScheduleAction(
+            timestamp=start + idx * timedelta(minutes=5),
+            action="charge",
+            power_w=15000,
+            battery_charge_w=15000,
+        )
+        for idx in range(36)
+    ]
+    schedule = opt_module.OptimizationSchedule(
+        actions=actions,
+        predicted_cost=0,
+        predicted_savings=0,
+        last_updated=start,
+    )
+
+    spread = coordinator._spread_import_schedule(
+        schedule,
+        [0.12] * 36,
+        [False] * 36,
+        initial_soc=0.35,
+        solar_forecast=[5.0] * 36,
+        load_forecast=[1.0] * 36,
+    )
+
+    assert max(action.battery_charge_w for action in spread.actions) == pytest.approx(
+        15000.0,
+        abs=0.1,
+    )
 
 
 def test_spread_import_free_only_smooths_free_window(opt_module):

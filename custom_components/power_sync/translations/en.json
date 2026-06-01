@@ -341,6 +341,7 @@
           "optimization_battery_capacity_wh": "Battery capacity",
           "optimization_max_charge_w": "Maximum charge power",
           "optimization_max_discharge_w": "Maximum discharge power",
+          "optimization_max_grid_import_w": "Maximum grid import",
           "optimization_allow_grid_charge": "Allow grid charging"
         },
         "data_description": {
@@ -353,6 +354,7 @@
           "optimization_battery_capacity_wh": "Total usable battery capacity in kWh for the external battery system.",
           "optimization_max_charge_w": "Maximum charge power in kW that the planner may schedule.",
           "optimization_max_discharge_w": "Maximum discharge/export power in kW that the planner may schedule.",
+          "optimization_max_grid_import_w": "Maximum site grid import in kW. Set 0 for no site import cap.",
           "optimization_allow_grid_charge": "When disabled, the planner will not schedule forced grid charging."
         },
         "submit": "Save"
@@ -381,6 +383,7 @@
           "optimization_battery_capacity_wh": "Battery capacity",
           "optimization_max_charge_w": "Maximum charge power",
           "optimization_max_discharge_w": "Maximum discharge power",
+          "optimization_max_grid_import_w": "Maximum grid import",
           "optimization_allow_grid_charge": "Allow grid charging",
           "optimization_spread_export_enabled": "Spread export across window",
           "optimization_spread_import_enabled": "Spread import across window",
@@ -398,6 +401,7 @@
           "optimization_battery_capacity_wh": "Total usable battery capacity in kWh. This should match the battery specs shown in the mobile app.",
           "optimization_max_charge_w": "Maximum grid charge power in kW that the LP optimizer may request.",
           "optimization_max_discharge_w": "Maximum discharge/export power in kW that the LP optimizer may request.",
+          "optimization_max_grid_import_w": "Maximum total site grid import in kW. Set 0 for no site import cap; solar can still add charging power above this limit.",
           "optimization_allow_grid_charge": "When disabled, Smart Optimization can still charge from solar surplus but will not plan forced battery charging from grid import.",
           "optimization_spread_export_enabled": "When enabled on supported batteries, Smart Optimization spreads planned battery export across the full eligible export window instead of using maximum discharge power.",
           "optimization_spread_import_enabled": "When enabled on supported batteries, Smart Optimization spreads planned grid charging across each same-price import window instead of using maximum charge power.",
@@ -1211,6 +1215,7 @@
           "optimization_battery_capacity_wh": "Battery capacity",
           "optimization_max_charge_w": "Maximum charge power",
           "optimization_max_discharge_w": "Maximum discharge power",
+          "optimization_max_grid_import_w": "Maximum grid import",
           "optimization_allow_grid_charge": "Allow grid charging",
           "optimization_spread_export_enabled": "Spread export across window",
           "optimization_spread_import_enabled": "Spread import across window",
@@ -1228,6 +1233,7 @@
           "optimization_battery_capacity_wh": "Total usable battery capacity in kWh. This should match the battery specs shown in the mobile app.",
           "optimization_max_charge_w": "Maximum grid charge power in kW that the LP optimizer may request.",
           "optimization_max_discharge_w": "Maximum discharge/export power in kW that the LP optimizer may request.",
+          "optimization_max_grid_import_w": "Maximum total site grid import in kW. Set 0 for no site import cap; solar can still add charging power above this limit.",
           "optimization_allow_grid_charge": "When disabled, Smart Optimization can still charge from solar surplus but will not plan forced battery charging from grid import.",
           "optimization_spread_export_enabled": "When enabled on supported batteries, Smart Optimization spreads planned battery export across the full eligible export window instead of using maximum discharge power.",
           "optimization_spread_import_enabled": "When enabled on supported batteries, Smart Optimization spreads planned grid charging across each same-price import window instead of using maximum charge power.",

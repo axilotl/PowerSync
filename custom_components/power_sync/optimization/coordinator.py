@@ -113,6 +113,7 @@ class OptimizationConfig:
     battery_capacity_wh: int = 13500
     max_charge_w: int = 5000
     max_discharge_w: int = 5000
+    max_grid_import_w: int | None = None
     max_grid_export_w: int | None = None
     allow_grid_charge: bool = True
     backup_reserve: float = 0.2
@@ -1287,6 +1288,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             capacity_wh=self._config.battery_capacity_wh,
             max_charge_w=self._config.max_charge_w,
             max_discharge_w=self._config.max_discharge_w,
+            max_grid_import_w=self._config.max_grid_import_w,
             max_grid_export_w=self._config.max_grid_export_w,
             efficiency=0.92,
             backup_reserve=self._config.backup_reserve,
@@ -2214,6 +2216,8 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     import_prices,
                     battery_charge_blocked,
                     soc,
+                    solar_forecast=solar_forecast,
+                    load_forecast=load_forecast,
                 )
                 result.schedule = self._current_schedule
             if self._should_spread_export_schedule():
@@ -3534,6 +3538,8 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         initial_soc: float,
         *,
         free_only: bool = False,
+        solar_forecast: list[float] | None = None,
+        load_forecast: list[float] | None = None,
     ) -> OptimizationSchedule:
         """Spread planned grid-charge energy across same-price import windows."""
         actions = list(schedule.actions or [])
@@ -3556,8 +3562,52 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         capacity_wh = max(0.0, float(self._config.battery_capacity_wh or 0))
         efficiency = float(getattr(self._optimizer, "efficiency", 0.92) or 0.92)
         max_charge_w = max(0.0, float(self._config.max_charge_w or 0))
+        max_grid_import_w = self._normalize_optional_power_w(
+            self._config.max_grid_import_w
+        )
+        cap_by_slot = max_grid_import_w is not None
         new_actions: list[ScheduleAction] = list(actions)
         soc_cursor = max(0.0, min(1.0, float(initial_soc or 0.0)))
+
+        def _forecast_kw(values: list[float] | None, pos: int) -> float:
+            if not values or pos >= len(values):
+                return 0.0
+            try:
+                return float(values[pos])
+            except (TypeError, ValueError):
+                return 0.0
+
+        def _slot_charge_cap_w(pos: int) -> float:
+            if max_grid_import_w is None:
+                return max_charge_w
+            load_w = _forecast_kw(load_forecast, pos) * 1000.0
+            solar_w = _forecast_kw(solar_forecast, pos) * 1000.0
+            return max(
+                0.0,
+                min(max_charge_w, max_grid_import_w - load_w + solar_w),
+            )
+
+        def _spread_power_by_cap(total_wh: float, caps_w: list[float]) -> list[float]:
+            """Spread total Wh evenly while respecting per-slot caps."""
+            if not caps_w:
+                return []
+            remaining = min(total_wh, sum(caps_w) * interval_hours)
+            output = [0.0] * len(caps_w)
+            open_slots = set(range(len(caps_w)))
+            while open_slots and remaining > 1e-6:
+                target_w = remaining / (len(open_slots) * interval_hours)
+                capped_now = [
+                    pos for pos in open_slots if caps_w[pos] <= target_w + 1e-6
+                ]
+                if not capped_now:
+                    for pos in open_slots:
+                        output[pos] = target_w
+                    break
+                for pos in capped_now:
+                    output[pos] = caps_w[pos]
+                    remaining -= caps_w[pos] * interval_hours
+                    open_slots.remove(pos)
+            return [round(max(0.0, value), 1) for value in output]
 
         def _advance_soc(soc: float, action: Any) -> float:
             if capacity_wh <= 0:
@@ -3613,26 +3663,45 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         soc_cursor = _advance_soc(soc_cursor, new_actions[pos])
                     continue
 
-            target_w = min(
-                max_charge_w,
-                charge_wh / (len(window_actions) * interval_hours),
-            )
-            target_w = round(max(0.0, target_w), 1)
-            if target_w <= 0:
+            if cap_by_slot:
+                target_by_pos = _spread_power_by_cap(
+                    charge_wh,
+                    [_slot_charge_cap_w(pos) for pos in range(start, end)],
+                )
+            else:
+                target_w = min(
+                    max_charge_w,
+                    charge_wh / (len(window_actions) * interval_hours),
+                )
+                target_w = round(max(0.0, target_w), 1)
+                target_by_pos = [target_w] * len(window_actions)
+
+            if not any(target_w > 0 for target_w in target_by_pos):
                 for pos in range(start, end):
                     soc_cursor = _advance_soc(soc_cursor, new_actions[pos])
                 continue
 
             for pos in range(start, end):
                 original = actions[pos]
-                new_actions[pos] = ScheduleAction(
-                    timestamp=original.timestamp,
-                    action="charge",
-                    power_w=target_w,
-                    soc=original.soc,
-                    battery_charge_w=target_w,
-                    battery_discharge_w=0.0,
-                )
+                target_w = target_by_pos[pos - start]
+                if target_w > 0:
+                    new_actions[pos] = ScheduleAction(
+                        timestamp=original.timestamp,
+                        action="charge",
+                        power_w=target_w,
+                        soc=original.soc,
+                        battery_charge_w=target_w,
+                        battery_discharge_w=0.0,
+                    )
+                else:
+                    new_actions[pos] = ScheduleAction(
+                        timestamp=original.timestamp,
+                        action="self_consumption",
+                        power_w=0.0,
+                        soc=original.soc,
+                        battery_charge_w=0.0,
+                        battery_discharge_w=0.0,
+                    )
                 soc_cursor = _advance_soc(soc_cursor, new_actions[pos])
 
         return OptimizationSchedule(
@@ -6566,6 +6635,8 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         for key, value in kwargs.items():
             if key == "interval_minutes":
                 value = FIXED_OPTIMIZATION_INTERVAL_MINUTES
+            if key == "max_grid_import_w":
+                value = self._normalize_optional_power_w(value)
             if hasattr(self._config, key):
                 setattr(self._config, key, value)
         self._config.interval_minutes = FIXED_OPTIMIZATION_INTERVAL_MINUTES
@@ -6576,6 +6647,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 capacity_wh=self._config.battery_capacity_wh,
                 max_charge_w=self._config.max_charge_w,
                 max_discharge_w=self._config.max_discharge_w,
+                max_grid_import_w=self._config.max_grid_import_w,
                 backup_reserve=self._config.backup_reserve,
             )
             self._optimizer.max_grid_export_w = self._config.max_grid_export_w
@@ -6588,6 +6660,14 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.energy_coordinator.set_min_soc_pct(
                 self._config.backup_reserve * 100
             )
+
+    @staticmethod
+    def _normalize_optional_power_w(value: Any) -> int | None:
+        try:
+            parsed = int(float(value))
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed > 0 else None
 
     async def force_reoptimize(self) -> Any:
         """Force immediate re-optimization."""
@@ -6763,6 +6843,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "battery_capacity_wh": self._config.battery_capacity_wh,
                 "max_charge_w": self._config.max_charge_w,
                 "max_discharge_w": self._config.max_discharge_w,
+                "max_grid_import_w": self._config.max_grid_import_w,
                 "max_grid_export_w": self._config.max_grid_export_w,
                 "allow_grid_charge": self._config.allow_grid_charge,
                 "spread_export_enabled": self._config.spread_export_enabled,
@@ -7004,6 +7085,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Handle config updates
         config_keys = [
             "battery_capacity_wh", "max_charge_w", "max_discharge_w",
+            "max_grid_import_w",
             "allow_grid_charge", "backup_reserve", "horizon_hours",
         ]
         config_updates = {k: v for k, v in settings.items() if k in config_keys}
@@ -7027,6 +7109,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     CONF_OPTIMIZATION_ALLOW_GRID_CHARGE,
                     CONF_OPTIMIZATION_MAX_CHARGE_W,
                     CONF_OPTIMIZATION_MAX_DISCHARGE_W,
+                    CONF_OPTIMIZATION_MAX_GRID_IMPORT_W,
                 )
                 new_data = dict(self._entry.data)
                 new_options = dict(self._entry.options)
@@ -7042,6 +7125,15 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     new_options[CONF_OPTIMIZATION_MAX_CHARGE_W] = int(settings["max_charge_w"])
                 if "max_discharge_w" in settings:
                     new_options[CONF_OPTIMIZATION_MAX_DISCHARGE_W] = int(settings["max_discharge_w"])
+                if "max_grid_import_w" in settings:
+                    grid_import_w = self._normalize_optional_power_w(
+                        settings["max_grid_import_w"]
+                    )
+                    if grid_import_w is None:
+                        new_options.pop(CONF_OPTIMIZATION_MAX_GRID_IMPORT_W, None)
+                        new_data.pop(CONF_OPTIMIZATION_MAX_GRID_IMPORT_W, None)
+                    else:
+                        new_options[CONF_OPTIMIZATION_MAX_GRID_IMPORT_W] = grid_import_w
                 if "allow_grid_charge" in settings:
                     new_options[CONF_OPTIMIZATION_ALLOW_GRID_CHARGE] = bool(settings["allow_grid_charge"])
                 # Prevent reload from API-driven options update

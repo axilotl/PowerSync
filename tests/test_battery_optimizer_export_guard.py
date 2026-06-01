@@ -82,6 +82,102 @@ def _optimizer(module):
     )
 
 
+def test_grid_import_limit_caps_grid_sourced_charge(battery_optimizer_module):
+    optimizer = battery_optimizer_module.BatteryOptimizer(
+        capacity_wh=100000,
+        max_charge_w=13600,
+        max_discharge_w=13600,
+        max_grid_import_w=11100,
+        backup_reserve=0.05,
+        interval_minutes=5,
+        horizon_hours=1,
+    )
+    n = 12
+
+    result = optimizer.optimize(
+        import_prices=[0.0] * 6 + [0.50] * 6,
+        export_prices=[0.0] * n,
+        solar_forecast=[0.0] * n,
+        load_forecast=[1.0] * n,
+        current_soc=0.20,
+        allow_grid_charge=True,
+    )
+
+    assert max(result.grid_import_w) <= 11100.1
+    assert max(action.battery_charge_w for action in result.schedule.actions) == pytest.approx(
+        10100.0,
+        abs=0.1,
+    )
+
+
+def test_grid_import_limit_still_allows_solar_assisted_full_charge(
+    battery_optimizer_module,
+):
+    optimizer = battery_optimizer_module.BatteryOptimizer(
+        capacity_wh=100000,
+        max_charge_w=13600,
+        max_discharge_w=13600,
+        max_grid_import_w=11100,
+        backup_reserve=0.05,
+        interval_minutes=5,
+        horizon_hours=1,
+    )
+    n = 12
+
+    result = optimizer.optimize(
+        import_prices=[0.0] * 6 + [0.50] * 6,
+        export_prices=[0.0] * n,
+        solar_forecast=[5.0] * n,
+        load_forecast=[1.0] * n,
+        current_soc=0.20,
+        allow_grid_charge=True,
+    )
+
+    assert max(result.grid_import_w) <= 11100.1
+    assert max(action.battery_charge_w for action in result.schedule.actions) == pytest.approx(
+        13600.0,
+        abs=0.1,
+    )
+
+
+def test_pre_window_target_is_capped_by_grid_import_limit(
+    battery_optimizer_module,
+):
+    optimizer = battery_optimizer_module.BatteryOptimizer(
+        capacity_wh=100000,
+        max_charge_w=13600,
+        max_discharge_w=13600,
+        max_grid_import_w=11100,
+        backup_reserve=0.05,
+        interval_minutes=5,
+        horizon_hours=1,
+    )
+    optimizer.pre_window_slot = 6
+    optimizer.pre_window_soc_target = 1.0
+    n = 12
+
+    result = optimizer.optimize(
+        import_prices=[0.0] * 6 + [0.50] * 6,
+        export_prices=[0.0] * n,
+        solar_forecast=[0.0] * n,
+        load_forecast=[1.0] * n,
+        current_soc=0.50,
+        allow_grid_charge=True,
+    )
+
+    assert max(result.grid_import_w) <= 11100.1
+
+
+def test_pre_window_reachability_uses_grid_import_charge_limit_source():
+    source = (COMPONENT_ROOT / "optimization" / "battery_optimizer.py").read_text()
+
+    pre_window_block = source.split("pre_window_boundary = self._period_index_for_base_slot", 1)[1]
+    pre_window_block = pre_window_block.split("# === Variable bounds ===", 1)[0]
+
+    assert "self._charge_limit_kw(" in pre_window_block
+    assert "self.max_charge_kw * eff * sum" not in pre_window_block
+
+
 class _FakeSparseMatrix:
     def __init__(self, shape, dtype=float):
         self.shape = shape
