@@ -2695,8 +2695,21 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         # Build station options from validated stations
         station_options = {}
+        try:
+            from .sigenergy_api import extract_tariff_station_id
+        except Exception:
+            extract_tariff_station_id = None
+
         for station in self._sigenergy_stations:
-            station_id = str(station.get("id") or station.get("stationId"))
+            station_id = (
+                extract_tariff_station_id(station)
+                if extract_tariff_station_id
+                else None
+            )
+            if not station_id:
+                station_id = str(station.get("stationId") or station.get("id") or "").strip()
+            if not station_id:
+                continue
             station_name = (
                 station.get("stationName")
                 or station.get("name")

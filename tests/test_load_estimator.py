@@ -335,6 +335,30 @@ def test_open_meteo_sensor_watts_attributes_are_used_without_hass_data(monkeypat
     assert forecast[:6] == [800.0, 800.0, 800.0, 1200.0, 1200.0, 1200.0]
 
 
+def test_open_meteo_renamed_sensor_watts_attributes_are_used(monkeypatch):
+    module = _load_estimator_module(monkeypatch)
+    start = datetime(2026, 5, 9, 10, 0, tzinfo=timezone.utc)
+    state = SimpleNamespace(
+        entity_id="sensor.my_rooftop_forecast",
+        state="12000",
+        attributes={
+            "watts": {
+                start.isoformat(): 700,
+                (start + timedelta(minutes=15)).isoformat(): 900,
+            }
+        },
+    )
+    hass = SimpleNamespace(
+        data={},
+        states=_FakeStates([state]),
+    )
+    forecaster = module.SolcastForecaster(hass, interval_minutes=5)
+
+    forecast = _run(forecaster.get_forecast(horizon_hours=1, start_time=start))
+
+    assert forecast[:6] == [700.0, 700.0, 700.0, 900.0, 900.0, 900.0]
+
+
 class _FakeStates:
     def __init__(self, states=None, state_map=None):
         self._states = states or []

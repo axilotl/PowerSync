@@ -18486,9 +18486,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
 
             try:
+                resolved_station = await client.resolve_tariff_station_id(station_id)
+                if "error" in resolved_station:
+                    _LOGGER.error(
+                        "❌ Sigenergy tariff sync failed: %s",
+                        resolved_station["error"],
+                    )
+                    return
+
+                tariff_station_id = resolved_station["station_id"]
+                if tariff_station_id != str(station_id).strip():
+                    new_data = {**entry.data}
+                    new_data[CONF_SIGENERGY_STATION_ID] = tariff_station_id
+                    hass.config_entries.async_update_entry(entry, data=new_data)
+                    _LOGGER.info(
+                        "Updated Sigenergy station ID for tariff sync: %s",
+                        tariff_station_id,
+                    )
+
                 provider_label = (provider_for_tz or "amber").replace("_", " ").title()
                 result = await client.set_tariff_rate(
-                    station_id=station_id,
+                    station_id=tariff_station_id,
                     buy_prices=buy_prices,
                     sell_prices=sell_prices if sell_prices else buy_prices,
                     plan_name=f"PowerSync {provider_label}",

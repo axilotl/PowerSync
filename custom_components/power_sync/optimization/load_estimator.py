@@ -1052,9 +1052,13 @@ class SolcastForecaster:
 
         for state in all_states or []:
             entity_id = getattr(state, "entity_id", "")
-            if not self._is_open_meteo_daily_sensor(entity_id):
+            attributes = getattr(state, "attributes", {})
+            watts = attributes.get(OPEN_METEO_WATTS_ATTR)
+            if (
+                not self._is_open_meteo_daily_sensor(entity_id)
+                and not self._looks_like_open_meteo_watts(watts)
+            ):
                 continue
-            watts = getattr(state, "attributes", {}).get(OPEN_METEO_WATTS_ATTR)
             forecast = self._parse_open_meteo_watts(watts, start_time, n_intervals)
             if forecast is not None:
                 forecasts.append(forecast)
@@ -1072,6 +1076,21 @@ class SolcastForecaster:
             object_id.endswith(OPEN_METEO_DAILY_SENSOR_SUFFIXES)
             or "_energy_production_d" in object_id
         )
+
+    def _looks_like_open_meteo_watts(self, watts: Any) -> bool:
+        """Return true when a sensor exposes Open-Meteo timestamp-to-Watts data."""
+        if not isinstance(watts, dict) or not watts:
+            return False
+
+        for raw_time, raw_power in watts.items():
+            try:
+                if not isinstance(raw_time, datetime):
+                    datetime.fromisoformat(str(raw_time).replace("Z", "+00:00"))
+                float(raw_power)
+                return True
+            except (TypeError, ValueError):
+                continue
+        return False
 
     def _parse_open_meteo_watts(
         self,
