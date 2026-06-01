@@ -19,6 +19,7 @@ OPTIMIZATION_BATTERY_CONTROLLER_PATH = (
     ROOT / "custom_components" / "power_sync" / "optimization" / "battery_controller.py"
 )
 SELECT_PATH = ROOT / "custom_components" / "power_sync" / "select.py"
+FOXESS_INVERTER_PATH = ROOT / "custom_components" / "power_sync" / "inverters" / "foxess.py"
 
 
 def _find_class_method(
@@ -933,6 +934,32 @@ def test_foxess_cloud_curtailment_uses_export_active_power_and_scheduler_limits(
     assert "_restore_stored_scheduler()" in restore_source
     assert '"ActivePowerLimit"' in restore_source
     assert '"ExportLimit"' in restore_source
+
+
+def test_foxess_direct_curtailment_uses_verified_grid_remote_control():
+    source = FOXESS_INVERTER_PATH.read_text()
+    tree = ast.parse(source)
+    curtail = _find_class_method(tree, "FoxESSController", "curtail")
+    curtail_source = ast.get_source_segment(source, curtail)
+
+    assert curtail_source is not None
+    assert "_write_remote_control(" in curtail_source
+    assert "REMOTE_CONTROL_GRID" in curtail_source
+    assert 'label="curtailment"' in curtail_source
+    assert "_write_holding_register(reg.remote_enable, 1)" not in curtail_source
+
+
+def test_foxess_dc_curtailment_reapplies_before_remote_timeout():
+    source = INIT_PATH.read_text()
+    tree = ast.parse(source)
+    handler = _find_function(tree, "handle_foxess_curtailment")
+    handler_source = ast.get_source_segment(source, handler)
+
+    assert handler_source is not None
+    assert "_last_foxess_curtailment_reapply" in handler_source
+    assert "_foxess_reapply_interval = 480" in handler_source
+    assert 'current_state != "curtailed" or _needs_reapply' in handler_source
+    assert 'entry_data.pop("_last_foxess_curtailment_reapply", None)' in handler_source
 
 
 def test_goodwe_entity_mode_prefers_solar_first_charge_and_export_discharge_modes():

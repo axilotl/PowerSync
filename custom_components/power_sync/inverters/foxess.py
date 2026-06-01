@@ -1260,22 +1260,19 @@ class FoxESSController(InverterController):
 
         reg = self._register_map
 
-        # Enable remote control
-        if reg.remote_enable:
-            await self._write_holding_register(reg.remote_enable, 1)
-            if reg.remote_timeout:
-                await self._write_holding_register(reg.remote_timeout, 600)
-
-        # Set remote active power
         power_w = int(home_load_w) if home_load_w is not None and home_load_w > 0 else 0
 
-        if reg.remote_active_power:
-            if reg.remote_active_power_is_32bit:
-                high = (power_w >> 16) & 0xFFFF
-                low = power_w & 0xFFFF
-                await self._write_holding_registers(reg.remote_active_power, [high, low])
-            else:
-                await self._write_holding_register(reg.remote_active_power, power_w)
+        success = await self._write_remote_control(
+            reg,
+            power_w,
+            duration_minutes=10,
+            timeout_seconds=600,
+            label="curtailment",
+            enable_val=REMOTE_CONTROL_GRID,
+        )
+        if not success:
+            _LOGGER.error("FoxESS solar export curtailment failed")
+            return False
 
         if power_w > 0:
             _LOGGER.info(f"FoxESS solar export curtailed (load-following: {power_w}W)")

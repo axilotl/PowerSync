@@ -19911,15 +19911,33 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         try:
             if export_earnings < 1:
+                import time as _time_mod
+                _foxess_reapply_interval = 480  # Keep ahead of FoxESS 600s remote-control timeout
+                _last_reapply = entry_data.get("_last_foxess_curtailment_reapply", 0)
+                _now = _time_mod.monotonic()
+                _elapsed_since_reapply = _now - _last_reapply
+                _needs_reapply = (
+                    current_state == "curtailed"
+                    and _elapsed_since_reapply >= _foxess_reapply_interval
+                )
+
                 # Negative or near-zero export earnings → curtail
-                if current_state != "curtailed":
-                    _LOGGER.info("FoxESS curtailment TRIGGERED: export_earnings=%.2fc (<1c) → zero export", export_earnings)
+                if current_state != "curtailed" or _needs_reapply:
+                    if current_state == "curtailed":
+                        _LOGGER.info(
+                            "FoxESS curtailment RE-APPLY: export_earnings=%.2fc (<1c), %ds since last apply",
+                            export_earnings,
+                            int(_elapsed_since_reapply),
+                        )
+                    else:
+                        _LOGGER.info("FoxESS curtailment TRIGGERED: export_earnings=%.2fc (<1c) → zero export", export_earnings)
                     if hasattr(fc, "curtail"):
                         success = await fc.curtail()
                     else:
                         success = await controller.curtail()
                     if success:
-                        hass.data[DOMAIN][entry.entry_id]["foxess_curtailment_state"] = "curtailed"
+                        entry_data["foxess_curtailment_state"] = "curtailed"
+                        entry_data["_last_foxess_curtailment_reapply"] = _now
                     else:
                         _LOGGER.error("FoxESS curtail() failed")
                 else:
@@ -19933,7 +19951,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     else:
                         success = await controller.restore()
                     if success:
-                        hass.data[DOMAIN][entry.entry_id]["foxess_curtailment_state"] = "normal"
+                        entry_data["foxess_curtailment_state"] = "normal"
+                        entry_data.pop("_last_foxess_curtailment_reapply", None)
                     else:
                         _LOGGER.error("FoxESS restore() failed")
                 else:
