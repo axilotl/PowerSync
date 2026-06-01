@@ -26117,8 +26117,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     din = entry.data.get(CONF_POWERWALL_LOCAL_DIN)
                     if not din:
                         return False
+                    from .powerwall_local.normalization import (
+                        local_backup_reserve_write_percent,
+                    )
+
+                    local_percent = local_backup_reserve_write_percent(percent)
+                    if local_percent is None:
+                        return False
                     return await transport.write_config(
-                        din, {"site_info.backup_reserve_percent": percent}
+                        din, {"site_info.backup_reserve_percent": local_percent}
                     )
 
                 async def _cloud() -> bool:

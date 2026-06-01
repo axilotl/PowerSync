@@ -119,6 +119,7 @@ client_mod = _load_module(
     f"{LOCAL_PKG}.client",
     ROOT / "powerwall_local" / "client.py",
 )
+normalization_mod = sys.modules[f"{LOCAL_PKG}.normalization"]
 coordinator_mod = _load_module(
     f"{LOCAL_PKG}.coordinator",
     ROOT / "powerwall_local" / "coordinator.py",
@@ -130,6 +131,26 @@ def test_loopback_host_is_not_treated_as_local_access():
     assert client_mod.is_loopback_host("localhost")
     assert client_mod.is_loopback_host("::1")
     assert not client_mod.is_loopback_host("192.168.1.50")
+
+
+def test_local_backup_reserve_readback_subtracts_hidden_reserve():
+    normalize = normalization_mod.normalize_local_backup_reserve_percent
+
+    assert normalize(0) == 0
+    assert normalize(5) == 0
+    assert normalize(10) == 5
+    assert normalize(15) == 10
+    assert normalize(100) == 100
+
+
+def test_local_backup_reserve_write_adds_hidden_reserve():
+    to_local = normalization_mod.local_backup_reserve_write_percent
+
+    assert to_local(0) == 5
+    assert to_local(5) == 10
+    assert to_local(10) == 15
+    assert to_local(80) == 85
+    assert to_local(100) == 100
 
 
 def test_cloud_only_client_does_not_poll_loopback_gateway():
@@ -255,7 +276,7 @@ def test_snapshot_from_dcq_full_payload():
     assert snap.soc == 26.31578947368421
     assert snap.grid_status == "SystemGridConnected"
     assert snap.operation_mode == "self_consumption"
-    assert snap.backup_reserve_percent == 20
+    assert snap.backup_reserve_percent == 10
     assert snap.pw_count == 2
     assert snap.total_pack_full_wh == 27000.0
     assert snap.total_pack_remaining_wh == 8100.0

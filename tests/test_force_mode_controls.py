@@ -772,6 +772,19 @@ def test_optimizer_backup_reserve_writes_do_not_persist_as_user_reserve():
     assert '"_user_backup_reserve": percent' in persistence_branch
 
 
+def test_tesla_local_backup_reserve_write_uses_hidden_reserve_offset():
+    source = INIT_PATH.read_text()
+    tree = ast.parse(source)
+    function = _find_function(tree, "handle_set_backup_reserve")
+    function_source = ast.get_source_segment(source, function)
+
+    assert function_source is not None
+    assert "local_backup_reserve_write_percent" in function_source
+    assert "local_percent = local_backup_reserve_write_percent(percent)" in function_source
+    assert '"site_info.backup_reserve_percent": local_percent' in function_source
+    assert 'json={"backup_reserve_percent": percent}' in function_source
+
+
 def test_foxess_force_charge_accepts_optimizer_min_timeout():
     source = COORDINATOR_PATH.read_text()
     tree = ast.parse(source)
