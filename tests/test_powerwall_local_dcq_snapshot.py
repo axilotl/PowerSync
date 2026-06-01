@@ -240,7 +240,7 @@ def _sample_cfg() -> dict:
     return {
         "site_info": {
             "default_real_mode": "self_consumption",
-            "backup_reserve_percent": 20,
+            "backup_reserve_percent": 15,
         }
     }
 

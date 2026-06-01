@@ -4490,6 +4490,12 @@ class PowerwallSettingsView(HomeAssistantView):
 
             # Extract settings from site_info
             backup_reserve = site_info.get("backup_reserve_percent", 20)
+            if entry.data.get(CONF_POWERWALL_LOCAL_PAIRED):
+                from .powerwall_local.normalization import normalize_local_backup_reserve_percent
+
+                backup_reserve = normalize_local_backup_reserve_percent(
+                    backup_reserve
+                )
             operation_mode = site_info.get("default_real_mode", "autonomous")
 
             # Get grid settings from components

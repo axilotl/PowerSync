@@ -37,6 +37,7 @@ from .const import (
     CONF_NEOVOLT_MAX_DISCHARGE_KW,
     CONF_OPTIMIZATION_MAX_CHARGE_W,
     CONF_OPTIMIZATION_MAX_DISCHARGE_W,
+    CONF_POWERWALL_LOCAL_PAIRED,
     CONF_SAJ_INVERTER_RATED_KW,
     CONF_SOLAX_BATTERY_NOMINAL_V,
     CONF_SOLAX_MAX_CHARGE_CURRENT_A,
@@ -47,6 +48,7 @@ from .const import (
     TESLA_SITE_INFO_CONTROL_MAX_AGE_SECONDS,
     TESLA_CAPABILITY_WAIT_SECONDS,
 )
+from .powerwall_local.normalization import normalize_local_backup_reserve_percent
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -205,7 +207,12 @@ class BackupReserveNumber(_TeslaSiteNumberBase):
         coord = self._tesla_coord()
         site_info = getattr(coord, "_site_info_cache", None) if coord else None
         if site_info and "backup_reserve_percent" in site_info:
-            return float(site_info["backup_reserve_percent"])
+            reserve = site_info["backup_reserve_percent"]
+            if self._entry.data.get(CONF_POWERWALL_LOCAL_PAIRED):
+                reserve = normalize_local_backup_reserve_percent(reserve)
+            if reserve is None:
+                return None
+            return float(reserve)
         stored = self._entry.options.get("_user_backup_reserve")
         return float(stored) if stored is not None else None
 
