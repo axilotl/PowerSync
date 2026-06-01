@@ -475,6 +475,43 @@ def test_optimization_options_exposes_enabled_toggle():
     assert "optimization_provider != OPT_PROVIDER_POWERSYNC" in method_source
 
 
+def test_battery_init_options_expose_max_grid_import_limit():
+    source = CONFIG_FLOW_PATH.read_text()
+
+    for method_name in (
+        "async_step_init_tesla",
+        "async_step_init_sigenergy",
+        "async_step_init_sungrow",
+        "async_step_init_foxess",
+        "async_step_init_goodwe",
+    ):
+        method = _options_flow_method(method_name)
+        method_source = ast.get_source_segment(source, method)
+
+        assert method_source is not None
+        assert "CONF_OPTIMIZATION_MAX_GRID_IMPORT_W" in method_source
+        assert "_form_kw_to_w(" in method_source
+        assert "_stored_w_to_kw(" in method_source
+        assert (
+            method_source.index("CONF_OPTIMIZATION_BACKUP_RESERVE")
+            < method_source.index("CONF_OPTIMIZATION_MAX_GRID_IMPORT_W")
+        )
+
+    for path in (STRINGS_PATH, TRANSLATIONS_PATH):
+        options_steps = json.loads(path.read_text())["options"]["step"]
+        for step_name in (
+            "init_tesla",
+            "init_sigenergy",
+            "init_sungrow",
+            "init_foxess",
+            "init_goodwe",
+        ):
+            step = options_steps[step_name]
+
+            assert step["data"]["optimization_max_grid_import_w"] == "Maximum grid import"
+            assert "no site import cap" in step["data_description"]["optimization_max_grid_import_w"]
+
+
 def test_optimization_options_schedules_reload_after_flow_response():
     source = CONFIG_FLOW_PATH.read_text()
     method = _options_flow_method("async_step_optimization")

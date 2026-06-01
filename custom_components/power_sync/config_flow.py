@@ -7320,6 +7320,10 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                         )
                         / 100.0
                     )  # Convert from % to decimal
+                    new_data[CONF_OPTIMIZATION_MAX_GRID_IMPORT_W] = _form_kw_to_w(
+                        user_input.get(CONF_OPTIMIZATION_MAX_GRID_IMPORT_W),
+                        0,
+                    )
 
                 self.hass.config_entries.async_update_entry(
                     self.config_entry, data=new_data
@@ -7350,6 +7354,13 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
         )
         current_backup_reserve = self.config_entry.data.get(
             CONF_OPTIMIZATION_BACKUP_RESERVE, DEFAULT_OPTIMIZATION_BACKUP_RESERVE
+        )
+        current_max_grid_import_kw = _stored_w_to_kw(
+            self._get_option(
+                CONF_OPTIMIZATION_MAX_GRID_IMPORT_W,
+                self.config_entry.data.get(CONF_OPTIMIZATION_MAX_GRID_IMPORT_W, 0),
+            ),
+            0,
         )
         current_ev_provider = self.config_entry.data.get(
             CONF_TESLA_EV_API_PROVIDER, TESLA_EV_API_PROVIDER_NONE
@@ -7423,6 +7434,13 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     ): NumberSelector(NumberSelectorConfig(
                         min=0, max=100, step=1, unit_of_measurement="%",
                         mode=NumberSelectorMode.SLIDER,
+                    )),
+                    vol.Required(
+                        CONF_OPTIMIZATION_MAX_GRID_IMPORT_W,
+                        default=current_max_grid_import_kw,
+                    ): NumberSelector(NumberSelectorConfig(
+                        min=0, max=100, step=0.1, unit_of_measurement="kW",
+                        mode=NumberSelectorMode.BOX,
                     )),
                 }
             ),
@@ -7552,6 +7570,10 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                         )
                         / 100.0
                     )
+                    new_data[CONF_OPTIMIZATION_MAX_GRID_IMPORT_W] = _form_kw_to_w(
+                        user_input.get(CONF_OPTIMIZATION_MAX_GRID_IMPORT_W),
+                        0,
+                    )
 
                 self.hass.config_entries.async_update_entry(
                     self.config_entry, data=new_data
@@ -7590,6 +7612,13 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
         )
         current_backup_reserve = self.config_entry.data.get(
             CONF_OPTIMIZATION_BACKUP_RESERVE, DEFAULT_OPTIMIZATION_BACKUP_RESERVE
+        )
+        current_max_grid_import_kw = _stored_w_to_kw(
+            self._get_option(
+                CONF_OPTIMIZATION_MAX_GRID_IMPORT_W,
+                self.config_entry.data.get(CONF_OPTIMIZATION_MAX_GRID_IMPORT_W, 0),
+            ),
+            0,
         )
 
         # Get current Sigenergy Cloud credentials (for display, show empty if not set)
@@ -7640,6 +7669,13 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     ): NumberSelector(NumberSelectorConfig(
                         min=0, max=100, step=1, unit_of_measurement="%",
                         mode=NumberSelectorMode.SLIDER,
+                    )),
+                    vol.Required(
+                        CONF_OPTIMIZATION_MAX_GRID_IMPORT_W,
+                        default=current_max_grid_import_kw,
+                    ): NumberSelector(NumberSelectorConfig(
+                        min=0, max=100, step=0.1, unit_of_measurement="kW",
+                        mode=NumberSelectorMode.BOX,
                     )),
                     vol.Required(
                         CONF_SIGENERGY_MODBUS_HOST,
@@ -7744,6 +7780,10 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                             )
                             / 100.0
                         )
+                        new_data[CONF_OPTIMIZATION_MAX_GRID_IMPORT_W] = _form_kw_to_w(
+                            user_input.get(CONF_OPTIMIZATION_MAX_GRID_IMPORT_W),
+                            0,
+                        )
 
                     self.hass.config_entries.async_update_entry(
                         self.config_entry, data=new_data, options=new_options
@@ -7774,6 +7814,13 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
         )
         current_backup_reserve = self.config_entry.data.get(
             CONF_OPTIMIZATION_BACKUP_RESERVE, DEFAULT_OPTIMIZATION_BACKUP_RESERVE
+        )
+        current_max_grid_import_kw = _stored_w_to_kw(
+            self._get_option(
+                CONF_OPTIMIZATION_MAX_GRID_IMPORT_W,
+                self.config_entry.data.get(CONF_OPTIMIZATION_MAX_GRID_IMPORT_W, 0),
+            ),
+            0,
         )
 
         # Build optimization provider choices
@@ -7814,6 +7861,13 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     ): NumberSelector(NumberSelectorConfig(
                         min=0, max=100, step=1, unit_of_measurement="%",
                         mode=NumberSelectorMode.SLIDER,
+                    )),
+                    vol.Required(
+                        CONF_OPTIMIZATION_MAX_GRID_IMPORT_W,
+                        default=current_max_grid_import_kw,
+                    ): NumberSelector(NumberSelectorConfig(
+                        min=0, max=100, step=0.1, unit_of_measurement="kW",
+                        mode=NumberSelectorMode.BOX,
                     )),
                     vol.Required(
                         CONF_SUNGROW_HOST,
@@ -7918,6 +7972,10 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                         )
                         / 100.0
                     )
+                    new_data[CONF_OPTIMIZATION_MAX_GRID_IMPORT_W] = _form_kw_to_w(
+                        user_input.get(CONF_OPTIMIZATION_MAX_GRID_IMPORT_W),
+                        0,
+                    )
 
                 self.hass.config_entries.async_update_entry(
                     self.config_entry, data=new_data
@@ -7959,6 +8017,13 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
         )
         current_backup_reserve = self.config_entry.data.get(
             CONF_OPTIMIZATION_BACKUP_RESERVE, DEFAULT_OPTIMIZATION_BACKUP_RESERVE
+        )
+        current_max_grid_import_kw = _stored_w_to_kw(
+            self._get_option(
+                CONF_OPTIMIZATION_MAX_GRID_IMPORT_W,
+                self.config_entry.data.get(CONF_OPTIMIZATION_MAX_GRID_IMPORT_W, 0),
+            ),
+            0,
         )
 
         opt_providers = {
@@ -8002,6 +8067,13 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             ): NumberSelector(NumberSelectorConfig(
                 min=0, max=100, step=1, unit_of_measurement="%",
                 mode=NumberSelectorMode.SLIDER,
+            )),
+            vol.Required(
+                CONF_OPTIMIZATION_MAX_GRID_IMPORT_W,
+                default=current_max_grid_import_kw,
+            ): NumberSelector(NumberSelectorConfig(
+                min=0, max=100, step=0.1, unit_of_measurement="kW",
+                mode=NumberSelectorMode.BOX,
             )),
             vol.Required(
                 CONF_FOXESS_CONNECTION_TYPE,
@@ -8133,6 +8205,10 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                             )
                             / 100.0
                         )
+                        new_data[CONF_OPTIMIZATION_MAX_GRID_IMPORT_W] = _form_kw_to_w(
+                            user_input.get(CONF_OPTIMIZATION_MAX_GRID_IMPORT_W),
+                            0,
+                        )
 
                     self.hass.config_entries.async_update_entry(
                         self.config_entry, data=new_data
@@ -8169,6 +8245,13 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
         )
         current_backup_reserve = self.config_entry.data.get(
             CONF_OPTIMIZATION_BACKUP_RESERVE, DEFAULT_OPTIMIZATION_BACKUP_RESERVE
+        )
+        current_max_grid_import_kw = _stored_w_to_kw(
+            self._get_option(
+                CONF_OPTIMIZATION_MAX_GRID_IMPORT_W,
+                self.config_entry.data.get(CONF_OPTIMIZATION_MAX_GRID_IMPORT_W, 0),
+            ),
+            0,
         )
 
         opt_providers = {
@@ -8213,6 +8296,13 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     ): NumberSelector(NumberSelectorConfig(
                         min=0, max=100, step=1, unit_of_measurement="%",
                         mode=NumberSelectorMode.SLIDER,
+                    )),
+                    vol.Required(
+                        CONF_OPTIMIZATION_MAX_GRID_IMPORT_W,
+                        default=current_max_grid_import_kw,
+                    ): NumberSelector(NumberSelectorConfig(
+                        min=0, max=100, step=0.1, unit_of_measurement="kW",
+                        mode=NumberSelectorMode.BOX,
                     )),
                     vol.Required(
                         CONF_GOODWE_HOST,
