@@ -336,6 +336,8 @@ from .const import (
     DEFAULT_INVERTER_RESTORE_SOC,
     # Sigenergy configuration
     CONF_SIGENERGY_STATION_ID,
+    CONF_SIGENERGY_TARIFF_STATION_ID,
+    CONF_SIGENERGY_TARIFF_STATION_SOURCE_ID,
     CONF_SIGENERGY_USERNAME,
     CONF_SIGENERGY_PASS_ENC,
     CONF_SIGENERGY_DEVICE_ID,
@@ -18504,23 +18506,50 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
 
             try:
-                resolved_station = await client.resolve_tariff_station_id(station_id)
-                if "error" in resolved_station:
-                    _LOGGER.error(
-                        "❌ Sigenergy tariff sync failed: %s",
-                        resolved_station["error"],
-                    )
-                    return
+                configured_station_id = str(station_id).strip()
+                cached_tariff_station_id = str(
+                    entry.data.get(CONF_SIGENERGY_TARIFF_STATION_ID) or ""
+                ).strip()
+                cached_tariff_station_source_id = str(
+                    entry.data.get(CONF_SIGENERGY_TARIFF_STATION_SOURCE_ID) or ""
+                ).strip()
 
-                tariff_station_id = resolved_station["station_id"]
-                if tariff_station_id != str(station_id).strip():
-                    new_data = {**entry.data}
-                    new_data[CONF_SIGENERGY_STATION_ID] = tariff_station_id
-                    hass.config_entries.async_update_entry(entry, data=new_data)
-                    _LOGGER.info(
-                        "Updated Sigenergy station ID for tariff sync: %s",
+                if (
+                    cached_tariff_station_id.isdigit()
+                    and cached_tariff_station_source_id == configured_station_id
+                ):
+                    tariff_station_id = cached_tariff_station_id
+                    _LOGGER.debug(
+                        "Using cached Sigenergy tariff station ID %s for "
+                        "configured station ID %s",
                         tariff_station_id,
+                        configured_station_id,
                     )
+                else:
+                    resolved_station = await client.resolve_tariff_station_id(
+                        configured_station_id
+                    )
+                    if "error" in resolved_station:
+                        _LOGGER.error(
+                            "❌ Sigenergy tariff sync failed: %s",
+                            resolved_station["error"],
+                        )
+                        return
+
+                    tariff_station_id = resolved_station["station_id"]
+                    new_data = {**entry.data}
+                    new_data[CONF_SIGENERGY_TARIFF_STATION_ID] = tariff_station_id
+                    new_data[CONF_SIGENERGY_TARIFF_STATION_SOURCE_ID] = (
+                        configured_station_id
+                    )
+                    if new_data != entry.data:
+                        hass.config_entries.async_update_entry(entry, data=new_data)
+                        _LOGGER.info(
+                            "Cached Sigenergy tariff station ID for uploads: %s "
+                            "(configured station ID remains %s)",
+                            tariff_station_id,
+                            configured_station_id,
+                        )
 
                 provider_label = (provider_for_tz or "amber").replace("_", " ").title()
                 result = await client.set_tariff_rate(

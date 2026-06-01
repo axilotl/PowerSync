@@ -301,6 +301,33 @@ def test_sigenergy_tariff_sync_does_not_require_optional_device_id():
     assert "device_id=device_id" in helper_source
 
 
+def test_sigenergy_tariff_sync_caches_numeric_id_without_overwriting_configured_id():
+    init_source = (COMPONENT_ROOT / "__init__.py").read_text()
+    helper_source = init_source[
+        init_source.index("async def _sync_tariff_to_sigenergy"):
+        init_source.index("async def _sync_tariff_to_foxess")
+    ]
+
+    assert "CONF_SIGENERGY_TARIFF_STATION_ID" in helper_source
+    assert "CONF_SIGENERGY_TARIFF_STATION_SOURCE_ID" in helper_source
+    assert "new_data[CONF_SIGENERGY_STATION_ID] = tariff_station_id" not in helper_source
+    assert "configured station ID remains" in helper_source
+    assert "station_id=tariff_station_id" in helper_source
+
+
+def test_sigenergy_station_picker_preserves_system_id_and_caches_tariff_id():
+    config_flow_source = (COMPONENT_ROOT / "config_flow.py").read_text()
+    helper_source = config_flow_source[
+        config_flow_source.index("async def async_step_sigenergy_station"):
+        config_flow_source.index("async def async_step_sigenergy_modbus")
+    ]
+
+    assert "CONF_SIGENERGY_TARIFF_STATION_ID" in helper_source
+    assert "CONF_SIGENERGY_TARIFF_STATION_SOURCE_ID" in helper_source
+    assert "not value.isdigit()" in helper_source
+    assert "station_tariff_ids[station_id] = tariff_station_id" in helper_source
+
+
 class _FakeTariffResponse:
     def __init__(
         self,

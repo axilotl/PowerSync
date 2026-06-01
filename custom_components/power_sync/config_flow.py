@@ -172,6 +172,8 @@ from .const import (
     CONF_SIGENERGY_PASS_ENC,
     CONF_SIGENERGY_DEVICE_ID,
     CONF_SIGENERGY_STATION_ID,
+    CONF_SIGENERGY_TARIFF_STATION_ID,
+    CONF_SIGENERGY_TARIFF_STATION_SOURCE_ID,
     CONF_SIGENERGY_ACCESS_TOKEN,
     CONF_SIGENERGY_REFRESH_TOKEN,
     CONF_SIGENERGY_TOKEN_EXPIRES_AT,
@@ -2688,6 +2690,16 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 # Strip any whitespace
                 station_id = str(station_id).strip()
                 self._sigenergy_data[CONF_SIGENERGY_STATION_ID] = station_id
+                tariff_station_id = getattr(
+                    self, "_sigenergy_tariff_station_options", {}
+                ).get(station_id)
+                if tariff_station_id:
+                    self._sigenergy_data[CONF_SIGENERGY_TARIFF_STATION_ID] = (
+                        tariff_station_id
+                    )
+                    self._sigenergy_data[CONF_SIGENERGY_TARIFF_STATION_SOURCE_ID] = (
+                        station_id
+                    )
                 # Go to Modbus connection configuration (required for energy data)
                 return await self.async_step_sigenergy_modbus()
             else:
@@ -2695,19 +2707,42 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         # Build station options from validated stations
         station_options = {}
+        station_tariff_ids = {}
         try:
             from .sigenergy_api import extract_tariff_station_id
         except Exception:
             extract_tariff_station_id = None
 
         for station in self._sigenergy_stations:
-            station_id = (
+            tariff_station_id = (
                 extract_tariff_station_id(station)
                 if extract_tariff_station_id
                 else None
             )
+            station_identifiers = [
+                str(station.get(key) or "").strip()
+                for key in (
+                    "id",
+                    "plantId",
+                    "systemId",
+                    "stationSn",
+                    "stationSN",
+                    "stationCode",
+                    "stationId",
+                    "station_id",
+                    "stationID",
+                )
+            ]
+            station_id = next(
+                (
+                    value
+                    for value in station_identifiers
+                    if value and not value.isdigit()
+                ),
+                None,
+            )
             if not station_id:
-                station_id = str(station.get("stationId") or station.get("id") or "").strip()
+                station_id = next((value for value in station_identifiers if value), "")
             if not station_id:
                 continue
             station_name = (
@@ -2716,6 +2751,9 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 or f"Station {station_id}"
             )
             station_options[station_id] = station_name
+            if tariff_station_id:
+                station_tariff_ids[station_id] = tariff_station_id
+        self._sigenergy_tariff_station_options = station_tariff_ids
 
         # If no stations found via API, show manual entry form
         if not station_options:
@@ -5566,7 +5604,11 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 if sigen_device_id:
                     new_data[CONF_SIGENERGY_DEVICE_ID] = sigen_device_id
                 if sigen_station_id:
+                    previous_station_id = new_data.get(CONF_SIGENERGY_STATION_ID)
                     new_data[CONF_SIGENERGY_STATION_ID] = sigen_station_id
+                    if previous_station_id != sigen_station_id:
+                        new_data.pop(CONF_SIGENERGY_TARIFF_STATION_ID, None)
+                        new_data.pop(CONF_SIGENERGY_TARIFF_STATION_SOURCE_ID, None)
 
                 self.hass.config_entries.async_update_entry(
                     self.config_entry, data=new_data
@@ -7433,7 +7475,11 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 if sigen_device_id:
                     new_data[CONF_SIGENERGY_DEVICE_ID] = sigen_device_id
                 if sigen_station_id:
+                    previous_station_id = new_data.get(CONF_SIGENERGY_STATION_ID)
                     new_data[CONF_SIGENERGY_STATION_ID] = sigen_station_id
+                    if previous_station_id != sigen_station_id:
+                        new_data.pop(CONF_SIGENERGY_TARIFF_STATION_ID, None)
+                        new_data.pop(CONF_SIGENERGY_TARIFF_STATION_SOURCE_ID, None)
 
                 # Optimization provider settings
                 optimization_provider = user_input.get(
