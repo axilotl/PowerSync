@@ -5935,11 +5935,18 @@ class InverterStatusView(HomeAssistantView):
             # but the inverter is actually curtailed using soft export limit
             entry_data = self._hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
             inverter_last_state = entry_data.get("inverter_last_state")
-            if inverter_last_state == "curtailed":
+            sungrow_curtailment_state = entry_data.get("sungrow_curtailment_state")
+            if (
+                inverter_last_state == "curtailed"
+                or sungrow_curtailment_state == "curtailed"
+            ):
                 state_dict["is_curtailed"] = True
                 if state_dict.get("status") == "online":
                     state_dict["status"] = "curtailed"
-            elif inverter_last_state in ("normal", "running"):
+            elif (
+                inverter_last_state in ("normal", "running")
+                or sungrow_curtailment_state == "normal"
+            ):
                 state_dict["is_curtailed"] = False
 
             # Check if it's nighttime for sleep detection
@@ -20346,6 +20353,55 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         except Exception as e:
             _LOGGER.error("GoodWe curtailment error: %s", e, exc_info=True)
 
+    async def _active_solar_surplus_ev_needs_inverter_headroom() -> bool:
+        """Return true when a plugged-in solar-surplus EV should release curtailment."""
+        try:
+            from .automations.actions import DEFAULT_VEHICLE_ID, _dynamic_ev_state
+            from .automations.ev_charging_planner import (
+                get_ev_battery_level,
+                is_ev_plugged_in,
+            )
+            from .automations.ev_ownership import is_solar_surplus_owner_mode
+            from .solar_surplus_config import get_stored_solar_surplus_config
+        except Exception as err:
+            _LOGGER.debug("Solar surplus EV headroom check unavailable: %s", err)
+            return False
+
+        entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+        solar_config = get_stored_solar_surplus_config(entry_data)
+        if not solar_config.get("enabled", False):
+            return False
+
+        for vehicle_id, state in (_dynamic_ev_state.get(entry.entry_id, {}) or {}).items():
+            if not state or not state.get("active") or state.get("paused"):
+                continue
+
+            params = state.get("params") or {}
+            dynamic_mode = params.get("dynamic_mode")
+            owner_mode = params.get("owner_mode") or dynamic_mode
+            if dynamic_mode != "solar_surplus" and not is_solar_surplus_owner_mode(owner_mode):
+                continue
+
+            vehicle_vin = params.get("vehicle_vin")
+            if not vehicle_vin and vehicle_id != DEFAULT_VEHICLE_ID:
+                vehicle_vin = vehicle_id
+
+            if not await is_ev_plugged_in(hass, entry, vehicle_vin=vehicle_vin):
+                continue
+
+            ev_soc = await get_ev_battery_level(hass, entry, vehicle_vin=vehicle_vin)
+            if ev_soc is not None and ev_soc >= 100:
+                continue
+
+            _LOGGER.info(
+                "Solar surplus EV headroom requested for %s (SOC=%s%%)",
+                str(vehicle_vin or vehicle_id)[:8],
+                "unknown" if ev_soc is None else f"{ev_soc:.1f}",
+            )
+            return True
+
+        return False
+
     async def handle_sungrow_curtailment(feedin_price=None, import_price=None) -> None:
         """Handle Sungrow SH curtailment via the export-limit register.
 
@@ -20421,7 +20477,33 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.debug("Sungrow curtailment: no coordinator export-limit control available")
 
         try:
-            if native_available and export_earnings < 1:
+            ev_needs_headroom = (
+                await _active_solar_surplus_ev_needs_inverter_headroom()
+            )
+            should_curtail_for_price = export_earnings < 1 and not ev_needs_headroom
+
+            if native_available and export_earnings < 1 and ev_needs_headroom:
+                if current_state != "normal":
+                    _LOGGER.info(
+                        "Sungrow curtailment RESTORED: solar surplus EV needs PV headroom "
+                        "(export_earnings=%.2fc)",
+                        export_earnings,
+                    )
+                    success = await sungrow_coord.set_export_limit(None)
+                    if success:
+                        hass.data[DOMAIN][entry.entry_id][
+                            "sungrow_curtailment_state"
+                        ] = "normal"
+                        hass.data[DOMAIN][entry.entry_id]["sungrow_power_limit_w"] = (
+                            None
+                        )
+                    else:
+                        _LOGGER.error("Sungrow set_export_limit(None) failed")
+                else:
+                    _LOGGER.debug(
+                        "Sungrow normal export retained: solar surplus EV needs PV headroom"
+                    )
+            elif native_available and should_curtail_for_price:
                 live_status = await get_live_status()
                 home_load_w = 0
                 if live_status and live_status.get("load_power"):
@@ -20493,7 +20575,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
             if ac_enabled and not ac_inverter_is_same_hybrid():
                 await apply_inverter_curtailment(
-                    curtail=export_earnings < 1,
+                    curtail=should_curtail_for_price,
                     import_price=import_price,
                     export_earnings=export_earnings,
                 )

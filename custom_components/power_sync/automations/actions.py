@@ -4707,7 +4707,18 @@ async def _get_tesla_live_status(hass: HomeAssistant, config_entry: ConfigEntry)
     for coord_key in ("tesla_coordinator", "sigenergy_coordinator", "sungrow_coordinator"):
         coordinator = entry_data.get(coord_key)
         if coordinator and coordinator.data:
-            return coordinator_data_to_ev_live_status(coordinator.data)
+            live_status = coordinator_data_to_ev_live_status(coordinator.data)
+            if (
+                entry_data.get("inverter_last_state") == "curtailed"
+                or entry_data.get("sungrow_curtailment_state") == "curtailed"
+            ):
+                live_status["is_curtailed"] = True
+            elif (
+                entry_data.get("inverter_last_state") in ("normal", "running")
+                or entry_data.get("sungrow_curtailment_state") == "normal"
+            ):
+                live_status["is_curtailed"] = False
+            return live_status
 
     # Fall back to direct API call
     token_getter = entry_data.get("token_getter")

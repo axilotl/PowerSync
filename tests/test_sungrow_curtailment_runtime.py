@@ -8,6 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 INIT_PATH = ROOT / "custom_components" / "power_sync" / "__init__.py"
+ACTIONS_PATH = ROOT / "custom_components" / "power_sync" / "automations" / "actions.py"
 
 
 def _function_source(name: str) -> str:
@@ -34,6 +35,17 @@ def _top_level_function_source(name: str) -> str:
     raise AssertionError(f"{name} not found")
 
 
+def _actions_function_source(name: str) -> str:
+    source = ACTIONS_PATH.read_text()
+    module = ast.parse(source)
+    for node in module.body:
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == name:
+            segment = ast.get_source_segment(source, node)
+            assert segment is not None
+            return segment
+    raise AssertionError(f"{name} not found")
+
+
 def test_sungrow_has_native_export_limit_curtailment_handler():
     handler = _function_source("handle_sungrow_curtailment")
 
@@ -44,6 +56,35 @@ def test_sungrow_has_native_export_limit_curtailment_handler():
     assert "await sungrow_coord.set_export_limit(None)" in handler
     assert "ac_inverter_is_same_hybrid" in handler
     assert "await apply_inverter_curtailment(" in handler
+
+
+def test_sungrow_curtailment_releases_limit_for_active_solar_surplus_ev():
+    helper = _function_source("_active_solar_surplus_ev_needs_inverter_headroom")
+    handler = _function_source("handle_sungrow_curtailment")
+
+    assert 'solar_config.get("enabled", False)' in helper
+    assert "is_ev_plugged_in" in helper
+    assert "get_ev_battery_level" in helper
+    assert 'state.get("paused")' in helper
+    assert "_active_solar_surplus_ev_needs_inverter_headroom" in handler
+    assert "should_curtail_for_price = export_earnings < 1 and not ev_needs_headroom" in handler
+    assert "solar surplus EV needs PV headroom" in handler
+    assert "curtail=should_curtail_for_price" in handler
+
+
+def test_ev_live_status_marks_native_sungrow_curtailment_as_curtailed():
+    source = _actions_function_source("_get_tesla_live_status")
+
+    assert 'entry_data.get("sungrow_curtailment_state") == "curtailed"' in source
+    assert 'live_status["is_curtailed"] = True' in source
+
+
+def test_inverter_status_api_marks_native_sungrow_curtailment_as_curtailed():
+    source = INIT_PATH.read_text()
+
+    assert 'sungrow_curtailment_state = entry_data.get("sungrow_curtailment_state")' in source
+    assert 'or sungrow_curtailment_state == "curtailed"' in source
+    assert 'or sungrow_curtailment_state == "normal"' in source
 
 
 def test_hybrid_curtailment_handlers_use_tariff_schedule_fallback():
