@@ -1051,6 +1051,38 @@ def test_reserve_recommendation_reports_bridge_floor_before_next_charge(
     assert recommendation["protects_until"].startswith("2026-05-04T01:")
 
 
+def test_reserve_recommendation_does_not_hold_full_soc_without_discharge_bridge(
+    battery_optimizer_module,
+):
+    optimizer = battery_optimizer_module.BatteryOptimizer(
+        capacity_wh=10000,
+        max_charge_w=5000,
+        max_discharge_w=5000,
+        backup_reserve=0.20,
+        hardware_reserve=0.05,
+        interval_minutes=5,
+        horizon_hours=1,
+    )
+
+    result = optimizer.optimize(
+        import_prices=[0.45] * 12,
+        export_prices=[0.0] * 12,
+        solar_forecast=[5.0] * 12,
+        load_forecast=[1.0] * 12,
+        current_soc=1.0,
+        acquisition_cost_kwh=0.0,
+        allow_battery_export=[False] * 12,
+    )
+
+    recommendation = result.reserve_recommendation
+
+    assert recommendation["next_charge_reason"] == "forecast_solar_surplus"
+    assert recommendation["minimum_forecast_soc_percent"] >= 98
+    assert recommendation["suggested_optimizer_reserve_percent"] == 20
+    assert recommendation["needs_optimizer_reserve_raise"] is False
+    assert recommendation["note"] == "No discharge bridge before next charge"
+
+
 def test_reserve_recommendation_marks_no_charge_in_horizon(
     battery_optimizer_module,
 ):

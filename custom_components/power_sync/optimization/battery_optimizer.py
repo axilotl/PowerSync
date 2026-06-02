@@ -1514,8 +1514,6 @@ class BatteryOptimizer:
 
         minimum_idx, minimum_soc_raw = min(soc_points, key=lambda item: item[1])
         minimum_soc = float(minimum_soc_raw)
-        suggested_ratio = max(self.hardware_reserve, min(1.0, minimum_soc))
-        suggested_percent = max(0, min(100, int(round(suggested_ratio * 100))))
         configured_percent = max(
             0,
             min(100, int(round(self.backup_reserve * 100))),
@@ -1524,6 +1522,13 @@ class BatteryOptimizer:
             0,
             min(100, int(round(self.hardware_reserve * 100))),
         )
+        starting_soc = float(soc_points[0][1])
+        meaningful_bridge_drop = starting_soc - minimum_soc > 0.02
+        if meaningful_bridge_drop:
+            suggested_ratio = max(self.hardware_reserve, min(1.0, minimum_soc))
+        else:
+            suggested_ratio = max(self.hardware_reserve, self.backup_reserve)
+        suggested_percent = max(0, min(100, int(round(suggested_ratio * 100))))
 
         recommendation: dict[str, Any] = {
             "suggested_optimizer_reserve_percent": suggested_percent,
@@ -1542,6 +1547,8 @@ class BatteryOptimizer:
             "next_charge_reason": next_charge_reason or "no_charge_in_horizon",
             "needs_optimizer_reserve_raise": suggested_percent > configured_percent,
         }
+        if not meaningful_bridge_drop:
+            recommendation["note"] = "No discharge bridge before next charge"
         if next_charge_idx is None:
             recommendation["note"] = "No charging opportunity in optimizer horizon"
         return recommendation
