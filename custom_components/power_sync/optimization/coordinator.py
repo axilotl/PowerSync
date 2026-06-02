@@ -124,6 +124,8 @@ class OptimizationConfig:
     profit_max_target_soc: float = 1.0
     spread_export_enabled: bool = False
     spread_import_enabled: bool = False
+    auto_apply_reserve_enabled: bool = False
+    manual_backup_reserve: float | None = None
 
 
 # Update interval for the coordinator
@@ -189,6 +191,36 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._cost_function = CostFunction("cost")
         self._provider_config = ProviderPriceConfig()
         self._last_custom_energy_warning: str | None = None
+        self._auto_apply_reserve_enabled = False
+        self._manual_backup_reserve: float | None = None
+        if self._entry:
+            from ..const import (
+                CONF_OPTIMIZATION_AUTO_APPLY_RESERVE,
+                CONF_OPTIMIZATION_BACKUP_RESERVE,
+                CONF_OPTIMIZATION_MANUAL_RESERVE,
+            )
+
+            self._auto_apply_reserve_enabled = bool(
+                self._entry.options.get(
+                    CONF_OPTIMIZATION_AUTO_APPLY_RESERVE,
+                    self._entry.data.get(CONF_OPTIMIZATION_AUTO_APPLY_RESERVE, False),
+                )
+            )
+            self._manual_backup_reserve = self._reserve_ratio(
+                self._entry.options.get(
+                    CONF_OPTIMIZATION_MANUAL_RESERVE,
+                    self._entry.data.get(CONF_OPTIMIZATION_MANUAL_RESERVE),
+                )
+            )
+            if self._manual_backup_reserve is None:
+                self._manual_backup_reserve = self._reserve_ratio(
+                    self._entry.data.get(
+                        CONF_OPTIMIZATION_BACKUP_RESERVE,
+                        self._entry.options.get(CONF_OPTIMIZATION_BACKUP_RESERVE),
+                    )
+                )
+            self._config.auto_apply_reserve_enabled = self._auto_apply_reserve_enabled
+            self._config.manual_backup_reserve = self._manual_backup_reserve
 
         # Lock to prevent concurrent LP solves. Three independent triggers
         # (DataUpdateCoordinator's _async_update_data, _schedule_polling_loop,
@@ -624,6 +656,16 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Return whether import spreading is active."""
         return self._config.spread_import_enabled
 
+    @property
+    def auto_apply_reserve_enabled(self) -> bool:
+        """Return whether forecast reserve recommendations update the LP floor."""
+        return bool(getattr(self, "_auto_apply_reserve_enabled", False))
+
+    @property
+    def manual_backup_reserve(self) -> float | None:
+        """Return the saved manual optimizer reserve restore point."""
+        return getattr(self, "_manual_backup_reserve", None)
+
     def _supports_target_export_power(self) -> bool:
         """Return True when the selected battery can honor a target export power."""
         try:
@@ -716,6 +758,174 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             new_options[CONF_PROFIT_MAX_ENABLED] = enabled
             self.hass.data.setdefault(DOMAIN, {}).setdefault(self.entry_id, {})["_skip_reload"] = True
             self.hass.config_entries.async_update_entry(self._entry, options=new_options)
+
+    async def set_auto_apply_reserve_enabled(self, enabled: bool) -> None:
+        """Enable or disable forecast-driven optimizer reserve tracking."""
+        enabled = bool(enabled)
+        current_manual = getattr(self, "_manual_backup_reserve", None)
+        if enabled:
+            if current_manual is None:
+                current_manual = self._config.backup_reserve
+            self._manual_backup_reserve = current_manual
+            self._auto_apply_reserve_enabled = True
+            self._config.auto_apply_reserve_enabled = True
+            self._config.manual_backup_reserve = current_manual
+            self._persist_optimizer_reserve_settings(
+                auto_apply=True,
+                manual_reserve=current_manual,
+            )
+        else:
+            restore_reserve = current_manual
+            if restore_reserve is None:
+                restore_reserve = self._config.backup_reserve
+                self._manual_backup_reserve = restore_reserve
+            self._auto_apply_reserve_enabled = False
+            self._config.auto_apply_reserve_enabled = False
+            if restore_reserve is not None:
+                self.update_config(backup_reserve=restore_reserve)
+            self._config.manual_backup_reserve = restore_reserve
+            self._persist_optimizer_reserve_settings(
+                auto_apply=False,
+                manual_reserve=restore_reserve,
+                backup_reserve=restore_reserve,
+            )
+
+        self._dispatch_auto_apply_reserve_state()
+        _LOGGER.info(
+            "Auto-Apply Optimizer Reserve %s%s",
+            "ENABLED" if enabled else "DISABLED",
+            (
+                f" (manual restore {current_manual * 100:.0f}%)"
+                if current_manual is not None
+                else ""
+            ),
+        )
+        if getattr(self, "_enabled", False):
+            await self._run_optimization()
+
+    def _dispatch_auto_apply_reserve_state(self) -> None:
+        """Notify HA switches after config-flow/API/mobile changes."""
+        if not (getattr(self, "hass", None) and getattr(self, "entry_id", None)):
+            return
+        from homeassistant.helpers.dispatcher import async_dispatcher_send
+
+        from ..const import DOMAIN
+
+        async_dispatcher_send(
+            self.hass,
+            f"{DOMAIN}_{self.entry_id}_auto_apply_reserve",
+            bool(getattr(self, "_auto_apply_reserve_enabled", False)),
+        )
+
+    @staticmethod
+    def _reserve_ratio(value: Any, default: float | None = None) -> float | None:
+        """Normalize reserve values stored as either 0-1 decimals or 0-100 percents."""
+        if value is None:
+            return default
+        try:
+            reserve = float(value)
+        except (TypeError, ValueError):
+            return default
+        if reserve > 1:
+            reserve = reserve / 100.0
+        return max(0.0, min(1.0, reserve))
+
+    def _persist_optimizer_reserve_settings(
+        self,
+        *,
+        auto_apply: bool | None = None,
+        manual_reserve: float | None = None,
+        backup_reserve: float | None = None,
+    ) -> None:
+        """Persist optimizer reserve settings without touching hardware reserve state."""
+        if not getattr(self, "_entry", None):
+            return
+        from ..const import (
+            CONF_OPTIMIZATION_AUTO_APPLY_RESERVE,
+            CONF_OPTIMIZATION_BACKUP_RESERVE,
+            CONF_OPTIMIZATION_MANUAL_RESERVE,
+            DOMAIN,
+        )
+
+        new_data = dict(self._entry.data)
+        new_options = dict(self._entry.options)
+        if auto_apply is not None:
+            new_data[CONF_OPTIMIZATION_AUTO_APPLY_RESERVE] = bool(auto_apply)
+            new_options[CONF_OPTIMIZATION_AUTO_APPLY_RESERVE] = bool(auto_apply)
+        if manual_reserve is not None:
+            manual = self._reserve_ratio(manual_reserve, self._config.backup_reserve)
+            new_data[CONF_OPTIMIZATION_MANUAL_RESERVE] = manual
+            new_options[CONF_OPTIMIZATION_MANUAL_RESERVE] = manual
+        if backup_reserve is not None:
+            reserve = self._reserve_ratio(backup_reserve, self._config.backup_reserve)
+            new_data[CONF_OPTIMIZATION_BACKUP_RESERVE] = reserve
+            new_options[CONF_OPTIMIZATION_BACKUP_RESERVE] = reserve
+
+        self.hass.data.setdefault(DOMAIN, {}).setdefault(self.entry_id, {})[
+            "_skip_reload"
+        ] = True
+        self.hass.config_entries.async_update_entry(
+            self._entry,
+            data=new_data,
+            options=new_options,
+        )
+
+    def _recommended_auto_reserve_ratio(
+        self,
+        reserve_recommendation: dict[str, Any],
+    ) -> float | None:
+        """Return clamped forecast optimizer reserve target as a ratio."""
+        suggested = reserve_recommendation.get("suggested_optimizer_reserve_percent")
+        if suggested is None:
+            return None
+        try:
+            suggested_percent = float(suggested)
+        except (TypeError, ValueError):
+            return None
+        hardware_percent = (
+            getattr(self, "_startup_backup_reserve", None)
+            if getattr(self, "_startup_backup_reserve", None) is not None
+            else 0
+        )
+        target_percent = max(float(hardware_percent), min(100.0, suggested_percent))
+        return max(0.0, min(1.0, target_percent / 100.0))
+
+    def _apply_auto_reserve_recommendation(
+        self,
+        result: OptimizerResult,
+    ) -> bool:
+        """Apply one forecast optimizer reserve update after a solve."""
+        if not bool(getattr(self, "_auto_apply_reserve_enabled", False)):
+            return False
+        recommendation = getattr(result, "reserve_recommendation", {}) or {}
+        target_ratio = self._recommended_auto_reserve_ratio(recommendation)
+        if target_ratio is None:
+            return False
+        current_ratio = self._reserve_ratio(self._config.backup_reserve, 0.0) or 0.0
+        recommendation["auto_apply_enabled"] = True
+        manual_reserve = getattr(self, "_manual_backup_reserve", None)
+        if manual_reserve is not None:
+            recommendation["manual_optimizer_reserve_percent"] = int(
+                round(manual_reserve * 100)
+            )
+        recommendation["applied_optimizer_reserve_percent"] = int(
+            round(current_ratio * 100)
+        )
+        if math.isclose(target_ratio, current_ratio, abs_tol=0.0001):
+            return False
+
+        self.update_config(backup_reserve=target_ratio)
+        self._persist_optimizer_reserve_settings(backup_reserve=target_ratio)
+        recommendation["applied_optimizer_reserve_percent"] = int(
+            round(target_ratio * 100)
+        )
+        _LOGGER.info(
+            "Auto-Apply Optimizer Reserve: applied forecast floor %.0f%% "
+            "(was %.0f%%)",
+            target_ratio * 100,
+            current_ratio * 100,
+        )
+        return True
 
     @staticmethod
     def _reserve_percent(value: Any) -> int | None:
@@ -2241,6 +2451,52 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     self._current_schedule, export_prices,
                 )
                 result.schedule = self._current_schedule
+
+            if self._apply_auto_reserve_recommendation(result):
+                result = await self.hass.async_add_executor_job(
+                    self._optimizer.optimize,
+                    import_prices,
+                    export_prices,
+                    solar_forecast,
+                    load_forecast,
+                    soc,
+                    self._cost_function.value,
+                    acq_cost,
+                    battery_export_allowed,
+                    battery_charge_blocked,
+                    self._config.allow_grid_charge,
+                    self._last_zerohero_bonus_prices,
+                    self._last_zerohero_bonus_cap_kwh,
+                )
+                self._last_optimizer_result = result
+                self._current_schedule = result.schedule
+                if self._should_spread_import_schedule():
+                    self._current_schedule = self._spread_import_schedule(
+                        self._current_schedule,
+                        import_prices,
+                        battery_charge_blocked,
+                        soc,
+                        solar_forecast=solar_forecast,
+                        load_forecast=load_forecast,
+                    )
+                    result.schedule = self._current_schedule
+                if self._should_spread_export_schedule():
+                    self._current_schedule = self._spread_export_schedule(
+                        self._current_schedule,
+                        battery_export_allowed,
+                    )
+                    result.schedule = self._current_schedule
+                self._current_schedule = self._bridge_short_export_gaps(
+                    self._current_schedule,
+                    export_prices,
+                )
+                result.schedule = self._current_schedule
+                if self._should_apply_offgrid_overlay():
+                    self._current_schedule = self._apply_offgrid_overlay(
+                        self._current_schedule, export_prices,
+                    )
+                    result.schedule = self._current_schedule
+                self._last_update_time = dt_util.now()
 
             # Store forecast data for LP forecast sensors
             self._has_solar_forecast = solar_forecast is not None and any(v > 0 for v in (solar_forecast or []))
@@ -6807,6 +7063,24 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             }
             lp_stats.update(getattr(self._last_optimizer_result, "lp_stats", {}) or {})
 
+        reserve_recommendation = (
+            getattr(self._last_optimizer_result, "reserve_recommendation", {}) or {}
+            if self._last_optimizer_result
+            else {}
+        )
+        if reserve_recommendation:
+            reserve_recommendation = dict(reserve_recommendation)
+            reserve_recommendation["auto_apply_enabled"] = self.auto_apply_reserve_enabled
+            manual_reserve = self.manual_backup_reserve
+            if manual_reserve is not None:
+                reserve_recommendation["manual_optimizer_reserve_percent"] = int(
+                    round(manual_reserve * 100)
+                )
+            reserve_recommendation.setdefault(
+                "applied_optimizer_reserve_percent",
+                int(round(self._config.backup_reserve * 100)),
+            )
+
         # Read monitoring mode from config entry
         from ..const import CONF_MONITORING_MODE
         monitoring_mode = False
@@ -6826,6 +7100,9 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "cost_function": self._cost_function.value,
             "spread_export_enabled": self._config.spread_export_enabled,
             "spread_import_enabled": self._config.spread_import_enabled,
+            "auto_apply_reserve_enabled": self.auto_apply_reserve_enabled,
+            "manual_backup_reserve": self.manual_backup_reserve,
+            "backup_reserve": self._config.backup_reserve,
             "status": "active" if self._enabled and optimizer_available else "disabled",
             "optimization_status": "active" if optimizer_available else "not_available",
             "current_action": current_action,
@@ -6839,6 +7116,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "predicted_cost": self._get_daily_cost(),
             "predicted_savings": self._get_daily_savings(),
             "lp_stats": lp_stats,
+            "reserve_recommendation": reserve_recommendation,
             "config": {
                 "battery_capacity_wh": self._config.battery_capacity_wh,
                 "max_charge_w": self._config.max_charge_w,
@@ -6848,6 +7126,8 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "allow_grid_charge": self._config.allow_grid_charge,
                 "spread_export_enabled": self._config.spread_export_enabled,
                 "spread_import_enabled": self._config.spread_import_enabled,
+                "auto_apply_reserve_enabled": self.auto_apply_reserve_enabled,
+                "manual_backup_reserve": self.manual_backup_reserve,
                 "battery_specs_source": self._battery_specs_source,
                 "backup_reserve": self._config.backup_reserve,
                 "hardware_backup_reserve": (self._startup_backup_reserve if self._startup_backup_reserve is not None else 0) / 100,
@@ -7042,6 +7322,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def set_settings(self, settings: dict[str, Any]) -> dict[str, Any]:
         """Update optimization settings from API."""
         response = {"success": True, "changes": []}
+        rerun_after_settings = False
 
         # Handle enabled toggle
         if "enabled" in settings:
@@ -7062,6 +7343,26 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 from ..const import DOMAIN as _SKIP_DOM
                 self.hass.data.get(_SKIP_DOM, {}).get(self.entry_id, {})["_skip_reload"] = True
                 self.hass.config_entries.async_update_entry(self._entry, options=new_options)
+
+        if "auto_apply_reserve_enabled" in settings:
+            await self.set_auto_apply_reserve_enabled(
+                bool(settings["auto_apply_reserve_enabled"])
+            )
+            response["changes"].append(
+                f"auto_apply_reserve_enabled: {settings['auto_apply_reserve_enabled']}"
+            )
+
+        if "manual_backup_reserve" in settings:
+            manual_reserve = self._reserve_ratio(settings["manual_backup_reserve"])
+            if manual_reserve is not None:
+                self._manual_backup_reserve = manual_reserve
+                self._config.manual_backup_reserve = manual_reserve
+                self._persist_optimizer_reserve_settings(
+                    manual_reserve=manual_reserve
+                )
+                response["changes"].append(
+                    f"manual_backup_reserve: {int(round(manual_reserve * 100))}%"
+                )
 
         # Handle cost function
         if "cost_function" in settings:
@@ -7105,6 +7406,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if self._entry:
                 from ..const import (
                     CONF_OPTIMIZATION_BACKUP_RESERVE,
+                    CONF_OPTIMIZATION_MANUAL_RESERVE,
                     CONF_OPTIMIZATION_BATTERY_CAPACITY_WH,
                     CONF_OPTIMIZATION_ALLOW_GRID_CHARGE,
                     CONF_OPTIMIZATION_MAX_CHARGE_W,
@@ -7119,6 +7421,12 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         reserve_value = reserve_value / 100
                     new_data[CONF_OPTIMIZATION_BACKUP_RESERVE] = reserve_value
                     new_options[CONF_OPTIMIZATION_BACKUP_RESERVE] = reserve_value
+                    if self.auto_apply_reserve_enabled:
+                        self._manual_backup_reserve = reserve_value
+                        self._config.manual_backup_reserve = reserve_value
+                        new_data[CONF_OPTIMIZATION_MANUAL_RESERVE] = reserve_value
+                        new_options[CONF_OPTIMIZATION_MANUAL_RESERVE] = reserve_value
+                        rerun_after_settings = True
                 if "battery_capacity_wh" in settings:
                     new_options[CONF_OPTIMIZATION_BATTERY_CAPACITY_WH] = int(settings["battery_capacity_wh"])
                 if "max_charge_w" in settings:
@@ -7148,6 +7456,9 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # Mark as manual when user explicitly sets battery specs
             if any(k in settings for k in ("battery_capacity_wh", "max_charge_w", "max_discharge_w")):
                 self._battery_specs_source = "manual"
+
+        if rerun_after_settings and getattr(self, "_enabled", False):
+            await self._run_optimization()
 
         # Handle hardware backup reserve
         if "hardware_backup_reserve" in settings:

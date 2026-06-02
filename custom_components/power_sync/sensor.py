@@ -1202,6 +1202,7 @@ OPTIMIZER_ACTION_SENSORS: tuple[PowerSyncSensorEntityDescription, ...] = (
             "status": data.get("status"),
             "until": data.get("current_action_end_time"),
             "lp_stats": data.get("lp_stats", {}),
+            "reserve_recommendation": data.get("reserve_recommendation", {}),
         } if data else {},
     ),
     PowerSyncSensorEntityDescription(

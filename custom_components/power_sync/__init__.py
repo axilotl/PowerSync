@@ -533,6 +533,8 @@ from .const import (
     OPT_PROVIDER_POWERSYNC,
     CONF_OPTIMIZATION_COST_FUNCTION,
     CONF_OPTIMIZATION_BACKUP_RESERVE,
+    CONF_OPTIMIZATION_AUTO_APPLY_RESERVE,
+    CONF_OPTIMIZATION_MANUAL_RESERVE,
     CONF_HARDWARE_BACKUP_RESERVE,
     CONF_OPTIMIZATION_BATTERY_CAPACITY_WH,
     CONF_OPTIMIZATION_ALLOW_GRID_CHARGE,
@@ -29169,6 +29171,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             saved_max_grid_import_w = _positive_int_setting(
                 CONF_OPTIMIZATION_MAX_GRID_IMPORT_W
             )
+            saved_auto_apply_reserve = bool(
+                entry.options.get(
+                    CONF_OPTIMIZATION_AUTO_APPLY_RESERVE,
+                    entry.data.get(CONF_OPTIMIZATION_AUTO_APPLY_RESERVE, False),
+                )
+            )
+            saved_manual_reserve_pct = entry.options.get(
+                CONF_OPTIMIZATION_MANUAL_RESERVE,
+                entry.data.get(CONF_OPTIMIZATION_MANUAL_RESERVE),
+            )
+            saved_manual_reserve = None
+            if saved_manual_reserve_pct is not None:
+                try:
+                    saved_manual_reserve = float(saved_manual_reserve_pct)
+                    if saved_manual_reserve > 1:
+                        saved_manual_reserve = saved_manual_reserve / 100
+                    saved_manual_reserve = max(0.0, min(1.0, saved_manual_reserve))
+                except (TypeError, ValueError):
+                    saved_manual_reserve = None
+            if saved_auto_apply_reserve and saved_manual_reserve is None:
+                saved_manual_reserve = saved_backup_reserve
 
             optimization_coordinator = OptimizationCoordinator(
                 hass=hass,
@@ -29192,6 +29215,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             optimizer_config_updates = {
                 "interval_minutes": saved_interval_minutes,
                 "backup_reserve": saved_backup_reserve,
+                "auto_apply_reserve_enabled": saved_auto_apply_reserve,
+                "manual_backup_reserve": saved_manual_reserve,
             }
             if saved_capacity_wh is not None:
                 optimizer_config_updates["battery_capacity_wh"] = saved_capacity_wh
@@ -29201,6 +29226,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 optimizer_config_updates["max_discharge_w"] = saved_max_discharge_w
             optimizer_config_updates["max_grid_import_w"] = saved_max_grid_import_w
             optimization_coordinator.update_config(**optimizer_config_updates)
+            optimization_coordinator._auto_apply_reserve_enabled = saved_auto_apply_reserve
+            optimization_coordinator._manual_backup_reserve = saved_manual_reserve
+            optimization_coordinator._config.auto_apply_reserve_enabled = (
+                saved_auto_apply_reserve
+            )
+            optimization_coordinator._config.manual_backup_reserve = (
+                saved_manual_reserve
+            )
             if any(v is not None for v in (saved_capacity_wh, saved_max_charge_w, saved_max_discharge_w)):
                 optimization_coordinator._battery_specs_source = "manual"
             _LOGGER.info(
@@ -29634,6 +29667,8 @@ class OptimizationSettingsView(HomeAssistantView):
 
             backup_reserve = DEFAULT_OPTIMIZATION_BACKUP_RESERVE
             hardware_reserve = 0
+            auto_apply_reserve = False
+            manual_reserve = None
             if config_entry:
                 raw_backup = config_entry.data.get(
                     CONF_OPTIMIZATION_BACKUP_RESERVE,
@@ -29658,6 +29693,23 @@ class OptimizationSettingsView(HomeAssistantView):
                         hardware_reserve = hardware_reserve * 100
                 except (TypeError, ValueError):
                     hardware_reserve = 0
+                auto_apply_reserve = bool(
+                    config_entry.options.get(
+                        CONF_OPTIMIZATION_AUTO_APPLY_RESERVE,
+                        config_entry.data.get(CONF_OPTIMIZATION_AUTO_APPLY_RESERVE, False),
+                    )
+                )
+                raw_manual = config_entry.options.get(
+                    CONF_OPTIMIZATION_MANUAL_RESERVE,
+                    config_entry.data.get(CONF_OPTIMIZATION_MANUAL_RESERVE),
+                )
+                try:
+                    if raw_manual is not None:
+                        manual_reserve = float(raw_manual)
+                        if manual_reserve > 1:
+                            manual_reserve = manual_reserve / 100
+                except (TypeError, ValueError):
+                    manual_reserve = None
 
             return web.json_response({
                 "success": True,
@@ -29667,6 +29719,10 @@ class OptimizationSettingsView(HomeAssistantView):
                 ),
                 "cost_function": "cost",
                 "backup_reserve": round(backup_reserve * 100),
+                "auto_apply_reserve_enabled": auto_apply_reserve,
+                "manual_backup_reserve": (
+                    round(manual_reserve * 100) if manual_reserve is not None else None
+                ),
                 "ev_integration": bool(
                     config_entry
                     and config_entry.options.get(
@@ -29737,6 +29793,12 @@ class OptimizationSettingsView(HomeAssistantView):
                         if config_entry
                         else False
                     ),
+                    "auto_apply_reserve_enabled": auto_apply_reserve,
+                    "manual_backup_reserve": (
+                        round(manual_reserve * 100)
+                        if manual_reserve is not None
+                        else None
+                    ),
                     "profit_max_target_time": (
                         config_entry.options.get(
                             CONF_PROFIT_MAX_TARGET_TIME,
@@ -29777,6 +29839,12 @@ class OptimizationSettingsView(HomeAssistantView):
             "profit_max_enabled": opt_coordinator.profit_max_mode,
             "spread_export_enabled": opt_coordinator._config.spread_export_enabled,
             "spread_import_enabled": opt_coordinator._config.spread_import_enabled,
+            "auto_apply_reserve_enabled": opt_coordinator.auto_apply_reserve_enabled,
+            "manual_backup_reserve": (
+                round(opt_coordinator.manual_backup_reserve * 100)
+                if opt_coordinator.manual_backup_reserve is not None
+                else None
+            ),
             "config": {
                 "battery_capacity_wh": opt_coordinator._config.battery_capacity_wh,
                 "max_charge_w": opt_coordinator._config.max_charge_w,
@@ -29785,6 +29853,12 @@ class OptimizationSettingsView(HomeAssistantView):
                 "allow_grid_charge": opt_coordinator._config.allow_grid_charge,
                 "spread_export_enabled": opt_coordinator._config.spread_export_enabled,
                 "spread_import_enabled": opt_coordinator._config.spread_import_enabled,
+                "auto_apply_reserve_enabled": opt_coordinator.auto_apply_reserve_enabled,
+                "manual_backup_reserve": (
+                    round(opt_coordinator.manual_backup_reserve * 100)
+                    if opt_coordinator.manual_backup_reserve is not None
+                    else None
+                ),
                 "backup_reserve": round(opt_coordinator._config.backup_reserve * 100),
                 "hardware_backup_reserve": opt_coordinator._startup_backup_reserve if opt_coordinator._startup_backup_reserve is not None else 0,
                 "battery_specs_source": opt_coordinator._battery_specs_source,
@@ -29903,6 +29977,63 @@ class OptimizationSettingsView(HomeAssistantView):
                 new_options[CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED] = bool(settings["spread_import_enabled"])
                 changes.append(f"Set spread import to {settings['spread_import_enabled']}")
 
+            if "auto_apply_reserve_enabled" in settings:
+                auto_apply = bool(settings["auto_apply_reserve_enabled"])
+                current_live = new_data.get(
+                    CONF_OPTIMIZATION_BACKUP_RESERVE,
+                    new_options.get(
+                        CONF_OPTIMIZATION_BACKUP_RESERVE,
+                        DEFAULT_OPTIMIZATION_BACKUP_RESERVE,
+                    ),
+                )
+                try:
+                    current_live = float(current_live)
+                except (TypeError, ValueError):
+                    current_live = DEFAULT_OPTIMIZATION_BACKUP_RESERVE
+                if current_live > 1:
+                    current_live = current_live / 100.0
+
+                manual_restore = new_options.get(
+                    CONF_OPTIMIZATION_MANUAL_RESERVE,
+                    new_data.get(CONF_OPTIMIZATION_MANUAL_RESERVE),
+                )
+                try:
+                    manual_restore = (
+                        float(manual_restore)
+                        if manual_restore is not None
+                        else current_live
+                    )
+                except (TypeError, ValueError):
+                    manual_restore = current_live
+                if manual_restore > 1:
+                    manual_restore = manual_restore / 100.0
+                manual_restore = max(0.0, min(1.0, manual_restore))
+
+                new_data[CONF_OPTIMIZATION_AUTO_APPLY_RESERVE] = auto_apply
+                new_options[CONF_OPTIMIZATION_AUTO_APPLY_RESERVE] = auto_apply
+                new_data[CONF_OPTIMIZATION_MANUAL_RESERVE] = manual_restore
+                new_options[CONF_OPTIMIZATION_MANUAL_RESERVE] = manual_restore
+                if not auto_apply:
+                    new_data[CONF_OPTIMIZATION_BACKUP_RESERVE] = manual_restore
+                    new_options[CONF_OPTIMIZATION_BACKUP_RESERVE] = manual_restore
+                changes.append(f"Set auto-apply optimizer reserve to {auto_apply}")
+
+            if "manual_backup_reserve" in settings:
+                manual_restore = settings["manual_backup_reserve"]
+                try:
+                    manual_restore = float(manual_restore)
+                except (TypeError, ValueError):
+                    manual_restore = None
+                if manual_restore is not None:
+                    if manual_restore > 1:
+                        manual_restore = manual_restore / 100.0
+                    manual_restore = max(0.0, min(1.0, manual_restore))
+                    new_data[CONF_OPTIMIZATION_MANUAL_RESERVE] = manual_restore
+                    new_options[CONF_OPTIMIZATION_MANUAL_RESERVE] = manual_restore
+                    changes.append(
+                        f"Set manual optimizer reserve to {int(manual_restore * 100)}%"
+                    )
+
             if "cost_function" in settings:
                 from .const import CONF_OPTIMIZATION_COST_FUNCTION
                 new_data[CONF_OPTIMIZATION_COST_FUNCTION] = settings["cost_function"]
@@ -29916,6 +30047,9 @@ class OptimizationSettingsView(HomeAssistantView):
                     reserve = reserve / 100.0
                 new_data[CONF_OPTIMIZATION_BACKUP_RESERVE] = reserve
                 new_options[CONF_OPTIMIZATION_BACKUP_RESERVE] = reserve
+                if new_options.get(CONF_OPTIMIZATION_AUTO_APPLY_RESERVE, False):
+                    new_data[CONF_OPTIMIZATION_MANUAL_RESERVE] = reserve
+                    new_options[CONF_OPTIMIZATION_MANUAL_RESERVE] = reserve
                 changes.append(f"Set backup reserve to {int(reserve * 100)}%")
 
             if "hardware_backup_reserve" in settings:

@@ -376,6 +376,7 @@
         "data": {
           "optimization_provider": "Optimization mode",
           "optimization_enabled": "Enable Smart Optimization",
+          "optimization_auto_apply_reserve": "Auto-apply optimizer reserve",
           "optimization_ev_integration": "EV Charging Integration",
           "monitoring_mode": "Monitoring mode",
           "optimization_backup_reserve": "Minimum discharge level",
@@ -394,6 +395,7 @@
         "data_description": {
           "optimization_provider": "Smart Optimization uses an LP solver to minimise costs. Native mode uses your battery's built-in TOU scheduler.",
           "optimization_enabled": "Turn the LP optimizer on or off without changing the saved Smart Optimization settings.",
+          "optimization_auto_apply_reserve": "Adjusts the software optimizer reserve floor from forecast recommendations. Your hardware backup reserve stays user controlled.",
           "optimization_ev_integration": "Include EV charging demand in Smart Optimization decisions.",
           "monitoring_mode": "Block battery and inverter control commands while still updating prices, sensors, and plans for observation.",
           "optimization_backup_reserve": "The optimizer will never discharge below this percentage. Default 20% is a good starting point. Your battery's hardware backup reserve (set in the Tesla/Sigenergy app) is separate.",
@@ -1208,6 +1210,7 @@
         "data": {
           "optimization_provider": "Optimization mode",
           "optimization_enabled": "Enable Smart Optimization",
+          "optimization_auto_apply_reserve": "Auto-apply optimizer reserve",
           "optimization_ev_integration": "EV Charging Integration",
           "monitoring_mode": "Monitoring mode",
           "optimization_backup_reserve": "Minimum discharge level",
@@ -1226,6 +1229,7 @@
         "data_description": {
           "optimization_provider": "Smart Optimization uses an LP solver to minimise costs. Native mode uses your battery's built-in TOU scheduler.",
           "optimization_enabled": "Turn the LP optimizer on or off without changing the saved Smart Optimization settings.",
+          "optimization_auto_apply_reserve": "Adjusts the software optimizer reserve floor from forecast recommendations. Your hardware backup reserve stays user controlled.",
           "optimization_ev_integration": "Include EV charging demand in Smart Optimization decisions.",
           "monitoring_mode": "Block battery and inverter control commands while still updating prices, sensors, and plans for observation.",
           "optimization_backup_reserve": "The optimizer will never discharge below this percentage. Default 20% is a good starting point. Your battery's hardware backup reserve (set in the Tesla/Sigenergy app) is separate.",
@@ -1256,30 +1260,19 @@
       },
       "init_tesla": {
         "title": "Tesla Powerwall settings",
-        "description": "Configure pricing, Tesla API providers, and optimization.",
+        "description": "Configure pricing and Tesla API providers.",
         "data": {
           "electricity_provider": "Electricity provider",
           "tesla_api_provider": "Tesla Energy API provider",
-          "tesla_ev_api_provider": "Tesla EV API provider",
-          "optimization_provider": "Optimization mode",
-          "optimization_backup_reserve": "Minimum discharge level (%)",
-          "optimization_max_grid_import_w": "Maximum grid import"
-        },
-        "data_description": {
-          "optimization_provider": "Choose between Tesla Powerwall built-in scheduling or Smart Optimization (LP solver).",
-          "optimization_backup_reserve": "The optimizer will not discharge below this level. Separate from your battery's hardware backup reserve.",
-          "optimization_max_grid_import_w": "Maximum total site grid import in kW. Set 0 for no site import cap; solar can still add charging power above this limit."
+          "tesla_ev_api_provider": "Tesla EV API provider"
         },
         "submit": "Save"
       },
       "init_sigenergy": {
         "title": "Sigenergy settings",
-        "description": "Configure pricing, optimization, Modbus connection, and Cloud API credentials. Modbus is required for energy data; Cloud API is required for price sync.",
+        "description": "Configure pricing, Modbus connection, and Cloud API credentials. Modbus is required for energy data; Cloud API is required for price sync.",
         "data": {
           "electricity_provider": "Electricity provider",
-          "optimization_provider": "Optimization mode",
-          "optimization_backup_reserve": "Minimum discharge level (%)",
-          "optimization_max_grid_import_w": "Maximum grid import",
           "sigenergy_modbus_host": "Inverter IP address",
           "sigenergy_modbus_port": "Modbus port",
           "sigenergy_modbus_slave_id": "Modbus slave ID",
@@ -1292,9 +1285,6 @@
           "sigenergy_station_id": "Station ID"
         },
         "data_description": {
-          "optimization_provider": "Choose between Sigenergy built-in scheduling or Smart Optimization (LP solver).",
-          "optimization_backup_reserve": "The optimizer will not discharge below this level. Separate from your battery's hardware backup reserve.",
-          "optimization_max_grid_import_w": "Maximum total site grid import in kW. Set 0 for no site import cap; solar can still add charging power above this limit.",
           "sigenergy_modbus_host": "Local IP address of your Sigenergy inverter or gateway (e.g. 192.168.1.100).",
           "sigenergy_modbus_port": "Default Modbus TCP port is 502. Only change if customised.",
           "sigenergy_modbus_slave_id": "Default is 247. PowerSync auto-detects the correct registers.",
@@ -1310,20 +1300,14 @@
       },
       "init_sungrow": {
         "title": "Sungrow settings",
-        "description": "Configure pricing, optimization, and Sungrow Modbus connection. Modbus is required for energy data and battery control.",
+        "description": "Configure pricing and Sungrow Modbus connection. Modbus is required for energy data and battery control.",
         "data": {
           "electricity_provider": "Electricity provider",
-          "optimization_provider": "Optimization mode",
-          "optimization_backup_reserve": "Minimum discharge level (%)",
-          "optimization_max_grid_import_w": "Maximum grid import",
           "sungrow_host": "Inverter IP address",
           "sungrow_port": "Modbus port",
           "sungrow_slave_id": "Modbus slave ID"
         },
         "data_description": {
-          "optimization_provider": "Choose between Sungrow's built-in scheduling or Smart Optimization (LP solver).",
-          "optimization_backup_reserve": "The optimizer will not discharge below this level. Separate from your battery's hardware backup reserve.",
-          "optimization_max_grid_import_w": "Maximum total site grid import in kW. Set 0 for no site import cap; solar can still add charging power above this limit.",
           "sungrow_host": "Local IP of your Sungrow inverter or WiNet-S dongle (e.g. 192.168.1.100).",
           "sungrow_port": "Default Modbus TCP port is 502. Only change if customised on the inverter.",
           "sungrow_slave_id": "Default is 1. Only change if you have multiple devices on the same bus."
@@ -1332,12 +1316,9 @@
       },
       "init_foxess": {
         "title": "FoxESS settings",
-        "description": "Configure pricing, optimization, and FoxESS connection. Use Modbus TCP, RS485 Serial, FoxESS Cloud API, or the foxess_modbus entity bridge for energy data and battery control.",
+        "description": "Configure pricing and FoxESS connection. Use Modbus TCP, RS485 Serial, FoxESS Cloud API, or the foxess_modbus entity bridge for energy data and battery control.",
         "data": {
           "electricity_provider": "Electricity provider",
-          "optimization_provider": "Optimization mode",
-          "optimization_backup_reserve": "Minimum discharge level (%)",
-          "optimization_max_grid_import_w": "Maximum grid import",
           "foxess_connection_type": "Connection type",
           "foxess_host": "Inverter IP address",
           "foxess_port": "Modbus port",
@@ -1350,9 +1331,6 @@
           "foxess_entity_prefix": "Entity prefix"
         },
         "data_description": {
-          "optimization_provider": "Choose between FoxESS built-in scheduling or Smart Optimization (LP solver).",
-          "optimization_backup_reserve": "The optimizer will not discharge below this level. Separate from your battery's hardware backup reserve.",
-          "optimization_max_grid_import_w": "Maximum total site grid import in kW. Set 0 for no site import cap; solar can still add charging power above this limit.",
           "foxess_connection_type": "Modbus TCP connects over LAN/WiFi. RS485 Serial provides direct register access. FoxESS Cloud API uses Open API control with cloud-rate-limit latency. Entity bridge reuses an existing foxess_modbus integration instead of opening another Modbus connection.",
           "foxess_host": "Local IP of your FoxESS inverter. H3 Smart may appear as 'espressif' on your network.",
           "foxess_port": "Default Modbus TCP port is 502.",
@@ -1368,12 +1346,9 @@
       },
       "init_goodwe": {
         "title": "GoodWe settings",
-        "description": "Configure pricing, optimization, and GoodWe connection. Required for energy data and battery control.",
+        "description": "Configure pricing and GoodWe connection. Required for energy data and battery control.",
         "data": {
           "electricity_provider": "Electricity provider",
-          "optimization_provider": "Optimization mode",
-          "optimization_backup_reserve": "Minimum discharge level (%)",
-          "optimization_max_grid_import_w": "Maximum grid import",
           "goodwe_host": "Inverter IP address",
           "goodwe_protocol": "Protocol",
           "goodwe_port": "Port",
@@ -1381,9 +1356,6 @@
           "goodwe_ems_entity_prefix": "GoodWe entity mode prefix"
         },
         "data_description": {
-          "optimization_provider": "Choose between GoodWe built-in scheduling or Smart Optimization (LP solver).",
-          "optimization_backup_reserve": "The optimizer will not discharge below this level. Separate from your battery's hardware backup reserve.",
-          "optimization_max_grid_import_w": "Maximum total site grid import in kW. Set 0 for no site import cap; solar can still add charging power above this limit.",
           "goodwe_host": "Local IP address of your GoodWe inverter.",
           "goodwe_protocol": "UDP uses direct GoodWe control on port 8899. TCP uses Modbus on port 502 for LAN/Kit-20 setups.",
           "goodwe_port": "Default: 8899 for UDP, 502 for TCP.",

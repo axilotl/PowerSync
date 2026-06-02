@@ -24,6 +24,28 @@ def test_optimization_enabled_switch_is_registered_as_config_entity():
     assert "_attr_entity_category = EntityCategory.CONFIG" in switch_source
 
 
+def test_auto_apply_optimizer_reserve_switch_is_registered_as_config_entity():
+    const_source = CONST_PATH.read_text()
+    switch_source = SWITCH_PATH.read_text()
+
+    assert (
+        'SWITCH_TYPE_OPTIMIZATION_AUTO_APPLY_RESERVE = "optimization_auto_apply_reserve"'
+        in const_source
+    )
+    assert (
+        'CONF_OPTIMIZATION_AUTO_APPLY_RESERVE = "optimization_auto_apply_reserve"'
+        in const_source
+    )
+    assert 'CONF_OPTIMIZATION_MANUAL_RESERVE = "optimization_manual_reserve"' in const_source
+    assert "AutoApplyOptimizerReserveSwitch(" in switch_source
+    assert "key=SWITCH_TYPE_OPTIMIZATION_AUTO_APPLY_RESERVE" in switch_source
+    assert 'name="Auto-Apply Optimizer Reserve"' in switch_source
+    assert "class AutoApplyOptimizerReserveSwitch(SwitchEntity):" in switch_source
+    assert "set_auto_apply_reserve_enabled(True)" in switch_source
+    assert "set_auto_apply_reserve_enabled(False)" in switch_source
+    assert "CONF_OPTIMIZATION_MANUAL_RESERVE" in switch_source
+
+
 def test_optimization_enabled_switch_persists_provider_and_enabled_flag():
     switch_source = SWITCH_PATH.read_text()
 
@@ -66,6 +88,20 @@ def test_spread_export_setting_is_exposed_through_api_and_coordinator():
     assert '"spread_import_enabled": self._config.spread_import_enabled' in coordinator_source
     assert "def set_spread_export_enabled(self, enabled: bool) -> None:" in coordinator_source
     assert "def set_spread_import_enabled(self, enabled: bool) -> None:" in coordinator_source
+
+
+def test_auto_apply_reserve_setting_is_exposed_through_api_and_coordinator():
+    init_source = INIT_PATH.read_text()
+    coordinator_source = COORDINATOR_PATH.read_text()
+
+    assert '"auto_apply_reserve_enabled": opt_coordinator.auto_apply_reserve_enabled' in init_source
+    assert '"manual_backup_reserve": (' in init_source
+    assert 'if "auto_apply_reserve_enabled" in settings:' in init_source
+    assert 'CONF_OPTIMIZATION_MANUAL_RESERVE' in init_source
+    assert '"auto_apply_reserve_enabled": self.auto_apply_reserve_enabled' in coordinator_source
+    assert '"manual_backup_reserve": self.manual_backup_reserve' in coordinator_source
+    assert "async def set_auto_apply_reserve_enabled(self, enabled: bool) -> None:" in coordinator_source
+    assert "def _apply_auto_reserve_recommendation(" in coordinator_source
 
 
 def test_max_grid_import_setting_is_exposed_through_api_and_coordinator():

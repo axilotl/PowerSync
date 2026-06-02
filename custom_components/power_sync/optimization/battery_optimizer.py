@@ -103,6 +103,7 @@ class OptimizerResult:
     grid_import_w: list[float] = field(default_factory=list)
     grid_export_w: list[float] = field(default_factory=list)
     lp_stats: dict[str, Any] = field(default_factory=dict)
+    reserve_recommendation: dict[str, Any] = field(default_factory=dict)
 
 
 class BatteryOptimizer:
@@ -1451,6 +1452,11 @@ class BatteryOptimizer:
 
         schedule.predicted_cost = round(predicted_cost, 2)
         schedule.predicted_savings = round(predicted_savings, 2)
+        reserve_recommendation = self._build_reserve_recommendation(
+            schedule,
+            solar,
+            load,
+        )
 
         return OptimizerResult(
             schedule=schedule,
@@ -1460,7 +1466,85 @@ class BatteryOptimizer:
             grid_import_w=[v * 1000 for v in grid_import],
             grid_export_w=[v * 1000 for v in grid_export],
             lp_stats=lp_stats,
+            reserve_recommendation=reserve_recommendation,
         )
+
+    def _build_reserve_recommendation(
+        self,
+        schedule: OptimizationSchedule,
+        solar: list[float],
+        load: list[float],
+    ) -> dict[str, Any]:
+        """Suggest the optimizer reserve needed to bridge to the next charge."""
+        actions = schedule.actions or []
+        if not actions:
+            return {}
+
+        threshold_w = ACTION_THRESHOLD_W
+        next_charge_idx: int | None = None
+        next_charge_reason: str | None = None
+        for idx, action in enumerate(actions):
+            if action.battery_charge_w > threshold_w:
+                next_charge_idx = idx
+                next_charge_reason = (
+                    "scheduled_grid_charge"
+                    if action.action == "charge"
+                    else "forecast_solar_surplus"
+                )
+                break
+
+            if idx < len(solar) and idx < len(load):
+                if (solar[idx] - load[idx]) * 1000 > threshold_w:
+                    next_charge_idx = idx
+                    next_charge_reason = "forecast_solar_surplus"
+                    break
+
+        bridge_actions = (
+            actions[: next_charge_idx + 1]
+            if next_charge_idx is not None
+            else actions
+        )
+        soc_points = [
+            (idx, action.soc)
+            for idx, action in enumerate(bridge_actions)
+            if action.soc is not None
+        ]
+        if not soc_points:
+            return {}
+
+        minimum_idx, minimum_soc_raw = min(soc_points, key=lambda item: item[1])
+        minimum_soc = float(minimum_soc_raw)
+        suggested_ratio = max(self.hardware_reserve, min(1.0, minimum_soc))
+        suggested_percent = max(0, min(100, int(round(suggested_ratio * 100))))
+        configured_percent = max(
+            0,
+            min(100, int(round(self.backup_reserve * 100))),
+        )
+        hardware_percent = max(
+            0,
+            min(100, int(round(self.hardware_reserve * 100))),
+        )
+
+        recommendation: dict[str, Any] = {
+            "suggested_optimizer_reserve_percent": suggested_percent,
+            "configured_optimizer_reserve_percent": configured_percent,
+            "hardware_reserve_percent": hardware_percent,
+            "minimum_forecast_soc_percent": max(
+                0,
+                min(100, round(minimum_soc * 100, 1)),
+            ),
+            "minimum_forecast_soc_time": actions[minimum_idx].timestamp.isoformat(),
+            "protects_until": (
+                actions[next_charge_idx].timestamp.isoformat()
+                if next_charge_idx is not None
+                else actions[-1].timestamp.isoformat()
+            ),
+            "next_charge_reason": next_charge_reason or "no_charge_in_horizon",
+            "needs_optimizer_reserve_raise": suggested_percent > configured_percent,
+        }
+        if next_charge_idx is None:
+            recommendation["note"] = "No charging opportunity in optimizer horizon"
+        return recommendation
 
     def _solve_lp_relaxed(
         self,
@@ -1756,6 +1840,11 @@ class BatteryOptimizer:
 
         schedule.predicted_cost = round(predicted_cost, 2)
         schedule.predicted_savings = round(baseline_cost - predicted_cost, 2)
+        reserve_recommendation = self._build_reserve_recommendation(
+            schedule,
+            solar,
+            load,
+        )
 
         return OptimizerResult(
             schedule=schedule,
@@ -1763,6 +1852,7 @@ class BatteryOptimizer:
             feasible=True,
             grid_import_w=[v * 1000 for v in grid_import],
             grid_export_w=[v * 1000 for v in grid_export],
+            reserve_recommendation=reserve_recommendation,
         )
 
     def _build_schedule(

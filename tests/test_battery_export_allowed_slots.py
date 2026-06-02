@@ -24,6 +24,7 @@ _STUB_MODULE_NAMES = (
     "homeassistant.core",
     "homeassistant.exceptions",
     "homeassistant.helpers",
+    "homeassistant.helpers.dispatcher",
     "homeassistant.helpers.event",
     "homeassistant.helpers.storage",
     "homeassistant.helpers.update_coordinator",
@@ -46,6 +47,7 @@ def _install_ha_stubs() -> None:
     ha_core = types.ModuleType("homeassistant.core")
     ha_exceptions = types.ModuleType("homeassistant.exceptions")
     ha_helpers = types.ModuleType("homeassistant.helpers")
+    ha_dispatcher = types.ModuleType("homeassistant.helpers.dispatcher")
     ha_event = types.ModuleType("homeassistant.helpers.event")
     ha_storage = types.ModuleType("homeassistant.helpers.storage")
     ha_update = types.ModuleType("homeassistant.helpers.update_coordinator")
@@ -71,6 +73,7 @@ def _install_ha_stubs() -> None:
     ha_exceptions.ConfigEntryNotReady = type("ConfigEntryNotReady", (Exception,), {})
     ha_storage.Store = _Store
     ha_update.DataUpdateCoordinator = _DataUpdateCoordinator
+    ha_dispatcher.async_dispatcher_send = lambda *args, **kwargs: None
     ha_event.async_track_point_in_utc_time = (
         lambda hass, callback, when: getattr(hass, "scheduled", []).append((callback, when)) or (lambda: None)
     )
@@ -78,6 +81,7 @@ def _install_ha_stubs() -> None:
     ha_dt.utcnow = lambda *args, **kwargs: datetime(2026, 5, 3, 8, 30, tzinfo=timezone.utc)
     ha_dt.UTC = timezone.utc
     ha_helpers.storage = ha_storage
+    ha_helpers.dispatcher = ha_dispatcher
     ha_helpers.event = ha_event
     ha_helpers.update_coordinator = ha_update
     ha_util.dt = ha_dt
@@ -88,6 +92,7 @@ def _install_ha_stubs() -> None:
     sys.modules["homeassistant.core"] = ha_core
     sys.modules["homeassistant.exceptions"] = ha_exceptions
     sys.modules["homeassistant.helpers"] = ha_helpers
+    sys.modules["homeassistant.helpers.dispatcher"] = ha_dispatcher
     sys.modules["homeassistant.helpers.event"] = ha_event
     sys.modules["homeassistant.helpers.storage"] = ha_storage
     sys.modules["homeassistant.helpers.update_coordinator"] = ha_update
@@ -113,6 +118,8 @@ def _install_power_sync_stubs() -> None:
     const_module.CONF_FP_TWAP_OVERRIDE = "fp_twap_override"
     const_module.CONF_HARDWARE_BACKUP_RESERVE = "hardware_backup_reserve"
     const_module.CONF_OPTIMIZATION_BACKUP_RESERVE = "optimization_backup_reserve"
+    const_module.CONF_OPTIMIZATION_AUTO_APPLY_RESERVE = "optimization_auto_apply_reserve"
+    const_module.CONF_OPTIMIZATION_MANUAL_RESERVE = "optimization_manual_reserve"
     const_module.CONF_OPTIMIZATION_BATTERY_CAPACITY_WH = "battery_capacity_wh"
     const_module.CONF_OPTIMIZATION_ALLOW_GRID_CHARGE = "allow_grid_charge"
     const_module.CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED = "optimization_spread_export_enabled"
@@ -483,6 +490,180 @@ def test_set_settings_persists_optimizer_reserve_to_data_and_options(opt_module)
     assert coordinator._entry.options["optimization_backup_reserve"] == 0.2
     assert updates[-1]["data"]["optimization_backup_reserve"] == 0.2
     assert updates[-1]["options"]["optimization_backup_reserve"] == 0.2
+
+
+def test_auto_apply_reserve_enable_snapshots_current_optimizer_reserve(opt_module):
+    coordinator = _coordinator(
+        opt_module,
+        "amber",
+        optimization_backup_reserve=0.35,
+    )
+    coordinator.entry_id = "entry-1"
+    coordinator._config.backup_reserve = 0.35
+    coordinator._auto_apply_reserve_enabled = False
+    coordinator._manual_backup_reserve = None
+    coordinator._enabled = False
+
+    updates = []
+
+    class _ConfigEntries:
+        def async_update_entry(self, entry, **kwargs):
+            updates.append(kwargs)
+            if "data" in kwargs:
+                entry.data = kwargs["data"]
+            if "options" in kwargs:
+                entry.options = kwargs["options"]
+
+    coordinator.hass = SimpleNamespace(
+        data={"power_sync": {"entry-1": {}}},
+        config_entries=_ConfigEntries(),
+    )
+
+    asyncio.run(coordinator.set_auto_apply_reserve_enabled(True))
+
+    assert coordinator.auto_apply_reserve_enabled is True
+    assert coordinator.manual_backup_reserve == 0.35
+    assert coordinator._entry.data["optimization_auto_apply_reserve"] is True
+    assert coordinator._entry.options["optimization_manual_reserve"] == 0.35
+    assert updates[-1]["options"]["optimization_manual_reserve"] == 0.35
+
+
+def test_auto_apply_reserve_manual_edit_updates_restore_value(opt_module):
+    coordinator = _coordinator(
+        opt_module,
+        "amber",
+        optimization_backup_reserve=0.45,
+        optimization_manual_reserve=0.45,
+        optimization_auto_apply_reserve=True,
+    )
+    coordinator.entry_id = "entry-1"
+    coordinator._auto_apply_reserve_enabled = True
+    coordinator._manual_backup_reserve = 0.45
+    coordinator._enabled = False
+
+    updates = []
+
+    class _ConfigEntries:
+        def async_update_entry(self, entry, **kwargs):
+            updates.append(kwargs)
+            if "data" in kwargs:
+                entry.data = kwargs["data"]
+            if "options" in kwargs:
+                entry.options = kwargs["options"]
+
+    coordinator.hass = SimpleNamespace(
+        data={"power_sync": {"entry-1": {}}},
+        config_entries=_ConfigEntries(),
+    )
+
+    result = asyncio.run(coordinator.set_settings({"backup_reserve": 25}))
+
+    assert result["success"] is True
+    assert coordinator._config.backup_reserve == 0.25
+    assert coordinator.manual_backup_reserve == 0.25
+    assert coordinator._entry.options["optimization_backup_reserve"] == 0.25
+    assert coordinator._entry.options["optimization_manual_reserve"] == 0.25
+    assert updates[-1]["options"]["optimization_manual_reserve"] == 0.25
+
+
+def test_auto_apply_reserve_disable_restores_manual_optimizer_reserve(opt_module):
+    coordinator = _coordinator(
+        opt_module,
+        "amber",
+        optimization_backup_reserve=0.60,
+        optimization_manual_reserve=0.30,
+        optimization_auto_apply_reserve=True,
+        hardware_backup_reserve=0.10,
+        _user_backup_reserve=55,
+    )
+    coordinator.entry_id = "entry-1"
+    coordinator._auto_apply_reserve_enabled = True
+    coordinator._manual_backup_reserve = 0.30
+    coordinator._config.backup_reserve = 0.60
+    coordinator._enabled = False
+
+    updates = []
+
+    class _ConfigEntries:
+        def async_update_entry(self, entry, **kwargs):
+            updates.append(kwargs)
+            if "data" in kwargs:
+                entry.data = kwargs["data"]
+            if "options" in kwargs:
+                entry.options = kwargs["options"]
+
+    coordinator.hass = SimpleNamespace(
+        data={"power_sync": {"entry-1": {}}},
+        config_entries=_ConfigEntries(),
+    )
+
+    asyncio.run(coordinator.set_auto_apply_reserve_enabled(False))
+
+    assert coordinator.auto_apply_reserve_enabled is False
+    assert coordinator._config.backup_reserve == 0.30
+    assert coordinator._entry.options["optimization_auto_apply_reserve"] is False
+    assert coordinator._entry.options["optimization_backup_reserve"] == 0.30
+    assert coordinator._entry.options["optimization_manual_reserve"] == 0.30
+    assert coordinator._entry.options["hardware_backup_reserve"] == 0.10
+    assert coordinator._entry.options["_user_backup_reserve"] == 55
+
+
+def test_auto_apply_reserve_applies_clamped_optimizer_recommendation(opt_module):
+    coordinator = _coordinator(
+        opt_module,
+        "amber",
+        optimization_backup_reserve=0.50,
+        optimization_manual_reserve=0.50,
+        optimization_auto_apply_reserve=True,
+        hardware_backup_reserve=0.20,
+    )
+    coordinator.entry_id = "entry-1"
+    coordinator._auto_apply_reserve_enabled = True
+    coordinator._manual_backup_reserve = 0.50
+    coordinator._config.backup_reserve = 0.50
+    coordinator._startup_backup_reserve = 20
+    update_calls = []
+    coordinator._optimizer = SimpleNamespace(
+        update_config=lambda **kwargs: update_calls.append(kwargs),
+        max_grid_export_w=None,
+        terminal_weight=0,
+    )
+
+    updates = []
+
+    class _ConfigEntries:
+        def async_update_entry(self, entry, **kwargs):
+            updates.append(kwargs)
+            if "data" in kwargs:
+                entry.data = kwargs["data"]
+            if "options" in kwargs:
+                entry.options = kwargs["options"]
+
+    coordinator.hass = SimpleNamespace(
+        data={"power_sync": {"entry-1": {}}},
+        config_entries=_ConfigEntries(),
+    )
+
+    changed = coordinator._apply_auto_reserve_recommendation(
+        SimpleNamespace(
+            reserve_recommendation={"suggested_optimizer_reserve_percent": 30}
+        )
+    )
+
+    assert changed is True
+    assert coordinator._config.backup_reserve == 0.30
+    assert updates[-1]["options"]["optimization_backup_reserve"] == 0.30
+    assert update_calls[-1]["backup_reserve"] == 0.30
+
+    changed = coordinator._apply_auto_reserve_recommendation(
+        SimpleNamespace(
+            reserve_recommendation={"suggested_optimizer_reserve_percent": 10}
+        )
+    )
+
+    assert changed is True
+    assert coordinator._config.backup_reserve == 0.20
+    assert updates[-1]["options"]["optimization_backup_reserve"] == 0.20
 
 
 def test_set_settings_ignores_interval_minutes_override(opt_module):

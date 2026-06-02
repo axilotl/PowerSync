@@ -1018,6 +1018,69 @@ def test_cheap_import_charge_not_blocked_by_positive_fit_at_reserve(
     assert result.schedule.actions[-1].soc > 0.20
 
 
+def test_reserve_recommendation_reports_bridge_floor_before_next_charge(
+    battery_optimizer_module,
+):
+    optimizer = battery_optimizer_module.BatteryOptimizer(
+        capacity_wh=10000,
+        max_charge_w=5000,
+        max_discharge_w=5000,
+        backup_reserve=0.20,
+        hardware_reserve=0.05,
+        interval_minutes=5,
+        horizon_hours=3,
+    )
+
+    result = optimizer.optimize(
+        import_prices=[0.45] * 36,
+        export_prices=[0.0] * 36,
+        solar_forecast=[0.0] * 12 + [5.0] * 12 + [0.0] * 12,
+        load_forecast=[1.0] * 36,
+        current_soc=0.70,
+        acquisition_cost_kwh=0.0,
+        allow_battery_export=[False] * 36,
+    )
+
+    recommendation = result.reserve_recommendation
+
+    assert recommendation["next_charge_reason"] == "forecast_solar_surplus"
+    assert recommendation["suggested_optimizer_reserve_percent"] > 20
+    assert 55 <= recommendation["minimum_forecast_soc_percent"] <= 65
+    assert recommendation["needs_optimizer_reserve_raise"] is True
+    assert recommendation["minimum_forecast_soc_time"].startswith("2026-05-04T00:")
+    assert recommendation["protects_until"].startswith("2026-05-04T01:")
+
+
+def test_reserve_recommendation_marks_no_charge_in_horizon(
+    battery_optimizer_module,
+):
+    optimizer = battery_optimizer_module.BatteryOptimizer(
+        capacity_wh=10000,
+        max_charge_w=5000,
+        max_discharge_w=5000,
+        backup_reserve=0.20,
+        hardware_reserve=0.05,
+        interval_minutes=5,
+        horizon_hours=1,
+    )
+
+    result = optimizer.optimize(
+        import_prices=[0.45] * 12,
+        export_prices=[0.0] * 12,
+        solar_forecast=[0.0] * 12,
+        load_forecast=[1.0] * 12,
+        current_soc=0.70,
+        acquisition_cost_kwh=0.0,
+        allow_battery_export=[False] * 12,
+    )
+
+    recommendation = result.reserve_recommendation
+
+    assert recommendation["next_charge_reason"] == "no_charge_in_horizon"
+    assert recommendation["note"] == "No charging opportunity in optimizer horizon"
+    assert recommendation["protects_until"].startswith("2026-05-04T00:55")
+
+
 def test_positive_fit_iog_charge_does_not_create_all_day_export_loop(
     battery_optimizer_module,
 ):

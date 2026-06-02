@@ -450,6 +450,12 @@ def test_optimization_options_exposes_enabled_toggle():
     assert method_source is not None
     assert "CONF_OPTIMIZATION_ENABLED" in method_source
     assert "new_options[CONF_OPTIMIZATION_ENABLED] = optimization_enabled" in method_source
+    assert "CONF_OPTIMIZATION_AUTO_APPLY_RESERVE" in method_source
+    assert (
+        "new_options[CONF_OPTIMIZATION_AUTO_APPLY_RESERVE] = auto_apply_reserve_enabled"
+        in method_source
+    )
+    assert "CONF_OPTIMIZATION_MANUAL_RESERVE" in method_source
     assert "CONF_OPTIMIZATION_EV_INTEGRATION" in method_source
     assert "new_options[CONF_OPTIMIZATION_EV_INTEGRATION] = ev_integration_enabled" in method_source
     assert "CONF_MONITORING_MODE" in method_source
@@ -457,6 +463,11 @@ def test_optimization_options_exposes_enabled_toggle():
     assert "CONF_HARDWARE_BACKUP_RESERVE" in method_source
     assert "new_options[CONF_HARDWARE_BACKUP_RESERVE] = hardware_backup_reserve" in method_source
     assert 'new_options.pop("_user_backup_reserve", None)' in method_source
+    assert (
+        method_source.index("CONF_OPTIMIZATION_ENABLED")
+        < method_source.index("CONF_OPTIMIZATION_AUTO_APPLY_RESERVE")
+        < method_source.index("CONF_OPTIMIZATION_EV_INTEGRATION")
+    )
     assert (
         method_source.index("CONF_OPTIMIZATION_BACKUP_RESERVE")
         < method_source.index("CONF_HARDWARE_BACKUP_RESERVE")
@@ -474,8 +485,18 @@ def test_optimization_options_exposes_enabled_toggle():
     )
     assert "optimization_provider != OPT_PROVIDER_POWERSYNC" in method_source
 
+    for path in (STRINGS_PATH, TRANSLATIONS_PATH):
+        step = json.loads(path.read_text())["options"]["step"]["optimization"]
+        assert (
+            step["data"]["optimization_auto_apply_reserve"]
+            == "Auto-apply optimizer reserve"
+        )
+        assert "hardware backup reserve stays user controlled" in step[
+            "data_description"
+        ]["optimization_auto_apply_reserve"]
 
-def test_battery_init_options_expose_max_grid_import_limit():
+
+def test_battery_init_options_do_not_mix_optimization_settings():
     source = CONFIG_FLOW_PATH.read_text()
 
     for method_name in (
@@ -489,13 +510,9 @@ def test_battery_init_options_expose_max_grid_import_limit():
         method_source = ast.get_source_segment(source, method)
 
         assert method_source is not None
-        assert "CONF_OPTIMIZATION_MAX_GRID_IMPORT_W" in method_source
-        assert "_form_kw_to_w(" in method_source
-        assert "_stored_w_to_kw(" in method_source
-        assert (
-            method_source.index("CONF_OPTIMIZATION_BACKUP_RESERVE")
-            < method_source.index("CONF_OPTIMIZATION_MAX_GRID_IMPORT_W")
-        )
+        assert "CONF_OPTIMIZATION_PROVIDER" not in method_source
+        assert "CONF_OPTIMIZATION_BACKUP_RESERVE" not in method_source
+        assert "CONF_OPTIMIZATION_MAX_GRID_IMPORT_W" not in method_source
 
     for path in (STRINGS_PATH, TRANSLATIONS_PATH):
         options_steps = json.loads(path.read_text())["options"]["step"]
@@ -508,8 +525,13 @@ def test_battery_init_options_expose_max_grid_import_limit():
         ):
             step = options_steps[step_name]
 
-            assert step["data"]["optimization_max_grid_import_w"] == "Maximum grid import"
-            assert "no site import cap" in step["data_description"]["optimization_max_grid_import_w"]
+            assert "optimization_provider" not in step.get("data", {})
+            assert "optimization_backup_reserve" not in step.get("data", {})
+            assert "optimization_max_grid_import_w" not in step.get("data", {})
+            assert "optimization_provider" not in step.get("data_description", {})
+            assert "optimization_backup_reserve" not in step.get("data_description", {})
+            assert "optimization_max_grid_import_w" not in step.get("data_description", {})
+            assert "optimization" not in step["description"].lower()
 
 
 def test_optimization_options_schedules_reload_after_flow_response():
@@ -559,11 +581,19 @@ def test_initial_smart_optimization_configuration_exposes_enabled_toggle():
     assert "self._optimization_provider = optimization_provider" in method_source
     assert "CONF_OPTIMIZATION_ENABLED" in method_source
     assert "user_input.get(CONF_OPTIMIZATION_ENABLED, True)" in method_source
+    assert "CONF_OPTIMIZATION_AUTO_APPLY_RESERVE" in method_source
+    assert "CONF_OPTIMIZATION_MANUAL_RESERVE" in method_source
     assert "CONF_OPTIMIZATION_EV_INTEGRATION" in method_source
     assert "user_input.get(CONF_OPTIMIZATION_EV_INTEGRATION, False)" in method_source
     assert "CONF_MONITORING_MODE" in method_source
     assert "user_input.get(CONF_MONITORING_MODE, False)" in method_source
     assert "CONF_HARDWARE_BACKUP_RESERVE" in method_source
+    schema_source = method_source[method_source.index("schema_fields") :]
+    assert (
+        schema_source.index("CONF_OPTIMIZATION_ENABLED")
+        < schema_source.index("CONF_OPTIMIZATION_AUTO_APPLY_RESERVE")
+        < schema_source.index("CONF_OPTIMIZATION_EV_INTEGRATION")
+    )
     assert (
         method_source.index("CONF_OPTIMIZATION_BACKUP_RESERVE")
         < method_source.index("CONF_HARDWARE_BACKUP_RESERVE")
@@ -579,6 +609,16 @@ def test_initial_smart_optimization_configuration_exposes_enabled_toggle():
         method_source.index("CONF_PROFIT_MAX_ENABLED")
         < method_source.index("CONF_PROFIT_MAX_TARGET_TIME")
     )
+
+    for path in (STRINGS_PATH, TRANSLATIONS_PATH):
+        step = json.loads(path.read_text())["config"]["step"]["ml_options"]
+        assert (
+            step["data"]["optimization_auto_apply_reserve"]
+            == "Auto-apply optimizer reserve"
+        )
+        assert "hardware backup reserve stays user controlled" in step[
+            "data_description"
+        ]["optimization_auto_apply_reserve"]
 
 
 def test_powerwall_smart_optimization_hides_spread_options():

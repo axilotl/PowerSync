@@ -384,6 +384,8 @@ from .const import (
     BATTERY_MANAGEMENT_MODES,
     CONF_MONITORING_MODE,
     CONF_OPTIMIZATION_ENABLED,
+    CONF_OPTIMIZATION_AUTO_APPLY_RESERVE,
+    CONF_OPTIMIZATION_MANUAL_RESERVE,
     CONF_OPTIMIZATION_EV_INTEGRATION,
     CONF_OPTIMIZATION_COST_FUNCTION,
     CONF_OPTIMIZATION_BACKUP_RESERVE,
@@ -2431,19 +2433,27 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         user_input.get(CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED, False)
                     )
                 )
+                auto_apply_reserve_enabled = bool(
+                    user_input.get(CONF_OPTIMIZATION_AUTO_APPLY_RESERVE, False)
+                )
+                backup_reserve = (
+                    user_input.get(
+                        CONF_OPTIMIZATION_BACKUP_RESERVE,
+                        int(DEFAULT_OPTIMIZATION_BACKUP_RESERVE * 100),
+                    )
+                    / 100.0
+                )
                 self._ml_options.update({
                     CONF_OPTIMIZATION_ENABLED: bool(
                         user_input.get(CONF_OPTIMIZATION_ENABLED, True)
                     ),
+                    CONF_OPTIMIZATION_AUTO_APPLY_RESERVE: auto_apply_reserve_enabled,
+                    CONF_OPTIMIZATION_MANUAL_RESERVE: backup_reserve,
                     CONF_OPTIMIZATION_EV_INTEGRATION: bool(
                         user_input.get(CONF_OPTIMIZATION_EV_INTEGRATION, False)
                     ),
                     CONF_OPTIMIZATION_COST_FUNCTION: COST_FUNCTION_COST,
-                    CONF_OPTIMIZATION_BACKUP_RESERVE: user_input.get(
-                        CONF_OPTIMIZATION_BACKUP_RESERVE,
-                        int(DEFAULT_OPTIMIZATION_BACKUP_RESERVE * 100),
-                    )
-                    / 100.0,
+                    CONF_OPTIMIZATION_BACKUP_RESERVE: backup_reserve,
                     CONF_HARDWARE_BACKUP_RESERVE: user_input.get(
                         CONF_HARDWARE_BACKUP_RESERVE,
                         int(DEFAULT_OPTIMIZATION_BACKUP_RESERVE * 100),
@@ -2503,6 +2513,10 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             vol.Required(
                 CONF_OPTIMIZATION_ENABLED,
                 default=True,
+            ): BooleanSelector(),
+            vol.Required(
+                CONF_OPTIMIZATION_AUTO_APPLY_RESERVE,
+                default=False,
             ): BooleanSelector(),
             vol.Required(
                 CONF_OPTIMIZATION_EV_INTEGRATION,
@@ -6828,14 +6842,20 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     optimization_provider == OPT_PROVIDER_POWERSYNC,
                 )
             )
+            auto_apply_reserve_enabled = bool(
+                user_input.get(CONF_OPTIMIZATION_AUTO_APPLY_RESERVE, False)
+            )
             if optimization_provider != OPT_PROVIDER_POWERSYNC:
                 optimization_enabled = False
+                auto_apply_reserve_enabled = False
             if is_custom:
                 optimization_enabled = True
             new_data = dict(self.config_entry.data)
             new_options = dict(self.config_entry.options)
             new_data[CONF_OPTIMIZATION_PROVIDER] = optimization_provider
             new_options[CONF_OPTIMIZATION_ENABLED] = optimization_enabled
+            new_data[CONF_OPTIMIZATION_AUTO_APPLY_RESERVE] = auto_apply_reserve_enabled
+            new_options[CONF_OPTIMIZATION_AUTO_APPLY_RESERVE] = auto_apply_reserve_enabled
             monitoring_mode = bool(user_input.get(CONF_MONITORING_MODE, False))
             if is_custom:
                 monitoring_mode = True
@@ -6871,6 +6891,29 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                         int(DEFAULT_OPTIMIZATION_BACKUP_RESERVE * 100),
                     )
                     / 100.0
+                )
+                current_manual_reserve = self._get_option(
+                    CONF_OPTIMIZATION_MANUAL_RESERVE,
+                    self.config_entry.data.get(CONF_OPTIMIZATION_MANUAL_RESERVE),
+                )
+                if current_manual_reserve is None:
+                    current_manual_reserve = backup_reserve
+                elif current_manual_reserve > 1:
+                    current_manual_reserve = current_manual_reserve / 100.0
+                if (
+                    not auto_apply_reserve_enabled
+                    and self._get_option(
+                        CONF_OPTIMIZATION_AUTO_APPLY_RESERVE,
+                        self.config_entry.data.get(
+                            CONF_OPTIMIZATION_AUTO_APPLY_RESERVE, False
+                        ),
+                    )
+                ):
+                    backup_reserve = current_manual_reserve
+                manual_reserve = (
+                    backup_reserve
+                    if auto_apply_reserve_enabled
+                    else current_manual_reserve
                 )
                 hardware_backup_reserve = (
                     user_input.get(
@@ -6914,6 +6957,8 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 new_options[CONF_OPTIMIZATION_COST_FUNCTION] = COST_FUNCTION_COST
                 new_data[CONF_OPTIMIZATION_BACKUP_RESERVE] = backup_reserve
                 new_options[CONF_OPTIMIZATION_BACKUP_RESERVE] = backup_reserve
+                new_data[CONF_OPTIMIZATION_MANUAL_RESERVE] = manual_reserve
+                new_options[CONF_OPTIMIZATION_MANUAL_RESERVE] = manual_reserve
                 new_data[CONF_HARDWARE_BACKUP_RESERVE] = hardware_backup_reserve
                 new_options[CONF_HARDWARE_BACKUP_RESERVE] = hardware_backup_reserve
                 new_options.pop("_user_backup_reserve", None)
@@ -6979,6 +7024,10 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             CONF_OPTIMIZATION_ENABLED,
             current_opt_provider == OPT_PROVIDER_POWERSYNC,
         )
+        current_auto_apply_reserve = self._get_option(
+            CONF_OPTIMIZATION_AUTO_APPLY_RESERVE,
+            self.config_entry.data.get(CONF_OPTIMIZATION_AUTO_APPLY_RESERVE, False),
+        )
         current_monitoring_mode = self._get_option(
             CONF_MONITORING_MODE,
             self.config_entry.data.get(CONF_MONITORING_MODE, False),
@@ -6996,6 +7045,17 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 CONF_OPTIMIZATION_BACKUP_RESERVE,
                 DEFAULT_OPTIMIZATION_BACKUP_RESERVE,
             ),
+        )
+        current_manual_reserve = self._get_option(
+            CONF_OPTIMIZATION_MANUAL_RESERVE,
+            self.config_entry.data.get(CONF_OPTIMIZATION_MANUAL_RESERVE),
+        )
+        if current_manual_reserve is not None and current_manual_reserve > 1:
+            current_manual_reserve = current_manual_reserve / 100.0
+        display_backup_reserve = (
+            current_manual_reserve
+            if current_auto_apply_reserve and current_manual_reserve is not None
+            else current_backup_reserve
         )
         current_hardware_backup_reserve = self._get_option(
             CONF_HARDWARE_BACKUP_RESERVE,
@@ -7099,6 +7159,10 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 default=bool(current_optimization_enabled),
             ): BooleanSelector(),
             vol.Required(
+                CONF_OPTIMIZATION_AUTO_APPLY_RESERVE,
+                default=bool(current_auto_apply_reserve),
+            ): BooleanSelector(),
+            vol.Required(
                 CONF_OPTIMIZATION_EV_INTEGRATION,
                 default=bool(current_ev_integration_enabled),
             ): BooleanSelector(),
@@ -7126,9 +7190,9 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             {
                 vol.Required(
                     CONF_OPTIMIZATION_BACKUP_RESERVE,
-                    default=int(current_backup_reserve * 100)
-                    if current_backup_reserve < 1
-                    else int(current_backup_reserve),
+                    default=int(display_backup_reserve * 100)
+                    if display_backup_reserve < 1
+                    else int(display_backup_reserve),
                 ): NumberSelector(NumberSelectorConfig(
                     min=0, max=100, step=1, unit_of_measurement="%",
                     mode=NumberSelectorMode.SLIDER,
@@ -7243,7 +7307,7 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
     async def async_step_init_tesla(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Step 1 for Tesla users: Select electricity provider, Tesla Energy/EV API providers, and optimization provider."""
+        """Step 1 for Tesla users: select electricity provider and Tesla API providers."""
         errors: dict[str, str] = {}
 
         if user_input is not None:
@@ -7251,9 +7315,6 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             self._provider = user_input.get(CONF_ELECTRICITY_PROVIDER, "amber")
             self._tesla_provider = user_input.get(
                 CONF_TESLA_API_PROVIDER, TESLA_PROVIDER_TESLEMETRY
-            )
-            optimization_provider = user_input.get(
-                CONF_OPTIMIZATION_PROVIDER, OPT_PROVIDER_NATIVE
             )
 
             # Tesla EV provider — independent from energy provider
@@ -7278,11 +7339,9 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 self._pending_init_tesla_input = dict(user_input)
                 return await self.async_step_options_tesla_ev_token()
 
-            # Check if switching providers and need a fresh token
             current_tesla_provider = self.config_entry.data.get(
                 CONF_TESLA_API_PROVIDER, TESLA_PROVIDER_TESLEMETRY
             )
-            current_token = self.config_entry.data.get(CONF_TESLEMETRY_API_TOKEN)
 
             if not errors:
                 # Persist the EV provider choice now (before any sub-step
@@ -7309,21 +7368,6 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 if self._tesla_provider != current_tesla_provider:
                     new_data[CONF_TESLA_API_PROVIDER] = self._tesla_provider
                 new_data[CONF_TESLA_EV_API_PROVIDER] = ev_choice
-                new_data[CONF_OPTIMIZATION_PROVIDER] = optimization_provider
-                # If Smart Optimization, store ML options
-                if optimization_provider == OPT_PROVIDER_POWERSYNC:
-                    new_data[CONF_OPTIMIZATION_COST_FUNCTION] = COST_FUNCTION_COST
-                    new_data[CONF_OPTIMIZATION_BACKUP_RESERVE] = (
-                        user_input.get(
-                            CONF_OPTIMIZATION_BACKUP_RESERVE,
-                            int(DEFAULT_OPTIMIZATION_BACKUP_RESERVE * 100),
-                        )
-                        / 100.0
-                    )  # Convert from % to decimal
-                    new_data[CONF_OPTIMIZATION_MAX_GRID_IMPORT_W] = _form_kw_to_w(
-                        user_input.get(CONF_OPTIMIZATION_MAX_GRID_IMPORT_W),
-                        0,
-                    )
 
                 self.hass.config_entries.async_update_entry(
                     self.config_entry, data=new_data
@@ -7349,19 +7393,6 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
         current_tesla_provider = self.config_entry.data.get(
             CONF_TESLA_API_PROVIDER, TESLA_PROVIDER_TESLEMETRY
         )
-        current_opt_provider = self.config_entry.data.get(
-            CONF_OPTIMIZATION_PROVIDER, OPT_PROVIDER_NATIVE
-        )
-        current_backup_reserve = self.config_entry.data.get(
-            CONF_OPTIMIZATION_BACKUP_RESERVE, DEFAULT_OPTIMIZATION_BACKUP_RESERVE
-        )
-        current_max_grid_import_kw = _stored_w_to_kw(
-            self._get_option(
-                CONF_OPTIMIZATION_MAX_GRID_IMPORT_W,
-                self.config_entry.data.get(CONF_OPTIMIZATION_MAX_GRID_IMPORT_W, 0),
-            ),
-            0,
-        )
         current_ev_provider = self.config_entry.data.get(
             CONF_TESLA_EV_API_PROVIDER, TESLA_EV_API_PROVIDER_NONE
         )
@@ -7375,12 +7406,6 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
 
         # Tesla EV provider choices (with detection annotations)
         tesla_ev_providers = _build_tesla_ev_provider_choices(self.hass)
-
-        # Build optimization provider choices
-        opt_providers = {
-            OPT_PROVIDER_NATIVE: "Tesla Powerwall built-in optimization",
-            OPT_PROVIDER_POWERSYNC: "Smart Optimization (Built-in LP)",
-        }
 
         return self.async_show_form(
             step_id="init_tesla",
@@ -7415,32 +7440,6 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                             for k, v in tesla_ev_providers.items()
                         ],
                         mode=SelectSelectorMode.DROPDOWN,
-                    )),
-                    vol.Required(
-                        CONF_OPTIMIZATION_PROVIDER,
-                        default=current_opt_provider,
-                    ): SelectSelector(SelectSelectorConfig(
-                        options=[
-                            SelectOptionDict(value=k, label=v)
-                            for k, v in opt_providers.items()
-                        ],
-                        mode=SelectSelectorMode.DROPDOWN,
-                    )),
-                    vol.Required(
-                        CONF_OPTIMIZATION_BACKUP_RESERVE,
-                        default=int(current_backup_reserve * 100)
-                        if current_backup_reserve < 1
-                        else int(current_backup_reserve),
-                    ): NumberSelector(NumberSelectorConfig(
-                        min=0, max=100, step=1, unit_of_measurement="%",
-                        mode=NumberSelectorMode.SLIDER,
-                    )),
-                    vol.Required(
-                        CONF_OPTIMIZATION_MAX_GRID_IMPORT_W,
-                        default=current_max_grid_import_kw,
-                    ): NumberSelector(NumberSelectorConfig(
-                        min=0, max=100, step=0.1, unit_of_measurement="kW",
-                        mode=NumberSelectorMode.BOX,
                     )),
                 }
             ),
@@ -7556,25 +7555,6 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                         new_data.pop(CONF_SIGENERGY_TARIFF_STATION_ID, None)
                         new_data.pop(CONF_SIGENERGY_TARIFF_STATION_SOURCE_ID, None)
 
-                # Optimization provider settings
-                optimization_provider = user_input.get(
-                    CONF_OPTIMIZATION_PROVIDER, OPT_PROVIDER_NATIVE
-                )
-                new_data[CONF_OPTIMIZATION_PROVIDER] = optimization_provider
-                if optimization_provider == OPT_PROVIDER_POWERSYNC:
-                    new_data[CONF_OPTIMIZATION_COST_FUNCTION] = COST_FUNCTION_COST
-                    new_data[CONF_OPTIMIZATION_BACKUP_RESERVE] = (
-                        user_input.get(
-                            CONF_OPTIMIZATION_BACKUP_RESERVE,
-                            int(DEFAULT_OPTIMIZATION_BACKUP_RESERVE * 100),
-                        )
-                        / 100.0
-                    )
-                    new_data[CONF_OPTIMIZATION_MAX_GRID_IMPORT_W] = _form_kw_to_w(
-                        user_input.get(CONF_OPTIMIZATION_MAX_GRID_IMPORT_W),
-                        0,
-                    )
-
                 self.hass.config_entries.async_update_entry(
                     self.config_entry, data=new_data
                 )
@@ -7607,20 +7587,6 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
         current_export_limit = self.config_entry.data.get(
             CONF_SIGENERGY_EXPORT_LIMIT_KW
         )
-        current_opt_provider = self.config_entry.data.get(
-            CONF_OPTIMIZATION_PROVIDER, OPT_PROVIDER_NATIVE
-        )
-        current_backup_reserve = self.config_entry.data.get(
-            CONF_OPTIMIZATION_BACKUP_RESERVE, DEFAULT_OPTIMIZATION_BACKUP_RESERVE
-        )
-        current_max_grid_import_kw = _stored_w_to_kw(
-            self._get_option(
-                CONF_OPTIMIZATION_MAX_GRID_IMPORT_W,
-                self.config_entry.data.get(CONF_OPTIMIZATION_MAX_GRID_IMPORT_W, 0),
-            ),
-            0,
-        )
-
         # Get current Sigenergy Cloud credentials (for display, show empty if not set)
         current_sigen_username = self.config_entry.data.get(CONF_SIGENERGY_USERNAME, "")
         current_sigen_device_id = self.config_entry.data.get(
@@ -7630,12 +7596,6 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             CONF_SIGENERGY_STATION_ID, ""
         )
         # Don't show current password for security - user must re-enter if changing
-
-        # Build optimization provider choices
-        opt_providers = {
-            OPT_PROVIDER_NATIVE: "Sigenergy built-in optimization",
-            OPT_PROVIDER_POWERSYNC: "Smart Optimization (Built-in LP)",
-        }
 
         return self.async_show_form(
             step_id="init_sigenergy",
@@ -7650,32 +7610,6 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                             for k, v in ELECTRICITY_PROVIDERS.items()
                         ],
                         mode=SelectSelectorMode.DROPDOWN,
-                    )),
-                    vol.Required(
-                        CONF_OPTIMIZATION_PROVIDER,
-                        default=current_opt_provider,
-                    ): SelectSelector(SelectSelectorConfig(
-                        options=[
-                            SelectOptionDict(value=k, label=v)
-                            for k, v in opt_providers.items()
-                        ],
-                        mode=SelectSelectorMode.DROPDOWN,
-                    )),
-                    vol.Required(
-                        CONF_OPTIMIZATION_BACKUP_RESERVE,
-                        default=int(current_backup_reserve * 100)
-                        if current_backup_reserve < 1
-                        else int(current_backup_reserve),
-                    ): NumberSelector(NumberSelectorConfig(
-                        min=0, max=100, step=1, unit_of_measurement="%",
-                        mode=NumberSelectorMode.SLIDER,
-                    )),
-                    vol.Required(
-                        CONF_OPTIMIZATION_MAX_GRID_IMPORT_W,
-                        default=current_max_grid_import_kw,
-                    ): NumberSelector(NumberSelectorConfig(
-                        min=0, max=100, step=0.1, unit_of_measurement="kW",
-                        mode=NumberSelectorMode.BOX,
                     )),
                     vol.Required(
                         CONF_SIGENERGY_MODBUS_HOST,
@@ -7766,25 +7700,6 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 self._remove_legacy_sungrow_dual_options(new_data, new_options)
 
                 if not errors:
-                    # Optimization provider settings
-                    optimization_provider = user_input.get(
-                        CONF_OPTIMIZATION_PROVIDER, OPT_PROVIDER_NATIVE
-                    )
-                    new_data[CONF_OPTIMIZATION_PROVIDER] = optimization_provider
-                    if optimization_provider == OPT_PROVIDER_POWERSYNC:
-                        new_data[CONF_OPTIMIZATION_COST_FUNCTION] = COST_FUNCTION_COST
-                        new_data[CONF_OPTIMIZATION_BACKUP_RESERVE] = (
-                            user_input.get(
-                                CONF_OPTIMIZATION_BACKUP_RESERVE,
-                                int(DEFAULT_OPTIMIZATION_BACKUP_RESERVE * 100),
-                            )
-                            / 100.0
-                        )
-                        new_data[CONF_OPTIMIZATION_MAX_GRID_IMPORT_W] = _form_kw_to_w(
-                            user_input.get(CONF_OPTIMIZATION_MAX_GRID_IMPORT_W),
-                            0,
-                        )
-
                     self.hass.config_entries.async_update_entry(
                         self.config_entry, data=new_data, options=new_options
                     )
@@ -7809,26 +7724,6 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
         current_slave_id = self._get_option(
             CONF_SUNGROW_SLAVE_ID, DEFAULT_SUNGROW_SLAVE_ID
         )
-        current_opt_provider = self.config_entry.data.get(
-            CONF_OPTIMIZATION_PROVIDER, OPT_PROVIDER_NATIVE
-        )
-        current_backup_reserve = self.config_entry.data.get(
-            CONF_OPTIMIZATION_BACKUP_RESERVE, DEFAULT_OPTIMIZATION_BACKUP_RESERVE
-        )
-        current_max_grid_import_kw = _stored_w_to_kw(
-            self._get_option(
-                CONF_OPTIMIZATION_MAX_GRID_IMPORT_W,
-                self.config_entry.data.get(CONF_OPTIMIZATION_MAX_GRID_IMPORT_W, 0),
-            ),
-            0,
-        )
-
-        # Build optimization provider choices
-        opt_providers = {
-            OPT_PROVIDER_NATIVE: "Sungrow built-in optimization",
-            OPT_PROVIDER_POWERSYNC: "Smart Optimization (Built-in LP)",
-        }
-
         return self.async_show_form(
             step_id="init_sungrow",
             data_schema=vol.Schema(
@@ -7842,32 +7737,6 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                             for k, v in ELECTRICITY_PROVIDERS.items()
                         ],
                         mode=SelectSelectorMode.DROPDOWN,
-                    )),
-                    vol.Required(
-                        CONF_OPTIMIZATION_PROVIDER,
-                        default=current_opt_provider,
-                    ): SelectSelector(SelectSelectorConfig(
-                        options=[
-                            SelectOptionDict(value=k, label=v)
-                            for k, v in opt_providers.items()
-                        ],
-                        mode=SelectSelectorMode.DROPDOWN,
-                    )),
-                    vol.Required(
-                        CONF_OPTIMIZATION_BACKUP_RESERVE,
-                        default=int(current_backup_reserve * 100)
-                        if current_backup_reserve < 1
-                        else int(current_backup_reserve),
-                    ): NumberSelector(NumberSelectorConfig(
-                        min=0, max=100, step=1, unit_of_measurement="%",
-                        mode=NumberSelectorMode.SLIDER,
-                    )),
-                    vol.Required(
-                        CONF_OPTIMIZATION_MAX_GRID_IMPORT_W,
-                        default=current_max_grid_import_kw,
-                    ): NumberSelector(NumberSelectorConfig(
-                        min=0, max=100, step=0.1, unit_of_measurement="kW",
-                        mode=NumberSelectorMode.BOX,
                     )),
                     vol.Required(
                         CONF_SUNGROW_HOST,
@@ -7893,7 +7762,7 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
     async def async_step_init_foxess(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Step 1 for FoxESS users: Configure Modbus connection and optimization settings."""
+        """Step 1 for FoxESS users: configure connection settings."""
         errors: dict[str, str] = {}
 
         if user_input is not None:
@@ -7958,25 +7827,6 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     CONF_FOXESS_SLAVE_ID, DEFAULT_FOXESS_SLAVE_ID
                 )
 
-                # Optimization provider settings
-                optimization_provider = user_input.get(
-                    CONF_OPTIMIZATION_PROVIDER, OPT_PROVIDER_NATIVE
-                )
-                new_data[CONF_OPTIMIZATION_PROVIDER] = optimization_provider
-                if optimization_provider == OPT_PROVIDER_POWERSYNC:
-                    new_data[CONF_OPTIMIZATION_COST_FUNCTION] = COST_FUNCTION_COST
-                    new_data[CONF_OPTIMIZATION_BACKUP_RESERVE] = (
-                        user_input.get(
-                            CONF_OPTIMIZATION_BACKUP_RESERVE,
-                            int(DEFAULT_OPTIMIZATION_BACKUP_RESERVE * 100),
-                        )
-                        / 100.0
-                    )
-                    new_data[CONF_OPTIMIZATION_MAX_GRID_IMPORT_W] = _form_kw_to_w(
-                        user_input.get(CONF_OPTIMIZATION_MAX_GRID_IMPORT_W),
-                        0,
-                    )
-
                 self.hass.config_entries.async_update_entry(
                     self.config_entry, data=new_data
                 )
@@ -8012,25 +7862,6 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
         current_cloud_device_sn = self._get_option(CONF_FOXESS_CLOUD_DEVICE_SN, "")
         current_entity_entry_id = self._get_option(CONF_FOXESS_ENTITY_CONFIG_ENTRY_ID, "")
         current_entity_prefix = self._get_option(CONF_FOXESS_ENTITY_PREFIX, "")
-        current_opt_provider = self.config_entry.data.get(
-            CONF_OPTIMIZATION_PROVIDER, OPT_PROVIDER_NATIVE
-        )
-        current_backup_reserve = self.config_entry.data.get(
-            CONF_OPTIMIZATION_BACKUP_RESERVE, DEFAULT_OPTIMIZATION_BACKUP_RESERVE
-        )
-        current_max_grid_import_kw = _stored_w_to_kw(
-            self._get_option(
-                CONF_OPTIMIZATION_MAX_GRID_IMPORT_W,
-                self.config_entry.data.get(CONF_OPTIMIZATION_MAX_GRID_IMPORT_W, 0),
-            ),
-            0,
-        )
-
-        opt_providers = {
-            OPT_PROVIDER_NATIVE: "FoxESS built-in optimization",
-            OPT_PROVIDER_POWERSYNC: "Smart Optimization (Built-in LP)",
-        }
-
         foxess_conn_types_legacy = {
             FOXESS_CONNECTION_TCP: "Modbus TCP",
             FOXESS_CONNECTION_SERIAL: "RS485 Serial",
@@ -8048,32 +7879,6 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     for k, v in ELECTRICITY_PROVIDERS.items()
                 ],
                 mode=SelectSelectorMode.DROPDOWN,
-            )),
-            vol.Required(
-                CONF_OPTIMIZATION_PROVIDER,
-                default=current_opt_provider,
-            ): SelectSelector(SelectSelectorConfig(
-                options=[
-                    SelectOptionDict(value=k, label=v)
-                    for k, v in opt_providers.items()
-                ],
-                mode=SelectSelectorMode.DROPDOWN,
-            )),
-            vol.Required(
-                CONF_OPTIMIZATION_BACKUP_RESERVE,
-                default=int(current_backup_reserve * 100)
-                if current_backup_reserve < 1
-                else int(current_backup_reserve),
-            ): NumberSelector(NumberSelectorConfig(
-                min=0, max=100, step=1, unit_of_measurement="%",
-                mode=NumberSelectorMode.SLIDER,
-            )),
-            vol.Required(
-                CONF_OPTIMIZATION_MAX_GRID_IMPORT_W,
-                default=current_max_grid_import_kw,
-            ): NumberSelector(NumberSelectorConfig(
-                min=0, max=100, step=0.1, unit_of_measurement="kW",
-                mode=NumberSelectorMode.BOX,
             )),
             vol.Required(
                 CONF_FOXESS_CONNECTION_TYPE,
@@ -8146,7 +7951,7 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
     async def async_step_init_goodwe(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Step 1 for GoodWe users: Configure connection and optimization settings."""
+        """Step 1 for GoodWe users: configure connection settings."""
         errors: dict[str, str] = {}
 
         if user_input is not None:
@@ -8191,25 +7996,6 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     else:
                         new_data.pop(CONF_GOODWE_EMS_ENTITY_PREFIX, None)
 
-                    # Optimization provider settings
-                    optimization_provider = user_input.get(
-                        CONF_OPTIMIZATION_PROVIDER, OPT_PROVIDER_NATIVE
-                    )
-                    new_data[CONF_OPTIMIZATION_PROVIDER] = optimization_provider
-                    if optimization_provider == OPT_PROVIDER_POWERSYNC:
-                        new_data[CONF_OPTIMIZATION_COST_FUNCTION] = COST_FUNCTION_COST
-                        new_data[CONF_OPTIMIZATION_BACKUP_RESERVE] = (
-                            user_input.get(
-                                CONF_OPTIMIZATION_BACKUP_RESERVE,
-                                int(DEFAULT_OPTIMIZATION_BACKUP_RESERVE * 100),
-                            )
-                            / 100.0
-                        )
-                        new_data[CONF_OPTIMIZATION_MAX_GRID_IMPORT_W] = _form_kw_to_w(
-                            user_input.get(CONF_OPTIMIZATION_MAX_GRID_IMPORT_W),
-                            0,
-                        )
-
                     self.hass.config_entries.async_update_entry(
                         self.config_entry, data=new_data
                     )
@@ -8240,25 +8026,6 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             self._get_option(CONF_GOODWE_EMS_CONTROL_MODE, None),
             current_ems_prefix_init,
         )
-        current_opt_provider = self.config_entry.data.get(
-            CONF_OPTIMIZATION_PROVIDER, OPT_PROVIDER_NATIVE
-        )
-        current_backup_reserve = self.config_entry.data.get(
-            CONF_OPTIMIZATION_BACKUP_RESERVE, DEFAULT_OPTIMIZATION_BACKUP_RESERVE
-        )
-        current_max_grid_import_kw = _stored_w_to_kw(
-            self._get_option(
-                CONF_OPTIMIZATION_MAX_GRID_IMPORT_W,
-                self.config_entry.data.get(CONF_OPTIMIZATION_MAX_GRID_IMPORT_W, 0),
-            ),
-            0,
-        )
-
-        opt_providers = {
-            OPT_PROVIDER_NATIVE: "GoodWe built-in optimization",
-            OPT_PROVIDER_POWERSYNC: "Smart Optimization (Built-in LP)",
-        }
-
         goodwe_protocols_legacy = {
             "udp": "UDP direct control (port 8899)",
             "tcp": "TCP / LAN Kit-20 (port 502)",
@@ -8277,32 +8044,6 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                             for k, v in ELECTRICITY_PROVIDERS.items()
                         ],
                         mode=SelectSelectorMode.DROPDOWN,
-                    )),
-                    vol.Required(
-                        CONF_OPTIMIZATION_PROVIDER,
-                        default=current_opt_provider,
-                    ): SelectSelector(SelectSelectorConfig(
-                        options=[
-                            SelectOptionDict(value=k, label=v)
-                            for k, v in opt_providers.items()
-                        ],
-                        mode=SelectSelectorMode.DROPDOWN,
-                    )),
-                    vol.Required(
-                        CONF_OPTIMIZATION_BACKUP_RESERVE,
-                        default=int(current_backup_reserve * 100)
-                        if current_backup_reserve < 1
-                        else int(current_backup_reserve),
-                    ): NumberSelector(NumberSelectorConfig(
-                        min=0, max=100, step=1, unit_of_measurement="%",
-                        mode=NumberSelectorMode.SLIDER,
-                    )),
-                    vol.Required(
-                        CONF_OPTIMIZATION_MAX_GRID_IMPORT_W,
-                        default=current_max_grid_import_kw,
-                    ): NumberSelector(NumberSelectorConfig(
-                        min=0, max=100, step=0.1, unit_of_measurement="kW",
-                        mode=NumberSelectorMode.BOX,
                     )),
                     vol.Required(
                         CONF_GOODWE_HOST,

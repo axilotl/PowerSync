@@ -25,7 +25,10 @@ from .const import (
     DEFAULT_AUTO_UPDATE_TIME,
     CONF_ELECTRICITY_PROVIDER,
     CONF_MONITORING_MODE,
+    CONF_OPTIMIZATION_AUTO_APPLY_RESERVE,
+    CONF_OPTIMIZATION_BACKUP_RESERVE,
     CONF_OPTIMIZATION_ENABLED,
+    CONF_OPTIMIZATION_MANUAL_RESERVE,
     CONF_OPTIMIZATION_PROVIDER,
     CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED,
     CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED,
@@ -45,6 +48,7 @@ from .const import (
     SWITCH_TYPE_OPTIMIZATION_SPREAD_EXPORT,
     SWITCH_TYPE_OPTIMIZATION_SPREAD_IMPORT,
     SWITCH_TYPE_OPTIMIZATION_ENABLED,
+    SWITCH_TYPE_OPTIMIZATION_AUTO_APPLY_RESERVE,
     DEFAULT_DISCHARGE_DURATION,
     ATTR_LAST_SYNC,
     ATTR_SYNC_STATUS,
@@ -176,6 +180,18 @@ async def async_setup_entry(
                 key=SWITCH_TYPE_OPTIMIZATION_ENABLED,
                 name="Enable Smart Optimization",
                 icon="mdi:chart-timeline-variant-shimmer",
+            ),
+        ),
+    )
+
+    entities.append(
+        AutoApplyOptimizerReserveSwitch(
+            hass=hass,
+            entry=entry,
+            description=SwitchEntityDescription(
+                key=SWITCH_TYPE_OPTIMIZATION_AUTO_APPLY_RESERVE,
+                name="Auto-Apply Optimizer Reserve",
+                icon="mdi:battery-sync-outline",
             ),
         ),
     )
@@ -560,6 +576,132 @@ class OptimizationEnabledSwitch(SwitchEntity):
             self._entry,
             options=new_options,
         )
+        self.async_write_ha_state()
+
+
+class AutoApplyOptimizerReserveSwitch(SwitchEntity):
+    """Switch to let forecast recommendations update the optimizer reserve floor."""
+
+    _attr_has_entity_name = True
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: ConfigEntry,
+        description: SwitchEntityDescription,
+    ) -> None:
+        """Initialize the switch."""
+        self.hass = hass
+        self.entity_description = description
+        self._entry = entry
+        self._attr_unique_id = f"{entry.entry_id}_{description.key}"
+        self._attr_suggested_object_id = f"power_sync_{description.key}"
+        self._attr_is_on = self._current_state()
+
+    def _current_state(self) -> bool:
+        return bool(
+            self._entry.options.get(
+                CONF_OPTIMIZATION_AUTO_APPLY_RESERVE,
+                self._entry.data.get(CONF_OPTIMIZATION_AUTO_APPLY_RESERVE, False),
+            )
+        )
+
+    def _coordinator(self) -> Any | None:
+        entry_data = self.hass.data.get(DOMAIN, {}).get(self._entry.entry_id, {})
+        if isinstance(entry_data, dict):
+            return entry_data.get("optimization_coordinator")
+        return None
+
+    async def async_added_to_hass(self) -> None:
+        """Register for optimizer setting changes made outside this switch."""
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                f"{DOMAIN}_{self._entry.entry_id}_auto_apply_reserve",
+                self._handle_auto_apply_reserve_update,
+            )
+        )
+
+    @callback
+    def _handle_auto_apply_reserve_update(self, enabled: bool) -> None:
+        """Update the HA switch state after API/config-flow changes."""
+        self._attr_is_on = bool(enabled)
+        self.async_write_ha_state()
+
+    @property
+    def device_info(self):
+        return family_device_info(self._entry.entry_id, SENSOR_FAMILY_LP_OPTIMIZER)
+
+    @property
+    def is_on(self) -> bool:
+        """Return True if forecast reserve auto-apply is enabled."""
+        coordinator = self._coordinator()
+        if coordinator and hasattr(coordinator, "auto_apply_reserve_enabled"):
+            return bool(coordinator.auto_apply_reserve_enabled)
+        return self._attr_is_on
+
+    async def _persist_without_coordinator(self, enabled: bool) -> None:
+        new_data = {**self._entry.data}
+        new_options = {**self._entry.options}
+        current_reserve = new_options.get(
+            CONF_OPTIMIZATION_BACKUP_RESERVE,
+            new_data.get(CONF_OPTIMIZATION_BACKUP_RESERVE, 0.2),
+        )
+        try:
+            current_reserve = float(current_reserve)
+        except (TypeError, ValueError):
+            current_reserve = 0.2
+        if current_reserve > 1:
+            current_reserve = current_reserve / 100.0
+
+        manual_reserve = new_options.get(
+            CONF_OPTIMIZATION_MANUAL_RESERVE,
+            new_data.get(CONF_OPTIMIZATION_MANUAL_RESERVE),
+        )
+        try:
+            manual_reserve = (
+                float(manual_reserve)
+                if manual_reserve is not None
+                else current_reserve
+            )
+        except (TypeError, ValueError):
+            manual_reserve = current_reserve
+        if manual_reserve > 1:
+            manual_reserve = manual_reserve / 100.0
+
+        new_data[CONF_OPTIMIZATION_AUTO_APPLY_RESERVE] = bool(enabled)
+        new_options[CONF_OPTIMIZATION_AUTO_APPLY_RESERVE] = bool(enabled)
+        new_data[CONF_OPTIMIZATION_MANUAL_RESERVE] = manual_reserve
+        new_options[CONF_OPTIMIZATION_MANUAL_RESERVE] = manual_reserve
+        if not enabled:
+            new_data[CONF_OPTIMIZATION_BACKUP_RESERVE] = manual_reserve
+            new_options[CONF_OPTIMIZATION_BACKUP_RESERVE] = manual_reserve
+
+        self.hass.config_entries.async_update_entry(
+            self._entry,
+            data=new_data,
+            options=new_options,
+        )
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Enable forecast-driven optimizer reserve updates."""
+        self._attr_is_on = True
+        coordinator = self._coordinator()
+        if coordinator and hasattr(coordinator, "set_auto_apply_reserve_enabled"):
+            await coordinator.set_auto_apply_reserve_enabled(True)
+        else:
+            await self._persist_without_coordinator(True)
+        self.async_write_ha_state()
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Disable forecast-driven optimizer reserve updates and restore manual floor."""
+        self._attr_is_on = False
+        coordinator = self._coordinator()
+        if coordinator and hasattr(coordinator, "set_auto_apply_reserve_enabled"):
+            await coordinator.set_auto_apply_reserve_enabled(False)
+        else:
+            await self._persist_without_coordinator(False)
         self.async_write_ha_state()
 
 

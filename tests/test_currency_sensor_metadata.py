@@ -406,6 +406,35 @@ def test_optimizer_force_discharge_windows_include_discharge_and_export():
     assert attrs["next_power_w"] == 4200
 
 
+def test_optimizer_current_action_exposes_reserve_recommendation():
+    sensor = _sensor_module()
+    desc = next(
+        d
+        for d in sensor.OPTIMIZER_ACTION_SENSORS
+        if d.key == "optimization_status"
+    )
+    recommendation = {
+        "suggested_optimizer_reserve_percent": 59,
+        "minimum_forecast_soc_percent": 59.1,
+        "next_charge_reason": "forecast_solar_surplus",
+    }
+    payload = {
+        "current_action": "self_consumption",
+        "current_power_w": 1000,
+        "actual_battery_power_w": 950,
+        "status": "active",
+        "current_action_end_time": "2026-05-04T00:05:00+00:00",
+        "lp_stats": {"solver_used": "highs"},
+        "reserve_recommendation": recommendation,
+    }
+    entity = sensor.OptimizerActionSensor(SimpleNamespace(data=payload), desc, _entry("amber"))
+
+    assert entity.native_value == "self_consumption"
+    attrs = entity.extra_state_attributes
+    assert attrs["reserve_recommendation"] == recommendation
+    assert attrs["lp_stats"]["solver_used"] == "highs"
+
+
 def test_eur_price_forecast_uses_major_rate_and_ct_minor_attributes():
     sensor = _sensor_module()
     desc = next(d for d in sensor.LP_FORECAST_SENSORS if d.key == "lp_import_price_forecast")

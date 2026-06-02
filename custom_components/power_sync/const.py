@@ -1163,6 +1163,7 @@ SWITCH_TYPE_PROFIT_MAX_MODE = "profit_max_mode"
 SWITCH_TYPE_OPTIMIZATION_SPREAD_EXPORT = "optimization_spread_export"
 SWITCH_TYPE_OPTIMIZATION_SPREAD_IMPORT = "optimization_spread_import"
 SWITCH_TYPE_OPTIMIZATION_ENABLED = "optimization_enabled"
+SWITCH_TYPE_OPTIMIZATION_AUTO_APPLY_RESERVE = "optimization_auto_apply_reserve"
 SWITCH_TYPE_AUTO_UPDATE = "auto_update"
 
 # Monitoring mode — blocks all battery/inverter control commands
@@ -1683,6 +1684,8 @@ OPTIMIZATION_PROVIDERS = {
 CONF_OPTIMIZATION_ENABLED = "optimization_enabled"
 CONF_OPTIMIZATION_COST_FUNCTION = "optimization_cost_function"
 CONF_OPTIMIZATION_BACKUP_RESERVE = "optimization_backup_reserve"
+CONF_OPTIMIZATION_AUTO_APPLY_RESERVE = "optimization_auto_apply_reserve"
+CONF_OPTIMIZATION_MANUAL_RESERVE = "optimization_manual_reserve"
 CONF_HARDWARE_BACKUP_RESERVE = "hardware_backup_reserve"
 CONF_OPTIMIZATION_INTERVAL = "optimization_interval"
 CONF_OPTIMIZATION_HORIZON = "optimization_horizon"
