@@ -140,6 +140,66 @@ def test_grid_import_limit_still_allows_solar_assisted_full_charge(
     )
 
 
+def test_self_consumption_schedule_soc_respects_optimizer_floor(battery_optimizer_module):
+    optimizer = battery_optimizer_module.BatteryOptimizer(
+        capacity_wh=13500,
+        max_charge_w=7000,
+        max_discharge_w=7000,
+        backup_reserve=0.10,
+        hardware_reserve=0.05,
+        interval_minutes=5,
+        horizon_hours=1,
+    )
+    n = 12
+
+    schedule = optimizer._build_schedule(
+        n=n,
+        grid_import=[5.0] * n,
+        grid_export=[0.0] * n,
+        battery_charge=[0.0] * n,
+        battery_discharge=[0.0] * n,
+        solar=[0.0] * n,
+        load=[5.0] * n,
+        soc_0=0.20,
+        import_prices=[0.50] * n,
+        export_prices=[0.0] * n,
+    )
+
+    assert min(action.soc for action in schedule.actions) >= 0.10
+    assert schedule.actions[-1].soc == pytest.approx(0.10, abs=0.001)
+
+
+def test_self_consumption_schedule_uses_hardware_floor_when_below_optimizer_reserve(
+    battery_optimizer_module,
+):
+    optimizer = battery_optimizer_module.BatteryOptimizer(
+        capacity_wh=13500,
+        max_charge_w=7000,
+        max_discharge_w=7000,
+        backup_reserve=0.10,
+        hardware_reserve=0.05,
+        interval_minutes=5,
+        horizon_hours=1,
+    )
+    n = 12
+
+    schedule = optimizer._build_schedule(
+        n=n,
+        grid_import=[5.0] * n,
+        grid_export=[0.0] * n,
+        battery_charge=[0.0] * n,
+        battery_discharge=[0.0] * n,
+        solar=[0.0] * n,
+        load=[5.0] * n,
+        soc_0=0.07,
+        import_prices=[0.50] * n,
+        export_prices=[0.0] * n,
+    )
+
+    assert min(action.soc for action in schedule.actions) >= 0.05
+    assert schedule.actions[-1].soc == pytest.approx(0.05, abs=0.001)
+
+
 def test_pre_window_target_is_capped_by_grid_import_limit(
     battery_optimizer_module,
 ):
@@ -676,12 +736,12 @@ def test_reserve_floor_self_consumption_forecasts_net_load_drain(
         battery_discharge=[0.0],
         solar=[0.4],
         load=[1.4],
-        soc_0=0.20,
+        soc_0=0.25,
         import_prices=[0.30],
         export_prices=[0.05],
     )
 
-    assert schedule.actions[0].soc < 0.20
+    assert schedule.actions[0].soc < 0.25
     assert schedule.actions[0].battery_discharge_w == 1000.0
     assert schedule.actions[0].action == "self_consumption"
     api = schedule.to_api_response()
@@ -690,7 +750,7 @@ def test_reserve_floor_self_consumption_forecasts_net_load_drain(
     assert api["battery_export_w"] == [0.0]
 
 
-def test_schedule_soc_display_can_drop_below_optimizer_reserve(
+def test_schedule_soc_display_holds_at_optimizer_reserve(
     battery_optimizer_module,
 ):
     optimizer = battery_optimizer_module.BatteryOptimizer(
@@ -716,7 +776,7 @@ def test_schedule_soc_display_can_drop_below_optimizer_reserve(
     )
 
     assert schedule.actions[0].action == "self_consumption"
-    assert schedule.actions[0].soc < 0.20
+    assert schedule.actions[0].soc == pytest.approx(0.20)
     assert schedule.to_api_response()["soc"][0] == schedule.actions[0].soc
 
 

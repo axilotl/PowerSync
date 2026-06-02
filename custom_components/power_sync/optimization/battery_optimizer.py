@@ -1905,6 +1905,12 @@ class BatteryOptimizer:
         block_battery_charge = block_battery_charge or [False] * n
         actions = []
         soc = soc_0
+        optimizer_reserve = max(0.0, min(1.0, self.backup_reserve))
+        self_consumption_floor = (
+            max(0.0, min(soc_0, self.hardware_reserve))
+            if soc_0 < optimizer_reserve
+            else optimizer_reserve
+        )
 
         for t in range(n):
             ts = now + timedelta(minutes=t * self.interval_minutes)
@@ -1998,7 +2004,7 @@ class BatteryOptimizer:
             ):
                 net_home_kw = load[t] - solar[t]
                 if net_home_kw > threshold_kw:
-                    available_kw = soc * cap * eff / dt
+                    available_kw = max(0.0, soc - self_consumption_floor) * cap * eff / dt
                     natural_discharge_kw = min(
                         self.max_discharge_kw,
                         net_home_kw,
@@ -2021,7 +2027,7 @@ class BatteryOptimizer:
             effective_charge_kw = reported_charge_w / 1000
             effective_discharge_kw = reported_discharge_w / 1000
             soc += (effective_charge_kw * eff - effective_discharge_kw / eff) * dt / cap
-            soc = max(0.0, min(1.0, soc))
+            soc = max(self_consumption_floor, min(1.0, soc))
 
             actions.append(ScheduleAction(
                 timestamp=ts,
