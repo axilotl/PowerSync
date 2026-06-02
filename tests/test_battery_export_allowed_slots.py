@@ -668,6 +668,55 @@ def test_auto_apply_reserve_applies_clamped_optimizer_recommendation(opt_module)
     assert updates[-1]["options"]["optimization_backup_reserve"] == 0.20
 
 
+def test_profit_max_auto_apply_keeps_manual_optimizer_reserve_floor(opt_module):
+    coordinator = _coordinator(
+        opt_module,
+        "flow_power",
+        profit_max=True,
+        optimization_backup_reserve=0.05,
+        optimization_manual_reserve=0.15,
+        optimization_auto_apply_reserve=True,
+        hardware_backup_reserve=0.05,
+    )
+    coordinator.entry_id = "entry-1"
+    coordinator._auto_apply_reserve_enabled = True
+    coordinator._manual_backup_reserve = 0.15
+    coordinator._config.backup_reserve = 0.05
+    coordinator._startup_backup_reserve = 5
+    update_calls = []
+    coordinator._optimizer = SimpleNamespace(
+        update_config=lambda **kwargs: update_calls.append(kwargs),
+        max_grid_export_w=None,
+        terminal_weight=0,
+    )
+
+    updates = []
+
+    class _ConfigEntries:
+        def async_update_entry(self, entry, **kwargs):
+            updates.append(kwargs)
+            if "data" in kwargs:
+                entry.data = kwargs["data"]
+            if "options" in kwargs:
+                entry.options = kwargs["options"]
+
+    coordinator.hass = SimpleNamespace(
+        data={"power_sync": {"entry-1": {}}},
+        config_entries=_ConfigEntries(),
+    )
+    recommendation = {"suggested_optimizer_reserve_percent": 5}
+
+    changed = coordinator._apply_auto_reserve_recommendation(
+        SimpleNamespace(reserve_recommendation=recommendation)
+    )
+
+    assert changed is True
+    assert coordinator._config.backup_reserve == 0.15
+    assert updates[-1]["options"]["optimization_backup_reserve"] == 0.15
+    assert update_calls[-1]["backup_reserve"] == 0.15
+    assert recommendation["applied_optimizer_reserve_percent"] == 15
+
+
 def test_set_settings_ignores_interval_minutes_override(opt_module):
     coordinator = _coordinator(opt_module, "amber")
     coordinator.entry_id = "entry-1"
@@ -1203,6 +1252,52 @@ def test_active_optimizer_export_at_reserve_is_canceled_not_extended(opt_module)
     assert battery.force_discharge_calls == []
     assert battery.restore_normal_calls == 1
     assert coordinator._optimizer_force_state["active"] is False
+    assert coordinator._last_executed_action == "self_consumption"
+
+
+def test_profit_max_auto_apply_manual_floor_cancels_active_export(opt_module):
+    battery = _FakeBattery()
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.10)
+    coordinator.battery_system = "goodwe"
+    coordinator._config.backup_reserve = 0.05
+    coordinator._config.profit_max_enabled = True
+    coordinator._auto_apply_reserve_enabled = True
+    coordinator._manual_backup_reserve = 0.15
+    action = SimpleNamespace(
+        action="export",
+        power_w=5000,
+        timestamp=datetime(2026, 5, 3, 8, 30, tzinfo=timezone.utc),
+    )
+    coordinator._current_schedule = SimpleNamespace(actions=[action])
+    coordinator._set_optimizer_force_state("discharge", 15, 5000)
+
+    asyncio.run(coordinator._execute_optimizer_action(action))
+
+    assert battery.force_discharge_calls == []
+    assert battery.restore_normal_calls == 1
+    assert coordinator._optimizer_force_state["active"] is False
+    assert coordinator._last_executed_action == "self_consumption"
+
+
+def test_profit_max_auto_apply_manual_floor_blocks_projected_export(opt_module):
+    battery = _FakeBattery()
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.18)
+    coordinator.battery_system = "goodwe"
+    coordinator._config.backup_reserve = 0.05
+    coordinator._config.profit_max_enabled = True
+    coordinator._auto_apply_reserve_enabled = True
+    coordinator._manual_backup_reserve = 0.15
+    action = SimpleNamespace(
+        action="export",
+        power_w=5000,
+        soc=0.14,
+        timestamp=datetime(2026, 5, 3, 8, 30, tzinfo=timezone.utc),
+    )
+    coordinator._current_schedule = SimpleNamespace(actions=[action])
+
+    asyncio.run(coordinator._execute_optimizer_action(action))
+
+    assert battery.force_discharge_calls == []
     assert coordinator._last_executed_action == "self_consumption"
 
 

@@ -897,7 +897,38 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             else 0
         )
         target_percent = max(float(hardware_percent), min(100.0, suggested_percent))
+        if self._config.profit_max_enabled and self.auto_apply_reserve_enabled:
+            manual_reserve = self._reserve_ratio(
+                getattr(self, "_manual_backup_reserve", None)
+            )
+            if manual_reserve is not None:
+                target_percent = max(target_percent, manual_reserve * 100)
         return max(0.0, min(1.0, target_percent / 100.0))
+
+    def _force_discharge_reserve_floor(self) -> float:
+        """Return the software floor used before force discharge/export commands."""
+        floor = self._reserve_ratio(self._config.backup_reserve, 0.0) or 0.0
+        if self._config.profit_max_enabled and self.auto_apply_reserve_enabled:
+            manual_reserve = self._reserve_ratio(
+                getattr(self, "_manual_backup_reserve", None)
+            )
+            if manual_reserve is not None:
+                floor = max(floor, manual_reserve)
+        return max(0.0, min(1.0, floor))
+
+    def _force_discharge_reaches_reserve(
+        self,
+        action: Any,
+        soc_now: float | None,
+        reserve: float,
+    ) -> tuple[bool, float | None]:
+        """Return whether a forced discharge/export command would hit reserve."""
+        projected_soc = self._reserve_ratio(getattr(action, "soc", None))
+        if soc_now is not None and soc_now <= reserve + 0.0001:
+            return True, projected_soc
+        if projected_soc is not None and projected_soc <= reserve + 0.0001:
+            return True, projected_soc
+        return False, projected_soc
 
     def _apply_auto_reserve_recommendation(
         self,
@@ -3100,13 +3131,32 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     if force_type == "discharge":
                         try:
                             soc_now, _ = await self._get_battery_state()
-                            opt_reserve = self._config.backup_reserve
-                            if soc_now is not None and soc_now <= opt_reserve:
+                            opt_reserve = self._force_discharge_reserve_floor()
+                            reaches_reserve, projected_soc = (
+                                self._force_discharge_reaches_reserve(
+                                    action,
+                                    soc_now,
+                                    opt_reserve,
+                                )
+                            )
+                            if reaches_reserve:
+                                soc_text = (
+                                    f"{soc_now * 100:.1f}%"
+                                    if soc_now is not None
+                                    else "unknown"
+                                )
+                                projected_text = (
+                                    f", projected {projected_soc * 100:.1f}%"
+                                    if projected_soc is not None
+                                    else ""
+                                )
                                 _LOGGER.warning(
                                     "Optimizer: Canceling active force discharge — "
-                                    "SOC %.1f%% at/below optimizer reserve %.0f%%; "
+                                    "SOC %s%s at/below optimizer reserve %.0f%%; "
                                     "restoring self_consumption instead of extending",
-                                    soc_now * 100, opt_reserve * 100,
+                                    soc_text,
+                                    projected_text,
+                                    opt_reserve * 100,
                                 )
                                 if force_state.get("scope") == "optimizer":
                                     self._clear_optimizer_force_state()
@@ -3451,12 +3501,32 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if effective_action in ("discharge", "export"):
                 try:
                     soc_now, _ = await self._get_battery_state()
-                    opt_reserve = self._config.backup_reserve
-                    if soc_now is not None and soc_now <= opt_reserve:
+                    opt_reserve = self._force_discharge_reserve_floor()
+                    reaches_reserve, projected_soc = (
+                        self._force_discharge_reaches_reserve(
+                            action,
+                            soc_now,
+                            opt_reserve,
+                        )
+                    )
+                    if reaches_reserve:
+                        soc_text = (
+                            f"{soc_now * 100:.1f}%"
+                            if soc_now is not None
+                            else "unknown"
+                        )
+                        projected_text = (
+                            f", projected {projected_soc * 100:.1f}%"
+                            if projected_soc is not None
+                            else ""
+                        )
                         _LOGGER.warning(
-                            "Optimizer: Blocking %s — SOC %.1f%% at/below "
+                            "Optimizer: Blocking %s — SOC %s%s at/below "
                             "optimizer reserve %.0f%%; switching to self_consumption",
-                            effective_action, soc_now * 100, opt_reserve * 100,
+                            effective_action,
+                            soc_text,
+                            projected_text,
+                            opt_reserve * 100,
                         )
                         effective_action = "self_consumption"
                 except Exception:
