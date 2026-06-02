@@ -124,6 +124,7 @@ class OptimizationConfig:
     profit_max_target_soc: float = 1.0
     spread_export_enabled: bool = False
     spread_import_enabled: bool = False
+    disable_idle_enabled: bool = False
     auto_apply_reserve_enabled: bool = False
     manual_backup_reserve: float | None = None
 
@@ -1573,6 +1574,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if self._entry:
             from ..const import (
                 CONF_OPTIMIZATION_ALLOW_GRID_CHARGE,
+                CONF_OPTIMIZATION_DISABLE_IDLE,
                 CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED,
                 CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED,
                 CONF_PROFIT_MAX_ENABLED,
@@ -1602,6 +1604,14 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
             if self._config.spread_import_enabled:
                 _LOGGER.info("Spread Import Across Window: ENABLED")
+            self._config.disable_idle_enabled = bool(
+                self._entry.options.get(
+                    CONF_OPTIMIZATION_DISABLE_IDLE,
+                    self._entry.data.get(CONF_OPTIMIZATION_DISABLE_IDLE, False),
+                )
+            )
+            if self._should_disable_idle_schedule():
+                _LOGGER.info("Flow Power No Idle: ENABLED")
 
             profit_max = self._entry.options.get(
                 CONF_PROFIT_MAX_ENABLED,
@@ -2494,6 +2504,11 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 export_prices,
             )
             result.schedule = self._current_schedule
+            if self._should_disable_idle_schedule():
+                self._current_schedule = self._disable_idle_schedule(
+                    self._current_schedule
+                )
+                result.schedule = self._current_schedule
             self._last_update_time = dt_util.now()
 
             # Apply off-grid curtailment overlay if enabled — converts
@@ -2540,6 +2555,11 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     export_prices,
                 )
                 result.schedule = self._current_schedule
+                if self._should_disable_idle_schedule():
+                    self._current_schedule = self._disable_idle_schedule(
+                        self._current_schedule
+                    )
+                    result.schedule = self._current_schedule
                 if self._should_apply_offgrid_overlay():
                     self._current_schedule = self._apply_offgrid_overlay(
                         self._current_schedule, export_prices,
@@ -2749,6 +2769,50 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return int(max(supported))
 
         return int(max(1, requested))
+
+    def _should_disable_idle_schedule(self) -> bool:
+        """Return True when Flow Power users have disabled optimizer IDLE."""
+        return self._provider_key() == "flow_power" and bool(
+            self._config.disable_idle_enabled
+        )
+
+    def _disable_idle_schedule(
+        self,
+        schedule: OptimizationSchedule,
+    ) -> OptimizationSchedule:
+        """Replace optimizer IDLE slots with self-consumption for Flow Power."""
+        actions = getattr(schedule, "actions", None) or []
+        if not actions:
+            return schedule
+
+        changed = False
+        new_actions = []
+        for action in actions:
+            if getattr(action, "action", None) != "idle":
+                new_actions.append(action)
+                continue
+            changed = True
+            new_actions.append(
+                ScheduleAction(
+                    timestamp=action.timestamp,
+                    action="self_consumption",
+                    power_w=0.0,
+                    soc=getattr(action, "soc", None),
+                    battery_charge_w=0.0,
+                    battery_discharge_w=0.0,
+                )
+            )
+
+        if not changed:
+            return schedule
+
+        _LOGGER.info("Flow Power No Idle: converted optimizer IDLE slots to self-consumption")
+        return OptimizationSchedule(
+            actions=new_actions,
+            predicted_cost=schedule.predicted_cost,
+            predicted_savings=schedule.predicted_savings,
+            last_updated=schedule.last_updated,
+        )
 
     def _bridge_short_export_gaps(
         self,
@@ -3384,6 +3448,12 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 _LOGGER.info(
                     "Optimizer: Skipping %s — calibration suspected, using self_consumption",
                     effective_action,
+                )
+                effective_action = "self_consumption"
+
+            if effective_action == "idle" and self._should_disable_idle_schedule():
+                _LOGGER.info(
+                    "Flow Power No Idle: overriding optimizer IDLE to self_consumption"
                 )
                 effective_action = "self_consumption"
 

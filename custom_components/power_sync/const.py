@@ -1700,6 +1700,7 @@ CONF_OPTIMIZATION_MAX_GRID_IMPORT_W = "optimization_max_grid_import_w"
 CONF_OPTIMIZATION_ALLOW_GRID_CHARGE = "optimization_allow_grid_charge"
 CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED = "optimization_spread_export_enabled"
 CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED = "optimization_spread_import_enabled"
+CONF_OPTIMIZATION_DISABLE_IDLE = "optimization_disable_idle"
 CONF_OPTIMIZATION_WEATHER_INTEGRATION = "optimization_weather_integration"
 CONF_AWAY_ENABLED_AT = "away_enabled_at"    # ISO timestamp when away mode was turned on
 CONF_AWAY_DISABLED_AT = "away_disabled_at"  # ISO timestamp when away mode was turned off

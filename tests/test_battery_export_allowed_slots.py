@@ -124,6 +124,7 @@ def _install_power_sync_stubs() -> None:
     const_module.CONF_OPTIMIZATION_ALLOW_GRID_CHARGE = "allow_grid_charge"
     const_module.CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED = "optimization_spread_export_enabled"
     const_module.CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED = "optimization_spread_import_enabled"
+    const_module.CONF_OPTIMIZATION_DISABLE_IDLE = "optimization_disable_idle"
     const_module.CONF_OPTIMIZATION_MAX_CHARGE_W = "max_charge_w"
     const_module.CONF_OPTIMIZATION_MAX_DISCHARGE_W = "max_discharge_w"
     const_module.CONF_OPTIMIZATION_MAX_GRID_IMPORT_W = "max_grid_import_w"
@@ -1875,6 +1876,70 @@ def test_multi_slot_self_consumption_gap_between_exports_is_not_bridged(opt_modu
         "self_consumption",
         "export",
     ]
+
+
+def test_flow_power_no_idle_converts_schedule_idle_to_self_consumption(opt_module):
+    coordinator = _coordinator(opt_module, "flow_power")
+    coordinator._config.disable_idle_enabled = True
+    start = datetime(2026, 5, 3, 18, 30, tzinfo=timezone.utc)
+    charge_action = opt_module.ScheduleAction(
+        timestamp=start + timedelta(minutes=5),
+        action="charge",
+        power_w=5000,
+        soc=0.66,
+        battery_charge_w=5000,
+        battery_discharge_w=0,
+    )
+    schedule = opt_module.OptimizationSchedule(
+        actions=[
+            opt_module.ScheduleAction(
+                timestamp=start,
+                action="idle",
+                power_w=0,
+                soc=0.65,
+                battery_charge_w=0,
+                battery_discharge_w=0,
+            ),
+            charge_action,
+        ],
+        predicted_cost=1.23,
+        predicted_savings=0.45,
+        last_updated=start,
+    )
+
+    converted = coordinator._disable_idle_schedule(schedule)
+
+    assert coordinator._should_disable_idle_schedule() is True
+    assert converted.actions[0].action == "self_consumption"
+    assert converted.actions[0].soc == 0.65
+    assert converted.actions[0].power_w == 0
+    assert converted.actions[1] is charge_action
+    assert converted.predicted_cost == schedule.predicted_cost
+
+
+def test_no_idle_schedule_guard_is_flow_power_only(opt_module):
+    coordinator = _coordinator(opt_module, "amber")
+    coordinator._config.disable_idle_enabled = True
+
+    assert coordinator._should_disable_idle_schedule() is False
+
+
+def test_flow_power_no_idle_executor_overrides_idle(opt_module):
+    battery = _FakeBattery(backup_reserve=20)
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.80)
+    coordinator._entry.options["electricity_provider"] = "flow_power"
+    coordinator._config.disable_idle_enabled = True
+    coordinator._last_executed_action = "export"
+
+    asyncio.run(
+        coordinator._execute_optimizer_action(
+            SimpleNamespace(action="idle", power_w=0)
+        )
+    )
+
+    assert battery.self_consumption_calls == 1
+    assert battery.backup_reserve_calls == [20]
+    assert coordinator._last_executed_action == "self_consumption"
 
 
 def test_single_slot_export_gap_with_price_change_is_not_bridged(opt_module):

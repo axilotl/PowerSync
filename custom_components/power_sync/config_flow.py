@@ -393,6 +393,7 @@ from .const import (
     CONF_OPTIMIZATION_BATTERY_CAPACITY_WH,
     CONF_OPTIMIZATION_ALLOW_GRID_CHARGE,
     CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED,
+    CONF_OPTIMIZATION_DISABLE_IDLE,
     CONF_OPTIMIZATION_MAX_CHARGE_W,
     CONF_OPTIMIZATION_MAX_DISCHARGE_W,
     CONF_OPTIMIZATION_MAX_GRID_IMPORT_W,
@@ -2400,6 +2401,7 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Configure Smart Optimization options."""
         battery_system = self._selected_battery_system or BATTERY_SYSTEM_TESLA
         is_tesla = battery_system == BATTERY_SYSTEM_TESLA
+        is_flow_power = self._selected_electricity_provider == "flow_power"
         default_capacity_wh, default_charge_w, default_discharge_w = (
             _default_optimizer_specs_for(battery_system)
         )
@@ -2435,6 +2437,11 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 )
                 auto_apply_reserve_enabled = bool(
                     user_input.get(CONF_OPTIMIZATION_AUTO_APPLY_RESERVE, False)
+                )
+                disable_idle = (
+                    bool(user_input.get(CONF_OPTIMIZATION_DISABLE_IDLE, False))
+                    if is_flow_power
+                    else False
                 )
                 backup_reserve = (
                     user_input.get(
@@ -2481,6 +2488,7 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     ),
                     CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED: spread_export_enabled,
                     CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED: spread_import_enabled,
+                    CONF_OPTIMIZATION_DISABLE_IDLE: disable_idle,
                     CONF_PROFIT_MAX_ENABLED: bool(
                         user_input.get(CONF_PROFIT_MAX_ENABLED, False)
                     ),
@@ -2614,6 +2622,13 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     default=False,
                 ): BooleanSelector(),
             })
+        if is_flow_power:
+            schema_fields[
+                vol.Required(
+                    CONF_OPTIMIZATION_DISABLE_IDLE,
+                    default=False,
+                )
+            ] = BooleanSelector()
         schema_fields.update({
             vol.Required(
                 CONF_PROFIT_MAX_ENABLED,
@@ -6830,6 +6845,11 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
         )
         is_tesla = battery_system == BATTERY_SYSTEM_TESLA
         is_custom = battery_system == BATTERY_SYSTEM_CUSTOM
+        current_provider = self._get_option(
+            CONF_ELECTRICITY_PROVIDER,
+            self.config_entry.data.get(CONF_ELECTRICITY_PROVIDER, "amber"),
+        )
+        is_flow_power = current_provider == "flow_power"
         if user_input is not None:
             optimization_provider = user_input.get(
                 CONF_OPTIMIZATION_PROVIDER, OPT_PROVIDER_NATIVE
@@ -6869,6 +6889,9 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 monitoring_mode = True
             new_data[CONF_MONITORING_MODE] = monitoring_mode
             new_options[CONF_MONITORING_MODE] = monitoring_mode
+            if optimization_provider != OPT_PROVIDER_POWERSYNC:
+                new_data[CONF_OPTIMIZATION_DISABLE_IDLE] = False
+                new_options[CONF_OPTIMIZATION_DISABLE_IDLE] = False
             if battery_system == BATTERY_SYSTEM_NEOVOLT:
                 surplus_balancer_mode = user_input.get(
                     CONF_NEOVOLT_SURPLUS_BALANCER_MODE,
@@ -6956,6 +6979,11 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     user_input.get(CONF_PROFIT_MAX_TARGET_SOC),
                     DEFAULT_PROFIT_MAX_TARGET_SOC,
                 )
+                disable_idle = (
+                    bool(user_input.get(CONF_OPTIMIZATION_DISABLE_IDLE, False))
+                    if is_flow_power
+                    else False
+                )
                 new_data[CONF_OPTIMIZATION_COST_FUNCTION] = COST_FUNCTION_COST
                 new_options[CONF_OPTIMIZATION_COST_FUNCTION] = COST_FUNCTION_COST
                 new_data[CONF_OPTIMIZATION_BACKUP_RESERVE] = backup_reserve
@@ -6996,6 +7024,8 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 new_options[CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED] = spread_export_enabled
                 new_data[CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED] = spread_import_enabled
                 new_options[CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED] = spread_import_enabled
+                new_data[CONF_OPTIMIZATION_DISABLE_IDLE] = disable_idle
+                new_options[CONF_OPTIMIZATION_DISABLE_IDLE] = disable_idle
                 new_data[CONF_OPTIMIZATION_EV_INTEGRATION] = ev_integration_enabled
                 new_options[CONF_OPTIMIZATION_EV_INTEGRATION] = ev_integration_enabled
                 new_data[CONF_PROFIT_MAX_ENABLED] = profit_max_enabled
@@ -7129,6 +7159,10 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
         current_spread_import_enabled = self._get_option(
             CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED,
             self.config_entry.data.get(CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED, False),
+        )
+        current_disable_idle = self._get_option(
+            CONF_OPTIMIZATION_DISABLE_IDLE,
+            self.config_entry.data.get(CONF_OPTIMIZATION_DISABLE_IDLE, False),
         )
         current_ev_integration_enabled = self._get_option(
             CONF_OPTIMIZATION_EV_INTEGRATION,
@@ -7265,6 +7299,13 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     default=bool(current_spread_import_enabled),
                 ): BooleanSelector(),
             })
+        if is_flow_power:
+            schema_fields[
+                vol.Required(
+                    CONF_OPTIMIZATION_DISABLE_IDLE,
+                    default=bool(current_disable_idle),
+                )
+            ] = BooleanSelector()
         schema_fields.update(
             {
                 vol.Required(

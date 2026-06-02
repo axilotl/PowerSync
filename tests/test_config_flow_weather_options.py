@@ -477,6 +477,9 @@ def test_optimization_options_exposes_enabled_toggle():
     assert "new_options[CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED] = spread_export_enabled" in method_source
     assert "CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED" in method_source
     assert "new_options[CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED] = spread_import_enabled" in method_source
+    assert "CONF_OPTIMIZATION_DISABLE_IDLE" in method_source
+    assert "new_options[CONF_OPTIMIZATION_DISABLE_IDLE] = disable_idle" in method_source
+    assert "if is_flow_power:" in method_source
     assert "CONF_PROFIT_MAX_ENABLED" in method_source
     assert "new_options[CONF_PROFIT_MAX_ENABLED] = profit_max_enabled" in method_source
     assert (
@@ -494,6 +497,10 @@ def test_optimization_options_exposes_enabled_toggle():
         assert "hardware backup reserve stays user controlled" in step[
             "data_description"
         ]["optimization_auto_apply_reserve"]
+        assert step["data"]["optimization_disable_idle"] == "Disable idle mode"
+        assert "Flow Power plans" in step["data_description"][
+            "optimization_disable_idle"
+        ]
 
 
 def test_battery_init_options_do_not_mix_optimization_settings():
@@ -624,6 +631,9 @@ def test_initial_smart_optimization_configuration_exposes_enabled_toggle():
     assert "user_input.get(CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED" in method_source
     assert "CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED" in method_source
     assert "user_input.get(CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED" in method_source
+    assert "CONF_OPTIMIZATION_DISABLE_IDLE" in method_source
+    assert "user_input.get(CONF_OPTIMIZATION_DISABLE_IDLE, False)" in method_source
+    assert "if is_flow_power:" in method_source
     assert "CONF_PROFIT_MAX_ENABLED" in method_source
     assert "user_input.get(CONF_PROFIT_MAX_ENABLED, False)" in method_source
     assert (
@@ -640,6 +650,28 @@ def test_initial_smart_optimization_configuration_exposes_enabled_toggle():
         assert "hardware backup reserve stays user controlled" in step[
             "data_description"
         ]["optimization_auto_apply_reserve"]
+        assert step["data"]["optimization_disable_idle"] == "Disable idle mode"
+        assert "Flow Power plans" in step["data_description"][
+            "optimization_disable_idle"
+        ]
+
+
+def test_flow_power_no_idle_option_is_provider_scoped():
+    source = CONFIG_FLOW_PATH.read_text()
+    initial_method = _config_flow_method("async_step_ml_options")
+    initial_source = ast.get_source_segment(source, initial_method)
+    options_method = _options_flow_method("async_step_optimization")
+    options_source = ast.get_source_segment(source, options_method)
+
+    assert initial_source is not None
+    assert options_source is not None
+    assert 'self._selected_electricity_provider == "flow_power"' in initial_source
+    assert 'current_provider == "flow_power"' in options_source
+
+    for method_source in (initial_source, options_source):
+        assert "CONF_OPTIMIZATION_DISABLE_IDLE" in method_source
+        assert "if is_flow_power:" in method_source
+        assert "else False" in method_source
 
 
 def test_powerwall_smart_optimization_hides_spread_options():
