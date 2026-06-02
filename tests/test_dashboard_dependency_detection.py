@@ -175,6 +175,21 @@ def test_battery_health_uses_native_dashboard_card():
     assert "healthGauge('Overall'" not in source
 
 
+def test_optimizer_plan_charts_have_tooltips():
+    """Optimizer SOC/power and price charts should expose hover tooltips."""
+    source = STRATEGY_PATH.read_text()
+
+    assert "class PowerSyncOptimizationPlan extends HTMLElement" in source
+    assert '<div class="chart-wrap soc-power-chart">' in source
+    assert '<div class="chart-wrap price-chart">' in source
+    assert "_attachOptimizerChartTooltip('.soc-power-chart', this._powerTooltipConfig(model, compact))" in source
+    assert "_attachOptimizerChartTooltip('.price-chart', this._priceTooltipConfig(model, compact, priceMeta))" in source
+    assert "_powerTooltipConfig(model, compact)" in source
+    assert "_priceTooltipConfig(model, compact, priceMeta)" in source
+    assert ".chart-tooltip-line" in source
+    assert ".chart-tooltip-time" in source
+
+
 def test_dashboard_entity_resolver_accepts_ha_renamed_powersync_sensors():
     """HA may compose PowerSync sensor IDs from the integration/device name."""
     source = STRATEGY_PATH.read_text()

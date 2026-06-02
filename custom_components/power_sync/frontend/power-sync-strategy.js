@@ -1635,11 +1635,66 @@ class PowerSyncOptimizationPlan extends HTMLElement {
           border: 1px solid var(--divider-color);
           background: rgba(127, 127, 127, 0.045);
           overflow: hidden;
+          touch-action: none;
         }
         svg {
           display: block;
           width: 100%;
           height: auto;
+        }
+        .chart-tooltip-line {
+          position: absolute;
+          top: 0;
+          bottom: 0;
+          width: 1px;
+          background: var(--primary-color, #03a9f4);
+          opacity: 0;
+          pointer-events: none;
+          transform: translateX(-0.5px);
+        }
+        .chart-tooltip {
+          position: absolute;
+          min-width: 154px;
+          max-width: min(260px, calc(100% - 16px));
+          padding: 8px 10px;
+          border-radius: 8px;
+          background: color-mix(in srgb, var(--ha-card-background, var(--card-background-color, white)) 88%, black);
+          color: var(--primary-text-color);
+          box-shadow: 0 8px 22px rgba(0, 0, 0, 0.28);
+          border: 1px solid var(--divider-color);
+          font-size: 12px;
+          line-height: 1.35;
+          opacity: 0;
+          pointer-events: none;
+          transform: translate(-50%, -100%);
+          z-index: 2;
+        }
+        .chart-tooltip-time {
+          font-weight: 800;
+          margin-bottom: 5px;
+        }
+        .chart-tooltip-row {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+          white-space: nowrap;
+        }
+        .chart-tooltip-name {
+          display: inline-flex;
+          align-items: center;
+          min-width: 0;
+          gap: 6px;
+          color: var(--secondary-text-color);
+        }
+        .chart-tooltip-dot {
+          width: 7px;
+          height: 7px;
+          border-radius: 999px;
+          flex: 0 0 auto;
+        }
+        .chart-tooltip-value {
+          font-weight: 800;
         }
         .legend {
           display: flex;
@@ -1858,11 +1913,11 @@ class PowerSyncOptimizationPlan extends HTMLElement {
         ${this._renderBatteryWindows(batteryWindows, priceMeta)}
         ${hasSchedule ? `
           <div class="section-title">SOC and Battery Power</div>
-          <div class="chart-wrap">${this._renderPowerChart(model, compact)}</div>
+          <div class="chart-wrap soc-power-chart">${this._renderPowerChart(model, compact)}<div class="chart-tooltip-line"></div><div class="chart-tooltip"></div></div>
           ${this._renderLegend(model.powerSeries)}
           ${model.priceSeries.length ? `
             <div class="section-title">Electricity Price (${this._escHtml(priceMeta.minorPriceUnit)})</div>
-            <div class="chart-wrap">${this._renderPriceChart(model, compact, priceMeta)}</div>
+            <div class="chart-wrap price-chart">${this._renderPriceChart(model, compact, priceMeta)}<div class="chart-tooltip-line"></div><div class="chart-tooltip"></div></div>
             ${this._renderLegend(model.priceSeries, false)}
           ` : ''}
         ` : ''}
@@ -1872,6 +1927,12 @@ class PowerSyncOptimizationPlan extends HTMLElement {
     `;
 
     this.shadowRoot.querySelector('.refresh')?.addEventListener('click', () => this._maybeLoadData(true));
+    if (hasSchedule) {
+      this._attachOptimizerChartTooltip('.soc-power-chart', this._powerTooltipConfig(model, compact));
+      if (model.priceSeries.length) {
+        this._attachOptimizerChartTooltip('.price-chart', this._priceTooltipConfig(model, compact, priceMeta));
+      }
+    }
   }
 
   _buildModel() {
@@ -2001,14 +2062,7 @@ class PowerSyncOptimizationPlan extends HTMLElement {
   }
 
   _renderPowerChart(model, compact) {
-    const W = compact ? 520 : 720;
-    const H = compact ? 240 : 270;
-    const pad = { top: 18, right: 14, bottom: 34, left: compact ? 44 : 52 };
-    const chartW = W - pad.left - pad.right;
-    const chartH = H - pad.top - pad.bottom;
-    const powerMax = Math.max(4, this._niceCeil(Math.max(
-      ...model.points.flatMap(p => model.powerSeries.map(s => p[s.key] || 0)),
-    )));
+    const { W, H, pad, chartW, chartH, powerMax } = this._powerChartMetrics(model, compact);
     const x = (i) => pad.left + (i / Math.max(1, model.points.length - 1)) * chartW;
     const yPower = (value) => pad.top + chartH - (Math.max(0, value) / powerMax) * chartH;
     const ySoc = (value) => pad.top + chartH - (Math.max(0, Math.min(100, value)) / 100) * chartH;
@@ -2043,14 +2097,7 @@ class PowerSyncOptimizationPlan extends HTMLElement {
   }
 
   _renderPriceChart(model, compact, priceMeta) {
-    const W = compact ? 520 : 720;
-    const H = compact ? 165 : 185;
-    const pad = { top: 16, right: 14, bottom: 32, left: compact ? 48 : 58 };
-    const chartW = W - pad.left - pad.right;
-    const chartH = H - pad.top - pad.bottom;
-    const maxPrice = Math.max(10, this._niceCeil(Math.max(
-      ...model.points.flatMap(p => model.priceSeries.map(s => Number.isFinite(p[s.key]) ? p[s.key] : 0)),
-    )));
+    const { W, H, pad, chartW, chartH, maxPrice } = this._priceChartMetrics(model, compact);
     const x = (i) => pad.left + (i / Math.max(1, model.points.length - 1)) * chartW;
     const y = (value) => pad.top + chartH - (Math.max(0, value) / maxPrice) * chartH;
     let svg = this._chartGrid(W, H, pad, model.points, compact, `${maxPrice} ${priceMeta.minorUnit}`);
@@ -2065,6 +2112,130 @@ class PowerSyncOptimizationPlan extends HTMLElement {
     }
 
     return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="24-hour import and export price chart">${svg}</svg>`;
+  }
+
+  _powerChartMetrics(model, compact) {
+    const W = compact ? 520 : 720;
+    const H = compact ? 240 : 270;
+    const pad = { top: 18, right: 14, bottom: 34, left: compact ? 44 : 52 };
+    const chartW = W - pad.left - pad.right;
+    const chartH = H - pad.top - pad.bottom;
+    const powerMax = Math.max(4, this._niceCeil(Math.max(
+      ...model.points.flatMap(p => model.powerSeries.map(s => p[s.key] || 0)),
+    )));
+    return { W, H, pad, chartW, chartH, powerMax };
+  }
+
+  _priceChartMetrics(model, compact) {
+    const W = compact ? 520 : 720;
+    const H = compact ? 165 : 185;
+    const pad = { top: 16, right: 14, bottom: 32, left: compact ? 48 : 58 };
+    const chartW = W - pad.left - pad.right;
+    const chartH = H - pad.top - pad.bottom;
+    const maxPrice = Math.max(10, this._niceCeil(Math.max(
+      ...model.points.flatMap(p => model.priceSeries.map(s => Number.isFinite(p[s.key]) ? p[s.key] : 0)),
+    )));
+    return { W, H, pad, chartW, chartH, maxPrice };
+  }
+
+  _powerTooltipConfig(model, compact) {
+    const metrics = this._powerChartMetrics(model, compact);
+    return {
+      ...metrics,
+      points: model.points,
+      rows: (point) => {
+        const rows = [
+          { label: 'SOC', color: '#42A5F5', value: `${Math.round(point.soc)}%` },
+          ...model.powerSeries.map(series => ({
+            label: series.label,
+            color: series.color,
+            value: `${Number(point[series.key] || 0).toFixed(2)} kW`,
+          })),
+        ];
+        if (Number.isFinite(model.reservePercent)) {
+          rows.push({
+            label: model.reserveCalculated ? 'Calculated Reserve' : 'Reserve',
+            color: '#F44336',
+            value: `${Math.round(model.reservePercent)}%`,
+          });
+        }
+        if (model.idleHoldActive && Number.isFinite(model.idleHoldReservePercent)) {
+          rows.push({ label: 'IDLE Hold', color: '#FF9800', value: `${Math.round(model.idleHoldReservePercent)}%` });
+        }
+        return rows;
+      },
+    };
+  }
+
+  _priceTooltipConfig(model, compact, priceMeta) {
+    const metrics = this._priceChartMetrics(model, compact);
+    return {
+      ...metrics,
+      points: model.points,
+      rows: (point) => model.priceSeries.map(series => ({
+        label: series.label,
+        color: series.color,
+        value: this._formatMinorPrice(point[series.key], priceMeta.minorUnit),
+      })),
+    };
+  }
+
+  _attachOptimizerChartTooltip(selector, chart) {
+    const wrap = this.shadowRoot.querySelector(selector);
+    const svg = wrap?.querySelector('svg');
+    const line = wrap?.querySelector('.chart-tooltip-line');
+    const tooltip = wrap?.querySelector('.chart-tooltip');
+    if (!wrap || !svg || !line || !tooltip || !chart?.points?.length) return;
+
+    const hide = () => {
+      line.style.opacity = '0';
+      tooltip.style.opacity = '0';
+    };
+
+    const move = (event) => {
+      const rect = svg.getBoundingClientRect();
+      if (!rect.width) return;
+      const localX = ((event.clientX - rect.left) / rect.width) * chart.W;
+      if (localX < chart.pad.left || localX > chart.W - chart.pad.right) {
+        hide();
+        return;
+      }
+      const ratio = (localX - chart.pad.left) / Math.max(1, chart.chartW);
+      const index = Math.max(0, Math.min(chart.points.length - 1, Math.round(ratio * (chart.points.length - 1))));
+      const point = chart.points[index];
+      if (!point) {
+        hide();
+        return;
+      }
+
+      const anchorX = chart.pad.left + (index / Math.max(1, chart.points.length - 1)) * chart.chartW;
+      const cssX = (anchorX / chart.W) * rect.width;
+      const rows = chart.rows(point)
+        .filter(row => row && row.value !== '')
+        .map(row => `
+          <div class="chart-tooltip-row">
+            <span class="chart-tooltip-name">
+              <span class="chart-tooltip-dot" style="background:${row.color}"></span>
+              <span>${this._escHtml(row.label)}</span>
+            </span>
+            <span class="chart-tooltip-value">${this._escHtml(row.value)}</span>
+          </div>
+        `).join('');
+
+      tooltip.innerHTML = `
+        <div class="chart-tooltip-time">${this._escHtml(this._formatTime(point.timestamp))}</div>
+        ${rows}
+      `;
+      line.style.left = `${cssX}px`;
+      line.style.opacity = '0.75';
+      tooltip.style.left = `${Math.min(Math.max(cssX, 84), rect.width - 84)}px`;
+      tooltip.style.top = `${Math.max(34, rect.height - chart.pad.bottom - 8)}px`;
+      tooltip.style.opacity = '1';
+    };
+
+    svg.addEventListener('pointermove', move);
+    svg.addEventListener('pointerleave', hide);
+    svg.addEventListener('pointercancel', hide);
   }
 
   _chartGrid(W, H, pad, points, compact, maxLabel) {
