@@ -53,3 +53,11 @@ def test_energy_flow_models_ev_discharge_as_site_supply():
     assert "const evToLoad = Math.min(remainingLoad, evSupplyRemaining)" in source
     assert "const evToGrid = Math.min(remainingGridExportAfterBattery, evSupplyRemaining)" in source
     assert "this._activatePath('line-wallbox-ev', 'flow-green', evSupplyTotal * ev1SupplyShare, 1, true)" in source
+
+
+def test_energy_flow_treats_power_sync_ev_attributes_as_presence():
+    source = ENERGY_FLOW_PATH.read_text()
+
+    assert "const attrs = entityState.attributes || {};" in source
+    assert "attrs.is_connected === true || attrs.is_charging === true" in source
+    assert "String(attrs.is_connected || '').toLowerCase() === 'true'" in source

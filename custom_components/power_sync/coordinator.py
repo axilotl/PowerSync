@@ -2944,14 +2944,13 @@ class DemandChargeCoordinator(DataUpdateCoordinator):
         # We only care about import for demand charges
         grid_import_kw = max(0, grid_power_kw)
 
-        # Update peak demand if current import exceeds it
-        if grid_import_kw > self._peak_demand_kw:
+        # Check if in peak period
+        in_peak_period = self._is_in_peak_period(now)
+
+        # Update peak demand only for samples inside the billable demand window.
+        if in_peak_period and grid_import_kw > self._peak_demand_kw:
             self._peak_demand_kw = grid_import_kw
             _LOGGER.info("New peak demand: %.2f kW", self._peak_demand_kw)
-
-        # Check if in peak period
-        now = dt_util.now()
-        in_peak_period = self._is_in_peak_period(now)
 
         # Calculate estimated demand charge cost (peak demand * rate)
         estimated_demand_cost = self._peak_demand_kw * self.rate

@@ -1200,6 +1200,11 @@ import {
       }
     }
 
+    const attrs = entityState.attributes || {};
+    if (attrs.is_connected === true || attrs.is_charging === true) return true;
+    if (String(attrs.is_connected || '').toLowerCase() === 'true') return true;
+    if (String(attrs.is_charging || '').toLowerCase() === 'true') return true;
+
     if (['on', 'home', 'present', 'true', 'occupied', 'detected'].includes(state)) return true;
     // EV charging states that indicate vehicle is present (plugged in)
     if (['charging', 'complete', 'connected', 'stopped', 'ready', 'waiting', 'paused', 'full'].includes(state)) return true;

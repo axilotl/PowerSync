@@ -4896,6 +4896,14 @@ function _teslaStyleFlow(e, hass, findSensor) {
     if (hass.states[evBattery]) {
       config.entities.ev_battery = evBattery;
     }
+    const evPowerAttrs = hass.states[evPower]?.attributes || {};
+    if (
+      !config.entities.ev_presence &&
+      (Object.prototype.hasOwnProperty.call(evPowerAttrs, 'is_connected') ||
+        Object.prototype.hasOwnProperty.call(evPowerAttrs, 'is_charging'))
+    ) {
+      config.entities.ev_presence = evPower;
+    }
     // Auto-detect EV presence sensor (shows car even when idle/not charging)
     // Searches: Tesla BLE charge flap, Teslemetry BT charging state,
     // Tesla Fleet charge cable/charging state, Wallbox/Easee/OCPP status

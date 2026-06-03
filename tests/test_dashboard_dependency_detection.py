@@ -103,6 +103,15 @@ def test_dashboard_setup_preserves_user_managed_lovelace_layout():
     assert "Migrating PowerSync dashboard to strategy mode" not in source
 
 
+def test_dashboard_uses_power_sync_ev_power_attributes_for_presence():
+    """Sigenergy idle-plugged chargers should show as present in the flow card."""
+    source = STRATEGY_PATH.read_text()
+
+    assert "const evPowerAttrs = hass.states[evPower]?.attributes || {};" in source
+    assert "Object.prototype.hasOwnProperty.call(evPowerAttrs, 'is_connected')" in source
+    assert "config.entities.ev_presence = evPower;" in source
+
+
 def test_dashboard_layout_storage_reconciles_card_changes():
     """Saved tile order should survive card additions/removals where possible."""
     source = STRATEGY_PATH.read_text()
