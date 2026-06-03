@@ -913,6 +913,47 @@ def test_foxess_dc_curtailment_reapplies_before_remote_timeout():
     assert 'entry_data.pop("_last_foxess_curtailment_reapply", None)' in handler_source
 
 
+def test_foxess_dc_curtailment_reapplies_when_live_export_continues():
+    source = INIT_PATH.read_text()
+    tree = ast.parse(source)
+    handler = _find_function(tree, "handle_foxess_curtailment")
+    handler_source = ast.get_source_segment(source, handler)
+
+    assert handler_source is not None
+    assert "_live_export_reapply = False" in handler_source
+    assert 'coord_data = getattr(fc, "data", None) or {}' in handler_source
+    assert 'grid_power_kw = float(coord_data.get("grid_power", 0) or 0)' in handler_source
+    assert 'current_state == "curtailed" and grid_export_w > 250' in handler_source
+    assert ") or _live_export_reapply" in handler_source
+
+
+def test_foxess_optimizer_self_consumption_preserves_active_curtailment():
+    source = INIT_PATH.read_text()
+    tree = ast.parse(source)
+    function = _find_function(tree, "handle_set_self_consumption")
+    function_source = ast.get_source_segment(source, function)
+
+    assert function_source is not None
+    assert 'source == "optimizer"' in function_source
+    assert 'entry_data.get("foxess_curtailment_state") == "curtailed"' in function_source
+    assert "leaving remote-control curtailment in place" in function_source
+    assert 'entry_data["foxess_curtailment_state"] = "normal"' in function_source
+    assert 'entry_data.pop("_last_foxess_curtailment_reapply", None)' in function_source
+
+
+def test_foxess_restore_normal_clears_curtailment_cache():
+    source = INIT_PATH.read_text()
+    tree = ast.parse(source)
+    function = _find_function(tree, "handle_restore_normal")
+    function_source = ast.get_source_segment(source, function)
+
+    assert function_source is not None
+    foxess_branch = function_source.split("# Check if this is a FoxESS system", 1)[1]
+    foxess_branch = foxess_branch.split("# Check if this is a GoodWe system", 1)[0]
+    assert 'entry_data["foxess_curtailment_state"] = "normal"' in foxess_branch
+    assert 'entry_data.pop("_last_foxess_curtailment_reapply", None)' in foxess_branch
+
+
 def test_goodwe_entity_mode_prefers_solar_first_charge_and_export_discharge_modes():
     source = COORDINATOR_PATH.read_text()
     tree = ast.parse(source)

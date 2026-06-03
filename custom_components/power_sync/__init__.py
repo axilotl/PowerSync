@@ -19967,10 +19967,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 _last_reapply = entry_data.get("_last_foxess_curtailment_reapply", 0)
                 _now = _time_mod.monotonic()
                 _elapsed_since_reapply = _now - _last_reapply
+                _live_export_reapply = False
+                try:
+                    coord_data = getattr(fc, "data", None) or {}
+                    grid_power_kw = float(coord_data.get("grid_power", 0) or 0)
+                    grid_export_w = max(0, int(abs(grid_power_kw) * 1000)) if grid_power_kw < -0.25 else 0
+                    if current_state == "curtailed" and grid_export_w > 250:
+                        _live_export_reapply = True
+                        _LOGGER.info(
+                            "FoxESS curtailment RE-APPLY: cached curtailed but grid export is %dW",
+                            grid_export_w,
+                        )
+                except (TypeError, ValueError):
+                    pass
                 _needs_reapply = (
                     current_state == "curtailed"
                     and _elapsed_since_reapply >= _foxess_reapply_interval
-                )
+                ) or _live_export_reapply
 
                 # Negative or near-zero export earnings → curtail
                 if current_state != "curtailed" or _needs_reapply:
@@ -24675,6 +24688,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 foxess_coord = entry_data.get("foxess_coordinator")
                 if foxess_coord:
                     await foxess_coord.restore_normal()
+                    entry_data["foxess_curtailment_state"] = "normal"
+                    entry_data.pop("_last_foxess_curtailment_reapply", None)
 
                 force_charge_state["active"] = False
                 force_discharge_state["active"] = False
@@ -25642,8 +25657,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     _LOGGER.error("Self-consumption: FoxESS coordinator not available")
                     return
 
+                if (
+                    source == "optimizer"
+                    and entry_data.get("foxess_curtailment_state") == "curtailed"
+                ):
+                    _LOGGER.info(
+                        "FoxESS self-consumption requested by optimizer while curtailment "
+                        "is active; leaving remote-control curtailment in place"
+                    )
+                    return
+
                 success = await foxess_coord.restore_normal()
                 if success:
+                    entry_data["foxess_curtailment_state"] = "normal"
+                    entry_data.pop("_last_foxess_curtailment_reapply", None)
                     _LOGGER.info("✅ FoxESS self-consumption mode set (Self Use)")
                 else:
                     _LOGGER.error("Failed to set FoxESS self-consumption mode")
