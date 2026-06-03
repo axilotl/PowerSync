@@ -5935,18 +5935,11 @@ class InverterStatusView(HomeAssistantView):
             # but the inverter is actually curtailed using soft export limit
             entry_data = self._hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
             inverter_last_state = entry_data.get("inverter_last_state")
-            sungrow_curtailment_state = entry_data.get("sungrow_curtailment_state")
-            if (
-                inverter_last_state == "curtailed"
-                or sungrow_curtailment_state == "curtailed"
-            ):
+            if inverter_last_state == "curtailed":
                 state_dict["is_curtailed"] = True
                 if state_dict.get("status") == "online":
                     state_dict["status"] = "curtailed"
-            elif (
-                inverter_last_state in ("normal", "running")
-                or sungrow_curtailment_state == "normal"
-            ):
+            elif inverter_last_state in ("normal", "running"):
                 state_dict["is_curtailed"] = False
 
             # Check if it's nighttime for sleep detection

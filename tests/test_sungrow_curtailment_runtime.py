@@ -86,19 +86,24 @@ def test_sungrow_curtailment_releases_limit_for_active_solar_surplus_ev():
     assert "curtail=should_curtail_for_price" in handler
 
 
-def test_ev_live_status_marks_native_sungrow_curtailment_as_curtailed():
+def test_ev_live_status_does_not_force_cached_sungrow_curtailment_state():
     source = _actions_function_source("_get_tesla_live_status")
 
-    assert 'entry_data.get("sungrow_curtailment_state") == "curtailed"' in source
+    assert "sungrow_curtailment_state" not in source
+    assert 'entry_data.get("inverter_last_state") == "curtailed"' in source
     assert 'live_status["is_curtailed"] = True' in source
 
 
-def test_inverter_status_api_marks_native_sungrow_curtailment_as_curtailed():
+def test_inverter_status_api_uses_ac_inverter_state_not_native_sungrow_state():
     source = INIT_PATH.read_text()
+    status_section = source[
+        source.index("class InverterStatusView"):
+        source.index("class SigenergyTariffView")
+    ]
 
-    assert 'sungrow_curtailment_state = entry_data.get("sungrow_curtailment_state")' in source
-    assert 'or sungrow_curtailment_state == "curtailed"' in source
-    assert 'or sungrow_curtailment_state == "normal"' in source
+    assert "sungrow_curtailment_state" not in status_section
+    assert 'inverter_last_state == "curtailed"' in status_section
+    assert 'inverter_last_state in ("normal", "running")' in status_section
 
 
 def test_ac_inverter_restore_keeps_heartbeat_but_skips_sungrow_verify_readback():
