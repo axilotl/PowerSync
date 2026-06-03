@@ -3118,9 +3118,22 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             data.get("work_mode_name")
             or data.get("mode")
             or data.get("work_mode")
+            or data.get("ems_mode_name")
         )
         mode = str(mode_value or "").strip().lower()
-        if not mode or "force charge" in mode:
+        charge_cmd = data.get("charge_cmd")
+        try:
+            charge_cmd_int = int(charge_cmd) if charge_cmd is not None else None
+        except (TypeError, ValueError):
+            charge_cmd_int = None
+
+        if self.battery_system == "sungrow":
+            sungrow_force_charge_cmd = 0xAA
+            if mode == "forced" and charge_cmd_int == sungrow_force_charge_cmd:
+                return False
+            if "force charge" in mode or mode == "force_charge":
+                return False
+        elif "force charge" in mode:
             return False
 
         try:
@@ -3136,8 +3149,9 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         _LOGGER.info(
             "Optimizer: force charge hardware appears inactive "
-            "(mode=%s, charging %.0fW below %.0fW target) — refreshing command",
+            "(mode=%s, charge_cmd=%s, charging %.0fW below %.0fW target) — refreshing command",
             mode_value,
+            charge_cmd,
             charge_power_w,
             target_w,
         )

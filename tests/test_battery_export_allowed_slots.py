@@ -1616,6 +1616,64 @@ def test_optimizer_owned_force_charge_reissues_when_foxess_mode_drops_to_self_us
     assert coordinator._optimizer_force_state["type"] == "charge"
 
 
+def test_optimizer_owned_force_charge_reissues_when_sungrow_ems_is_not_charging(opt_module):
+    now = datetime(2026, 5, 3, 8, 30, tzinfo=timezone.utc)
+    opt_module.dt_util.utcnow = lambda *args, **kwargs: now
+    battery = _FakeBattery()
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.64)
+    coordinator.battery_system = "sungrow"
+    coordinator.energy_coordinator = SimpleNamespace(
+        data={
+            "ems_mode_name": "self_consumption",
+            "charge_cmd": 0xCC,
+            "battery_power": 13.4,
+        }
+    )
+    actions = [
+        SimpleNamespace(
+            action="charge",
+            power_w=15000,
+            timestamp=now + idx * timedelta(minutes=5),
+        )
+        for idx in range(6)
+    ]
+    coordinator._current_schedule = SimpleNamespace(actions=actions)
+    coordinator._set_optimizer_force_state("charge", 120, 15000)
+    coordinator._optimizer_force_state["hardware_expires_at"] = now + timedelta(hours=1)
+
+    asyncio.run(coordinator._execute_optimizer_action(actions[0]))
+
+    assert battery.force_charge_calls == [(30, 15000, True)]
+    assert coordinator._optimizer_force_state["active"] is True
+    assert coordinator._optimizer_force_state["type"] == "charge"
+
+
+def test_optimizer_owned_force_charge_reissues_when_sungrow_mode_is_missing(opt_module):
+    battery = _FakeBattery()
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.64)
+    coordinator.battery_system = "sungrow"
+    coordinator.energy_coordinator = SimpleNamespace(
+        data={"battery_power": 13.4}
+    )
+
+    assert coordinator._force_charge_hardware_needs_refresh(15000) is True
+
+
+def test_optimizer_owned_force_charge_accepts_sungrow_forced_charge_cmd(opt_module):
+    battery = _FakeBattery()
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.64)
+    coordinator.battery_system = "sungrow"
+    coordinator.energy_coordinator = SimpleNamespace(
+        data={
+            "ems_mode_name": "forced",
+            "charge_cmd": 0xAA,
+            "battery_power": 0,
+        }
+    )
+
+    assert coordinator._force_charge_hardware_needs_refresh(15000) is False
+
+
 def test_optimizer_owned_force_charge_does_not_override_idle_with_lookahead_charge(opt_module):
     battery = _FakeBattery()
     coordinator = _execution_coordinator(opt_module, battery, soc=0.50)
