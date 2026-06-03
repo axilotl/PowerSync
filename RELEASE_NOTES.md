@@ -1,3 +1,5 @@
+<!-- release: v2.12.556 -->
+
 ## What's Changed
 
 **Fixed: optimiser reserve collapsing to the hardware floor with Profit Max**
