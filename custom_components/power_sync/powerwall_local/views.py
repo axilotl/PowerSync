@@ -152,8 +152,16 @@ def _schedule_local_coordinator_warmup(
     hass: HomeAssistant,
     entry: ConfigEntry,
 ) -> None:
-    """Start local LAN polling without blocking the pairing success path."""
-    hass.async_create_task(_warm_powerwall_local_coordinator(hass, entry))
+    """Start local LAN polling without blocking the pairing success path.
+
+    Uses a background task (not async_create_task) so HA's bootstrap never
+    waits on the first refresh: if the gateway is unreachable, a slow first
+    poll must not be able to stall startup and crash-loop the config entry.
+    """
+    hass.async_create_background_task(
+        _warm_powerwall_local_coordinator(hass, entry),
+        "powersync_powerwall_local_warmup",
+    )
 
 
 def _get_fleet_api_context(

@@ -82,6 +82,9 @@ def test_pairing_success_schedules_local_warmup_without_blocking():
     views_source = (ROOT / "views.py").read_text()
     button_source = (ROOT.parent / "button.py").read_text()
 
-    assert "hass.async_create_task(_warm_powerwall_local_coordinator" in views_source
+    # Background task (not async_create_task) so a slow first poll on an
+    # unreachable gateway can never stall HA bootstrap.
+    assert "hass.async_create_background_task(" in views_source
+    assert "_warm_powerwall_local_coordinator(hass, entry)" in views_source
     assert "_schedule_local_coordinator_warmup(self._hass, entry)" in views_source
     assert "_schedule_local_coordinator_warmup(hass, entry)" in button_source

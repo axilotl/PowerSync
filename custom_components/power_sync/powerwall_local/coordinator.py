@@ -8,6 +8,7 @@ it leaves ``snapshot`` at ``None`` so consumers know to fall back to cloud data.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import timedelta
 from typing import Any
@@ -33,6 +34,15 @@ from .normalization import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+# Hard ceiling on a single snapshot fetch. The transport's per-request
+# ClientTimeout is 8s, but that relies on event-loop timer callbacks — when the
+# loop is briefly blocked (weak hardware / startup load) those timers fire late
+# and a dead-gateway connect can run to the OS TCP timeout (~100s). That long
+# block during the first refresh exceeds HA's bootstrap window and crash-loops
+# setup, so wrap every fetch in an explicit ceiling well under the per-request
+# budget's worst case but far below the runaway.
+POWERWALL_LOCAL_SNAPSHOT_TIMEOUT = 15.0
 
 
 class PowerwallLocalCoordinator(DataUpdateCoordinator[PowerwallSnapshot | None]):
@@ -116,7 +126,22 @@ class PowerwallLocalCoordinator(DataUpdateCoordinator[PowerwallSnapshot | None])
             return None
 
         try:
-            snap = await self._client.get_snapshot()
+            snap = await asyncio.wait_for(
+                self._client.get_snapshot(),
+                timeout=POWERWALL_LOCAL_SNAPSHOT_TIMEOUT,
+            )
+        except (asyncio.TimeoutError, TimeoutError) as err:
+            self._consecutive_failures += 1
+            if self._consecutive_failures <= 3:
+                _LOGGER.debug(
+                    "Powerwall local snapshot timed out after %.0fs (attempt %s)",
+                    POWERWALL_LOCAL_SNAPSHOT_TIMEOUT,
+                    self._consecutive_failures,
+                )
+            raise UpdateFailed(
+                "Powerwall unreachable: snapshot timed out after "
+                f"{POWERWALL_LOCAL_SNAPSHOT_TIMEOUT:.0f}s"
+            ) from err
         except PowerwallSignatureError as err:
             # Gateway no longer recognises our RSA key — usually means the
             # user revoked it from the Tesla app, or the gateway was
