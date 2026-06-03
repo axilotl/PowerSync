@@ -5182,9 +5182,6 @@ class FoxESSCloudEnergyCoordinator(DataUpdateCoordinator):
         self._store = Store(hass, 1, f"{DOMAIN}.foxess_cloud.{entry_id}") if entry_id else None
         self._stored_scheduler_groups: list[dict] | None = None
         self._last_backup_reserve = 10
-        self._last_export_enabled: float | None = None
-        self._last_export_limit: float | None = None
-        self._last_active_power_limit: float | None = None
 
         super().__init__(
             hass,
@@ -5272,12 +5269,38 @@ class FoxESSCloudEnergyCoordinator(DataUpdateCoordinator):
             raw = await self._client.get_real_data()
             values = self._real_data_map(raw)
 
+            def _first_present(*keys: str) -> Any:
+                for key in keys:
+                    val = values.get(key)
+                    if val is not None:
+                        return val
+                return None
+
             solar_kw = self._to_float(values.get("pvPower") or values.get("generationPower")) / 1000.0
             load_kw = self._to_float(values.get("loadsPower")) / 1000.0
-            battery_kw = self._to_float(values.get("batPower")) / 1000.0
-            import_kw = self._to_float(values.get("gridConsumptionPower")) / 1000.0
-            export_kw = self._to_float(values.get("feedinPower")) / 1000.0
-            grid_kw = import_kw - export_kw
+
+            # Battery power: FoxESS exposes different variables per model. KH/K-series
+            # report invBatPower (or split batChargePower/batDischargePower) rather than
+            # batPower, so reading batPower alone yields 0 on those units. Prefer the
+            # signed inverter-battery reading, then fall back to charge/discharge
+            # magnitudes. Positive = discharging, matching the PowerSync convention.
+            inv_bat = _first_present("invBatPower", "batPower")
+            if inv_bat is not None:
+                battery_kw = self._to_float(inv_bat) / 1000.0
+            else:
+                charge_kw = self._to_float(_first_present("batChargePower", "chargePower")) / 1000.0
+                discharge_kw = self._to_float(_first_present("batDischargePower", "dischargePower")) / 1000.0
+                battery_kw = discharge_kw - charge_kw
+
+            # Grid power: prefer the meter reading; otherwise net import minus export.
+            meter = _first_present("meterPower")
+            if meter is not None:
+                grid_kw = self._to_float(meter) / 1000.0
+            else:
+                import_kw = self._to_float(values.get("gridConsumptionPower")) / 1000.0
+                export_kw = self._to_float(values.get("feedinPower")) / 1000.0
+                grid_kw = import_kw - export_kw
+
             soc = self._to_float(values.get("SoC") or values.get("soc"))
 
             buy, sell = _get_current_prices(self.hass, self._entry_id)
@@ -5345,7 +5368,7 @@ class FoxESSCloudEnergyCoordinator(DataUpdateCoordinator):
     async def restore_normal(self) -> bool:
         """Restore scheduler state and set SelfUse mode."""
         await self._restore_stored_scheduler()
-        await self._client.set_device_setting("WorkMode", "SelfUse")
+        await self._client.set_work_mode("SelfUse")
         return True
 
     async def set_backup_reserve(self, percent: int) -> bool:
@@ -5357,7 +5380,7 @@ class FoxESSCloudEnergyCoordinator(DataUpdateCoordinator):
 
     async def set_backup_mode(self) -> bool:
         """Set FoxESS Backup mode through cloud settings."""
-        await self._client.set_device_setting("WorkMode", "Backup")
+        await self._client.set_work_mode("Backup")
         return True
 
     async def restore_work_mode_from_idle(self) -> bool:
@@ -5368,7 +5391,7 @@ class FoxESSCloudEnergyCoordinator(DataUpdateCoordinator):
         """Set FoxESS work mode through cloud settings."""
         mode_map = {0: "SelfUse", 1: "FeedIn", 2: "Backup"}
         cloud_mode = mode_map.get(mode, mode)
-        await self._client.set_device_setting("WorkMode", cloud_mode)
+        await self._client.set_work_mode(cloud_mode)
         return True
 
     async def set_charge_rate_limit(self, amps: float) -> bool:
@@ -5382,25 +5405,18 @@ class FoxESSCloudEnergyCoordinator(DataUpdateCoordinator):
         return True
 
     async def curtail(self, home_load_w: int | None = None) -> bool:
-        """Curtail export through FoxESS Cloud export limit settings."""
+        """Curtail export through FoxESS Cloud export limit settings.
+
+        On FoxESS the ``ExportLimit`` key is the export ceiling in watts (not a
+        0/1 enable). ``ExportLimitPower``/``ActivePowerLimit`` are best-effort —
+        not every model exposes them — so writes that report the key unsupported
+        are tolerated rather than aborting the curtailment.
+        """
         await self._save_current_scheduler()
-        for attr, key, default in (
-            ("_last_export_enabled", "ExportLimit", 1),
-            ("_last_export_limit", "ExportLimitPower", 30000),
-            ("_last_active_power_limit", "ActivePowerLimit", 30000),
-        ):
-            if getattr(self, attr) is not None:
-                continue
-            try:
-                current = await self._client.get_device_setting(key)
-                value = current.get("value") if isinstance(current, dict) else None
-                setattr(self, attr, self._to_float(value, default))
-            except Exception:
-                setattr(self, attr, default)
         limit = max(0, float(home_load_w or 0))
-        await self._client.set_device_setting("ExportLimit", 1)
-        await self._client.set_device_setting("ExportLimitPower", limit)
-        await self._client.set_device_setting("ActivePowerLimit", limit)
+        await self._client.set_device_setting("ExportLimit", limit)
+        await self._client.set_device_setting_optional("ExportLimitPower", limit)
+        await self._client.set_device_setting_optional("ActivePowerLimit", limit)
         await self._client.set_scheduler_v3(
             [
                 {
@@ -5424,19 +5440,9 @@ class FoxESSCloudEnergyCoordinator(DataUpdateCoordinator):
     async def restore_curtailment(self) -> bool:
         """Restore export limit after cloud curtailment."""
         await self._restore_stored_scheduler()
-        restore_limit = self._last_export_limit if self._last_export_limit is not None else 30000
-        restore_active_limit = (
-            self._last_active_power_limit
-            if self._last_active_power_limit is not None
-            else 30000
-        )
-        await self._client.set_device_setting("ExportLimitPower", restore_limit)
-        await self._client.set_device_setting("ActivePowerLimit", restore_active_limit)
-        if self._last_export_enabled is not None:
-            await self._client.set_device_setting("ExportLimit", self._last_export_enabled)
-        self._last_export_enabled = None
-        self._last_export_limit = None
-        self._last_active_power_limit = None
+        await self._client.set_device_setting("ExportLimit", 30000)
+        await self._client.set_device_setting_optional("ExportLimitPower", 30000)
+        await self._client.set_device_setting_optional("ActivePowerLimit", 30000)
         return True
 
     async def async_shutdown(self) -> None:

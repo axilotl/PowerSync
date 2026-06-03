@@ -862,7 +862,26 @@ def test_foxess_cloud_force_modes_snapshot_and_restore_scheduler():
     assert "_save_current_scheduler()" in force_discharge_source
     assert "_client.force_discharge" in force_discharge_source
     assert "_restore_stored_scheduler()" in restore_source
-    assert '"WorkMode", "SelfUse"' in restore_source
+    assert 'set_work_mode("SelfUse")' in restore_source
+
+
+def test_foxess_cloud_realtime_maps_battery_power_across_model_variables():
+    """KH/K-series report invBatPower / batChargePower / batDischargePower rather
+    than batPower; the cloud coordinator must read all of them so battery and grid
+    power populate instead of staying at zero."""
+    source = COORDINATOR_PATH.read_text()
+    tree = ast.parse(source)
+    update = _find_class_method(tree, "FoxESSCloudEnergyCoordinator", "_async_update_data")
+    update_source = ast.get_source_segment(source, update)
+
+    assert update_source is not None
+    # Battery power falls back across the per-model variable names.
+    assert '"invBatPower"' in update_source
+    assert '"batChargePower"' in update_source
+    assert '"batDischargePower"' in update_source
+    assert "discharge_kw - charge_kw" in update_source
+    # Grid power prefers the meter reading before net import/export.
+    assert '"meterPower"' in update_source
 
 
 def test_foxess_cloud_curtailment_uses_export_active_power_and_scheduler_limits():
