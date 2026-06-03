@@ -124,7 +124,7 @@ class BatteryOptimizer:
         max_battery_export_w: float | None = None,
         efficiency: float = DEFAULT_EFFICIENCY,
         backup_reserve: float = 0.20,
-        hardware_reserve: float = 0.0,
+        hardware_reserve: float | None = None,
         interval_minutes: int = 5,
         horizon_hours: int = 48,
         terminal_weight: float = 1.0,
@@ -137,7 +137,8 @@ class BatteryOptimizer:
         self.max_battery_export_w = max_battery_export_w
         self.efficiency = efficiency
         self.backup_reserve = backup_reserve
-        self.hardware_reserve = hardware_reserve
+        self.hardware_reserve = max(0.0, min(1.0, float(hardware_reserve or 0.0)))
+        self.hardware_reserve_known = hardware_reserve is not None
         self.interval_minutes = interval_minutes
         self.horizon_hours = horizon_hours
         self.terminal_weight = terminal_weight
@@ -257,7 +258,17 @@ class BatteryOptimizer:
 
     def update_hardware_reserve(self, hardware_reserve: float) -> None:
         """Update hardware reserve (from manufacturer's app setting)."""
-        self.hardware_reserve = hardware_reserve
+        self.hardware_reserve = max(0.0, min(1.0, float(hardware_reserve or 0.0)))
+        self.hardware_reserve_known = True
+
+    def _natural_self_consumption_floor(self, soc_0: float) -> float:
+        """SOC floor for displayed natural home-load battery use."""
+        optimizer_reserve = max(0.0, min(1.0, self.backup_reserve))
+        if not getattr(self, "hardware_reserve_known", False):
+            return optimizer_reserve
+        current_soc = max(0.0, min(1.0, float(soc_0)))
+        hardware_reserve = max(0.0, min(1.0, self.hardware_reserve))
+        return min(current_soc, hardware_reserve)
 
     def optimize(
         self,
@@ -2002,10 +2013,11 @@ class BatteryOptimizer:
         actions = []
         soc = soc_0
         optimizer_reserve = max(0.0, min(1.0, self.backup_reserve))
-        self_consumption_floor = (
-            max(0.0, min(soc_0, self.hardware_reserve))
-            if soc_0 < optimizer_reserve
-            else optimizer_reserve
+        self_consumption_floor = self._natural_self_consumption_floor(soc_0)
+        export_floor = (
+            optimizer_reserve
+            if soc_0 >= optimizer_reserve
+            else self_consumption_floor
         )
 
         for t in range(n):
@@ -2072,10 +2084,10 @@ class BatteryOptimizer:
                 elif meaningful_hold:
                     action = "idle"
                 else:
-                    # At or below the optimizer reserve, stay in self_consumption.
-                    # The configured backup reserve is the floor; IDLE is a
-                    # separate hold strategy for preserving useful SOC above
-                    # that floor for a future export/avoidance window.
+                    # At or below the optimizer reserve, stay in
+                    # self_consumption. IDLE is a separate hold strategy for
+                    # preserving useful SOC above that floor for a future
+                    # export/avoidance window.
                     action = "self_consumption"
                 power_w = 0.0
             else:
@@ -2100,7 +2112,9 @@ class BatteryOptimizer:
             ):
                 net_home_kw = load[t] - solar[t]
                 if net_home_kw > threshold_kw:
-                    available_kw = max(0.0, soc - self_consumption_floor) * cap * eff / dt
+                    available_kw = (
+                        max(0.0, soc - self_consumption_floor) * cap * eff / dt
+                    )
                     natural_discharge_kw = min(
                         self.max_discharge_kw,
                         net_home_kw,
@@ -2123,7 +2137,12 @@ class BatteryOptimizer:
             effective_charge_kw = reported_charge_w / 1000
             effective_discharge_kw = reported_discharge_w / 1000
             soc += (effective_charge_kw * eff - effective_discharge_kw / eff) * dt / cap
-            soc = max(self_consumption_floor, min(1.0, soc))
+            soc_floor = (
+                export_floor
+                if action in ("discharge", "export")
+                else self_consumption_floor
+            )
+            soc = max(soc_floor, min(1.0, soc))
 
             actions.append(ScheduleAction(
                 timestamp=ts,

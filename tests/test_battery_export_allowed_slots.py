@@ -1979,6 +1979,95 @@ def test_flow_power_no_idle_converts_schedule_idle_to_self_consumption(opt_modul
     assert converted.predicted_cost == schedule.predicted_cost
 
 
+def test_flow_power_no_idle_schedule_simulates_home_load(opt_module):
+    coordinator = _coordinator(opt_module, "flow_power")
+    coordinator._config.disable_idle_enabled = True
+    coordinator._config.battery_capacity_wh = 13500
+    coordinator._config.max_discharge_w = 5000
+    coordinator._config.backup_reserve = 0.2
+
+    start = datetime(2026, 5, 3, 17, 30, tzinfo=timezone.utc)
+    schedule = opt_module.OptimizationSchedule(
+        actions=[
+            opt_module.ScheduleAction(
+                timestamp=start,
+                action="idle",
+                power_w=0,
+                soc=0.65,
+                battery_charge_w=0,
+                battery_discharge_w=0,
+            ),
+            opt_module.ScheduleAction(
+                timestamp=start + timedelta(minutes=5),
+                action="idle",
+                power_w=0,
+                soc=0.65,
+                battery_charge_w=0,
+                battery_discharge_w=0,
+            ),
+        ],
+        predicted_cost=1.23,
+        predicted_savings=0.45,
+        last_updated=start,
+    )
+
+    converted = coordinator._disable_idle_schedule(
+        schedule,
+        solar_forecast=[0.0, 0.0],
+        load_forecast=[2.0, 2.0],
+        initial_soc=0.65,
+    )
+
+    assert [action.action for action in converted.actions] == [
+        "self_consumption",
+        "self_consumption",
+    ]
+    assert [action.battery_discharge_w for action in converted.actions] == [
+        2000.0,
+        2000.0,
+    ]
+    assert [action.power_w for action in converted.actions] == [2000.0, 2000.0]
+    assert converted.actions[0].soc < 0.65
+    assert converted.actions[1].soc < converted.actions[0].soc
+
+
+def test_flow_power_no_idle_schedule_uses_hardware_floor_for_home_load(opt_module):
+    coordinator = _coordinator(opt_module, "flow_power")
+    coordinator._config.disable_idle_enabled = True
+    coordinator._config.battery_capacity_wh = 13500
+    coordinator._config.max_discharge_w = 5000
+    coordinator._config.backup_reserve = 0.20
+    coordinator._startup_backup_reserve = 5
+
+    start = datetime(2026, 5, 3, 17, 30, tzinfo=timezone.utc)
+    schedule = opt_module.OptimizationSchedule(
+        actions=[
+            opt_module.ScheduleAction(
+                timestamp=start,
+                action="idle",
+                power_w=0,
+                soc=0.205,
+                battery_charge_w=0,
+                battery_discharge_w=0,
+            ),
+        ],
+        predicted_cost=1.23,
+        predicted_savings=0.45,
+        last_updated=start,
+    )
+
+    converted = coordinator._disable_idle_schedule(
+        schedule,
+        solar_forecast=[0.0],
+        load_forecast=[2.0],
+        initial_soc=0.205,
+    )
+
+    assert converted.actions[0].action == "self_consumption"
+    assert converted.actions[0].battery_discharge_w == 2000.0
+    assert converted.actions[0].soc < 0.20
+
+
 def test_no_idle_schedule_guard_is_flow_power_only(opt_module):
     coordinator = _coordinator(opt_module, "amber")
     coordinator._config.disable_idle_enabled = True

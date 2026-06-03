@@ -1534,8 +1534,12 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         # Initialize built-in optimizer
         # Hardware reserve: captured at startup from the battery's actual setting.
-        # Falls back to 0 if not yet known (will be updated on first poll).
-        hw_reserve_pct = (self._startup_backup_reserve or 0) / 100
+        # Starts unknown when not yet captured and is updated on first poll.
+        hw_reserve_pct = (
+            self._startup_backup_reserve / 100
+            if self._startup_backup_reserve is not None
+            else None
+        )
         self._optimizer = BatteryOptimizer(
             capacity_wh=self._config.battery_capacity_wh,
             max_charge_w=self._config.max_charge_w,
@@ -2520,7 +2524,10 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             result.schedule = self._current_schedule
             if self._should_disable_idle_schedule():
                 self._current_schedule = self._disable_idle_schedule(
-                    self._current_schedule
+                    self._current_schedule,
+                    solar_forecast=solar_forecast,
+                    load_forecast=load_forecast,
+                    initial_soc=soc,
                 )
                 result.schedule = self._current_schedule
             self._last_update_time = dt_util.now()
@@ -2571,7 +2578,10 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 result.schedule = self._current_schedule
                 if self._should_disable_idle_schedule():
                     self._current_schedule = self._disable_idle_schedule(
-                        self._current_schedule
+                        self._current_schedule,
+                        solar_forecast=solar_forecast,
+                        load_forecast=load_forecast,
+                        initial_soc=soc,
                     )
                     result.schedule = self._current_schedule
                 if self._should_apply_offgrid_overlay():
@@ -2793,6 +2803,10 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _disable_idle_schedule(
         self,
         schedule: OptimizationSchedule,
+        *,
+        solar_forecast: list[float] | None = None,
+        load_forecast: list[float] | None = None,
+        initial_soc: float | None = None,
     ) -> OptimizationSchedule:
         """Replace optimizer IDLE slots with self-consumption for Flow Power."""
         actions = getattr(schedule, "actions", None) or []
@@ -2801,19 +2815,114 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         changed = False
         new_actions = []
-        for action in actions:
+        interval_hours = max(
+            1,
+            int(getattr(self._config, "interval_minutes", 5) or 5),
+        ) / 60.0
+        capacity_wh = max(
+            0.0,
+            float(getattr(self._config, "battery_capacity_wh", 0) or 0),
+        )
+        max_discharge_w = max(
+            0.0,
+            float(getattr(self._config, "max_discharge_w", 0) or 0),
+        )
+        efficiency = max(
+            0.001,
+            float(
+                getattr(getattr(self, "_optimizer", None), "efficiency", 0.95)
+                or 0.95
+            ),
+        )
+        optimizer_reserve = max(
+            0.0,
+            min(1.0, float(getattr(self._config, "backup_reserve", 0) or 0)),
+        )
+        soc_cursor = (
+            max(0.0, min(1.0, float(initial_soc)))
+            if initial_soc is not None
+            else None
+        )
+        hardware_reserve_known = False
+        hardware_reserve = optimizer_reserve
+        startup_reserve = getattr(self, "_startup_backup_reserve", None)
+        if startup_reserve is not None:
+            hardware_reserve_known = True
+            hardware_reserve = float(startup_reserve) / 100.0
+        else:
+            optimizer = getattr(self, "_optimizer", None)
+            if getattr(optimizer, "hardware_reserve_known", False):
+                hardware_reserve_known = True
+                hardware_reserve = float(
+                    getattr(optimizer, "hardware_reserve", 0.0) or 0.0
+                )
+        self_consumption_floor = (
+            max(0.0, min(1.0, hardware_reserve))
+            if hardware_reserve_known
+            else optimizer_reserve
+        )
+        if soc_cursor is not None:
+            self_consumption_floor = min(soc_cursor, self_consumption_floor)
+
+        def _forecast_w(values: list[float] | None, index: int) -> float:
+            if not values or index >= len(values):
+                return 0.0
+            try:
+                return max(0.0, float(values[index]) * 1000.0)
+            except (TypeError, ValueError):
+                return 0.0
+
+        def _natural_discharge_w(index: int, soc: float | None) -> float:
+            net_load_w = _forecast_w(load_forecast, index) - _forecast_w(
+                solar_forecast,
+                index,
+            )
+            if net_load_w <= 0 or max_discharge_w <= 0:
+                return 0.0
+            if soc is None or capacity_wh <= 0:
+                return min(max_discharge_w, net_load_w)
+            available_wh = max(0.0, soc - self_consumption_floor) * capacity_wh
+            available_w = available_wh * efficiency / interval_hours
+            return min(max_discharge_w, net_load_w, max(0.0, available_w))
+
+        def _advance_soc(
+            soc: float | None,
+            charge_w: float,
+            discharge_w: float,
+        ) -> float | None:
+            if soc is None or capacity_wh <= 0:
+                return soc
+            stored_wh = max(0.0, charge_w) * interval_hours * efficiency
+            removed_wh = max(0.0, discharge_w) * interval_hours / efficiency
+            return max(
+                self_consumption_floor,
+                min(1.0, soc + (stored_wh - removed_wh) / capacity_wh),
+            )
+
+        for index, action in enumerate(actions):
             if getattr(action, "action", None) != "idle":
                 new_actions.append(action)
+                soc_cursor = _advance_soc(
+                    soc_cursor,
+                    float(getattr(action, "battery_charge_w", 0.0) or 0.0),
+                    float(getattr(action, "battery_discharge_w", 0.0) or 0.0),
+                )
                 continue
             changed = True
+            discharge_w = round(_natural_discharge_w(index, soc_cursor), 1)
+            soc_cursor = _advance_soc(soc_cursor, 0.0, discharge_w)
             new_actions.append(
                 ScheduleAction(
                     timestamp=action.timestamp,
                     action="self_consumption",
-                    power_w=0.0,
-                    soc=getattr(action, "soc", None),
+                    power_w=discharge_w,
+                    soc=(
+                        round(soc_cursor, 4)
+                        if soc_cursor is not None
+                        else getattr(action, "soc", None)
+                    ),
                     battery_charge_w=0.0,
-                    battery_discharge_w=0.0,
+                    battery_discharge_w=discharge_w,
                 )
             )
 

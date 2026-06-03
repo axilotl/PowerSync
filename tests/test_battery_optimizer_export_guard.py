@@ -140,7 +140,9 @@ def test_grid_import_limit_still_allows_solar_assisted_full_charge(
     )
 
 
-def test_self_consumption_schedule_soc_respects_optimizer_floor(battery_optimizer_module):
+def test_self_consumption_schedule_soc_uses_hardware_floor_above_optimizer_reserve(
+    battery_optimizer_module,
+):
     optimizer = battery_optimizer_module.BatteryOptimizer(
         capacity_wh=13500,
         max_charge_w=7000,
@@ -165,8 +167,8 @@ def test_self_consumption_schedule_soc_respects_optimizer_floor(battery_optimize
         export_prices=[0.0] * n,
     )
 
-    assert min(action.soc for action in schedule.actions) >= 0.10
-    assert schedule.actions[-1].soc == pytest.approx(0.10, abs=0.001)
+    assert min(action.soc for action in schedule.actions) >= 0.05
+    assert schedule.actions[-1].soc == pytest.approx(0.05, abs=0.001)
 
 
 def test_self_consumption_schedule_uses_hardware_floor_when_below_optimizer_reserve(
@@ -776,6 +778,68 @@ def test_schedule_soc_display_holds_at_optimizer_reserve(
     )
 
     assert schedule.actions[0].action == "self_consumption"
+    assert schedule.actions[0].soc == pytest.approx(0.20)
+    assert schedule.to_api_response()["soc"][0] == schedule.actions[0].soc
+
+
+def test_schedule_soc_display_uses_hardware_floor_when_known(
+    battery_optimizer_module,
+):
+    optimizer = battery_optimizer_module.BatteryOptimizer(
+        capacity_wh=13500,
+        max_charge_w=5000,
+        max_discharge_w=5000,
+        backup_reserve=0.20,
+        hardware_reserve=0.05,
+        interval_minutes=5,
+        horizon_hours=1,
+    )
+
+    schedule = optimizer._build_schedule(
+        n=1,
+        grid_import=[0.0],
+        grid_export=[0.0],
+        battery_charge=[0.0],
+        battery_discharge=[1.35],
+        solar=[0.0],
+        load=[1.35],
+        soc_0=0.20,
+        import_prices=[0.30],
+        export_prices=[0.05],
+    )
+
+    assert schedule.actions[0].action == "self_consumption"
+    assert schedule.actions[0].soc < 0.20
+    assert schedule.to_api_response()["soc"][0] == schedule.actions[0].soc
+
+
+def test_schedule_export_display_keeps_optimizer_floor_when_hardware_floor_is_lower(
+    battery_optimizer_module,
+):
+    optimizer = battery_optimizer_module.BatteryOptimizer(
+        capacity_wh=13500,
+        max_charge_w=5000,
+        max_discharge_w=5000,
+        backup_reserve=0.20,
+        hardware_reserve=0.05,
+        interval_minutes=5,
+        horizon_hours=1,
+    )
+
+    schedule = optimizer._build_schedule(
+        n=1,
+        grid_import=[0.0],
+        grid_export=[1.35],
+        battery_charge=[0.0],
+        battery_discharge=[1.35],
+        solar=[0.0],
+        load=[0.0],
+        soc_0=0.20,
+        import_prices=[0.30],
+        export_prices=[0.50],
+    )
+
+    assert schedule.actions[0].action == "export"
     assert schedule.actions[0].soc == pytest.approx(0.20)
     assert schedule.to_api_response()["soc"][0] == schedule.actions[0].soc
 
