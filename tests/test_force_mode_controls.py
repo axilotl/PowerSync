@@ -927,6 +927,22 @@ def test_foxess_dc_curtailment_reapplies_when_live_export_continues():
     assert ") or _live_export_reapply" in handler_source
 
 
+def test_sigenergy_curtailment_reapplies_when_live_export_continues():
+    source = INIT_PATH.read_text()
+    tree = ast.parse(source)
+    handler = _find_function(tree, "handle_sigenergy_curtailment")
+    handler_source = ast.get_source_segment(source, handler)
+
+    assert handler_source is not None
+    assert "_last_sigenergy_curtailment_reapply" in handler_source
+    assert "_live_export_reapply = False" in handler_source
+    assert 'coord_data = getattr(sig_coord, "data", None) or {}' in handler_source
+    assert 'grid_power_kw = float(coord_data.get("grid_power", 0) or 0)' in handler_source
+    assert 'current_state == "curtailed" and grid_export_w > 250' in handler_source
+    assert ") or _live_export_reapply" in handler_source
+    assert 'entry_data.pop("_last_sigenergy_curtailment_reapply", None)' in handler_source
+
+
 def test_foxess_optimizer_self_consumption_preserves_active_curtailment():
     source = INIT_PATH.read_text()
     tree = ast.parse(source)

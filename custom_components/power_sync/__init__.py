@@ -20082,15 +20082,47 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         try:
             if export_earnings < 1:
+                import time as _time_mod
+
+                _sigenergy_reapply_interval = 900
+                _last_reapply = entry_data.get("_last_sigenergy_curtailment_reapply", 0)
+                _now = _time_mod.monotonic()
+                _elapsed_since_reapply = _now - _last_reapply
+                _live_export_reapply = False
+                try:
+                    coord_data = getattr(sig_coord, "data", None) or {}
+                    grid_power_kw = float(coord_data.get("grid_power", 0) or 0)
+                    grid_export_w = max(0, int(abs(grid_power_kw) * 1000)) if grid_power_kw < -0.25 else 0
+                    if current_state == "curtailed" and grid_export_w > 250:
+                        _live_export_reapply = True
+                        _LOGGER.info(
+                            "Sigenergy curtailment RE-APPLY: cached curtailed but grid export is %dW",
+                            grid_export_w,
+                        )
+                except (TypeError, ValueError):
+                    pass
+                _needs_reapply = (
+                    current_state == "curtailed"
+                    and _elapsed_since_reapply >= _sigenergy_reapply_interval
+                ) or _live_export_reapply
+
                 # Negative or near-zero export earnings → zero-export curtailment
-                if current_state == "normal":
-                    _LOGGER.info(
-                        "Sigenergy curtailment TRIGGERED: export_earnings=%.2fc (<1c) → zero export",
-                        export_earnings,
-                    )
+                if current_state != "curtailed" or _needs_reapply:
+                    if current_state == "curtailed":
+                        _LOGGER.info(
+                            "Sigenergy curtailment RE-APPLY: export_earnings=%.2fc (<1c), %ds since last apply",
+                            export_earnings,
+                            int(_elapsed_since_reapply),
+                        )
+                    else:
+                        _LOGGER.info(
+                            "Sigenergy curtailment TRIGGERED: export_earnings=%.2fc (<1c) → zero export",
+                            export_earnings,
+                        )
                     success = await controller.curtail()
                     if success:
-                        hass.data[DOMAIN][entry.entry_id]["sigenergy_curtailment_state"] = "curtailed"
+                        entry_data["sigenergy_curtailment_state"] = "curtailed"
+                        entry_data["_last_sigenergy_curtailment_reapply"] = _now
                     else:
                         _LOGGER.error("Sigenergy curtail() failed")
                 else:
@@ -20104,7 +20136,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     )
                     success = await controller.restore()
                     if success:
-                        hass.data[DOMAIN][entry.entry_id]["sigenergy_curtailment_state"] = "normal"
+                        entry_data["sigenergy_curtailment_state"] = "normal"
+                        entry_data.pop("_last_sigenergy_curtailment_reapply", None)
                     else:
                         _LOGGER.error("Sigenergy restore() failed")
                 else:
