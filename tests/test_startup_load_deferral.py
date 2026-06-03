@@ -46,6 +46,57 @@ def _find_setup_child(
     raise AssertionError(f"async_setup_entry.{child_name} not found")
 
 
+def _find_module_function(
+    tree: ast.AST,
+    name: str,
+) -> ast.FunctionDef | ast.AsyncFunctionDef:
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+            return node
+    raise AssertionError(f"{name} not found")
+
+
+def test_mobile_config_endpoint_registered_before_slow_refreshes():
+    """The HA app probe must be available before startup network warmups."""
+    source = INIT_PATH.read_text()
+    tree = ast.parse(source)
+    setup = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "async_setup_entry"
+    )
+    helper = _find_module_function(tree, "_register_mobile_detection_views")
+
+    helper_source = ast.get_source_segment(source, helper)
+    assert helper_source is not None
+    assert "ConfigView(hass)" in helper_source
+    assert "ConfigViewLegacy(hass, config_view)" in helper_source
+
+    helper_calls = [
+        node
+        for node in ast.walk(setup)
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "_register_mobile_detection_views"
+        )
+    ]
+    first_refresh_calls = [
+        node
+        for node in ast.walk(setup)
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "async_config_entry_first_refresh"
+        )
+    ]
+
+    assert len(helper_calls) == 1
+    assert first_refresh_calls
+    assert helper_calls[0].lineno < min(call.lineno for call in first_refresh_calls)
+    assert "longer than the app's HA request timeout" in source
+
+
 def test_initial_optimizer_pass_is_deferred_after_enable():
     source = OPTIMIZATION_COORDINATOR_PATH.read_text()
     tree = ast.parse(source)

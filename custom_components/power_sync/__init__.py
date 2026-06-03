@@ -7638,6 +7638,15 @@ class ConfigViewLegacy(HomeAssistantView):
         return await self._config_view.get(request)
 
 
+def _register_mobile_detection_views(hass: HomeAssistant) -> None:
+    """Register the lightweight mobile app probe before slow startup awaits."""
+    config_view = ConfigView(hass)
+    hass.http.register_view(config_view)
+    _LOGGER.info("📱 Config HTTP endpoint registered at /api/power_sync/backend_config")
+    hass.http.register_view(ConfigViewLegacy(hass, config_view))
+    _LOGGER.info("📱 Config HTTP endpoint also registered at /api/power_sync/config (legacy)")
+
+
 class ProviderConfigView(HomeAssistantView):
     """HTTP view for electricity provider configuration.
 
@@ -15784,6 +15793,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if entry.title != expected_title:
         _LOGGER.info(f"Updating entry title from '{entry.title}' to '{expected_title}'")
         hass.config_entries.async_update_entry(entry, title=expected_title)
+
+    # Register the mobile app auto-detection endpoint before any network or
+    # coordinator warmup awaits. On Tesla/Amber startups those warmups can take
+    # longer than the app's HA request timeout, but this endpoint only needs
+    # config-entry data and can answer while setup continues.
+    _register_mobile_detection_views(hass)
 
     # Check pricing source configuration
     aemo_spike_enabled = entry.options.get(
@@ -27565,15 +27580,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Register HTTP endpoint for Amber usage data (actual metered costs)
     hass.http.register_view(AmberUsageView(hass))
     _LOGGER.info("Amber usage HTTP endpoint registered at /api/power_sync/amber_usage")
-
-    # Register HTTP endpoint for Config (for mobile app auto-detection)
-    config_view = ConfigView(hass)
-    hass.http.register_view(config_view)
-    _LOGGER.info("📱 Config HTTP endpoint registered at /api/power_sync/backend_config")
-
-    # Also register at legacy URL for backwards compatibility
-    hass.http.register_view(ConfigViewLegacy(hass, config_view))
-    _LOGGER.info("📱 Config HTTP endpoint also registered at /api/power_sync/config (legacy)")
 
     # Register HTTP endpoint for Tariff Price (for Globird users without API)
     hass.http.register_view(TariffPriceView(hass))
