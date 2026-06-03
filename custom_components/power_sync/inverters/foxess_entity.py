@@ -54,7 +54,15 @@ _WRITE_ENTITIES: dict[str, tuple[str, ...]] = {
     "backup_reserve": ("min_soc_on_grid", "min_soc"),
     "max_charge_current": ("max_charge_current",),
     "max_discharge_current": ("max_discharge_current",),
-    "export_power_limit": ("export_power_limit",),
+    # foxess_modbus names this entity differently across inverter generations
+    # (H1/AIO expose "Export Power Limit", H3/KH expose "Export Limit"). Try the
+    # most specific suffix first; the number-domain guard in resolution prevents
+    # matching an unrelated on/off "Export Limit" switch.
+    "export_power_limit": (
+        "export_power_limit",
+        "export_limit_power",
+        "export_limit",
+    ),
 }
 
 _WORK_MODE_OPTIONS = {
@@ -80,6 +88,10 @@ class FoxESSEntityController:
         self._foxess_entry_id = (foxess_entry_id or "").strip()
         self._prefix = entity_prefix.strip()
         self._entity_map: dict[str, str] = {}
+        # Rate-limit the "curtailment unavailable" diagnostic to once per
+        # discovery so a missing/disabled export-limit entity does not spam
+        # the log every curtailment cycle.
+        self._export_limit_warned = False
 
     async def connect(self) -> bool:
         """Validate the required entity surface exists."""
@@ -233,10 +245,12 @@ class FoxESSEntityController:
         """Apply an export limit when the upstream entity exposes it."""
         self._ensure_entity_map()
         if not self._entity_exists("export_power_limit"):
-            _LOGGER.warning(
-                "FoxESS entity bridge: export_power_limit entity not found; "
-                "curtailment is unavailable"
-            )
+            if not self._export_limit_warned:
+                self._export_limit_warned = True
+                _LOGGER.warning(
+                    "FoxESS entity bridge: curtailment unavailable — %s",
+                    self._diagnose_missing_export_limit(),
+                )
             return False
         await self._set_number("export_power_limit", max(0, int(home_load_w or 0)))
         return True
@@ -253,6 +267,59 @@ class FoxESSEntityController:
         await self._set_number("export_power_limit", 99999)
         return True
 
+    def _diagnose_missing_export_limit(self) -> str:
+        """Explain why the export power limit entity is unusable.
+
+        Distinguishes "disabled in the registry" (the common foxess_modbus
+        default) from "not exposed by this inverter" so the log line tells the
+        user exactly what to fix.
+        """
+        try:
+            registry = er.async_get(self.hass)
+            if self._foxess_entry_id:
+                entries = er.async_entries_for_config_entry(
+                    registry, self._foxess_entry_id
+                )
+            else:
+                entries = list(registry.entities.values())
+        except Exception:  # pragma: no cover - defensive
+            return (
+                "no export power limit entity (number.*_export_power_limit) is "
+                "available; curtailment cannot zero export"
+            )
+
+        candidates = [
+            entry
+            for entry in entries
+            if entry.entity_id.startswith("number.")
+            and "export" in entry.entity_id
+            and "limit" in entry.entity_id
+        ]
+        if not candidates:
+            return (
+                "your FoxESS integration does not expose an export power limit "
+                "entity (number.*_export_power_limit); curtailment cannot zero "
+                "export — enable the Export Power Limit control in the "
+                "foxess_modbus integration if your inverter supports it"
+            )
+        disabled = [
+            entry
+            for entry in candidates
+            if getattr(entry, "disabled_by", None) is not None
+        ]
+        if disabled:
+            names = ", ".join(entry.entity_id for entry in disabled)
+            return (
+                f"export limit entity {names} exists but is DISABLED; enable it "
+                "in Settings → Devices & Services → (FoxESS device) → entity "
+                "settings to allow curtailment"
+            )
+        names = ", ".join(entry.entity_id for entry in candidates)
+        return (
+            f"export limit entity {names} is enabled but has no state "
+            "(unavailable); check the FoxESS Modbus connection"
+        )
+
     async def disconnect(self) -> None:
         """No persistent connection to close."""
 
@@ -263,6 +330,7 @@ class FoxESSEntityController:
     def _discover_entities(self) -> None:
         """Populate logical entity map from config entry or suffix scan."""
         self._entity_map = {}
+        self._export_limit_warned = False
 
         if self._foxess_entry_id:
             registry = er.async_get(self.hass)

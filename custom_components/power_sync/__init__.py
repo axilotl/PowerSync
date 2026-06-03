@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import pathlib
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -4198,10 +4199,115 @@ class CalendarHistoryView(HomeAssistantView):
     url = "/api/power_sync/calendar_history"
     name = "api:power_sync:calendar_history"
     requires_auth = True
+    _CACHE_TTL_SECONDS = 300
+    _REQUEST_TIMEOUT_SECONDS = 6.0
 
     def __init__(self, hass: HomeAssistant):
         """Initialize the view."""
         self._hass = hass
+        self._cache: dict[tuple[str, str, str], tuple[float, dict[str, Any], int]] = {}
+        self._inflight: dict[tuple[str, str, str], asyncio.Task[tuple[dict[str, Any], int]]] = {}
+
+    def _calendar_cache_key(
+        self,
+        tesla_coordinator: Any,
+        period: str,
+        end_date: str | None,
+    ) -> tuple[str, str, str]:
+        """Return a stable cache key for one calendar-history request."""
+        site_id = str(getattr(tesla_coordinator, "site_id", "") or "unknown")
+        return (site_id, period, end_date or "")
+
+    def _cached_calendar_result(
+        self,
+        key: tuple[str, str, str],
+    ) -> tuple[dict[str, Any], int] | None:
+        """Return a fresh cached calendar-history response, if one exists."""
+        cached = self._cache.get(key)
+        if not cached:
+            return None
+        cached_at, result, status = cached
+        if time.monotonic() - cached_at > self._CACHE_TTL_SECONDS:
+            return None
+        response = dict(result)
+        response["cached"] = True
+        return response, status
+
+    def _store_calendar_result(
+        self,
+        key: tuple[str, str, str],
+        result: dict[str, Any],
+        status: int,
+    ) -> None:
+        """Cache successful calendar-history responses for short-term reuse."""
+        if status == 200 and result.get("success"):
+            self._cache[key] = (time.monotonic(), dict(result), status)
+
+    async def _build_calendar_history_response(
+        self,
+        *,
+        tesla_coordinator: Any,
+        tariff_schedule: dict | None,
+        period: str,
+        end_date: str | None,
+    ) -> tuple[dict[str, Any], int]:
+        """Fetch and shape calendar history without blocking duplicate requests."""
+        try:
+            history = await tesla_coordinator.async_get_calendar_history(period=period, end_date=end_date)
+        except Exception as e:
+            _LOGGER.error(f"Error fetching calendar history: {e}")
+            return {"success": False, "error": str(e)}, 500
+
+        if not history:
+            _LOGGER.error("Failed to fetch calendar history")
+            return {
+                "success": False,
+                "error": "Failed to fetch calendar history from Tesla API",
+            }, 500
+
+        time_series = []
+        for entry_data in history.get("time_series", []):
+            time_series.append({
+                "timestamp": entry_data.get("timestamp", ""),
+                # Normalized fields for compatibility
+                "solar_generation": entry_data.get("solar_energy_exported", 0),
+                "battery_discharge": entry_data.get("battery_energy_exported", 0),
+                "battery_charge": entry_data.get("battery_energy_imported", 0),
+                "grid_import": entry_data.get("grid_energy_imported", 0),
+                "grid_export": entry_data.get("grid_energy_exported_from_solar", 0) + entry_data.get("grid_energy_exported_from_battery", 0),
+                "home_consumption": entry_data.get("consumer_energy_imported_from_grid", 0) + entry_data.get("consumer_energy_imported_from_solar", 0) + entry_data.get("consumer_energy_imported_from_battery", 0),
+                # Detailed breakdown fields from Tesla API (for detail screens)
+                "solar_energy_exported": entry_data.get("solar_energy_exported", 0),
+                "battery_energy_exported": entry_data.get("battery_energy_exported", 0),
+                "battery_energy_imported_from_grid": entry_data.get("battery_energy_imported_from_grid", 0),
+                "battery_energy_imported_from_solar": entry_data.get("battery_energy_imported_from_solar", 0),
+                "consumer_energy_imported_from_grid": entry_data.get("consumer_energy_imported_from_grid", 0),
+                "consumer_energy_imported_from_solar": entry_data.get("consumer_energy_imported_from_solar", 0),
+                "consumer_energy_imported_from_battery": entry_data.get("consumer_energy_imported_from_battery", 0),
+                "grid_energy_exported_from_solar": entry_data.get("grid_energy_exported_from_solar", 0),
+                "grid_energy_exported_from_battery": entry_data.get("grid_energy_exported_from_battery", 0),
+            })
+
+        result = {
+            "success": True,
+            "period": period,
+            "time_series": time_series,
+            "serial_number": history.get("serial_number"),
+            "installation_date": history.get("installation_date"),
+        }
+        cost_summary = await _calculate_cost_from_statistics(self._hass, period, end_date)
+        if not cost_summary and tariff_schedule:
+            cost_summary = _calculate_cost_from_tariff(tariff_schedule, time_series)
+        if cost_summary:
+            load_kwh = sum(e.get("home_consumption", 0) for e in time_series) / 1000
+            if load_kwh > 0:
+                cost_summary["avg_cost_per_kwh"] = round(
+                    ((cost_summary.get("import_cost") or 0) - (cost_summary.get("export_earnings") or 0)) / load_kwh, 4
+                )
+            result["cost_summary"] = cost_summary
+
+        _LOGGER.info(f"✅ Calendar history HTTP response: {len(time_series)} records for period '{period}'")
+        return result, 200
 
     async def get(self, request: web.Request) -> web.Response:
         """Handle GET request for calendar history."""
@@ -4280,68 +4386,70 @@ class CalendarHistoryView(HomeAssistantView):
                     status=200  # Return 200 with error in body so mobile app handles gracefully
                 )
 
-        # Fetch calendar history
+        cache_key = self._calendar_cache_key(tesla_coordinator, period, end_date)
+        cached = self._cached_calendar_result(cache_key)
+        if cached:
+            result, status = cached
+            return web.json_response(result, status=status)
+
+        task = self._inflight.get(cache_key)
+        if task and task.done():
+            try:
+                result, status = task.result()
+                self._store_calendar_result(cache_key, result, status)
+                return web.json_response(result, status=status)
+            finally:
+                self._inflight.pop(cache_key, None)
+
+        if not task:
+            task = self._hass.async_create_task(
+                self._build_calendar_history_response(
+                    tesla_coordinator=tesla_coordinator,
+                    tariff_schedule=tariff_schedule,
+                    period=period,
+                    end_date=end_date,
+                ),
+                name=f"powersync_calendar_history_{period}",
+            )
+            self._inflight[cache_key] = task
+
         try:
-            history = await tesla_coordinator.async_get_calendar_history(period=period, end_date=end_date)
-        except Exception as e:
-            _LOGGER.error(f"Error fetching calendar history: {e}")
-            return web.json_response(
-                {"success": False, "error": str(e)},
-                status=500
+            result, status = await asyncio.wait_for(
+                asyncio.shield(task),
+                timeout=self._REQUEST_TIMEOUT_SECONDS,
             )
-
-        if not history:
-            _LOGGER.error("Failed to fetch calendar history")
-            return web.json_response(
-                {"success": False, "error": "Failed to fetch calendar history from Tesla API"},
-                status=500
-            )
-
-        # Transform time_series to match mobile app format
-        # Include both normalized fields AND detailed Tesla breakdown fields
-        time_series = []
-        for entry_data in history.get("time_series", []):
-            time_series.append({
-                "timestamp": entry_data.get("timestamp", ""),
-                # Normalized fields for compatibility
-                "solar_generation": entry_data.get("solar_energy_exported", 0),
-                "battery_discharge": entry_data.get("battery_energy_exported", 0),
-                "battery_charge": entry_data.get("battery_energy_imported", 0),
-                "grid_import": entry_data.get("grid_energy_imported", 0),
-                "grid_export": entry_data.get("grid_energy_exported_from_solar", 0) + entry_data.get("grid_energy_exported_from_battery", 0),
-                "home_consumption": entry_data.get("consumer_energy_imported_from_grid", 0) + entry_data.get("consumer_energy_imported_from_solar", 0) + entry_data.get("consumer_energy_imported_from_battery", 0),
-                # Detailed breakdown fields from Tesla API (for detail screens)
-                "solar_energy_exported": entry_data.get("solar_energy_exported", 0),
-                "battery_energy_exported": entry_data.get("battery_energy_exported", 0),
-                "battery_energy_imported_from_grid": entry_data.get("battery_energy_imported_from_grid", 0),
-                "battery_energy_imported_from_solar": entry_data.get("battery_energy_imported_from_solar", 0),
-                "consumer_energy_imported_from_grid": entry_data.get("consumer_energy_imported_from_grid", 0),
-                "consumer_energy_imported_from_solar": entry_data.get("consumer_energy_imported_from_solar", 0),
-                "consumer_energy_imported_from_battery": entry_data.get("consumer_energy_imported_from_battery", 0),
-                "grid_energy_exported_from_solar": entry_data.get("grid_energy_exported_from_solar", 0),
-                "grid_energy_exported_from_battery": entry_data.get("grid_energy_exported_from_battery", 0),
-            })
-
-        result = {
-            "success": True,
-            "period": period,
-            "time_series": time_series,
-            "serial_number": history.get("serial_number"),
-            "installation_date": history.get("installation_date"),
-        }
-        cost_summary = await _calculate_cost_from_statistics(self._hass, period, end_date)
-        if not cost_summary and tariff_schedule:
-            cost_summary = _calculate_cost_from_tariff(tariff_schedule, time_series)
-        if cost_summary:
-            load_kwh = sum(e.get("home_consumption", 0) for e in time_series) / 1000
-            if load_kwh > 0:
-                cost_summary["avg_cost_per_kwh"] = round(
-                    ((cost_summary.get("import_cost") or 0) - (cost_summary.get("export_earnings") or 0)) / load_kwh, 4
+        except (asyncio.TimeoutError, TimeoutError):
+            cached = self._cache.get(cache_key)
+            if cached:
+                _cached_at, result, status = cached
+                stale_result = dict(result)
+                stale_result["cached"] = True
+                stale_result["stale"] = True
+                stale_result["refresh_pending"] = True
+                _LOGGER.warning(
+                    "Calendar history still loading after %.1fs; returning stale cache",
+                    self._REQUEST_TIMEOUT_SECONDS,
                 )
-            result["cost_summary"] = cost_summary
+                return web.json_response(stale_result, status=status)
 
-        _LOGGER.info(f"✅ Calendar history HTTP response: {len(time_series)} records for period '{period}'")
-        return web.json_response(result)
+            _LOGGER.warning(
+                "Calendar history still loading after %.1fs; returning loading response",
+                self._REQUEST_TIMEOUT_SECONDS,
+            )
+            return web.json_response(
+                {
+                    "success": False,
+                    "error": "Calendar history is still loading, please retry",
+                    "reason": "loading",
+                    "refresh_pending": True,
+                },
+                status=200,
+            )
+
+        if task.done():
+            self._inflight.pop(cache_key, None)
+        self._store_calendar_result(cache_key, result, status)
+        return web.json_response(result, status=status)
 
 
 class PowerwallSettingsView(HomeAssistantView):

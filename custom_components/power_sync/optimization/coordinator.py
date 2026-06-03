@@ -2389,6 +2389,9 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     self._config.max_discharge_w / 1000,
                 )
 
+            if self._ev_integration_enabled:
+                await self._refresh_ev_forecast_inputs()
+
             # Collect forecast data
             self._last_export_boost_allowed_slots = []
             prices = await self._get_price_forecast()
@@ -6390,6 +6393,18 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 horizon_hours=self._config.horizon_hours
             )
         return None
+
+    async def _refresh_ev_forecast_inputs(self) -> None:
+        """Refresh EV schedule inputs before an LP solve without charger commands."""
+        try:
+            from ..automations.ev_charging_planner import get_auto_schedule_executor
+
+            executor = get_auto_schedule_executor()
+            refresh = getattr(executor, "refresh_optimizer_forecast_plans", None)
+            if refresh is not None:
+                await refresh()
+        except Exception as err:
+            _LOGGER.debug("Optimizer: EV forecast refresh skipped: %s", err)
 
     def _get_ev_planned_load(self, n_intervals: int) -> list[float] | None:
         """Get EV planned charging load from AutoScheduleExecutor.

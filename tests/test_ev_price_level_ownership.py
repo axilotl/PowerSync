@@ -1175,6 +1175,75 @@ def test_auto_schedule_clears_stale_plan_when_away_vehicle_reaches_target(
     assert preserve_state["source"] == "smart_schedule"
 
 
+def test_auto_schedule_forecast_refresh_updates_plan_without_charger_commands(
+    monkeypatch,
+    fake_actions,
+):
+    now = datetime(2026, 5, 27, 15, 0, tzinfo=timezone.utc)
+    plan_calls = []
+
+    class ForecastPlanner:
+        async def plan_charging(self, **kwargs):
+            plan_calls.append(kwargs)
+            return ev_planner.ChargingPlan(
+                vehicle_id=kwargs["vehicle_id"],
+                current_soc=kwargs["current_soc"],
+                target_soc=kwargs["target_soc"],
+                target_time=None,
+                energy_needed_kwh=10.0,
+                windows=[
+                    ev_planner.PlannedChargingWindow(
+                        start_time=now.replace(hour=23).isoformat(),
+                        end_time=now.replace(hour=23, minute=30).isoformat(),
+                        source="grid_offpeak",
+                        estimated_power_kw=7.0,
+                        estimated_energy_kwh=3.5,
+                        price_cents_kwh=10.0,
+                        reason="target_deadline",
+                    )
+                ],
+                estimated_grid_kwh=3.5,
+            )
+
+    async def at_home(*args, **kwargs):
+        return "home"
+
+    async def plugged_in(*args, **kwargs):
+        return True
+
+    async def vehicle_soc(self, vehicle_id):
+        return 45
+
+    start_charging = AsyncMock()
+    monkeypatch.setattr(ev_planner, "get_ev_location", at_home)
+    monkeypatch.setattr(ev_planner, "is_ev_plugged_in", plugged_in)
+    monkeypatch.setattr(ev_planner.AutoScheduleExecutor, "_get_vehicle_soc", vehicle_soc)
+    monkeypatch.setattr(ev_planner.AutoScheduleExecutor, "_start_charging", start_charging)
+    monkeypatch.setattr(ev_planner.dt_util, "now", lambda *args, **kwargs: now)
+
+    hass = _FakeHass()
+    executor = ev_planner.AutoScheduleExecutor(
+        hass,
+        _FakeConfigEntry(),
+        planner=ForecastPlanner(),
+    )
+    executor._settings[VIN] = ev_planner.AutoScheduleSettings(
+        enabled=True,
+        vehicle_id=VIN,
+        display_name="Model 3",
+        target_soc=80,
+        departure_time="07:00",
+    )
+
+    asyncio.run(executor.refresh_optimizer_forecast_plans(current_price_cents=20))
+
+    state = executor.get_state(VIN)
+    assert state.current_plan is not None
+    assert state.last_decision == "forecast_ready"
+    assert plan_calls[0]["current_soc"] == 45
+    start_charging.assert_not_awaited()
+
+
 def test_auto_schedule_preserve_does_not_overwrite_price_level_intent(
     monkeypatch,
     fake_actions,

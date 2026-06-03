@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import importlib.util
 import sys
 import types
@@ -452,3 +453,48 @@ def _run(coro):
 async def _fake_executor(func, *args):
     """Run an executor-offloaded function inline (for mock hass in tests)."""
     return func(*args)
+
+
+def test_get_forecast_offloads_history_build_to_executor(monkeypatch):
+    """The full-history forecast build must run off the event loop.
+
+    _forecast_from_history iterates the entire load history (and re-scans it for
+    the recent-regime adjustment), so running it inline on the event loop froze
+    HA every optimisation cycle. Regression guard: get_forecast must hand it to
+    async_add_executor_job, never call it on the loop.
+    """
+    module = _load_estimator_module(monkeypatch)
+    now = datetime(2026, 5, 9, tzinfo=timezone.utc)
+    calls = {}
+
+    history = [
+        (now - timedelta(days=offset), 1000.0)
+        for offset in range(1, 21)
+    ]
+    _install_fake_recorder(monkeypatch, {"sensor.load": [
+        SimpleNamespace(state="1000", last_changed=ts) for ts, _ in history
+    ]}, calls)
+
+    offloaded: list[str] = []
+
+    async def _spy_executor(func, *args):
+        target = func.func if isinstance(func, functools.partial) else func
+        offloaded.append(getattr(target, "__name__", repr(target)))
+        return func(*args)
+
+    hass = SimpleNamespace(
+        states=SimpleNamespace(
+            get=lambda entity_id: SimpleNamespace(
+                attributes={"unit_of_measurement": "W"}
+            )
+        ),
+        async_add_executor_job=_spy_executor,
+    )
+    estimator = module.LoadEstimator(hass, "sensor.load", interval_minutes=5)
+
+    forecast = _run(estimator.get_forecast(horizon_hours=12))
+
+    assert forecast, "expected a non-empty forecast"
+    assert "_forecast_from_history" in offloaded, (
+        f"forecast build was not offloaded to the executor; saw {offloaded}"
+    )

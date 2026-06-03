@@ -11,6 +11,7 @@ recency weighting and outlier handling to avoid overreacting to one unusual day.
 from __future__ import annotations
 
 import bisect
+import functools
 import logging
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -147,11 +148,20 @@ class LoadEstimator:
                     forecast_temps, bucket_temp_avgs, alpha = await self._get_temperature_adjustment(
                         history, horizon_hours
                     )
-                forecast = self._forecast_from_history(
-                    history, start_time, n_intervals,
-                    forecast_temps=forecast_temps,
-                    bucket_temp_averages=bucket_temp_avgs,
-                    alpha=alpha,
+                # Building the forecast iterates the full load history (tens to
+                # hundreds of thousands of recorder points) and re-scans it for
+                # the recent-regime adjustment — heavy, pure-CPU work. Run it off
+                # the event loop so it can't freeze HA on every optimisation
+                # cycle. _forecast_from_history operates only on its arguments
+                # and constants, so it is safe in a worker thread.
+                forecast = await self.hass.async_add_executor_job(
+                    functools.partial(
+                        self._forecast_from_history,
+                        history, start_time, n_intervals,
+                        forecast_temps=forecast_temps,
+                        bucket_temp_averages=bucket_temp_avgs,
+                        alpha=alpha,
+                    )
                 )
                 avg_w = sum(forecast) / len(forecast) if forecast else 0
                 _LOGGER.info(
@@ -388,10 +398,15 @@ class LoadEstimator:
         baseline_end = recent_start - timedelta(hours=RECENT_LOAD_BASELINE_EXCLUDE_HOURS)
 
         older_pattern: dict[tuple[int, int, int], list[tuple[datetime, float]]] = defaultdict(list)
+        recent_samples: list[tuple[datetime, float]] = []
         actual_values: list[float] = []
         expected_values: list[float] = []
         matched_timestamps: list[datetime] = []
 
+        # Single pass over the full history: bucket the older baseline samples
+        # and collect the (much smaller) recent window. Converting each timestamp
+        # to local time is the per-point cost, so doing it once here rather than
+        # in two separate full scans halves the work on a large history.
         for ts, value in history:
             sample_time = dt_util.as_local(ts) if ts.tzinfo else ts
             if sample_time < baseline_end:
@@ -401,12 +416,10 @@ class LoadEstimator:
                     0 if sample_time.minute < 30 else 1,
                 )
                 older_pattern[key].append((ts, value))
+            elif recent_start <= sample_time <= recent_end:
+                recent_samples.append((sample_time, value))
 
-        for ts, value in history:
-            sample_time = dt_util.as_local(ts) if ts.tzinfo else ts
-            if not (recent_start <= sample_time <= recent_end):
-                continue
-
+        for sample_time, value in recent_samples:
             key = (
                 sample_time.weekday(),
                 sample_time.hour,

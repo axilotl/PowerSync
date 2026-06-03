@@ -4697,6 +4697,83 @@ class AutoScheduleExecutor:
             f" ({reason})" if reason else "",
         )
 
+    async def refresh_optimizer_forecast_plans(
+        self,
+        current_price_cents: Optional[float] = None,
+    ) -> None:
+        """Refresh EV forecast plans for the optimiser without charger commands."""
+        for vehicle_id, settings in self._settings.items():
+            if not settings.enabled:
+                continue
+
+            try:
+                self._sync_charger_params_from_vehicle_configs(vehicle_id, settings)
+                state = self.get_state(vehicle_id)
+                now = datetime.now()
+                vehicle_vin = self._resolve_vehicle_vin(vehicle_id)
+
+                ev_soc = await self._get_vehicle_soc(vehicle_id)
+                if ev_soc >= settings.target_soc:
+                    state.current_plan = None
+                    state.current_window = None
+                    state.last_decision = "complete"
+                    state.last_decision_reason = (
+                        f"EV at {ev_soc}% (target: {settings.target_soc}%)"
+                    )
+                    continue
+
+                if (
+                    state.current_plan is None
+                    or state.last_plan_update is None
+                    or now - state.last_plan_update > self._plan_update_interval
+                ):
+                    await self._regenerate_plan(
+                        vehicle_id,
+                        settings,
+                        state,
+                        current_soc=ev_soc,
+                    )
+
+                location = await get_ev_location(
+                    self.hass,
+                    self.config_entry,
+                    vehicle_vin,
+                )
+                if location not in ("home", "unknown"):
+                    state.last_decision = "away"
+                    state.last_decision_reason = (
+                        f"Vehicle not at home (location: {location})"
+                    )
+                    continue
+
+                plugged_in = await is_ev_plugged_in(
+                    self.hass,
+                    self.config_entry,
+                    vehicle_vin,
+                )
+                if not plugged_in:
+                    state.last_decision = "unplugged"
+                    state.last_decision_reason = "Vehicle not plugged in"
+                    continue
+
+                if state.current_plan is None:
+                    state.last_decision = "no_plan"
+                    state.last_decision_reason = "No charging plan available"
+                else:
+                    state.last_decision = "forecast_ready"
+                    state.last_decision_reason = (
+                        "EV forecast refreshed for Smart Optimization"
+                    )
+
+            except Exception as err:
+                _LOGGER.debug(
+                    "Auto-schedule forecast refresh failed for %s: %s",
+                    vehicle_id,
+                    err,
+                )
+
+        self._sync_future_demand_preserve_intent()
+
     def _sync_future_demand_preserve_intent(self) -> None:
         """Keep optimiser no-discharge intent aligned with unavailable EV demand."""
         unavailable_with_demand = []

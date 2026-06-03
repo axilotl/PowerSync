@@ -406,6 +406,26 @@ def test_curtailment_returns_false_when_export_limit_is_missing():
     assert hass.services.calls == []
 
 
+def test_curtailment_maps_export_limit_name_variant():
+    """foxess_modbus H3/KH expose the entity as `export_limit`, not
+    `export_power_limit`; discovery should resolve the variant so curtailment
+    works instead of silently failing."""
+    states = _without_suffix(_base_states(), ("_export_power_limit",))
+    states.append(_FakeState("number.foxess_export_limit", "99999", _w()))
+    hass = _FakeHass(states)
+    controller = FoxESSEntityController(hass, entity_prefix="foxess")
+
+    assert asyncio.run(controller.connect())
+    assert asyncio.run(controller.curtail(1500))
+    assert hass.services.calls == [
+        (
+            "number",
+            "set_value",
+            {"entity_id": "number.foxess_export_limit", "value": 1500},
+        ),
+    ]
+
+
 def test_missing_required_entities_raise_actionable_setup_error():
     states = _without_suffix(_base_states(), ("_force_charge_power",))
     hass = _FakeHass(states)
