@@ -2110,7 +2110,15 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             except asyncio.TimeoutError:
                 pass
             finally:
-                unsub()
+                # async_listen_once removes its own listener once it fires;
+                # calling unsub() again raises "unknown job listener". Only
+                # remove it on the timeout path where it never fired, and guard
+                # the boundary race where it fires just as we time out.
+                if not started.is_set():
+                    try:
+                        unsub()
+                    except ValueError:
+                        pass
 
         if not self._enabled:
             return
