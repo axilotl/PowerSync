@@ -252,33 +252,16 @@ class LoadEstimator:
                 _LOGGER.warning("No history found for %s", self.load_entity_id)
                 return []
 
-            # Parse states into (timestamp, value_watts) tuples
-            result = []
-            for state in history[self.load_entity_id]:
-                try:
-                    value = float(state.state)
-                    value_watts = value * multiplier
-                    # Filter invalid values: must be positive and < 100kW residential max
-                    if 0 < value_watts < 100_000:
-                        result.append((state.last_changed, value_watts))
-                except (ValueError, TypeError):
-                    continue
-
-            # Away Mode recovery: exclude the completed away window
-            # [enabled_at, disabled_at], then keep the most recent 30 days of
-            # the remaining data.
-            excluded = 0
-            if has_away_window:
-                before = len(result)
-                result = [
-                    (ts, w) for (ts, w) in result
-                    if not (self.away_enabled_at <= ts <= away_end)
-                ]
-                excluded = before - len(result)
-                if result:
-                    result.sort(key=lambda h: h[0])
-                    cutoff = result[-1][0] - timedelta(days=HISTORY_LOOKBACK_DAYS)
-                    result = [h for h in result if h[0] >= cutoff]
+            # Parsing/filtering the raw states (tens of thousands of points) is
+            # pure-CPU work — run it off the event loop so it can't block HA.
+            result, excluded = await self.hass.async_add_executor_job(
+                self._parse_load_history,
+                history[self.load_entity_id],
+                multiplier,
+                has_away_window,
+                self.away_enabled_at,
+                away_end,
+            )
 
             # Cache the result
             self._history_cache[cache_key] = result
@@ -635,20 +618,12 @@ class LoadEstimator:
             self._temp_cache_time = now
             return None, None, None
 
-        # Build load bucket averages
-        load_pattern: dict[tuple[int, int, int], list[float]] = defaultdict(list)
-        for ts, val in history:
-            local_ts = dt_util.as_local(ts) if ts.tzinfo else ts
-            key = (local_ts.weekday(), local_ts.hour, 0 if local_ts.minute < 30 else 1)
-            load_pattern[key].append(val)
-        bucket_averages = {k: sum(v) / len(v) for k, v in load_pattern.items()}
-
-        # Build temperature bucket averages
-        bucket_temp_avgs = self._compute_bucket_temp_averages(temp_history)
-
-        # Fit global sensitivity coefficient
-        alpha = self._fit_temperature_sensitivity(
-            history, temp_history, bucket_averages, bucket_temp_avgs
+        # Bucketing the full load history (tens of thousands of points) and
+        # fitting the sensitivity coefficient (a bisect per point) is heavy,
+        # pure-CPU work. Run it off the event loop so it can't freeze HA during
+        # the optimiser's first forecast at setup.
+        bucket_temp_avgs, alpha = await self.hass.async_add_executor_job(
+            self._compute_temperature_fit, history, temp_history
         )
 
         self._temp_alpha = alpha
@@ -781,6 +756,72 @@ class LoadEstimator:
             key = (local_ts.weekday(), local_ts.hour, 0 if local_ts.minute < 30 else 1)
             bucket[key].append(temp_c)
         return {k: sum(v) / len(v) for k, v in bucket.items()}
+
+    @staticmethod
+    def _parse_load_history(
+        raw_states,
+        multiplier: float,
+        has_away_window: bool,
+        away_start: datetime | None,
+        away_end: datetime | None,
+    ) -> tuple[list[tuple[datetime, float]], int]:
+        """Parse + away-filter raw recorder states (executor-only, CPU-bound).
+
+        Iterates every recorder state for the load sensor (tens of thousands of
+        points), so it must not run on the event loop. Pure function over its
+        arguments — safe in a worker thread.
+        """
+        result: list[tuple[datetime, float]] = []
+        for state in raw_states:
+            try:
+                value_watts = float(state.state) * multiplier
+                # Filter invalid values: must be positive and < 100kW residential max
+                if 0 < value_watts < 100_000:
+                    result.append((state.last_changed, value_watts))
+            except (ValueError, TypeError):
+                continue
+
+        # Away Mode recovery: exclude the completed away window
+        # [enabled_at, disabled_at], then keep the most recent 30 days of
+        # the remaining data.
+        excluded = 0
+        if has_away_window:
+            before = len(result)
+            result = [
+                (ts, w) for (ts, w) in result
+                if not (away_start <= ts <= away_end)
+            ]
+            excluded = before - len(result)
+            if result:
+                result.sort(key=lambda h: h[0])
+                cutoff = result[-1][0] - timedelta(days=HISTORY_LOOKBACK_DAYS)
+                result = [h for h in result if h[0] >= cutoff]
+        return result, excluded
+
+    def _compute_temperature_fit(
+        self,
+        history: list[tuple[datetime, float]],
+        temp_history: list[tuple[datetime, float]],
+    ) -> tuple[dict[tuple[int, int, int], float] | None, float | None]:
+        """Bucket the load history and fit temperature sensitivity (executor-only).
+
+        Iterates the full load history (tens of thousands of points) and runs a
+        bisect per point in the fit, so this must NOT run on the event loop — it
+        would block HA during the optimiser's first forecast. Operates purely on
+        the passed-in data, so it is safe to run in a worker thread.
+        """
+        load_pattern: dict[tuple[int, int, int], list[float]] = defaultdict(list)
+        for ts, val in history:
+            local_ts = dt_util.as_local(ts) if ts.tzinfo else ts
+            key = (local_ts.weekday(), local_ts.hour, 0 if local_ts.minute < 30 else 1)
+            load_pattern[key].append(val)
+        bucket_averages = {k: sum(v) / len(v) for k, v in load_pattern.items()}
+
+        bucket_temp_avgs = self._compute_bucket_temp_averages(temp_history)
+        alpha = self._fit_temperature_sensitivity(
+            history, temp_history, bucket_averages, bucket_temp_avgs
+        )
+        return bucket_temp_avgs, alpha
 
     def _fit_temperature_sensitivity(
         self,

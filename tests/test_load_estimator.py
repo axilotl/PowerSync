@@ -78,7 +78,8 @@ def test_normal_history_fetch_requests_30_days(monkeypatch):
             get=lambda entity_id: SimpleNamespace(
                 attributes={"unit_of_measurement": "W"}
             )
-        )
+        ),
+        async_add_executor_job=_fake_executor,
     )
     estimator = module.LoadEstimator(hass, "sensor.load", interval_minutes=5)
 
@@ -242,7 +243,8 @@ def test_away_window_is_excluded_from_30_day_history(monkeypatch):
             get=lambda entity_id: SimpleNamespace(
                 attributes={"unit_of_measurement": "W"}
             )
-        )
+        ),
+        async_add_executor_job=_fake_executor,
     )
     estimator = module.LoadEstimator(hass, "sensor.load", interval_minutes=5)
     estimator.away_enabled_at = datetime(2026, 5, 5, tzinfo=timezone.utc)
@@ -276,7 +278,8 @@ def test_active_away_mode_records_departure_without_excluding_history(monkeypatc
             get=lambda entity_id: SimpleNamespace(
                 attributes={"unit_of_measurement": "W"}
             )
-        )
+        ),
+        async_add_executor_job=_fake_executor,
     )
     estimator = module.LoadEstimator(hass, "sensor.load", interval_minutes=5)
     estimator.away_enabled_at = datetime(2026, 5, 7, tzinfo=timezone.utc)
@@ -444,3 +447,8 @@ def _run(coro):
     import asyncio
 
     return asyncio.run(coro)
+
+
+async def _fake_executor(func, *args):
+    """Run an executor-offloaded function inline (for mock hass in tests)."""
+    return func(*args)
