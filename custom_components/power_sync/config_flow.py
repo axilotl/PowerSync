@@ -7227,6 +7227,10 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 or _opt_changed(CONF_OPTIMIZATION_AUTO_APPLY_RESERVE, False)
                 or _opt_changed(CONF_MONITORING_MODE, False)
                 or _opt_changed(CONF_OPTIMIZATION_DISABLE_IDLE, False)
+                # EV integration must reload: set_settings only flips the
+                # load-overlay flag, it does NOT start/stop the EV coordinator
+                # that schedules charging — that happens during setup/enable.
+                or _opt_changed(CONF_OPTIMIZATION_EV_INTEGRATION, False)
                 or _opt_changed(CONF_NEOVOLT_SURPLUS_BALANCER_MODE)
             )
 

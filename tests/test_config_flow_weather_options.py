@@ -577,6 +577,9 @@ def test_optimization_options_apply_tunables_in_place_without_reload():
     # them (it drives the reserve-transition logic), so it reloads rather than
     # applying live.
     assert "CONF_OPTIMIZATION_AUTO_APPLY_RESERVE" in method_source
+    # EV integration toggle must reload — set_settings only flips the overlay
+    # flag and never starts/stops the EV coordinator that schedules charging.
+    assert "_opt_changed(CONF_OPTIMIZATION_EV_INTEGRATION" in method_source
     assert (
         "self.hass.config_entries.async_reload(self.config_entry.entry_id)"
         in method_source
