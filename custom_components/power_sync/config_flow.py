@@ -5176,8 +5176,169 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 class PowerSyncOptionsFlow(config_entries.OptionsFlow):
     """Handle options flow for PowerSync."""
 
+    async def _restore_owned_curtailment_limits(self) -> None:
+        """Restore curtailment limits PowerSync has marked active."""
+        entry_data = self.hass.data.get(DOMAIN, {}).get(
+            self.config_entry.entry_id, {}
+        )
+        if not entry_data:
+            return
+
+        async def _restore_controller(
+            label: str,
+            coord_key: str,
+            state_key: str,
+            *extra_state_keys: str,
+        ) -> None:
+            if entry_data.get(state_key) != "curtailed":
+                return
+
+            coord = entry_data.get(coord_key)
+            controller = getattr(coord, "_controller", coord)
+            if not controller or not hasattr(controller, "restore"):
+                _LOGGER.warning(
+                    "%s curtailment was active but no restore controller is available",
+                    label,
+                )
+                return
+
+            try:
+                success = await controller.restore()
+            except Exception as err:
+                _LOGGER.error("%s curtailment restore failed: %s", label, err)
+                return
+
+            if success:
+                entry_data[state_key] = "normal"
+                for key in extra_state_keys:
+                    entry_data.pop(key, None)
+                _LOGGER.info(
+                    "Solar curtailment disabled - restored %s export limit",
+                    label,
+                )
+            else:
+                _LOGGER.error("%s curtailment restore returned false", label)
+
+        await _restore_controller(
+            "Sigenergy",
+            "sigenergy_coordinator",
+            "sigenergy_curtailment_state",
+            "_last_sigenergy_curtailment_reapply",
+        )
+        await _restore_controller(
+            "AlphaESS",
+            "alphaess_coordinator",
+            "alphaess_curtailment_state",
+        )
+        await _restore_controller(
+            "GoodWe",
+            "goodwe_coordinator",
+            "goodwe_curtailment_state",
+            "_last_goodwe_curtailment_reapply",
+        )
+
+        if entry_data.get("foxess_curtailment_state") == "curtailed":
+            fc = entry_data.get("foxess_coordinator")
+            controller = getattr(fc, "_controller", fc)
+            restore = (
+                getattr(fc, "restore_curtailment", None)
+                or getattr(controller, "restore", None)
+            )
+            if restore:
+                try:
+                    success = await restore()
+                except Exception as err:
+                    _LOGGER.error("FoxESS curtailment restore failed: %s", err)
+                else:
+                    if success:
+                        entry_data["foxess_curtailment_state"] = "normal"
+                        entry_data.pop("_last_foxess_curtailment_reapply", None)
+                        _LOGGER.info(
+                            "Solar curtailment disabled - restored FoxESS export control"
+                        )
+                    else:
+                        _LOGGER.error("FoxESS curtailment restore returned false")
+            else:
+                _LOGGER.warning(
+                    "FoxESS curtailment was active but no restore controller is available"
+                )
+
+        if entry_data.get("solaredge_curtailment_state") == "curtailed":
+            controller = entry_data.get("solaredge_controller")
+            if controller and hasattr(controller, "restore"):
+                try:
+                    success = await controller.restore()
+                except Exception as err:
+                    _LOGGER.error("SolarEdge curtailment restore failed: %s", err)
+                else:
+                    if success:
+                        entry_data["solaredge_curtailment_state"] = "normal"
+                        _LOGGER.info(
+                            "Solar curtailment disabled - restored SolarEdge active power"
+                        )
+                    else:
+                        _LOGGER.error("SolarEdge curtailment restore returned false")
+            else:
+                _LOGGER.warning(
+                    "SolarEdge curtailment was active but no restore controller is available"
+                )
+
+        if entry_data.get("sungrow_curtailment_state") == "curtailed":
+            sungrow_coord = entry_data.get("sungrow_coordinator")
+            if sungrow_coord and hasattr(sungrow_coord, "set_export_limit"):
+                try:
+                    success = await sungrow_coord.set_export_limit(None)
+                except Exception as err:
+                    _LOGGER.error("Sungrow curtailment restore failed: %s", err)
+                else:
+                    if success:
+                        entry_data["sungrow_curtailment_state"] = "normal"
+                        entry_data["sungrow_power_limit_w"] = None
+                        _LOGGER.info(
+                            "Solar curtailment disabled - restored Sungrow export limit"
+                        )
+                    else:
+                        _LOGGER.error("Sungrow curtailment restore returned false")
+            else:
+                _LOGGER.warning(
+                    "Sungrow curtailment was active but no export-limit coordinator is available"
+                )
+
+        if entry_data.get("inverter_last_state") == "curtailed":
+            controller = entry_data.get("inverter_controller")
+            if controller and hasattr(controller, "restore"):
+                try:
+                    import inspect
+
+                    restore_sig = inspect.signature(controller.restore)
+                    if "verify" in restore_sig.parameters:
+                        success = await controller.restore(verify=False)
+                    else:
+                        success = await controller.restore()
+                except Exception as err:
+                    _LOGGER.error("AC inverter curtailment restore failed: %s", err)
+                else:
+                    if success:
+                        entry_data["inverter_last_state"] = "running"
+                        entry_data["inverter_power_limit_w"] = None
+                        _LOGGER.info(
+                            "Solar curtailment disabled - restored AC inverter"
+                        )
+                    else:
+                        _LOGGER.error("AC inverter curtailment restore returned false")
+            else:
+                _LOGGER.warning(
+                    "AC inverter curtailment was active but no restore controller is available"
+                )
+
     async def _restore_export_rule(self) -> None:
-        """Restore Tesla export rule to battery_ok when curtailment is disabled."""
+        """Restore active curtailment controls when curtailment is disabled."""
+        await self._restore_owned_curtailment_limits()
+
+        battery_system = self._get_option(CONF_BATTERY_SYSTEM, BATTERY_SYSTEM_TESLA)
+        if battery_system != BATTERY_SYSTEM_TESLA:
+            return
+
         site_id = self.config_entry.data.get(CONF_TESLA_ENERGY_SITE_ID)
         if not site_id:
             _LOGGER.warning("Cannot restore export rule - no Tesla site ID configured")

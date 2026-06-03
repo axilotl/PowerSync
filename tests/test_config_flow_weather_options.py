@@ -1069,6 +1069,37 @@ def test_non_tesla_curtailment_options_do_not_expose_powerwall_controls():
     assert "else:\n            # Tesla" not in method_source
 
 
+def test_disabling_curtailment_restores_owned_inverter_limits():
+    source = CONFIG_FLOW_PATH.read_text()
+    restore_method = _options_flow_method("_restore_export_rule")
+    restore_source = ast.get_source_segment(source, restore_method)
+    helper_method = _options_flow_method("_restore_owned_curtailment_limits")
+    helper_source = ast.get_source_segment(source, helper_method)
+
+    assert restore_source is not None
+    assert helper_source is not None
+    assert "await self._restore_owned_curtailment_limits()" in restore_source
+    assert "battery_system != BATTERY_SYSTEM_TESLA" in restore_source
+
+    for state_key in (
+        "sigenergy_curtailment_state",
+        "alphaess_curtailment_state",
+        "goodwe_curtailment_state",
+        "foxess_curtailment_state",
+        "solaredge_curtailment_state",
+        "sungrow_curtailment_state",
+        "inverter_last_state",
+    ):
+        assert state_key in helper_source
+
+    assert "_last_sigenergy_curtailment_reapply" in helper_source
+    assert "_last_goodwe_curtailment_reapply" in helper_source
+    assert "_last_foxess_curtailment_reapply" in helper_source
+    assert "sungrow_coord.set_export_limit(None)" in helper_source
+    assert 'entry_data["sungrow_power_limit_w"] = None' in helper_source
+    assert 'entry_data["inverter_power_limit_w"] = None' in helper_source
+
+
 def test_powerwall_offgrid_fallback_toggle_is_translated():
     for path in (STRINGS_PATH, TRANSLATIONS_PATH):
         data = json.loads(path.read_text())
