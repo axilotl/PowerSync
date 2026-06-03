@@ -7199,25 +7199,80 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             entry_data = self.hass.data.get(DOMAIN, {}).get(
                 self.config_entry.entry_id
             )
+            coordinator = (
+                entry_data.get("optimization_coordinator")
+                if isinstance(entry_data, dict)
+                else None
+            )
+
+            # Decide — before persisting — whether anything STRUCTURAL changed.
+            # Pure optimiser tunables are pushed into the running coordinator in
+            # place (the same path the mobile app uses via set_settings), so the
+            # change applies in well under a second. Structural changes —
+            # provider, enable/disable, auto-apply toggle, monitoring mode, the
+            # Flow Power idle toggle, or the Neovolt surplus mode — still rebuild
+            # the integration with a full reload.
+            def _opt_changed(key: str, default: Any = None) -> bool:
+                current = self._get_option(
+                    key, self.config_entry.data.get(key, default)
+                )
+                updated = new_options.get(key, new_data.get(key, default))
+                return current != updated
+
+            structural_change = (
+                coordinator is None
+                or not hasattr(coordinator, "set_settings")
+                or _opt_changed(CONF_OPTIMIZATION_PROVIDER, OPT_PROVIDER_NATIVE)
+                or _opt_changed(CONF_OPTIMIZATION_ENABLED, False)
+                or _opt_changed(CONF_OPTIMIZATION_AUTO_APPLY_RESERVE, False)
+                or _opt_changed(CONF_MONITORING_MODE, False)
+                or _opt_changed(CONF_OPTIMIZATION_DISABLE_IDLE, False)
+                or _opt_changed(CONF_NEOVOLT_SURPLUS_BALANCER_MODE)
+            )
+
             if isinstance(entry_data, dict):
                 entry_data["_skip_reload"] = True
             self.hass.config_entries.async_update_entry(
                 self.config_entry, data=new_data, options=new_options
             )
-            if (
-                previous_auto_apply_reserve_enabled != auto_apply_reserve_enabled
-                and isinstance(entry_data, dict)
-            ):
-                coordinator = entry_data.get("optimization_coordinator")
-                if coordinator and hasattr(
-                    coordinator, "set_auto_apply_reserve_enabled"
-                ):
-                    await coordinator.set_auto_apply_reserve_enabled(
-                        auto_apply_reserve_enabled
+
+            if structural_change:
+                self.hass.async_create_task(
+                    self.hass.config_entries.async_reload(self.config_entry.entry_id)
+                )
+            elif optimization_provider == OPT_PROVIDER_POWERSYNC:
+                live_settings = {
+                    "auto_apply_reserve_enabled": auto_apply_reserve_enabled,
+                    "backup_reserve": backup_reserve,
+                    "hardware_backup_reserve": hardware_backup_reserve,
+                    "battery_capacity_wh": capacity_wh,
+                    "max_charge_w": charge_w,
+                    "max_discharge_w": discharge_w,
+                    "max_grid_import_w": max_grid_import_w,
+                    "allow_grid_charge": allow_grid_charge,
+                    "cost_function": COST_FUNCTION_COST,
+                    "profit_max_enabled": profit_max_enabled,
+                    "profit_max_target_time": profit_max_target_time,
+                    "profit_max_target_soc": profit_max_target_soc,
+                    "spread_export_enabled": spread_export_enabled,
+                    "spread_import_enabled": spread_import_enabled,
+                    "ev_integration": ev_integration_enabled,
+                }
+                try:
+                    await coordinator.set_settings(live_settings)
+                    if getattr(coordinator, "_enabled", False):
+                        await coordinator._run_optimization()
+                except Exception as err:  # never leave settings half-applied
+                    _LOGGER.warning(
+                        "Live optimiser settings apply failed (%s) — reloading entry",
+                        err,
                     )
-            self.hass.async_create_task(
-                self.hass.config_entries.async_reload(self.config_entry.entry_id)
-            )
+                    self.hass.async_create_task(
+                        self.hass.config_entries.async_reload(
+                            self.config_entry.entry_id
+                        )
+                    )
+
             return self.async_create_entry(
                 title="", data=dict(self.config_entry.options)
             )

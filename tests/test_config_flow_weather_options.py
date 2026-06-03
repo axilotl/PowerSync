@@ -562,25 +562,30 @@ def test_optimization_options_schedules_reload_after_flow_response():
     )
 
 
-def test_optimization_options_applies_auto_reserve_toggle_before_reload():
+def test_optimization_options_apply_tunables_in_place_without_reload():
+    """Pure optimiser tunables apply live (no reload); structural keys reload."""
     source = CONFIG_FLOW_PATH.read_text()
     method = _options_flow_method("async_step_optimization")
     method_source = ast.get_source_segment(source, method)
 
     assert method_source is not None
-    previous_state_index = method_source.index(
-        "previous_auto_apply_reserve_enabled = bool"
+    # Optimiser tunables are pushed into the running coordinator via the same
+    # in-place path the mobile app uses, instead of a full reload.
+    assert "await coordinator.set_settings(" in method_source
+    assert "structural_change" in method_source
+    # Structural keys still force a full reload. The auto-apply toggle is one of
+    # them (it drives the reserve-transition logic), so it reloads rather than
+    # applying live.
+    assert "CONF_OPTIMIZATION_AUTO_APPLY_RESERVE" in method_source
+    assert (
+        "self.hass.config_entries.async_reload(self.config_entry.entry_id)"
+        in method_source
     )
     update_entry_index = method_source.index(
         "self.hass.config_entries.async_update_entry"
     )
-    setter_index = method_source.index(
-        "await coordinator.set_auto_apply_reserve_enabled"
-    )
-    schedule_reload_index = method_source.index("self.hass.async_create_task")
-
-    assert previous_state_index < update_entry_index
-    assert update_entry_index < setter_index < schedule_reload_index
+    set_settings_index = method_source.index("await coordinator.set_settings(")
+    assert update_entry_index < set_settings_index
 
 
 def test_neovolt_surplus_balancer_selector_is_in_optimization_options():
