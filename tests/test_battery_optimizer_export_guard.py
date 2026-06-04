@@ -1237,6 +1237,40 @@ def test_reserve_recommendation_reports_export_floor_for_home_load_bridge(
     assert recommendation["home_load_bridge_until"].startswith("2026-05-04T01:30")
 
 
+def test_export_reserve_floor_limits_planned_battery_export_only(
+    battery_optimizer_module,
+):
+    optimizer = battery_optimizer_module.BatteryOptimizer(
+        capacity_wh=10000,
+        max_charge_w=5000,
+        max_discharge_w=5000,
+        backup_reserve=0.05,
+        hardware_reserve=0.05,
+        interval_minutes=5,
+        horizon_hours=3,
+    )
+    n = 36
+
+    result = optimizer.optimize(
+        import_prices=[0.30] * n,
+        export_prices=[0.50] * 12 + [0.0] * (n - 12),
+        solar_forecast=[0.0] * n,
+        load_forecast=[0.5] * n,
+        current_soc=0.90,
+        acquisition_cost_kwh=0.0,
+        allow_battery_export=[True] * 12 + [False] * (n - 12),
+        export_reserve_floor=0.56,
+    )
+
+    export_actions = [a for a in result.schedule.actions if a.action == "export"]
+    assert export_actions
+    assert min(action.soc for action in export_actions) >= 0.55
+    assert any(
+        action.action == "self_consumption" and action.soc < 0.56
+        for action in result.schedule.actions
+    )
+
+
 def test_positive_fit_iog_charge_does_not_create_all_day_export_loop(
     battery_optimizer_module,
 ):

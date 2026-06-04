@@ -980,7 +980,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _force_discharge_reserve_floor(self) -> float:
         """Return the software floor used before force discharge/export commands."""
         floor = self._reserve_ratio(self._config.backup_reserve, 0.0) or 0.0
-        if self._config.profit_max_enabled and self.auto_apply_reserve_enabled:
+        if self.auto_apply_reserve_enabled:
             recommendation = (
                 getattr(getattr(self, "_last_optimizer_result", None), "reserve_recommendation", {})
                 or {}
@@ -992,6 +992,24 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if export_floor is not None:
                 floor = max(floor, export_floor)
         return max(0.0, min(1.0, floor))
+
+    def _auto_export_reserve_floor(
+        self,
+        reserve_recommendation: dict[str, Any],
+    ) -> float | None:
+        """Return the transient export-only floor from the reserve recommendation."""
+        if not self.auto_apply_reserve_enabled:
+            return None
+        export_floor = self._reserve_ratio(
+            reserve_recommendation.get("home_load_export_floor_percent"),
+            None,
+        )
+        if export_floor is None:
+            return None
+        optimizer_floor = self._reserve_ratio(self._config.backup_reserve, 0.0) or 0.0
+        if export_floor <= optimizer_floor + 0.0001:
+            return None
+        return export_floor
 
     def _force_discharge_reaches_reserve(
         self,
@@ -2628,6 +2646,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
             async def _run_optimizer_once(
                 reserve_floor: float | None = None,
+                export_reserve_floor: float | None = None,
             ) -> OptimizerResult:
                 if reserve_floor is not None:
                     self._optimizer.update_config(backup_reserve=reserve_floor)
@@ -2646,6 +2665,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         self._config.allow_grid_charge,
                         self._last_zerohero_bonus_prices,
                         self._last_zerohero_bonus_cap_kwh,
+                        export_reserve_floor,
                     )
                 finally:
                     if reserve_floor is not None:
@@ -2710,10 +2730,17 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 reserve_recommendation = dict(
                     getattr(result, "reserve_recommendation", {}) or {}
                 )
-            if reserve_changed or used_recommendation_floor:
-                result = await _run_optimizer_once()
-                if reserve_recommendation:
-                    result.reserve_recommendation = reserve_recommendation
+            export_reserve_floor = self._auto_export_reserve_floor(
+                reserve_recommendation
+            )
+            if (
+                reserve_changed
+                or used_recommendation_floor
+                or export_reserve_floor is not None
+            ):
+                result = await _run_optimizer_once(
+                    export_reserve_floor=export_reserve_floor
+                )
                 self._last_optimizer_result = result
                 self._current_schedule = result.schedule
                 if self._should_spread_import_schedule():
@@ -2750,6 +2777,16 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         self._current_schedule, export_prices,
                     )
                     result.schedule = self._current_schedule
+                if reserve_recommendation and result.reserve_recommendation:
+                    for recommendation_key in (
+                        "configured_optimizer_reserve_percent",
+                        "manual_optimizer_reserve_percent",
+                    ):
+                        if recommendation_key in reserve_recommendation:
+                            result.reserve_recommendation.setdefault(
+                                recommendation_key,
+                                reserve_recommendation[recommendation_key],
+                            )
                 self._last_update_time = dt_util.now()
 
             # Store forecast data for LP forecast sensors

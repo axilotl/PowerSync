@@ -253,6 +253,7 @@ class BatteryOptimizer:
         # (SOC below reserve is expected during intentional force discharge.)
         self.suppress_reserve_warning: bool = False
         self._below_reserve_recovery_target: float | None = None
+        self.export_reserve_floor: float = 0.0
 
         # Pre-window SOC floor: enforce soc[pre_window_slot - 1] >= target.
         # Used by the coordinator to guarantee the battery is filled before
@@ -376,6 +377,13 @@ class BatteryOptimizer:
         hardware_reserve = max(0.0, min(1.0, self.hardware_reserve))
         return min(current_soc, hardware_reserve)
 
+    def _configured_export_reserve_floor(self) -> float:
+        """Return the transient reserve floor for forced battery export."""
+        return max(
+            0.0,
+            min(1.0, float(getattr(self, "export_reserve_floor", 0.0) or 0.0)),
+        )
+
     def optimize(
         self,
         import_prices: list[float],
@@ -390,6 +398,7 @@ class BatteryOptimizer:
         allow_grid_charge: bool = True,
         export_bonus_prices: list[float] | None = None,
         export_bonus_cap_kwh: float | None = None,
+        export_reserve_floor: float | None = None,
     ) -> OptimizerResult:
         """
         Run the LP optimization.
@@ -439,47 +448,57 @@ class BatteryOptimizer:
         block_battery_charge = self._normalize_battery_charge_blocks(
             block_battery_charge, n_steps
         )
+        previous_export_floor = self.export_reserve_floor
+        if export_reserve_floor is not None:
+            self.export_reserve_floor = max(
+                0.0,
+                min(1.0, float(export_reserve_floor)),
+            )
 
-        if HIGHS_AVAILABLE:
-            try:
-                result = self._solve_lp(
-                    n_steps,
-                    import_prices,
-                    export_prices,
-                    solar_forecast,
-                    load_forecast,
-                    current_soc,
-                    cost_function,
-                    acquisition_cost_kwh,
-                    allow_battery_export,
-                    block_battery_charge,
-                    allow_grid_charge,
-                    export_bonus_prices,
-                    export_bonus_cap_kwh,
-                )
-                result.solve_time_s = time.monotonic() - start_time
-                return result
-            except Exception as e:
-                _LOGGER.error(f"LP solver failed, falling back to greedy: {e}")
+        try:
+            if HIGHS_AVAILABLE:
+                try:
+                    result = self._solve_lp(
+                        n_steps,
+                        import_prices,
+                        export_prices,
+                        solar_forecast,
+                        load_forecast,
+                        current_soc,
+                        cost_function,
+                        acquisition_cost_kwh,
+                        allow_battery_export,
+                        block_battery_charge,
+                        allow_grid_charge,
+                        export_bonus_prices,
+                        export_bonus_cap_kwh,
+                    )
+                    result.solve_time_s = time.monotonic() - start_time
+                    return result
+                except Exception as e:
+                    _LOGGER.error(f"LP solver failed, falling back to greedy: {e}")
 
-        # Greedy fallback
-        result = self._solve_greedy(
-            n_steps,
-            import_prices,
-            export_prices,
-            solar_forecast,
-            load_forecast,
-            current_soc,
-            cost_function,
-            acquisition_cost_kwh,
-            allow_battery_export,
-            block_battery_charge,
-            allow_grid_charge,
-            export_bonus_prices,
-            export_bonus_cap_kwh,
-        )
-        result.solve_time_s = time.monotonic() - start_time
-        return result
+            # Greedy fallback
+            result = self._solve_greedy(
+                n_steps,
+                import_prices,
+                export_prices,
+                solar_forecast,
+                load_forecast,
+                current_soc,
+                cost_function,
+                acquisition_cost_kwh,
+                allow_battery_export,
+                block_battery_charge,
+                allow_grid_charge,
+                export_bonus_prices,
+                export_bonus_cap_kwh,
+            )
+            result.solve_time_s = time.monotonic() - start_time
+            return result
+        finally:
+            if export_reserve_floor is not None:
+                self.export_reserve_floor = previous_export_floor
 
     def _align_forecasts(
         self,
@@ -988,6 +1007,15 @@ class BatteryOptimizer:
                     max_reachable + reachable_charge_kw * eff * p_dt[t] / cap,
                 )
                 reserve_floor[t + 1] = max(self_consumption_floor, max_reachable)
+
+        export_reserve_floor = self._configured_export_reserve_floor()
+        if export_reserve_floor > self_consumption_floor:
+            for t, allow_export in enumerate(p_allow_export):
+                if allow_export:
+                    reserve_floor[t + 1] = max(
+                        reserve_floor[t + 1],
+                        export_reserve_floor,
+                    )
 
         # Boundary-energy state model: power variables per period, battery energy
         # variables at period boundaries. This removes the dense cumulative SOC
@@ -2034,7 +2062,9 @@ class BatteryOptimizer:
                 ):
                     discharge_limit = min(discharge_limit, max(0.0, net_load))
                 discharge_floor = (
-                    optimizer_reserve if forced_export_slot else self_consumption_floor
+                    max(optimizer_reserve, self._configured_export_reserve_floor())
+                    if forced_export_slot
+                    else self_consumption_floor
                 )
                 discharge_room = (soc_tracker - discharge_floor) * cap * eff / dt
                 discharge_kw = min(discharge_limit, max(0, discharge_room))
@@ -2211,7 +2241,7 @@ class BatteryOptimizer:
         optimizer_reserve = max(0.0, min(1.0, self.backup_reserve))
         self_consumption_floor = self._natural_self_consumption_floor(soc_0)
         export_floor = (
-            optimizer_reserve
+            max(optimizer_reserve, self._configured_export_reserve_floor())
             if soc_0 >= optimizer_reserve
             else self_consumption_floor
         )

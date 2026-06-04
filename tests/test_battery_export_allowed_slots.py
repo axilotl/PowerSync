@@ -1615,6 +1615,32 @@ def test_profit_max_home_load_export_floor_blocks_projected_export(opt_module):
     assert coordinator._last_executed_action == "self_consumption"
 
 
+def test_auto_apply_home_load_export_floor_blocks_projected_export_without_profit_max(
+    opt_module,
+):
+    battery = _FakeBattery()
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.18)
+    coordinator.battery_system = "goodwe"
+    coordinator._config.backup_reserve = 0.05
+    coordinator._config.profit_max_enabled = False
+    coordinator._auto_apply_reserve_enabled = True
+    coordinator._last_optimizer_result = SimpleNamespace(
+        reserve_recommendation={"home_load_export_floor_percent": 15}
+    )
+    action = SimpleNamespace(
+        action="export",
+        power_w=5000,
+        soc=0.14,
+        timestamp=datetime(2026, 5, 3, 8, 30, tzinfo=timezone.utc),
+    )
+    coordinator._current_schedule = SimpleNamespace(actions=[action])
+
+    asyncio.run(coordinator._execute_optimizer_action(action))
+
+    assert battery.force_discharge_calls == []
+    assert coordinator._last_executed_action == "self_consumption"
+
+
 def test_scheduled_ev_preserve_release_restores_no_discharge_mode(opt_module):
     battery = _FakeBattery()
     coordinator = _execution_coordinator(opt_module, battery, soc=0.80)
