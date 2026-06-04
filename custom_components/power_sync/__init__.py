@@ -9039,6 +9039,39 @@ def get_current_prices_for_curtailment(
         except (TypeError, ValueError):
             return None
 
+    def _entry_provider(data: dict[str, Any] | None) -> str | None:
+        if not isinstance(data, dict):
+            return None
+        entry = data.get("entry")
+        entry_options = getattr(entry, "options", {}) or {}
+        entry_data_inner = getattr(entry, "data", {}) or {}
+        return (
+            entry_options.get("electricity_provider")
+            or entry_data_inner.get("electricity_provider")
+            or data.get("electricity_provider")
+        )
+
+    def _prices_from_tariff_schedule() -> tuple[float | None, float | None, str | None]:
+        tariff_schedule = (entry_data or {}).get("tariff_schedule")
+        if isinstance(tariff_schedule, dict) and tariff_schedule:
+            buy_cents, sell_cents, _ = get_current_price_from_tariff_schedule(tariff_schedule)
+            buy_price = _as_float(buy_cents)
+            sell_price = _as_float(sell_cents)
+            schedule_import_price = buy_price if buy_price is not None else None
+            if sell_price is not None:
+                # Curtailment uses Amber's feedIn convention:
+                # negative means the customer earns money for export.
+                return -sell_price, schedule_import_price, "tariff_schedule"
+            return None, schedule_import_price, None
+        return None, None, None
+
+    # Flow Power's AEMO coordinator exposes raw wholesale feed-in prices, while
+    # actual export credit is encoded in the generated tariff schedule.
+    if _entry_provider(entry_data) == "flow_power":
+        feedin_price, import_price, price_source = _prices_from_tariff_schedule()
+        if feedin_price is not None:
+            return feedin_price, import_price, price_source
+
     import_price: float | None = None
     for price_coord in price_coordinators:
         data = getattr(price_coord, "data", None)
@@ -9065,17 +9098,11 @@ def get_current_prices_for_curtailment(
         if feedin_price is not None:
             return feedin_price, import_price, "price_coordinator"
 
-    tariff_schedule = (entry_data or {}).get("tariff_schedule")
-    if isinstance(tariff_schedule, dict) and tariff_schedule:
-        buy_cents, sell_cents, _ = get_current_price_from_tariff_schedule(tariff_schedule)
-        buy_price = _as_float(buy_cents)
-        sell_price = _as_float(sell_cents)
-        if buy_price is not None:
-            import_price = buy_price
-        if sell_price is not None:
-            # Curtailment uses Amber's feedIn convention:
-            # negative means the customer earns money for export.
-            return -sell_price, import_price, "tariff_schedule"
+    feedin_price, schedule_import_price, price_source = _prices_from_tariff_schedule()
+    if schedule_import_price is not None:
+        import_price = schedule_import_price
+    if feedin_price is not None:
+        return feedin_price, import_price, price_source
 
     return None, import_price, None
 

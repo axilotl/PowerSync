@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -239,6 +240,64 @@ def test_curtailment_price_fallback_preserves_negative_export_earnings():
     assert feedin_price == 2.5
     assert import_price == 31.0
     assert source == "tariff_schedule"
+
+
+def test_flow_power_curtailment_prefers_tariff_export_over_raw_aemo():
+    namespace = {
+        "Any": object,
+        "get_current_price_from_tariff_schedule": lambda tariff: (24.5, 0.0, "PERIOD_10_00"),
+    }
+    exec(_top_level_function_source("get_current_prices_for_curtailment"), namespace)
+
+    aemo_coordinator = SimpleNamespace(
+        data={
+            "current": [
+                {"channelType": "general", "perKwh": 0.61},
+                {"channelType": "feedIn", "perKwh": -0.61},
+            ],
+        }
+    )
+    entry = SimpleNamespace(options={"electricity_provider": "flow_power"}, data={})
+
+    feedin_price, import_price, source = namespace[
+        "get_current_prices_for_curtailment"
+    ](
+        {"entry": entry, "tariff_schedule": {"buy_prices": {"PERIOD_10_00": 0.245}}},
+        (aemo_coordinator,),
+    )
+
+    assert feedin_price == -0.0
+    assert import_price == 24.5
+    assert source == "tariff_schedule"
+
+
+def test_non_flow_power_curtailment_keeps_live_coordinator_priority():
+    namespace = {
+        "Any": object,
+        "get_current_price_from_tariff_schedule": lambda tariff: (24.5, 0.0, "PERIOD_10_00"),
+    }
+    exec(_top_level_function_source("get_current_prices_for_curtailment"), namespace)
+
+    aemo_coordinator = SimpleNamespace(
+        data={
+            "current": [
+                {"channelType": "general", "perKwh": 0.61},
+                {"channelType": "feedIn", "perKwh": -0.61},
+            ],
+        }
+    )
+    entry = SimpleNamespace(options={"electricity_provider": "aemo_vpp"}, data={})
+
+    feedin_price, import_price, source = namespace[
+        "get_current_prices_for_curtailment"
+    ](
+        {"entry": entry, "tariff_schedule": {"buy_prices": {"PERIOD_10_00": 0.245}}},
+        (aemo_coordinator,),
+    )
+
+    assert feedin_price == -0.61
+    assert import_price == 0.61
+    assert source == "price_coordinator"
 
 
 def test_startup_tesla_tariff_fetch_requires_tesla_site():
