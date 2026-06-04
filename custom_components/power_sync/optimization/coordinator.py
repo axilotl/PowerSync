@@ -8050,9 +8050,6 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if any(k in settings for k in ("battery_capacity_wh", "max_charge_w", "max_discharge_w")):
                 self._battery_specs_source = "manual"
 
-        if rerun_after_settings and getattr(self, "_enabled", False):
-            await self._run_optimization()
-
         # Handle hardware backup reserve
         if "hardware_backup_reserve" in settings:
             hw_reserve = settings["hardware_backup_reserve"]
@@ -8087,6 +8084,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.set_profit_max_mode(new_val)
             if changed:
                 response["changes"].append(f"profit_max_enabled: {settings['profit_max_enabled']}")
+                rerun_after_settings = True
 
         if "spread_export_enabled" in settings:
             new_val = bool(settings["spread_export_enabled"])
@@ -8124,9 +8122,15 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 options=new_options,
             )
             response["changes"].append(f"profit_max_target_time: {target_time}")
+            rerun_after_settings = True
 
         if "profit_max_target_soc" in settings:
             target_soc = self._soc_ratio(settings["profit_max_target_soc"], 1.0)
+            changed = not math.isclose(
+                self._config.profit_max_target_soc,
+                target_soc,
+                abs_tol=0.0001,
+            )
             self._config.profit_max_target_soc = target_soc
             if self._entry:
                 from ..const import CONF_PROFIT_MAX_TARGET_SOC
@@ -8142,6 +8146,8 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     options=new_options,
                 )
             response["changes"].append(f"profit_max_target_soc: {int(round(target_soc * 100))}%")
+            if changed:
+                rerun_after_settings = True
 
         # Handle EV integration toggle
         if "ev_integration" in settings:
@@ -8156,6 +8162,9 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self.hass.data.get(_SKIP_DOM, {}).get(self.entry_id, {})["_skip_reload"] = True
                 self.hass.config_entries.async_update_entry(self._entry, options=new_options)
                 response["changes"].append(f"ev_integration: {ev_enabled}")
+
+        if rerun_after_settings and getattr(self, "_enabled", False):
+            await self._run_optimization()
 
         return response
 

@@ -132,6 +132,7 @@ def _install_power_sync_stubs() -> None:
     const_module.CONF_ALPHAESS_EXPORT_LIMIT_KW = "alphaess_export_limit_kw"
     const_module.CONF_PROFIT_MAX_TARGET_TIME = "profit_max_target_time"
     const_module.CONF_PROFIT_MAX_TARGET_SOC = "profit_max_target_soc"
+    const_module.CONF_PROFIT_MAX_ENABLED = "profit_max_enabled"
     const_module.DEFAULT_PROFIT_MAX_TARGET_TIME = "17:15"
     const_module.DEFAULT_PROFIT_MAX_TARGET_SOC = 1.0
     const_module.DEFAULT_OPTIMIZATION_INTERVAL = 5
@@ -846,6 +847,74 @@ def test_set_settings_ignores_interval_minutes_override(opt_module):
     assert result["changes"] == []
     assert coordinator._config.interval_minutes == 5
     assert updates == []
+
+
+def _prepare_enabled_settings_coordinator(coordinator):
+    coordinator.entry_id = "entry-1"
+    coordinator._enabled = True
+    coordinator._load_estimator = None
+    updates = []
+    run_calls = []
+
+    class _ConfigEntries:
+        def async_update_entry(self, entry, **kwargs):
+            updates.append(kwargs)
+            if "data" in kwargs:
+                entry.data = kwargs["data"]
+            if "options" in kwargs:
+                entry.options = kwargs["options"]
+
+    async def _run_optimization():
+        run_calls.append(True)
+
+    coordinator.hass = SimpleNamespace(
+        data={"power_sync": {"entry-1": {}}},
+        config_entries=_ConfigEntries(),
+    )
+    coordinator._run_optimization = _run_optimization
+    return updates, run_calls
+
+
+def test_profit_max_setting_change_forces_immediate_reoptimization(opt_module):
+    coordinator = _coordinator(opt_module, "flow_power", profit_max=False)
+    updates, run_calls = _prepare_enabled_settings_coordinator(coordinator)
+
+    result = asyncio.run(coordinator.set_settings({"profit_max_enabled": True}))
+
+    assert result["success"] is True
+    assert result["changes"] == ["profit_max_enabled: True"]
+    assert coordinator._config.profit_max_enabled is True
+    assert updates[-1]["options"]["profit_max_enabled"] is True
+    assert len(run_calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("settings", "expected_change"),
+    [
+        ({"profit_max_target_time": "16:00"}, "profit_max_target_time: 16:00"),
+        ({"profit_max_target_soc": 80}, "profit_max_target_soc: 80%"),
+    ],
+)
+def test_profit_max_target_setting_change_forces_immediate_reoptimization(
+    opt_module,
+    settings,
+    expected_change,
+):
+    coordinator = _coordinator(
+        opt_module,
+        "flow_power",
+        profit_max=True,
+        profit_max_target_time="17:15",
+        profit_max_target_soc=1.0,
+    )
+    updates, run_calls = _prepare_enabled_settings_coordinator(coordinator)
+
+    result = asyncio.run(coordinator.set_settings(settings))
+
+    assert result["success"] is True
+    assert expected_change in result["changes"]
+    assert updates
+    assert len(run_calls) == 1
 
 
 def test_startup_uses_fixed_optimization_interval_not_persisted_value():
