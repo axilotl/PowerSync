@@ -547,6 +547,7 @@ from .const import (
     CONF_OPTIMIZATION_MAX_GRID_IMPORT_W,
     CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED,
     CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED,
+    CONF_OPTIMIZATION_DISABLE_IDLE,
     CONF_PROFIT_MAX_ENABLED,
     CONF_PROFIT_MAX_TARGET_TIME,
     CONF_PROFIT_MAX_TARGET_SOC,
@@ -29629,6 +29630,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             add_profit_max = hass.data[DOMAIN][entry.entry_id].pop("switch_add_profit_max", None)
             if add_profit_max:
                 add_profit_max(optimization_coordinator)
+            add_disable_idle = hass.data[DOMAIN][entry.entry_id].pop("switch_add_disable_idle", None)
+            if add_disable_idle:
+                add_disable_idle(optimization_coordinator)
             add_spread_export = hass.data[DOMAIN][entry.entry_id].pop("switch_add_spread_export", None)
             if add_spread_export:
                 add_spread_export(optimization_coordinator)
@@ -30090,6 +30094,13 @@ class OptimizationSettingsView(HomeAssistantView):
                         config_entry.data.get(CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED, False),
                     )
                 ),
+                "disable_idle_enabled": bool(
+                    config_entry
+                    and config_entry.options.get(
+                        CONF_OPTIMIZATION_DISABLE_IDLE,
+                        config_entry.data.get(CONF_OPTIMIZATION_DISABLE_IDLE, False),
+                    )
+                ),
                 "config": {
                     "battery_capacity_wh": _entry_int_setting(
                         CONF_OPTIMIZATION_BATTERY_CAPACITY_WH,
@@ -30128,6 +30139,14 @@ class OptimizationSettingsView(HomeAssistantView):
                         config_entry.options.get(
                             CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED,
                             config_entry.data.get(CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED, False),
+                        )
+                        if config_entry
+                        else False
+                    ),
+                    "disable_idle_enabled": bool(
+                        config_entry.options.get(
+                            CONF_OPTIMIZATION_DISABLE_IDLE,
+                            config_entry.data.get(CONF_OPTIMIZATION_DISABLE_IDLE, False),
                         )
                         if config_entry
                         else False
@@ -30178,6 +30197,7 @@ class OptimizationSettingsView(HomeAssistantView):
             "profit_max_enabled": opt_coordinator.profit_max_mode,
             "spread_export_enabled": opt_coordinator._config.spread_export_enabled,
             "spread_import_enabled": opt_coordinator._config.spread_import_enabled,
+            "disable_idle_enabled": opt_coordinator.disable_idle_enabled,
             "auto_apply_reserve_enabled": opt_coordinator.auto_apply_reserve_enabled,
             "manual_backup_reserve": (
                 round(opt_coordinator.manual_backup_reserve * 100)
@@ -30192,6 +30212,7 @@ class OptimizationSettingsView(HomeAssistantView):
                 "allow_grid_charge": opt_coordinator._config.allow_grid_charge,
                 "spread_export_enabled": opt_coordinator._config.spread_export_enabled,
                 "spread_import_enabled": opt_coordinator._config.spread_import_enabled,
+                "disable_idle_enabled": opt_coordinator.disable_idle_enabled,
                 "auto_apply_reserve_enabled": opt_coordinator.auto_apply_reserve_enabled,
                 "manual_backup_reserve": (
                     round(opt_coordinator.manual_backup_reserve * 100)
@@ -30315,6 +30336,12 @@ class OptimizationSettingsView(HomeAssistantView):
             if "spread_import_enabled" in settings:
                 new_options[CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED] = bool(settings["spread_import_enabled"])
                 changes.append(f"Set spread import to {settings['spread_import_enabled']}")
+
+            if "disable_idle_enabled" in settings:
+                disable_idle = bool(settings["disable_idle_enabled"])
+                new_data[CONF_OPTIMIZATION_DISABLE_IDLE] = disable_idle
+                new_options[CONF_OPTIMIZATION_DISABLE_IDLE] = disable_idle
+                changes.append(f"Set Flow Power No Idle mode to {settings['disable_idle_enabled']}")
 
             if "auto_apply_reserve_enabled" in settings:
                 auto_apply = bool(settings["auto_apply_reserve_enabled"])

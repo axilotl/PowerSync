@@ -27,6 +27,7 @@ from .const import (
     CONF_MONITORING_MODE,
     CONF_OPTIMIZATION_AUTO_APPLY_RESERVE,
     CONF_OPTIMIZATION_BACKUP_RESERVE,
+    CONF_OPTIMIZATION_DISABLE_IDLE,
     CONF_OPTIMIZATION_ENABLED,
     CONF_OPTIMIZATION_MANUAL_RESERVE,
     CONF_OPTIMIZATION_PROVIDER,
@@ -45,6 +46,7 @@ from .const import (
     SWITCH_TYPE_MONITORING_MODE,
     SWITCH_TYPE_AWAY_MODE,
     SWITCH_TYPE_PROFIT_MAX_MODE,
+    SWITCH_TYPE_OPTIMIZATION_DISABLE_IDLE,
     SWITCH_TYPE_OPTIMIZATION_SPREAD_EXPORT,
     SWITCH_TYPE_OPTIMIZATION_SPREAD_IMPORT,
     SWITCH_TYPE_OPTIMIZATION_ENABLED,
@@ -273,6 +275,16 @@ async def async_setup_entry(
         async_add_entities([ProfitMaxModeSwitch(hass=hass, entry=entry, coordinator=coordinator)])
 
     hass.data[DOMAIN][entry.entry_id]["switch_add_profit_max"] = _add_profit_max_switch
+
+    if electricity_provider == "flow_power":
+        def _add_disable_idle_switch(coordinator: Any) -> None:
+            async_add_entities([
+                DisableIdleModeSwitch(hass=hass, entry=entry, coordinator=coordinator)
+            ])
+
+        hass.data[DOMAIN][entry.entry_id]["switch_add_disable_idle"] = (
+            _add_disable_idle_switch
+        )
 
     if battery_system in TARGET_EXPORT_POWER_BATTERY_SYSTEMS:
         def _add_spread_export_switch(coordinator: Any) -> None:
@@ -1255,6 +1267,67 @@ class ProfitMaxModeSwitch(SwitchEntity):
         """Disable profit maximisation mode."""
         self._attr_is_on = False
         self._coordinator.set_profit_max_mode(False)
+        self.async_write_ha_state()
+
+
+class DisableIdleModeSwitch(SwitchEntity):
+    """Switch to replace Flow Power optimizer idle holds with self-consumption."""
+
+    _attr_has_entity_name = True
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry, coordinator: Any) -> None:
+        """Initialize the switch."""
+        self.hass = hass
+        self._entry = entry
+        self._coordinator = coordinator
+        self._attr_unique_id = f"{entry.entry_id}_{SWITCH_TYPE_OPTIMIZATION_DISABLE_IDLE}"
+        self._attr_suggested_object_id = (
+            f"power_sync_{SWITCH_TYPE_OPTIMIZATION_DISABLE_IDLE}"
+        )
+        self._attr_name = "No Idle Mode"
+        self._attr_icon = "mdi:sleep-off"
+        enabled = entry.options.get(
+            CONF_OPTIMIZATION_DISABLE_IDLE,
+            entry.data.get(CONF_OPTIMIZATION_DISABLE_IDLE, False),
+        )
+        self._attr_is_on = bool(enabled)
+
+    async def async_added_to_hass(self) -> None:
+        """Register for optimizer setting changes made outside this switch."""
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                f"{DOMAIN}_{self._entry.entry_id}_disable_idle",
+                self._handle_disable_idle_update,
+            )
+        )
+
+    @callback
+    def _handle_disable_idle_update(self, enabled: bool) -> None:
+        """Update the HA switch state after API-driven changes."""
+        self._attr_is_on = bool(enabled)
+        self.async_write_ha_state()
+
+    @property
+    def device_info(self):
+        return family_device_info(self._entry.entry_id, SENSOR_FAMILY_LP_OPTIMIZER)
+
+    @property
+    def is_on(self) -> bool:
+        """Return True if Flow Power no-idle mode is active."""
+        return self._coordinator.disable_idle_enabled
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Enable Flow Power no-idle mode."""
+        self._attr_is_on = True
+        self._coordinator.set_disable_idle_enabled(True)
+        self.async_write_ha_state()
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Disable Flow Power no-idle mode."""
+        self._attr_is_on = False
+        self._coordinator.set_disable_idle_enabled(False)
         self.async_write_ha_state()
 
 

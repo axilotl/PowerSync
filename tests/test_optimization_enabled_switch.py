@@ -76,6 +76,27 @@ def test_spread_export_switch_is_registered_and_capability_gated():
     assert "set_spread_import_enabled(False)" in switch_source
 
 
+def test_flow_power_disable_idle_switch_is_registered_and_provider_gated():
+    const_source = CONST_PATH.read_text()
+    switch_source = SWITCH_PATH.read_text()
+    coordinator_source = COORDINATOR_PATH.read_text()
+    init_source = INIT_PATH.read_text()
+
+    assert 'CONF_OPTIMIZATION_DISABLE_IDLE = "optimization_disable_idle"' in const_source
+    assert 'SWITCH_TYPE_OPTIMIZATION_DISABLE_IDLE = "optimization_disable_idle"' in const_source
+    assert 'if electricity_provider == "flow_power":' in switch_source
+    assert 'hass.data[DOMAIN][entry.entry_id]["switch_add_disable_idle"]' in switch_source
+    assert "DisableIdleModeSwitch(" in switch_source
+    assert "class DisableIdleModeSwitch(SwitchEntity):" in switch_source
+    assert 'self._attr_name = "No Idle Mode"' in switch_source
+    assert "set_disable_idle_enabled(True)" in switch_source
+    assert "set_disable_idle_enabled(False)" in switch_source
+    assert "def set_disable_idle_enabled(self, enabled: bool) -> None:" in coordinator_source
+    assert '"disable_idle_enabled": self.disable_idle_enabled' in coordinator_source
+    assert '"disable_idle_enabled": opt_coordinator.disable_idle_enabled' in init_source
+    assert "CONF_OPTIMIZATION_DISABLE_IDLE" in init_source
+
+
 def test_spread_export_setting_is_exposed_through_api_and_coordinator():
     init_source = INIT_PATH.read_text()
     coordinator_source = COORDINATOR_PATH.read_text()

@@ -687,6 +687,11 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return self._config.spread_import_enabled
 
     @property
+    def disable_idle_enabled(self) -> bool:
+        """Return whether Flow Power optimizer IDLE actions are disabled."""
+        return self._should_disable_idle_schedule()
+
+    @property
     def auto_apply_reserve_enabled(self) -> bool:
         """Return whether forecast reserve recommendations update the LP floor."""
         return bool(getattr(self, "_auto_apply_reserve_enabled", False))
@@ -801,6 +806,41 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             new_options[CONF_PROFIT_MAX_ENABLED] = enabled
             self.hass.data.setdefault(DOMAIN, {}).setdefault(self.entry_id, {})["_skip_reload"] = True
             self.hass.config_entries.async_update_entry(self._entry, options=new_options)
+
+    def set_disable_idle_enabled(self, enabled: bool) -> None:
+        """Enable or disable Flow Power no-idle mode."""
+        if self._config.disable_idle_enabled == bool(enabled):
+            return
+        self._config.disable_idle_enabled = bool(enabled)
+        if self._load_estimator:
+            self._load_estimator.invalidate_cache()
+        _LOGGER.info(
+            "Flow Power No Idle mode %s",
+            "ENABLED" if enabled else "DISABLED",
+        )
+        if self.hass and self.entry_id:
+            from homeassistant.helpers.dispatcher import async_dispatcher_send
+
+            from ..const import DOMAIN
+
+            async_dispatcher_send(
+                self.hass,
+                f"{DOMAIN}_{self.entry_id}_disable_idle",
+                bool(enabled),
+            )
+        if self._entry:
+            from ..const import CONF_OPTIMIZATION_DISABLE_IDLE, DOMAIN
+
+            new_data = dict(self._entry.data)
+            new_options = dict(self._entry.options)
+            new_data[CONF_OPTIMIZATION_DISABLE_IDLE] = bool(enabled)
+            new_options[CONF_OPTIMIZATION_DISABLE_IDLE] = bool(enabled)
+            self.hass.data.setdefault(DOMAIN, {}).setdefault(self.entry_id, {})["_skip_reload"] = True
+            self.hass.config_entries.async_update_entry(
+                self._entry,
+                data=new_data,
+                options=new_options,
+            )
 
     async def set_auto_apply_reserve_enabled(self, enabled: bool) -> None:
         """Enable or disable forecast-driven optimizer reserve tracking."""
@@ -7615,6 +7655,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "cost_function": self._cost_function.value,
             "spread_export_enabled": self._config.spread_export_enabled,
             "spread_import_enabled": self._config.spread_import_enabled,
+            "disable_idle_enabled": self.disable_idle_enabled,
             "auto_apply_reserve_enabled": self.auto_apply_reserve_enabled,
             "manual_backup_reserve": self.manual_backup_reserve,
             "backup_reserve": self._config.backup_reserve,
@@ -7655,6 +7696,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "allow_grid_charge": self._config.allow_grid_charge,
                 "spread_export_enabled": self._config.spread_export_enabled,
                 "spread_import_enabled": self._config.spread_import_enabled,
+                "disable_idle_enabled": self.disable_idle_enabled,
                 "auto_apply_reserve_enabled": self.auto_apply_reserve_enabled,
                 "manual_backup_reserve": self.manual_backup_reserve,
                 "battery_specs_source": self._battery_specs_source,
@@ -8051,6 +8093,13 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.set_spread_import_enabled(new_val)
             if changed:
                 response["changes"].append(f"spread_import_enabled: {settings['spread_import_enabled']}")
+
+        if "disable_idle_enabled" in settings:
+            new_val = bool(settings["disable_idle_enabled"])
+            changed = self._config.disable_idle_enabled != new_val
+            self.set_disable_idle_enabled(new_val)
+            if changed:
+                response["changes"].append(f"disable_idle_enabled: {settings['disable_idle_enabled']}")
 
         if "profit_max_target_time" in settings and self._entry:
             from ..const import CONF_PROFIT_MAX_TARGET_TIME
