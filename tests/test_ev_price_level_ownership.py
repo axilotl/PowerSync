@@ -410,7 +410,19 @@ def test_generic_price_level_start_uses_generic_loadpoint_id(monkeypatch, fake_a
         wants_charge,
     )
 
-    executor = ev_planner.PriceLevelChargingExecutor(_FakeHass(), GenericEntry())
+    hass = _FakeHass()
+    hass.data["power_sync"]["entry-1"]["automation_store"]._data[
+        "vehicle_charging_configs"
+    ] = [{
+        "vehicle_id": VIN,
+        "charger_type": "tesla",
+        "min_amps": 5,
+        "max_amps": 32,
+        "voltage": 230,
+        "phases": 1,
+    }]
+
+    executor = ev_planner.PriceLevelChargingExecutor(hass, GenericEntry())
     results = asyncio.run(executor.evaluate_all_vehicles(5))
 
     assert results["generic_ev"] == (True, "Cheap price", "price_level_opportunity")
@@ -421,6 +433,40 @@ def test_generic_price_level_start_uses_generic_loadpoint_id(monkeypatch, fake_a
     assert params["charger_type"] == "generic"
     assert params["charger_switch_entity"] == "switch.garage_ev"
     assert params["allow_ownership_takeover"] is True
+
+
+def test_price_level_generic_stop_ignores_stale_tesla_vehicle_config(fake_actions):
+    fake_actions._action_stop_ev_charging_dynamic = AsyncMock(return_value=True)
+
+    class GenericEntry(_FakeConfigEntry):
+        options = {
+            "generic_charger_enabled": True,
+            "generic_charger_switch_entity": "switch.garage_ev",
+            "generic_charger_amps_entity": "number.garage_ev_current",
+        }
+
+    hass = _FakeHass()
+    hass.data["power_sync"]["entry-1"]["automation_store"]._data[
+        "vehicle_charging_configs"
+    ] = [{
+        "vehicle_id": VIN,
+        "charger_type": "tesla",
+        "min_amps": 5,
+        "max_amps": 32,
+        "voltage": 230,
+        "phases": 1,
+    }]
+
+    executor = ev_planner.PriceLevelChargingExecutor(hass, GenericEntry())
+    result = asyncio.run(executor._stop_charging("Price above threshold", "generic_ev"))
+
+    assert result is True
+    fake_actions._action_stop_ev_charging_dynamic.assert_awaited_once()
+    _hass, _entry, params = fake_actions._action_stop_ev_charging_dynamic.await_args.args
+    assert params["vehicle_id"] == "generic_ev"
+    assert params["vehicle_vin"] == "generic_ev"
+    assert params["charger_type"] == "generic"
+    assert params["charger_switch_entity"] == "switch.garage_ev"
 
 
 def test_scheduled_generic_start_uses_generic_loadpoint_id(fake_actions):

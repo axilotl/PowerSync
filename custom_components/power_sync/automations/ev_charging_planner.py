@@ -5653,6 +5653,63 @@ def _resolve_dynamic_loadpoint_id(
     return vehicle_vin
 
 
+def _is_configured_non_tesla_loadpoint(
+    hass: "HomeAssistant",
+    opts: Mapping[str, Any],
+    charger_type: str,
+    vehicle_id: Optional[str],
+) -> bool:
+    """Return whether vehicle_id is the synthetic id for the configured charger."""
+    if not vehicle_id:
+        return True
+    if charger_type == "generic":
+        return _vehicle_config_matches(vehicle_id, "generic_ev")
+    if charger_type == "zaptec":
+        return _vehicle_config_matches(vehicle_id, "zaptec_standalone")
+    if charger_type == "sigenergy":
+        return _vehicle_config_matches(vehicle_id, "sigenergy_charger")
+    if charger_type == "ocpp":
+        ocpp_charger_id = _resolve_ocpp_charger_id(hass, opts.get("ocpp_charger_id"))
+        expected = _resolve_dynamic_loadpoint_id(
+            "ocpp",
+            None,
+            {"ocpp_charger_id": ocpp_charger_id},
+        )
+        return _vehicle_config_matches(vehicle_id, expected)
+    return False
+
+
+def _drop_stale_charger_backend(
+    hass: "HomeAssistant",
+    opts: Mapping[str, Any],
+    vehicle_charger_params: dict,
+    configured_vehicle_id: Optional[str],
+    vehicle_vin: Optional[str],
+) -> tuple[dict, Optional[str], Optional[str]]:
+    """Discard stale stored backend params when entry config selects a non-Tesla charger."""
+    configured_charger_type = _configured_charger_type(opts)
+    stored_charger_type = vehicle_charger_params.get("charger_type")
+    if (
+        configured_charger_type != "tesla"
+        and stored_charger_type
+        and stored_charger_type != configured_charger_type
+        and _is_configured_non_tesla_loadpoint(
+            hass,
+            opts,
+            configured_charger_type,
+            vehicle_vin,
+        )
+    ):
+        vehicle_charger_params = {
+            key: value
+            for key, value in vehicle_charger_params.items()
+            if key in ("min_charge_amps", "max_charge_amps", "voltage", "phases")
+        }
+        configured_vehicle_id = None
+        stored_charger_type = None
+    return vehicle_charger_params, configured_vehicle_id, stored_charger_type
+
+
 def _resolve_ocpp_charger_id(
     hass: "HomeAssistant",
     configured_id: Optional[str] = None,
@@ -5861,23 +5918,18 @@ def _build_dynamic_charging_params(
     )
     configured_vehicle_id = vehicle_charger_params.pop("_configured_vehicle_id", None)
     configured_charger_type = _configured_charger_type(opts)
-    stored_charger_type = vehicle_charger_params.get("charger_type")
-    if (
-        vehicle_vin is None
-        and configured_charger_type != "tesla"
-        and stored_charger_type
-        and stored_charger_type != configured_charger_type
-    ):
-        vehicle_charger_params = {
-            key: value
-            for key, value in vehicle_charger_params.items()
-            if key in ("min_charge_amps", "max_charge_amps", "voltage", "phases")
-        }
-        configured_vehicle_id = None
-        stored_charger_type = None
+    vehicle_charger_params, configured_vehicle_id, stored_charger_type = (
+        _drop_stale_charger_backend(
+            hass,
+            opts,
+            vehicle_charger_params,
+            configured_vehicle_id,
+            vehicle_vin,
+        )
+    )
     charger_type = (
         configured_charger_type
-        if vehicle_vin is None and configured_charger_type != "tesla"
+        if not stored_charger_type and configured_charger_type != "tesla"
         else stored_charger_type or configured_charger_type
     )
 
@@ -5923,7 +5975,17 @@ def _build_dynamic_stop_params(
         vehicle_vin,
     )
     configured_vehicle_id = vehicle_charger_params.pop("_configured_vehicle_id", None)
-    charger_type = vehicle_charger_params.get("charger_type") or _configured_charger_type(opts)
+    configured_charger_type = _configured_charger_type(opts)
+    vehicle_charger_params, configured_vehicle_id, stored_charger_type = (
+        _drop_stale_charger_backend(
+            hass,
+            opts,
+            vehicle_charger_params,
+            configured_vehicle_id,
+            vehicle_vin,
+        )
+    )
+    charger_type = stored_charger_type or configured_charger_type
 
     params = {
         **vehicle_charger_params,
