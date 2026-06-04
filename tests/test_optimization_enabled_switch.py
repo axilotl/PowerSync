@@ -158,6 +158,8 @@ def test_auto_apply_reserve_recommendation_uses_manual_baseline_floor():
     assert "used_recommendation_floor = recommendation_floor is not None" in coordinator_source
     assert "or export_reserve_floor is not None" in coordinator_source
     assert "export_reserve_floor=export_reserve_floor" in coordinator_source
+    assert '"home_load_export_floor_percent"' in coordinator_source
+    assert '"applied_export_reserve_floor_percent"' in coordinator_source
     assert "for recommendation_key in (" in coordinator_source
     assert '"configured_optimizer_reserve_percent"' in coordinator_source
 

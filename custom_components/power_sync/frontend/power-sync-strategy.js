@@ -1998,6 +1998,8 @@ class PowerSyncOptimizationPlan extends HTMLElement {
       intervalMinutes,
       reservePercent: reserve.percent,
       reserveCalculated: reserve.calculated,
+      exportReservePercent: reserve.exportPercent,
+      exportReserveCalculated: reserve.exportCalculated,
       idleHoldActive: idleHold.active,
       idleHoldReservePercent: idleHold.percent,
       powerSeries,
@@ -2025,6 +2027,9 @@ class PowerSyncOptimizationPlan extends HTMLElement {
     }
     if (model.reserveCalculated && Number.isFinite(model.reservePercent)) {
       chips.push(['Auto Reserve', `${Math.round(model.reservePercent)}%`]);
+    }
+    if (model.exportReserveCalculated && Number.isFinite(model.exportReservePercent)) {
+      chips.push(['Export Floor', `${Math.round(model.exportReservePercent)}%`]);
     }
     if (model.idleHoldActive && Number.isFinite(model.idleHoldReservePercent)) {
       chips.push(['IDLE Hold', `${Math.round(model.idleHoldReservePercent)}%`, true]);
@@ -2082,6 +2087,12 @@ class PowerSyncOptimizationPlan extends HTMLElement {
       svg += `<rect x="${pad.left}" y="${ry}" width="${chartW}" height="${pad.top + chartH - ry}" fill="#F44336" opacity="0.06"/>`;
       svg += `<line x1="${pad.left}" y1="${ry}" x2="${W - pad.right}" y2="${ry}" stroke="#F44336" stroke-width="1" stroke-dasharray="5,3" opacity="0.75"/>`;
       svg += `<text x="${W - pad.right - 4}" y="${ry - 5}" text-anchor="end" font-size="${compact ? 9 : 10}" fill="#F44336">${this._escSvg(`${reserveLabel} ${Math.round(model.reservePercent)}%`)}</text>`;
+    }
+    if (model.exportReserveCalculated && Number.isFinite(model.exportReservePercent)) {
+      const exportY = ySoc(model.exportReservePercent);
+      const exportLabelY = Math.max(pad.top + 11, exportY - 5);
+      svg += `<line x1="${pad.left}" y1="${exportY}" x2="${W - pad.right}" y2="${exportY}" stroke="#FF5252" stroke-width="1.4" stroke-dasharray="7,3" opacity="0.9"/>`;
+      svg += `<text x="${pad.left + 4}" y="${exportLabelY}" text-anchor="start" font-size="${compact ? 9 : 10}" fill="#FF5252">${this._escSvg(`Export Floor ${Math.round(model.exportReservePercent)}%`)}</text>`;
     }
     if (model.idleHoldActive && Number.isFinite(model.idleHoldReservePercent)) {
       const holdY = ySoc(model.idleHoldReservePercent);
@@ -2165,6 +2176,13 @@ class PowerSyncOptimizationPlan extends HTMLElement {
             label: model.reserveCalculated ? 'Calculated Reserve' : 'Reserve',
             color: '#F44336',
             value: `${Math.round(model.reservePercent)}%`,
+          });
+        }
+        if (model.exportReserveCalculated && Number.isFinite(model.exportReservePercent)) {
+          rows.push({
+            label: 'Export Floor',
+            color: '#FF5252',
+            value: `${Math.round(model.exportReservePercent)}%`,
           });
         }
         if (model.idleHoldActive && Number.isFinite(model.idleHoldReservePercent)) {
@@ -2513,13 +2531,28 @@ class PowerSyncOptimizationPlan extends HTMLElement {
       data?.config?.auto_apply_reserve_enabled === true ||
       recommendation?.auto_apply_enabled === true;
     const appliedReserve = this._clampedPercent(recommendation?.applied_optimizer_reserve_percent);
+    const exportReserve = Math.max(
+      this._clampedPercent(recommendation?.applied_export_reserve_floor_percent),
+      this._clampedPercent(recommendation?.home_load_export_floor_percent),
+    );
+    const exportCalculated = autoApplyEnabled &&
+      Number.isFinite(exportReserve) &&
+      Number.isFinite(appliedReserve) &&
+      exportReserve > appliedReserve + 0.5;
     if (autoApplyEnabled && Number.isFinite(appliedReserve)) {
-      return { percent: appliedReserve, calculated: true };
+      return {
+        percent: appliedReserve,
+        calculated: true,
+        exportPercent: exportCalculated ? exportReserve : NaN,
+        exportCalculated,
+      };
     }
     const configuredReserve = this._reservePercent(data?.config?.backup_reserve);
     return {
       percent: Number.isFinite(configuredReserve) ? Math.max(0, Math.min(100, configuredReserve)) : NaN,
       calculated: false,
+      exportPercent: NaN,
+      exportCalculated: false,
     };
   }
 

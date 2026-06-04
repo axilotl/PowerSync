@@ -2782,12 +2782,18 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     for recommendation_key in (
                         "configured_optimizer_reserve_percent",
                         "manual_optimizer_reserve_percent",
+                        "home_load_export_floor_percent",
                     ):
                         if recommendation_key in reserve_recommendation:
                             result.reserve_recommendation.setdefault(
                                 recommendation_key,
                                 reserve_recommendation[recommendation_key],
                             )
+                    if export_reserve_floor is not None:
+                        result.reserve_recommendation.setdefault(
+                            "applied_export_reserve_floor_percent",
+                            int(round(export_reserve_floor * 100)),
+                        )
                 self._last_update_time = dt_util.now()
 
             # Store forecast data for LP forecast sensors

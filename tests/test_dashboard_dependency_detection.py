@@ -63,7 +63,11 @@ def test_optimizer_plan_shows_calculated_auto_reserve():
     assert "auto_apply_reserve_enabled" in source
     assert "Calculated Reserve" in source
     assert "Auto Reserve" in source
+    assert "home_load_export_floor_percent" in source
+    assert "applied_export_reserve_floor_percent" in source
+    assert "Export Floor" in source
     assert "reserveCalculated" in source
+    assert "exportReserveCalculated" in source
 
 
 def test_optimizer_plan_shows_temporary_idle_hold_separately():
