@@ -601,6 +601,29 @@ def _build_globird_plan_schema(
     )
 
 
+async def _validate_globird_credentials(email: str, password: str) -> str | None:
+    """Validate GloBird portal credentials and return a config-flow error key."""
+    from .globird_api import (
+        GloBirdAuthError,
+        GloBirdCaptchaRequired,
+        GloBirdClient,
+    )
+
+    client = GloBirdClient()
+    try:
+        await client.authenticate(email, password)
+    except GloBirdCaptchaRequired:
+        return "captcha_required"
+    except GloBirdAuthError:
+        return "invalid_globird_auth"
+    except Exception as err:
+        _LOGGER.exception("GloBird portal credential validation failed: %s", err)
+        return "cannot_connect"
+    finally:
+        await client.close()
+    return None
+
+
 def _normalize_neovolt_entry_ids(
     raw_entry_ids: Any,
     fallback_entry_id: str | None = None,
@@ -4764,30 +4787,6 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             currency_unit=self._currency(),
         )
 
-    async def _validate_globird_credentials(
-        self, email: str, password: str
-    ) -> str | None:
-        """Validate GloBird portal credentials and return a config-flow error."""
-        from .globird_api import (
-            GloBirdAuthError,
-            GloBirdCaptchaRequired,
-            GloBirdClient,
-        )
-
-        client = GloBirdClient()
-        try:
-            await client.authenticate(email, password)
-        except GloBirdCaptchaRequired:
-            return "captcha_required"
-        except GloBirdAuthError:
-            return "invalid_globird_auth"
-        except Exception as err:
-            _LOGGER.exception("GloBird portal credential validation failed: %s", err)
-            return "cannot_connect"
-        finally:
-            await client.close()
-        return None
-
     async def async_step_globird_plan(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
@@ -4842,7 +4841,7 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             email = user_input.get(CONF_GLOBIRD_EMAIL, "")
             password = user_input.get(CONF_GLOBIRD_PASSWORD, "")
             if email and password:
-                error = await self._validate_globird_credentials(email, password)
+                error = await _validate_globird_credentials(email, password)
                 if error is None:
                     self._globird_data[CONF_GLOBIRD_EMAIL] = email
                     self._globird_data[CONF_GLOBIRD_PASSWORD] = password
@@ -10513,7 +10512,7 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             password = user_input.get(CONF_GLOBIRD_PASSWORD) or ""
             password_for_validation = password or current.get(CONF_GLOBIRD_PASSWORD, "")
             if email and password_for_validation:
-                error = await self._validate_globird_credentials(
+                error = await _validate_globird_credentials(
                     email, password_for_validation
                 )
                 if error is None:

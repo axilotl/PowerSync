@@ -523,6 +523,25 @@ def test_provider_portal_login_errors_are_translated_for_setup_and_options():
             assert options_errors.get(key), f"{path.name} missing options error {key}"
 
 
+def test_globird_options_login_uses_shared_credential_validator():
+    source = CONFIG_FLOW_PATH.read_text()
+    helper = next(
+        node
+        for node in _module_tree().body
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "_validate_globird_credentials"
+    )
+    method = _options_flow_method("async_step_globird_portal_login_options")
+    helper_source = ast.get_source_segment(source, helper)
+    method_source = ast.get_source_segment(source, method)
+
+    assert helper_source is not None
+    assert "GloBirdClient" in helper_source
+    assert method_source is not None
+    assert "await _validate_globird_credentials(" in method_source
+    assert "self._validate_globird_credentials" not in method_source
+
+
 def test_optimization_options_exposes_enabled_toggle():
     source = CONFIG_FLOW_PATH.read_text()
     method = _options_flow_method("async_step_optimization")
