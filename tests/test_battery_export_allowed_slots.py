@@ -722,6 +722,58 @@ def test_profit_max_auto_apply_can_lower_to_forecast_reserve(opt_module):
     assert recommendation["applied_optimizer_reserve_percent"] == 5
 
 
+def test_auto_apply_reserve_uses_home_load_export_bridge_floor(opt_module):
+    coordinator = _coordinator(
+        opt_module,
+        "flow_power",
+        profit_max=True,
+        optimization_backup_reserve=0.05,
+        optimization_manual_reserve=0.05,
+        optimization_auto_apply_reserve=True,
+        hardware_backup_reserve=0.05,
+    )
+    coordinator.entry_id = "entry-1"
+    coordinator._auto_apply_reserve_enabled = True
+    coordinator._manual_backup_reserve = 0.05
+    coordinator._config.backup_reserve = 0.05
+    coordinator._startup_backup_reserve = 5
+    update_calls = []
+    coordinator._optimizer = SimpleNamespace(
+        update_config=lambda **kwargs: update_calls.append(kwargs),
+        max_grid_export_w=None,
+        terminal_weight=0,
+    )
+
+    updates = []
+
+    class _ConfigEntries:
+        def async_update_entry(self, entry, **kwargs):
+            updates.append(kwargs)
+            if "data" in kwargs:
+                entry.data = kwargs["data"]
+            if "options" in kwargs:
+                entry.options = kwargs["options"]
+
+    coordinator.hass = SimpleNamespace(
+        data={"power_sync": {"entry-1": {}}},
+        config_entries=_ConfigEntries(),
+    )
+    recommendation = {
+        "suggested_optimizer_reserve_percent": 5,
+        "home_load_export_floor_percent": 25,
+    }
+
+    changed = coordinator._apply_auto_reserve_recommendation(
+        SimpleNamespace(reserve_recommendation=recommendation)
+    )
+
+    assert changed is True
+    assert coordinator._config.backup_reserve == 0.25
+    assert update_calls[-1]["backup_reserve"] == 0.25
+    assert updates == []
+    assert recommendation["applied_optimizer_reserve_percent"] == 25
+
+
 def test_auto_apply_reserve_ignores_relaxed_infeasible_result(opt_module):
     """A relaxed/infeasible solve must never lower the optimiser reserve.
 
@@ -3130,6 +3182,40 @@ def test_export_duration_clips_at_next_non_export_boundary(opt_module):
     asyncio.run(coordinator._execute_optimizer_action(actions[0]))
 
     assert battery.force_discharge_calls == [(5, 4200, False, None)]
+    assert coordinator._last_executed_action == "export"
+
+
+def test_profit_max_export_floor_does_not_block_when_auto_apply_disabled(opt_module):
+    battery = _FakeBattery()
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.73)
+    coordinator.battery_system = "goodwe"
+    coordinator._config.profit_max_enabled = True
+    coordinator._config.backup_reserve = 0.05
+    coordinator._config.max_discharge_w = 6000
+    coordinator._auto_apply_reserve_enabled = False
+    coordinator._last_optimizer_result = SimpleNamespace(
+        reserve_recommendation={"home_load_export_floor_percent": 84}
+    )
+    start = datetime(2026, 6, 4, 8, 25, tzinfo=timezone.utc)
+    actions = [
+        SimpleNamespace(
+            action="export",
+            power_w=6000,
+            soc=0.706,
+            timestamp=start,
+        ),
+        SimpleNamespace(
+            action="self_consumption",
+            power_w=0,
+            timestamp=start + timedelta(minutes=5),
+        ),
+    ]
+    coordinator._current_schedule = SimpleNamespace(actions=actions)
+
+    asyncio.run(coordinator._execute_optimizer_action(actions[0]))
+
+    assert battery.force_discharge_calls == [(5, 6000, False, None)]
+    assert battery.self_consumption_calls == 0
     assert coordinator._last_executed_action == "export"
 
 

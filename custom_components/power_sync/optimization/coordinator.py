@@ -958,13 +958,21 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         reserve_recommendation: dict[str, Any],
     ) -> float | None:
         """Return clamped forecast optimizer reserve target as a ratio."""
-        suggested = reserve_recommendation.get("suggested_optimizer_reserve_percent")
-        if suggested is None:
+        reserve_candidates = [
+            reserve_recommendation.get("suggested_optimizer_reserve_percent"),
+            reserve_recommendation.get("home_load_export_floor_percent"),
+        ]
+        suggested_values: list[float] = []
+        for candidate in reserve_candidates:
+            if candidate is None:
+                continue
+            try:
+                suggested_values.append(float(candidate))
+            except (TypeError, ValueError):
+                continue
+        if not suggested_values:
             return None
-        try:
-            suggested_percent = float(suggested)
-        except (TypeError, ValueError):
-            return None
+        suggested_percent = max(suggested_values)
         hardware_percent = (
             getattr(self, "_startup_backup_reserve", None)
             if getattr(self, "_startup_backup_reserve", None) is not None
@@ -976,7 +984,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _force_discharge_reserve_floor(self) -> float:
         """Return the software floor used before force discharge/export commands."""
         floor = self._reserve_ratio(self._config.backup_reserve, 0.0) or 0.0
-        if self._config.profit_max_enabled:
+        if self._config.profit_max_enabled and self.auto_apply_reserve_enabled:
             recommendation = (
                 getattr(getattr(self, "_last_optimizer_result", None), "reserve_recommendation", {})
                 or {}
