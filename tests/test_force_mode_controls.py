@@ -1071,3 +1071,48 @@ def test_saj_force_charge_false_result_clears_state_and_notifies():
     )[1].split("return", 1)[0]
 
     assert '_notify_api_error(hass, "Force Charge Failed", "SAJ H2 entity write error")' in failure_branch
+
+
+def test_sungrow_restore_normal_does_not_clear_state_on_failed_restore():
+    source = INIT_PATH.read_text()
+    tree = ast.parse(source)
+    function = _find_function(tree, "handle_restore_normal")
+    function_source = ast.get_source_segment(source, function)
+
+    assert function_source is not None
+    branch = function_source.split(
+        "# Check if this is a Sungrow system",
+        1,
+    )[1].split(
+        "# Guard: if no force mode is active",
+        1,
+    )[0]
+
+    restore_index = branch.index(
+        "restore_result = await sungrow_coord.restore_normal()"
+    )
+    failure_index = branch.index("if not restore_result:")
+    return_index = branch.index("return", failure_index)
+    clear_index = branch.index('force_charge_state["active"] = False')
+
+    assert restore_index < failure_index < return_index < clear_index
+    assert '"Restore Normal Failed"' in branch
+    assert '"Sungrow Modbus communication error"' in branch
+
+
+def test_optimizer_retries_sungrow_restore_when_self_consumption_drift_detected():
+    source = OPTIMIZATION_COORDINATOR_PATH.read_text()
+    tree = ast.parse(source)
+    function = _find_class_method(
+        tree,
+        "OptimizationCoordinator",
+        "_execute_optimizer_action",
+    )
+    function_source = ast.get_source_segment(source, function)
+
+    assert function_source is not None
+    assert 'self.battery_system == "sungrow"' in function_source
+    assert 'coord_data.get("ems_mode_name")' in function_source
+    assert "charge_cmd_int in (0xAA, 0xBB)" in function_source
+    assert "Sungrow still reports forced mode" in function_source
+    assert "apply_self_consumption = True" in function_source

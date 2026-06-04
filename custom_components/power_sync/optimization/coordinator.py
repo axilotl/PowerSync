@@ -140,6 +140,7 @@ class OptimizationConfig:
     horizon_hours: int = 48
     cost_function: str = "cost"
     profit_max_enabled: bool = False
+    profit_max_target_time: str = "17:15"
     profit_max_target_soc: float = 1.0
     spread_export_enabled: bool = False
     spread_import_enabled: bool = False
@@ -1703,7 +1704,9 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED,
                 CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED,
                 CONF_PROFIT_MAX_ENABLED,
+                CONF_PROFIT_MAX_TARGET_TIME,
                 CONF_PROFIT_MAX_TARGET_SOC,
+                DEFAULT_PROFIT_MAX_TARGET_TIME,
                 DEFAULT_PROFIT_MAX_TARGET_SOC,
             )
             allow_grid_charge = self._entry.options.get(
@@ -1743,6 +1746,15 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._entry.data.get(CONF_PROFIT_MAX_ENABLED, False),
             )
             self._config.profit_max_enabled = bool(profit_max)
+            self._config.profit_max_target_time = str(
+                self._entry.options.get(
+                    CONF_PROFIT_MAX_TARGET_TIME,
+                    self._entry.data.get(
+                        CONF_PROFIT_MAX_TARGET_TIME,
+                        DEFAULT_PROFIT_MAX_TARGET_TIME,
+                    ),
+                )
+            )
             self._config.profit_max_target_soc = self._soc_ratio(
                 self._entry.options.get(
                     CONF_PROFIT_MAX_TARGET_SOC,
@@ -4269,6 +4281,32 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                                     battery_kw,
                                 )
                                 apply_self_consumption = True
+                        if self.battery_system == "sungrow" and self.energy_coordinator:
+                            coord_data = getattr(self.energy_coordinator, "data", None) or {}
+                            mode_value = (
+                                coord_data.get("ems_mode_name")
+                                or coord_data.get("mode")
+                                or coord_data.get("work_mode")
+                            )
+                            mode = str(mode_value or "").strip().lower()
+                            charge_cmd = coord_data.get("charge_cmd")
+                            try:
+                                charge_cmd_int = (
+                                    int(charge_cmd)
+                                    if charge_cmd is not None
+                                    else None
+                                )
+                            except (TypeError, ValueError):
+                                charge_cmd_int = None
+                            if mode == "forced" or charge_cmd_int in (0xAA, 0xBB):
+                                _LOGGER.info(
+                                    "Optimizer: Sungrow still reports forced mode "
+                                    "(mode=%s, charge_cmd=%s) while LP action is "
+                                    "self_consumption — reapplying restore_normal",
+                                    mode_value,
+                                    charge_cmd,
+                                )
+                                apply_self_consumption = True
                         if not apply_self_consumption and not reapply_backup_reserve:
                             _LOGGER.debug(
                                 "Optimizer: Already in self-consumption mode — "
@@ -5157,7 +5195,6 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         from ..const import (
             CONF_ELECTRICITY_PROVIDER,
             CONF_FLOW_POWER_STATE,
-            CONF_PROFIT_MAX_TARGET_TIME,
             DEFAULT_PROFIT_MAX_TARGET_TIME,
         )
         provider = self._entry.options.get(
@@ -5175,12 +5212,10 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         happy_start_min = 17 * 60 + 30  # 17:30
         target_min = _hhmm_to_minutes(
-            self._entry.options.get(
-                CONF_PROFIT_MAX_TARGET_TIME,
-                self._entry.data.get(
-                    CONF_PROFIT_MAX_TARGET_TIME,
-                    DEFAULT_PROFIT_MAX_TARGET_TIME,
-                ),
+            getattr(
+                self._config,
+                "profit_max_target_time",
+                DEFAULT_PROFIT_MAX_TARGET_TIME,
             ),
             DEFAULT_PROFIT_MAX_TARGET_TIME,
         )
@@ -8169,6 +8204,12 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if "profit_max_target_time" in settings and self._entry:
             from ..const import CONF_PROFIT_MAX_TARGET_TIME
             target_time = str(settings["profit_max_target_time"])
+            changed = target_time != getattr(
+                self._config,
+                "profit_max_target_time",
+                target_time,
+            )
+            self._config.profit_max_target_time = target_time
             new_data = dict(self._entry.data)
             new_options = dict(self._entry.options)
             new_data[CONF_PROFIT_MAX_TARGET_TIME] = target_time
@@ -8181,7 +8222,8 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 options=new_options,
             )
             response["changes"].append(f"profit_max_target_time: {target_time}")
-            rerun_after_settings = True
+            if changed:
+                rerun_after_settings = True
 
         if "profit_max_target_soc" in settings:
             target_soc = self._soc_ratio(settings["profit_max_target_soc"], 1.0)

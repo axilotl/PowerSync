@@ -236,6 +236,8 @@ def _coordinator(opt_module, provider: str, profit_max: bool = False, **options)
         interval_minutes=5,
         horizon_hours=24,
         profit_max_enabled=profit_max,
+        profit_max_target_time=base_options.get("profit_max_target_time", "17:15"),
+        profit_max_target_soc=base_options.get("profit_max_target_soc", 1.0),
     )
     coordinator._saving_session_coordinator = None
     coordinator._last_export_boost_allowed_slots = []
@@ -910,6 +912,10 @@ def test_optimizer_mode_setting_change_forces_immediate_reoptimization(
     assert expected_change in result["changes"]
     assert updates
     assert len(run_calls) == 1
+    if "profit_max_target_time" in settings:
+        assert coordinator._config.profit_max_target_time == settings["profit_max_target_time"]
+    if "profit_max_target_soc" in settings:
+        assert coordinator._config.profit_max_target_soc == 0.8
 
 
 def test_optimizer_config_setting_change_forces_immediate_reoptimization(opt_module):
@@ -1171,6 +1177,19 @@ def test_flow_power_profit_max_uses_configured_full_soc_target(opt_module):
         flow_power_state="NSW1",
         profit_max_target_time="16:00",
     )
+
+    assert coordinator._next_profit_max_target_slot() == 90
+
+
+def test_flow_power_profit_max_target_uses_live_coordinator_setting(opt_module):
+    coordinator = _coordinator(
+        opt_module,
+        "flow_power",
+        profit_max=True,
+        flow_power_state="NSW1",
+        profit_max_target_time="16:00",
+    )
+    coordinator._entry.options["profit_max_target_time"] = "17:15"
 
     assert coordinator._next_profit_max_target_slot() == 90
 

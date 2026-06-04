@@ -25191,7 +25191,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
                 sungrow_coord = entry_data.get("sungrow_coordinator")
                 if sungrow_coord:
-                    await sungrow_coord.restore_normal()
+                    restore_result = await sungrow_coord.restore_normal()
+                    if not restore_result:
+                        _LOGGER.error("Sungrow restore_normal failed")
+                        hass.async_create_task(
+                            _notify_api_error(
+                                hass,
+                                "Restore Normal Failed",
+                                "Sungrow Modbus communication error",
+                            )
+                        )
+                        return
+                else:
+                    _LOGGER.error("Restore normal: Sungrow coordinator not available")
+                    hass.async_create_task(
+                        _notify_api_error(
+                            hass,
+                            "Restore Normal Failed",
+                            "Sungrow coordinator unavailable",
+                        )
+                    )
+                    return
 
                 force_charge_state["active"] = False
                 force_discharge_state["active"] = False
