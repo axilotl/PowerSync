@@ -189,6 +189,31 @@ class GoodWeController(InverterController):
             _LOGGER.debug(f"Error reading register {address}: {e}")
             return None
 
+    async def _read_register_block(self, address: int, count: int) -> dict[int, int]:
+        """Read a block of registers and return address-indexed values."""
+        registers = await self._read_register(address, count)
+        if not registers:
+            return {}
+        return {
+            address + offset: value
+            for offset, value in enumerate(registers)
+        }
+
+    def _block_values(
+        self,
+        registers: dict[int, int],
+        address: int,
+        count: int = 1,
+    ) -> Optional[list[int]]:
+        """Return values from a register block when the full range is present."""
+        values: list[int] = []
+        for offset in range(count):
+            register = address + offset
+            if register not in registers:
+                return None
+            values.append(registers[register])
+        return values
+
     def _to_signed16(self, value: int) -> int:
         """Convert unsigned 16-bit to signed."""
         if value >= 0x8000:
@@ -282,78 +307,91 @@ class GoodWeController(InverterController):
         attrs = {}
 
         try:
+            pv_block = await self._read_register_block(self.REG_PV1_VOLTAGE, 16)
+            grid_block = await self._read_register_block(self.REG_GRID_POWER, 20)
+            battery_block = await self._read_register_block(self.REG_TEMP_AIR, 10)
+            soc_block = await self._read_register_block(self.REG_BATTERY_SOC, 1)
+            export_block = await self._read_register_block(
+                self.REG_EXPORT_LIMIT_ENABLED,
+                2,
+            )
+
             # Read PV1 data
-            pv1_voltage = await self._read_register(self.REG_PV1_VOLTAGE, 1)
+            pv1_voltage = self._block_values(pv_block, self.REG_PV1_VOLTAGE, 1)
             if pv1_voltage:
                 attrs["pv1_voltage"] = round(pv1_voltage[0] * 0.1, 1)
 
-            pv1_current = await self._read_register(self.REG_PV1_CURRENT, 1)
+            pv1_current = self._block_values(pv_block, self.REG_PV1_CURRENT, 1)
             if pv1_current:
                 attrs["pv1_current"] = round(pv1_current[0] * 0.1, 1)
 
-            pv1_power = await self._read_register(self.REG_PV1_POWER, 2)
+            pv1_power = self._block_values(pv_block, self.REG_PV1_POWER, 2)
             if pv1_power and len(pv1_power) >= 2:
                 attrs["pv1_power"] = self._to_unsigned32(pv1_power[0], pv1_power[1])
 
             # Read PV2 data
-            pv2_voltage = await self._read_register(self.REG_PV2_VOLTAGE, 1)
+            pv2_voltage = self._block_values(pv_block, self.REG_PV2_VOLTAGE, 1)
             if pv2_voltage:
                 attrs["pv2_voltage"] = round(pv2_voltage[0] * 0.1, 1)
 
-            pv2_current = await self._read_register(self.REG_PV2_CURRENT, 1)
+            pv2_current = self._block_values(pv_block, self.REG_PV2_CURRENT, 1)
             if pv2_current:
                 attrs["pv2_current"] = round(pv2_current[0] * 0.1, 1)
 
-            pv2_power = await self._read_register(self.REG_PV2_POWER, 2)
+            pv2_power = self._block_values(pv_block, self.REG_PV2_POWER, 2)
             if pv2_power and len(pv2_power) >= 2:
                 attrs["pv2_power"] = self._to_unsigned32(pv2_power[0], pv2_power[1])
 
             # Read battery data
-            battery_voltage = await self._read_register(self.REG_BATTERY_VOLTAGE, 1)
+            battery_voltage = self._block_values(battery_block, self.REG_BATTERY_VOLTAGE, 1)
             if battery_voltage:
                 attrs["battery_voltage"] = round(battery_voltage[0] * 0.1, 1)
 
-            battery_current = await self._read_register(self.REG_BATTERY_CURRENT, 1)
+            battery_current = self._block_values(battery_block, self.REG_BATTERY_CURRENT, 1)
             if battery_current:
                 attrs["battery_current"] = round(self._to_signed16(battery_current[0]) * 0.1, 1)
 
-            battery_power = await self._read_register(self.REG_BATTERY_POWER, 2)
+            battery_power = self._block_values(battery_block, self.REG_BATTERY_POWER, 2)
             if battery_power and len(battery_power) >= 2:
                 attrs["battery_power"] = self._to_signed32(battery_power[0], battery_power[1])
 
-            battery_soc = await self._read_register(self.REG_BATTERY_SOC, 1)
+            battery_soc = self._block_values(soc_block, self.REG_BATTERY_SOC, 1)
             if battery_soc:
                 attrs["battery_level"] = battery_soc[0]
 
             # Read grid power
-            grid_power = await self._read_register(self.REG_GRID_POWER, 1)
+            grid_power = self._block_values(grid_block, self.REG_GRID_POWER, 1)
             if grid_power:
                 attrs["grid_power"] = self._to_signed16(grid_power[0])
 
             # Read temperatures
-            temp_air = await self._read_register(self.REG_TEMP_AIR, 1)
+            temp_air = self._block_values(battery_block, self.REG_TEMP_AIR, 1)
             if temp_air:
                 attrs["inverter_temperature"] = round(self._to_signed16(temp_air[0]) * 0.1, 1)
 
             # Read daily energy
-            daily_pv = await self._read_register(self.REG_DAILY_PV, 1)
+            daily_pv = self._block_values(pv_block, self.REG_DAILY_PV, 1)
             if daily_pv:
                 attrs["daily_pv_generation"] = round(daily_pv[0] * 0.1, 2)
 
-            daily_export = await self._read_register(self.REG_DAILY_EXPORT, 1)
+            daily_export = self._block_values(grid_block, self.REG_DAILY_EXPORT, 1)
             if daily_export:
                 attrs["daily_export"] = round(daily_export[0] * 0.1, 2)
 
-            daily_import = await self._read_register(self.REG_DAILY_IMPORT, 1)
+            daily_import = self._block_values(grid_block, self.REG_DAILY_IMPORT, 1)
             if daily_import:
                 attrs["daily_import"] = round(daily_import[0] * 0.1, 2)
 
             # Read export limit status
-            export_enabled = await self._read_register(self.REG_EXPORT_LIMIT_ENABLED, 1)
+            export_enabled = self._block_values(
+                export_block,
+                self.REG_EXPORT_LIMIT_ENABLED,
+                1,
+            )
             if export_enabled:
                 attrs["export_limit_enabled"] = export_enabled[0] == 1
 
-            export_limit = await self._read_register(self.REG_EXPORT_LIMIT, 1)
+            export_limit = self._block_values(export_block, self.REG_EXPORT_LIMIT, 1)
             if export_limit:
                 attrs["export_limit_w"] = export_limit[0]
 
