@@ -41,6 +41,24 @@ from ..zerohero import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+# Optimiser decision summary logger.
+#
+# The per-cycle decision line (solver result + planned schedule) is the single
+# most useful signal for support/triage: it answers "is it planning to charge,
+# export, or hold?" at a glance. We want it visible in standard logs WITHOUT
+# asking users to raise the whole integration to INFO/DEBUG.
+#
+# So this dedicated child logger is pinned to INFO. Because the record still
+# propagates to the root handlers, an INFO record here is emitted even when the
+# parent ``custom_components.power_sync`` logger sits at the default WARNING.
+# We only ever *raise* visibility (NOTSET / stricter-than-INFO -> INFO); a user
+# who deliberately enables DEBUG keeps DEBUG. This is intentionally scoped to one
+# logger, unlike the old blanket force-DEBUG-on-import that PR #f8192959 removed.
+_DECISION_LOGGER = logging.getLogger(f"{__name__}.decisions")
+if _DECISION_LOGGER.level == logging.NOTSET or _DECISION_LOGGER.level > logging.INFO:
+    _DECISION_LOGGER.setLevel(logging.INFO)
+
 CUSTOM_BATTERY_SYSTEM = "custom"
 CUSTOM_BATTERY_LEVEL_ENTITY = "custom_battery_level_entity"
 CUSTOM_BATTERY_POWER_ENTITY = "custom_battery_power_entity"
@@ -2708,7 +2726,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 f"{k}={v}" for k, v in sorted(action_counts.items())
             )
 
-            _LOGGER.info(
+            _DECISION_LOGGER.info(
                 "Optimization complete (%s, %.2fs): "
                 "daily_cost=$%.2f (actual=$%.2f + remaining=$%.2f), "
                 "daily_savings=$%.2f, %d steps [%s]",
@@ -7647,7 +7665,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # Debug: log SOC range for API response
             soc_vals = api_response.get("soc", [])
             if soc_vals:
-                _LOGGER.info(
+                _DECISION_LOGGER.info(
                     "Schedule API: %d points, SOC range %.2f-%.2f (first=%.4f, last=%.4f)",
                     len(soc_vals), min(soc_vals), max(soc_vals),
                     soc_vals[0], soc_vals[-1],
