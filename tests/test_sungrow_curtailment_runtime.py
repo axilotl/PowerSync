@@ -170,6 +170,16 @@ def test_periodic_solar_curtailment_routes_to_sungrow_before_tesla_path():
     assert "await handle_sungrow_curtailment()" in pre_tesla_path
 
 
+def test_solar_curtailment_is_not_blocked_by_monitoring_mode():
+    periodic_handler = _function_source("handle_solar_curtailment_check")
+    websocket_handler = _function_source("handle_solar_curtailment_with_websocket_data")
+
+    assert "_is_monitoring_mode()" not in periodic_handler
+    assert "_is_monitoring_mode()" not in websocket_handler
+    assert "Would check solar curtailment" not in periodic_handler
+    assert "Would check solar curtailment" not in websocket_handler
+
+
 def test_periodic_tesla_curtailment_uses_any_provider_price_source():
     handler = _function_source("handle_solar_curtailment_check")
 

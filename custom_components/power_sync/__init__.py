@@ -20811,10 +20811,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.debug("Solar curtailment is disabled, skipping check")
             return
 
-        if _is_monitoring_mode():
-            _LOGGER.info("[MONITORING] Would check solar curtailment — blocked by monitoring mode")
-            return
-
         # Skip if EV charging has overridden curtailment to allow full solar production
         entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
         if entry_data.get("ev_curtailment_override"):
@@ -21162,10 +21158,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         if not curtailment_enabled:
             _LOGGER.debug("Solar curtailment is disabled, skipping check")
-            return
-
-        if _is_monitoring_mode():
-            _LOGGER.info("[MONITORING] Would check solar curtailment (websocket) — blocked by monitoring mode")
             return
 
         # Skip if EV charging has overridden curtailment to allow full solar production
