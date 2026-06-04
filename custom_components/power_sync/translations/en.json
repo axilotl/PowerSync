@@ -914,6 +914,8 @@
     "error": {
       "invalid_auth": "Token rejected by the API -- check you copied the full token string with no extra spaces.",
       "cannot_connect": "Cannot reach the API server. Check your internet connection and that Home Assistant has outbound HTTPS access.",
+      "invalid_globird_auth": "Email or password is incorrect. Check your GloBird portal login credentials.",
+      "captcha_required": "GloBird requested captcha verification. Sign in through the GloBird portal in a browser, then try again.",
       "no_sites": "No Amber sites found for this token. Verify the token belongs to an account with an active Amber site.",
       "no_energy_sites": "No Tesla energy sites found. Ensure your Powerwall or Solar system is set up in the Tesla app before continuing.",
       "no_token_provided": "Paste a token in the field above. See the hint text for where to find it.",
@@ -982,6 +984,14 @@
     }
   },
   "options": {
+    "error": {
+      "cannot_connect": "Cannot reach the provider portal. Check your internet connection and that Home Assistant has outbound HTTPS access.",
+      "invalid_globird_auth": "Email or password is incorrect. Check your GloBird portal login credentials.",
+      "captcha_required": "GloBird requested captcha verification. Sign in through the GloBird portal in a browser, then try again.",
+      "invalid_credentials": "Email or password is incorrect. Check your Flow Power portal login credentials.",
+      "invalid_mfa_code": "Verification code is incorrect or expired. Request a new SMS code and try again.",
+      "unknown": "An unexpected error occurred. Check the Home Assistant logs for details and try again."
+    },
     "step": {
       "init": {
         "title": "PowerSync settings",

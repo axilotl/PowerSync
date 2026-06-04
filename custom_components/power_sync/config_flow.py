@@ -1754,8 +1754,12 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     errors["base"] = "cannot_connect"
                 except ValueError:
                     errors["base"] = "invalid_credentials"
-                except Exception:
+                except Exception as err:
+                    _LOGGER.exception("Flow Power portal login failed during setup: %s", err)
                     errors["base"] = "cannot_connect"
+                    if getattr(self, "_fp_client", None) is not None:
+                        await self._fp_client.close()
+                    self._fp_client = None
             else:
                 errors["base"] = "invalid_credentials"
 
@@ -4777,7 +4781,8 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return "captcha_required"
         except GloBirdAuthError:
             return "invalid_globird_auth"
-        except Exception:
+        except Exception as err:
+            _LOGGER.exception("GloBird portal credential validation failed: %s", err)
             return "cannot_connect"
         finally:
             await client.close()
@@ -10041,8 +10046,13 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             except ValueError:
                 errors["base"] = "invalid_credentials"
                 self._fp_client = None
-            except Exception:
+            except Exception as err:
+                _LOGGER.exception(
+                    "Flow Power portal stored-credential login failed: %s", err
+                )
                 errors["base"] = "cannot_connect"
+                if getattr(self, "_fp_client", None) is not None:
+                    await self._fp_client.close()
                 self._fp_client = None
 
         if user_input is not None:
@@ -10060,8 +10070,14 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                         return await self.async_step_flow_power_portal_mfa_options()
                 except ValueError:
                     errors["base"] = "invalid_credentials"
-                except Exception:
+                except Exception as err:
+                    _LOGGER.exception(
+                        "Flow Power portal login failed from options: %s", err
+                    )
                     errors["base"] = "cannot_connect"
+                    if getattr(self, "_fp_client", None) is not None:
+                        await self._fp_client.close()
+                    self._fp_client = None
             else:
                 errors["base"] = "invalid_credentials"
 

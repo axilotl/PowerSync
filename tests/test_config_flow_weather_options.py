@@ -495,6 +495,26 @@ def test_provider_portal_login_has_dedicated_options_sections():
         assert "connect_globird_portal" in globird_portal["data_description"]
 
 
+def test_provider_portal_login_errors_are_translated_for_setup_and_options():
+    provider_error_keys = {
+        "cannot_connect",
+        "invalid_globird_auth",
+        "captcha_required",
+        "invalid_credentials",
+        "invalid_mfa_code",
+        "unknown",
+    }
+
+    for path in (STRINGS_PATH, TRANSLATIONS_PATH):
+        data = json.loads(path.read_text())
+        config_errors = data["config"]["error"]
+        options_errors = data["options"]["error"]
+
+        for key in provider_error_keys:
+            assert config_errors.get(key), f"{path.name} missing config error {key}"
+            assert options_errors.get(key), f"{path.name} missing options error {key}"
+
+
 def test_optimization_options_exposes_enabled_toggle():
     source = CONFIG_FLOW_PATH.read_text()
     method = _options_flow_method("async_step_optimization")
