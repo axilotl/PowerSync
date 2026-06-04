@@ -1,0 +1,136 @@
+from __future__ import annotations
+
+import asyncio
+import importlib
+import sys
+import types
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parent.parent
+COMPONENT_ROOT = ROOT / "custom_components" / "power_sync"
+
+
+def _load_goodwe_module():
+    saved = {
+        name: sys.modules.get(name)
+        for name in (
+            "pymodbus",
+            "pymodbus.client",
+            "pymodbus.exceptions",
+            "power_sync",
+            "power_sync.inverters",
+            "power_sync.inverters.goodwe",
+        )
+    }
+
+    pymodbus = types.ModuleType("pymodbus")
+    pymodbus.__version__ = "3.9.0"
+    pymodbus_client = types.ModuleType("pymodbus.client")
+    pymodbus_exceptions = types.ModuleType("pymodbus.exceptions")
+
+    class _AsyncModbusTcpClient:
+        connected = False
+
+        async def connect(self) -> bool:
+            self.connected = True
+            return True
+
+        def close(self) -> None:
+            self.connected = False
+
+    pymodbus_client.AsyncModbusTcpClient = _AsyncModbusTcpClient
+    pymodbus_exceptions.ModbusException = type("ModbusException", (Exception,), {})
+
+    sys.modules["pymodbus"] = pymodbus
+    sys.modules["pymodbus.client"] = pymodbus_client
+    sys.modules["pymodbus.exceptions"] = pymodbus_exceptions
+
+    power_sync = types.ModuleType("power_sync")
+    power_sync.__path__ = [str(COMPONENT_ROOT)]
+    sys.modules["power_sync"] = power_sync
+
+    inverters = types.ModuleType("power_sync.inverters")
+    inverters.__path__ = [str(COMPONENT_ROOT / "inverters")]
+    sys.modules["power_sync.inverters"] = inverters
+    sys.modules.pop("power_sync.inverters.goodwe", None)
+
+    module = importlib.import_module("power_sync.inverters.goodwe")
+
+    def restore() -> None:
+        for name, module in saved.items():
+            if module is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
+
+    return module, restore
+
+
+class _FakeResult:
+    registers = [1, 2]
+
+    def isError(self) -> bool:
+        return False
+
+
+class _ConcurrentTrackingClient:
+    connected = True
+
+    def __init__(self) -> None:
+        self.active_requests = 0
+        self.max_active_requests = 0
+
+    async def read_holding_registers(self, **_kwargs):
+        await self._track_request()
+        return _FakeResult()
+
+    async def write_register(self, **_kwargs):
+        await self._track_request()
+        return _FakeResult()
+
+    async def _track_request(self) -> None:
+        self.active_requests += 1
+        self.max_active_requests = max(self.max_active_requests, self.active_requests)
+        await asyncio.sleep(0.01)
+        self.active_requests -= 1
+
+
+def test_goodwe_modbus_reads_are_serialized_on_one_client():
+    module, restore_module = _load_goodwe_module()
+    try:
+        controller = module.GoodWeController("192.0.2.10")
+        client = _ConcurrentTrackingClient()
+        controller._client = client
+
+        async def run_reads() -> None:
+            await asyncio.gather(
+                controller._read_register(35103, 1),
+                controller._read_register(35104, 1),
+            )
+
+        asyncio.run(run_reads())
+
+        assert client.max_active_requests == 1
+    finally:
+        restore_module()
+
+
+def test_goodwe_modbus_reads_and_writes_share_the_same_request_lock():
+    module, restore_module = _load_goodwe_module()
+    try:
+        controller = module.GoodWeController("192.0.2.10")
+        client = _ConcurrentTrackingClient()
+        controller._client = client
+
+        async def run_requests() -> None:
+            await asyncio.gather(
+                controller._read_register(35103, 1),
+                controller._write_register(47550, 0),
+            )
+
+        asyncio.run(run_requests())
+
+        assert client.max_active_requests == 1
+    finally:
+        restore_module()

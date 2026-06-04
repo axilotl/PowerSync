@@ -96,6 +96,7 @@ class GoodWeController(InverterController):
         super().__init__(host, int(port), int(slave_id), model)
         self._client: Optional[AsyncModbusTcpClient] = None
         self._lock = asyncio.Lock()
+        self._request_lock = asyncio.Lock()
 
     async def connect(self) -> bool:
         """Connect to the GoodWe inverter via Modbus TCP."""
@@ -140,11 +141,12 @@ class GoodWeController(InverterController):
                 return False
 
         try:
-            result = await self._client.write_register(
-                address=address,
-                value=value,
-                **{_SLAVE_PARAM: self.slave_id},
-            )
+            async with self._request_lock:
+                result = await self._client.write_register(
+                    address=address,
+                    value=value,
+                    **{_SLAVE_PARAM: self.slave_id},
+                )
 
             if result.isError():
                 _LOGGER.error(f"Modbus write error at register {address}: {result}")
@@ -167,11 +169,12 @@ class GoodWeController(InverterController):
                 return None
 
         try:
-            result = await self._client.read_holding_registers(
-                address=address,
-                count=count,
-                **{_SLAVE_PARAM: self.slave_id},
-            )
+            async with self._request_lock:
+                result = await self._client.read_holding_registers(
+                    address=address,
+                    count=count,
+                    **{_SLAVE_PARAM: self.slave_id},
+                )
 
             if result.isError():
                 _LOGGER.debug(f"Modbus read error at register {address}: {result}")
