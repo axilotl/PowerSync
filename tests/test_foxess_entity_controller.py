@@ -116,6 +116,10 @@ def _kw() -> dict[str, str]:
     return {"unit_of_measurement": "kW"}
 
 
+def _kw_range(minimum: float, maximum: float) -> dict[str, float | str]:
+    return {"unit_of_measurement": "kW", "min": minimum, "max": maximum}
+
+
 def _w() -> dict[str, str]:
     return {"unit_of_measurement": "W"}
 
@@ -169,6 +173,17 @@ def _without_suffix(states: list[_FakeState], suffixes: tuple[str, ...]) -> list
         state
         for state in states
         if not any(state.entity_id.endswith(suffix) for suffix in suffixes)
+    ]
+
+
+def _unprefixed_states() -> list[_FakeState]:
+    return [
+        _FakeState(
+            state.entity_id.replace(".foxess_", "."),
+            state.state,
+            dict(state.attributes),
+        )
+        for state in _base_states()
     ]
 
 
@@ -392,6 +407,67 @@ def test_force_restore_reserve_work_mode_and_limit_controls():
             "number",
             "set_value",
             {"entity_id": "number.foxess_export_power_limit", "value": 1500},
+        ),
+    ]
+
+
+def test_force_charge_and_discharge_power_clamp_to_number_entity_range():
+    states = _base_states()
+    for state in states:
+        if state.entity_id == "number.foxess_force_charge_power":
+            state.attributes = _kw_range(0, 15)
+        if state.entity_id == "number.foxess_force_discharge_power":
+            state.attributes = _kw_range(0, 5)
+    hass = _FakeHass(states)
+    controller = FoxESSEntityController(hass, entity_prefix="foxess")
+
+    assert asyncio.run(controller.connect())
+    assert asyncio.run(controller.force_charge(duration_minutes=30, power_w=20000))
+    assert asyncio.run(controller.force_discharge(duration_minutes=30, power_w=7000))
+
+    assert hass.services.calls == [
+        (
+            "number",
+            "set_value",
+            {"entity_id": "number.foxess_force_charge_power", "value": 15.0},
+        ),
+        (
+            "select",
+            "select_option",
+            {"entity_id": "select.foxess_work_mode", "option": "Force Charge"},
+        ),
+        (
+            "number",
+            "set_value",
+            {"entity_id": "number.foxess_force_discharge_power", "value": 5.0},
+        ),
+        (
+            "select",
+            "select_option",
+            {"entity_id": "select.foxess_work_mode", "option": "Force Discharge"},
+        ),
+    ]
+
+
+def test_force_charge_rediscovers_entities_after_foxess_modbus_renames_controls():
+    hass = _FakeHass(_base_states())
+    controller = FoxESSEntityController(hass, entity_prefix="foxess")
+
+    assert asyncio.run(controller.connect())
+    hass.states = _FakeStates(_unprefixed_states())
+
+    assert asyncio.run(controller.force_charge(duration_minutes=30, power_w=5000))
+
+    assert hass.services.calls == [
+        (
+            "number",
+            "set_value",
+            {"entity_id": "number.force_charge_power", "value": 5.0},
+        ),
+        (
+            "select",
+            "select_option",
+            {"entity_id": "select.work_mode", "option": "Force Charge"},
         ),
     ]
 

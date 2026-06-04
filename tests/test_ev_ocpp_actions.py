@@ -317,6 +317,79 @@ def test_solar_surplus_curtailed_full_battery_keeps_active_ev_headroom():
     assert surplus_kw == 5.61
 
 
+def test_solar_surplus_curtailed_full_battery_probes_idle_ev_start():
+    surplus_kw = actions._calculate_solar_surplus(
+        {
+            "battery_soc": 100,
+            "grid_power": 0,
+            "battery_power": 0,
+            "solar_power": 1200,
+            "load_power": 1200,
+            "is_curtailed": True,
+        },
+        current_ev_power_kw=0,
+        config={
+            "surplus_calculation": "grid_based",
+            "household_buffer_kw": 1.2,
+            "allow_parallel_charging": True,
+            "max_battery_charge_rate_kw": 3.0,
+            "min_battery_soc": 20,
+            "min_charge_amps": 5,
+            "voltage": 240,
+            "phases": 1,
+        },
+    )
+
+    assert surplus_kw == 1.2
+
+
+def test_solar_surplus_curtailed_full_battery_idle_probe_requires_solar():
+    surplus_kw = actions._calculate_solar_surplus(
+        {
+            "battery_soc": 100,
+            "grid_power": 0,
+            "battery_power": 0,
+            "solar_power": 0,
+            "load_power": 0,
+            "is_curtailed": True,
+        },
+        current_ev_power_kw=0,
+        config={
+            "surplus_calculation": "grid_based",
+            "household_buffer_kw": 1.2,
+            "min_charge_amps": 5,
+            "voltage": 240,
+            "phases": 1,
+        },
+    )
+
+    assert surplus_kw == 0
+
+
+def test_solar_surplus_curtailed_full_battery_idle_probe_blocks_grid_import():
+    surplus_kw = actions._calculate_solar_surplus(
+        {
+            "battery_soc": 100,
+            "grid_power": 300,
+            "battery_power": 0,
+            "solar_power": 1200,
+            "load_power": 1500,
+            "is_curtailed": True,
+        },
+        current_ev_power_kw=0,
+        config={
+            "surplus_calculation": "grid_based",
+            "household_buffer_kw": 1.2,
+            "grid_import_tolerance_kw": 0.1,
+            "min_charge_amps": 5,
+            "voltage": 240,
+            "phases": 1,
+        },
+    )
+
+    assert surplus_kw == 0
+
+
 def test_solar_surplus_full_battery_topoff_does_not_reserve_battery_charge_rate():
     surplus_kw = actions._calculate_solar_surplus(
         {

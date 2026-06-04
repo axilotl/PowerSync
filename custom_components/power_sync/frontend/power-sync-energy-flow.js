@@ -1490,12 +1490,7 @@ import {
           const batteryState = this._entityState(slot.batteryEntity);
           const switchState = this._entityState(slot.chargeSwitchEntity);
           const presenceState = this._entityState(slot.presenceEntity);
-          const batteryPct = [
-            toPct(batteryState, Number.NaN),
-            toPct(powerState, Number.NaN),
-            toPct(presenceState, Number.NaN),
-            toPct(switchState, Number.NaN)
-          ].find((value) => Number.isFinite(value));
+          const batteryPct = toPct(batteryState, Number.NaN);
           const derivedLabel = (
             friendlyEntityName(powerState) ||
             friendlyEntityName(batteryState) ||
@@ -1507,7 +1502,7 @@ import {
             key: slot.key,
             configured,
             hasPowerEntity: !!powerState,
-            hasBatteryEntity: Number.isFinite(batteryPct) || !!batteryState,
+            hasBatteryEntity: Number.isFinite(batteryPct),
             power: signedPower,
             drawPower: Math.max(0, signedPower),
             supplyPower: Math.max(0, -signedPower),

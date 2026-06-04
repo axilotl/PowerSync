@@ -3954,6 +3954,40 @@ def _curtailed_full_battery_active_ev(
     )
 
 
+def _curtailed_full_battery_idle_ev_probe_kw(
+    live_status: dict,
+    current_ev_power_kw: float,
+    config: dict,
+) -> float:
+    """Return a minimum-amp probe when curtailment hides idle EV headroom."""
+    if current_ev_power_kw > _ACTIVE_EV_POWER_EPSILON_KW:
+        return 0.0
+    if not bool(live_status.get("is_curtailed")):
+        return 0.0
+
+    battery_soc = live_status.get("battery_soc")
+    try:
+        battery_soc = float(battery_soc) if battery_soc is not None else None
+    except (TypeError, ValueError):
+        battery_soc = None
+    if battery_soc is None or battery_soc < _BATTERY_FULL_RESERVE_BYPASS_SOC:
+        return 0.0
+
+    solar_kw = (live_status.get("solar_power") or 0) / 1000
+    if solar_kw <= 0.05:
+        return 0.0
+
+    grid_kw = (live_status.get("grid_power") or 0) / 1000
+    grid_import_tolerance_kw = config.get("grid_import_tolerance_kw", 0.1)
+    if grid_kw > grid_import_tolerance_kw:
+        return 0.0
+
+    min_amps = _effective_min_charge_amps(config)
+    voltage = config.get("voltage", 240)
+    phases = config.get("phases", 1)
+    return max(0.0, (min_amps * voltage * phases) / 1000)
+
+
 def _calculate_solar_surplus(live_status: dict, current_ev_power_kw: float, config: dict) -> float:
     """
     Calculate available solar surplus for EV charging.
@@ -4019,6 +4053,18 @@ def _calculate_solar_surplus(live_status: dict, current_ev_power_kw: float, conf
             f"buffer={buffer_kw:.2f}kW, battery_reserve={battery_reserve_kw:.2f}kW, "
             f"available={available_kw:.2f}kW"
         )
+
+    probe_kw = _curtailed_full_battery_idle_ev_probe_kw(
+        live_status,
+        current_ev_power_kw,
+        config,
+    )
+    if probe_kw > available_kw:
+        _LOGGER.debug(
+            f"Surplus calc: curtailment/full-battery idle EV probe available={probe_kw:.2f}kW "
+            f"(calculated={available_kw:.2f}kW)"
+        )
+        available_kw = probe_kw
 
     # Apply buffer and ensure non-negative
     return available_kw

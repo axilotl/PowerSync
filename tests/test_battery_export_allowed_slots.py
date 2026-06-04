@@ -1255,6 +1255,109 @@ def test_scheduled_ev_preserve_blocks_export_but_allows_charge(opt_module):
     assert energy.no_discharge_calls == 1
 
 
+def test_free_import_charge_uses_live_solar_headroom_under_site_import_cap(opt_module):
+    battery = _FakeBattery()
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.25)
+    coordinator.battery_system = "goodwe"
+    coordinator._config.max_grid_import_w = 10000
+    coordinator._config.max_charge_w = 13600
+    coordinator._last_import_prices = [0.0]
+    coordinator.energy_coordinator = SimpleNamespace(
+        data={
+            "solar_power": 6.2,
+            "load_power": 1.9,
+            "grid_power": 9.3,
+            "battery_power": -13.5,
+        }
+    )
+
+    asyncio.run(
+        coordinator._execute_optimizer_action(
+            SimpleNamespace(action="charge", power_w=11300)
+        )
+    )
+
+    assert battery.force_charge_calls == [(10, 13600, False)]
+    assert coordinator._optimizer_force_state["power_w"] == 13600
+
+
+def test_free_import_charge_lowers_command_when_live_site_headroom_drops(opt_module):
+    battery = _FakeBattery()
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.25)
+    coordinator.battery_system = "goodwe"
+    coordinator._config.max_grid_import_w = 10000
+    coordinator._config.max_charge_w = 13600
+    coordinator._last_import_prices = [0.0]
+    coordinator.energy_coordinator = SimpleNamespace(
+        data={
+            "solar_power": 0.5,
+            "load_power": 2.0,
+            "grid_power": 0.0,
+            "battery_power": 0.0,
+        }
+    )
+
+    asyncio.run(
+        coordinator._execute_optimizer_action(
+            SimpleNamespace(action="charge", power_w=12100)
+        )
+    )
+
+    assert battery.force_charge_calls == [(10, 8500, False)]
+    assert coordinator._optimizer_force_state["power_w"] == 8500
+
+
+def test_paid_import_charge_keeps_scheduled_optimizer_power(opt_module):
+    battery = _FakeBattery()
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.25)
+    coordinator.battery_system = "goodwe"
+    coordinator._config.max_grid_import_w = 10000
+    coordinator._config.max_charge_w = 13600
+    coordinator._last_import_prices = [0.12]
+    coordinator.energy_coordinator = SimpleNamespace(
+        data={
+            "solar_power": 6.2,
+            "load_power": 1.9,
+            "grid_power": 9.3,
+            "battery_power": -13.5,
+        }
+    )
+
+    asyncio.run(
+        coordinator._execute_optimizer_action(
+            SimpleNamespace(action="charge", power_w=11300)
+        )
+    )
+
+    assert battery.force_charge_calls == [(10, 11300, False)]
+    assert coordinator._optimizer_force_state["power_w"] == 11300
+
+
+def test_free_import_charge_keeps_schedule_for_non_target_power_battery(opt_module):
+    battery = _FakeBattery()
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.25)
+    coordinator.battery_system = "tesla"
+    coordinator._config.max_grid_import_w = 10000
+    coordinator._config.max_charge_w = 13600
+    coordinator._last_import_prices = [0.0]
+    coordinator.energy_coordinator = SimpleNamespace(
+        data={
+            "solar_power": 6.2,
+            "load_power": 1.9,
+            "grid_power": 9.3,
+            "battery_power": -13.5,
+        }
+    )
+
+    asyncio.run(
+        coordinator._execute_optimizer_action(
+            SimpleNamespace(action="charge", power_w=11300)
+        )
+    )
+
+    assert battery.force_charge_calls == [(10, 11300, False)]
+
+
 def test_scheduled_ev_preserve_cancels_active_optimizer_export(opt_module):
     battery = _FakeBattery()
     coordinator = _execution_coordinator(opt_module, battery, soc=0.80)

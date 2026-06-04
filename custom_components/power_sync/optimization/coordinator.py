@@ -3397,6 +3397,80 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         return True
 
+    def _current_import_price_is_free(self) -> bool:
+        prices = getattr(self, "_last_display_import_prices", None) or getattr(
+            self, "_last_import_prices", None
+        )
+        if not prices:
+            return False
+        try:
+            return float(prices[0]) <= 0.001
+        except (TypeError, ValueError):
+            return False
+
+    @staticmethod
+    def _kw_to_w(value: Any) -> float | None:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed * 1000.0
+
+    def _live_site_import_charge_limit_w(self) -> float | None:
+        """Return live battery charge headroom under the site import cap."""
+        max_grid_import_w = self._normalize_optional_power_w(
+            self._config.max_grid_import_w
+        )
+        if max_grid_import_w is None or self.energy_coordinator is None:
+            return None
+
+        data = self._get_energy_data()
+        if not isinstance(data, dict):
+            return None
+
+        max_charge_w = max(0.0, float(self._config.max_charge_w or 0))
+        if max_charge_w <= 0:
+            return None
+
+        solar_w = self._kw_to_w(data.get("solar_power"))
+        load_w = self._kw_to_w(data.get("load_power"))
+        if solar_w is not None and load_w is not None:
+            return max(0.0, min(max_charge_w, max_grid_import_w + solar_w - load_w))
+
+        grid_w = self._kw_to_w(data.get("grid_power"))
+        battery_w = self._kw_to_w(data.get("battery_power"))
+        if grid_w is None or battery_w is None:
+            return None
+
+        current_charge_w = max(0.0, -battery_w)
+        return max(0.0, min(max_charge_w, max_grid_import_w - grid_w + current_charge_w))
+
+    def _charge_command_power_w(self, action: Any) -> float:
+        """Return charge command power, using live headroom in free import slots."""
+        try:
+            scheduled_w = max(0.0, float(getattr(action, "power_w", 0.0) or 0.0))
+        except (TypeError, ValueError):
+            scheduled_w = 0.0
+
+        if not self._supports_target_charge_power():
+            return scheduled_w
+
+        if not self._current_import_price_is_free():
+            return scheduled_w
+
+        live_limit_w = self._live_site_import_charge_limit_w()
+        if live_limit_w is None:
+            return scheduled_w
+
+        if abs(live_limit_w - scheduled_w) >= 250.0:
+            _LOGGER.info(
+                "Optimizer: Adjusting free-import charge target from %.0fW to %.0fW "
+                "using live site-import headroom",
+                scheduled_w,
+                live_limit_w,
+            )
+        return live_limit_w
+
     async def _execute_optimizer_action(self, action: Any) -> None:
         """Execute an optimizer action on the battery."""
         if not self._executor or not self._executor.battery_controller:
@@ -3524,7 +3598,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         else None
                     )
                     force_power_w = (
-                        force_window_action.power_w
+                        self._charge_command_power_w(force_window_action)
                         if force_type == "charge"
                         else self._export_command_power_w(force_window_action)
                     )
@@ -3859,6 +3933,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
             if effective_action == "charge":
                 if hasattr(battery, "force_charge"):
+                    charge_power_w = self._charge_command_power_w(action)
                     charge_duration = self._force_duration_for_action_window(
                         action,
                         {"charge"},
@@ -3891,31 +3966,31 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         )
                         force_result = await battery.force_charge(
                             duration_minutes=charge_duration,
-                            power_w=action.power_w,
+                            power_w=charge_power_w,
                         )
                         if force_result is not False and self.battery_system != "tesla":
                             self._set_optimizer_force_state(
                                 "charge",
                                 charge_duration,
-                                action.power_w,
+                                charge_power_w,
                             )
                         _LOGGER.info(
                             "Optimizer: Charging at %.0fW for %dmin "
                             "(auto-restore before demand)",
-                            action.power_w, charge_duration,
+                            charge_power_w, charge_duration,
                         )
                     else:
                         force_result = await battery.force_charge(
                             duration_minutes=charge_duration,
-                            power_w=action.power_w,
+                            power_w=charge_power_w,
                         )
                         if force_result is not False and self.battery_system != "tesla":
                             self._set_optimizer_force_state(
                                 "charge",
                                 charge_duration,
-                                action.power_w,
+                                charge_power_w,
                             )
-                        _LOGGER.info("Optimizer: Charging at %.0fW", action.power_w)
+                        _LOGGER.info("Optimizer: Charging at %.0fW", charge_power_w)
             elif effective_action in ("discharge", "export"):
                 if hasattr(battery, "force_discharge"):
                     discharge_power = self._export_command_power_w(action)

@@ -531,7 +531,16 @@ class FoxESSEntityController:
             or not entity_id.startswith("number.")
             or self.hass.states.get(entity_id) is None
         ):
+            self._discover_entities()
+            entity_id = self._entity_map.get(key)
+        if (
+            not entity_id
+            or not entity_id.startswith("number.")
+            or self.hass.states.get(entity_id) is None
+        ):
             raise ValueError(self._expected_entity_hint(key) or key)
+        state = self.hass.states.get(entity_id)
+        value = self._clamp_number_value(entity_id, state, value)
         await self.hass.services.async_call(
             "number",
             "set_value",
@@ -539,9 +548,55 @@ class FoxESSEntityController:
             blocking=True,
         )
 
+    def _clamp_number_value(
+        self,
+        entity_id: str,
+        state: Any,
+        value: float | int,
+    ) -> float | int:
+        attributes = getattr(state, "attributes", {}) or {}
+        numeric_value = self._float_attr(value)
+        if numeric_value is None:
+            return value
+
+        minimum = self._float_attr(
+            attributes.get("min", attributes.get("native_min_value"))
+        )
+        maximum = self._float_attr(
+            attributes.get("max", attributes.get("native_max_value"))
+        )
+
+        clamped = numeric_value
+        if minimum is not None:
+            clamped = max(minimum, clamped)
+        if maximum is not None:
+            clamped = min(maximum, clamped)
+
+        if clamped != numeric_value:
+            _LOGGER.warning(
+                "FoxESS entity bridge: clamped %s from %.3g to %.3g to match "
+                "number entity range",
+                entity_id,
+                numeric_value,
+                clamped,
+            )
+            return clamped
+        return value
+
+    def _float_attr(self, value: Any) -> float | None:
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
     async def _select_work_mode(self, option: str) -> bool:
         self._ensure_entity_map()
         entity_id = self._entity_map.get("work_mode")
+        if not entity_id or self.hass.states.get(entity_id) is None:
+            self._discover_entities()
+            entity_id = self._entity_map.get("work_mode")
         if not entity_id or self.hass.states.get(entity_id) is None:
             _LOGGER.error("FoxESS entity bridge: work_mode entity not found")
             return False
