@@ -850,9 +850,10 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def set_auto_apply_reserve_enabled(self, enabled: bool) -> None:
         """Enable or disable forecast-driven optimizer reserve tracking."""
         enabled = bool(enabled)
+        was_enabled = bool(getattr(self, "_auto_apply_reserve_enabled", False))
         current_manual = getattr(self, "_manual_backup_reserve", None)
         if enabled:
-            if current_manual is None:
+            if not was_enabled or current_manual is None:
                 current_manual = self._config.backup_reserve
             self._manual_backup_reserve = current_manual
             self._auto_apply_reserve_enabled = True
@@ -1784,9 +1785,24 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 _LOGGER.info("Restored profit maximisation mode: ENABLED")
 
         # Initialize solar forecaster
-        from ..const import CONF_SOLCAST_ESTIMATE_TYPE, DEFAULT_SOLCAST_ESTIMATE_TYPE
+        from ..const import (
+            CONF_SOLAR_FORECAST_PROVIDER,
+            CONF_SOLCAST_ESTIMATE_TYPE,
+            DEFAULT_SOLAR_FORECAST_PROVIDER,
+            DEFAULT_SOLCAST_ESTIMATE_TYPE,
+            SOLAR_FORECAST_PROVIDERS,
+        )
+        solar_forecast_provider = DEFAULT_SOLAR_FORECAST_PROVIDER
         solcast_estimate_type = DEFAULT_SOLCAST_ESTIMATE_TYPE
         if self._entry:
+            solar_forecast_provider = self._entry.options.get(
+                CONF_SOLAR_FORECAST_PROVIDER,
+                self._entry.data.get(
+                    CONF_SOLAR_FORECAST_PROVIDER, DEFAULT_SOLAR_FORECAST_PROVIDER
+                ),
+            )
+            if solar_forecast_provider not in SOLAR_FORECAST_PROVIDERS:
+                solar_forecast_provider = DEFAULT_SOLAR_FORECAST_PROVIDER
             solcast_estimate_type = self._entry.options.get(
                 CONF_SOLCAST_ESTIMATE_TYPE,
                 self._entry.data.get(
@@ -1797,6 +1813,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.hass,
             interval_minutes=self._config.interval_minutes,
             estimate_type=solcast_estimate_type,
+            provider_preference=solar_forecast_provider,
         )
 
         # Initialize executor (for battery control)
@@ -3235,6 +3252,12 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 previous_action,
                 next_action,
             )
+            if not self._can_bridge_export_gap_above_reserve(
+                previous_action,
+                actions[gap_start:gap_end],
+                bridge_power_w,
+            ):
+                continue
 
             for gap_action in actions[gap_start:gap_end]:
                 gap_action.action = export_action
@@ -3244,6 +3267,9 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     getattr(gap_action, "battery_discharge_w", 0.0) or 0.0,
                     bridge_power_w,
                 )
+                bridged_soc = self._bridged_gap_soc(previous_action, bridge_power_w)
+                if bridged_soc is not None:
+                    gap_action.soc = bridged_soc
                 bridged += 1
 
         if bridged:
@@ -3252,6 +3278,59 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 bridged * interval,
             )
         return schedule
+
+    def _can_bridge_export_gap_above_reserve(
+        self,
+        previous_action: Any,
+        gap_actions: list[Any],
+        bridge_power_w: float,
+    ) -> bool:
+        """Return False when bridging would export below the configured floor."""
+        reserve_floor = self._force_discharge_reserve_floor()
+        previous_soc = self._reserve_ratio(getattr(previous_action, "soc", None), None)
+        gap_socs = [
+            soc
+            for soc in (
+                self._reserve_ratio(getattr(action, "soc", None), None)
+                for action in gap_actions
+            )
+            if soc is not None
+        ]
+        if previous_soc is None and not gap_socs:
+            return True
+        if previous_soc is not None and previous_soc <= reserve_floor + 1e-6:
+            return False
+        if any(soc <= reserve_floor + 1e-6 for soc in gap_socs):
+            return False
+        bridged_soc = self._bridged_gap_soc(previous_action, bridge_power_w)
+        if bridged_soc is None:
+            return True
+        return bridged_soc >= reserve_floor - 1e-6
+
+    def _bridged_gap_soc(
+        self,
+        previous_action: Any,
+        bridge_power_w: float,
+    ) -> float | None:
+        """Estimate SOC after one bridged export slot."""
+        previous_soc = self._reserve_ratio(getattr(previous_action, "soc", None), None)
+        if previous_soc is None:
+            return None
+        capacity_wh = float(getattr(self._config, "battery_capacity_wh", 0.0) or 0.0)
+        if capacity_wh <= 0:
+            return previous_soc
+        interval_hours = max(
+            1,
+            int(getattr(self._config, "interval_minutes", 5) or 5),
+        ) / 60.0
+        efficiency = float(
+            getattr(getattr(self, "_optimizer", None), "efficiency", 0.92) or 0.92
+        )
+        removed_wh = max(0.0, float(bridge_power_w or 0.0)) * interval_hours / max(
+            efficiency,
+            0.001,
+        )
+        return max(0.0, min(1.0, round(previous_soc - removed_wh / capacity_wh, 4)))
 
     def _dynamic_export_prices_can_have_real_one_slot_gaps(self) -> bool:
         """Return True when a one-slot export gap may be a real price signal."""
@@ -4629,8 +4708,31 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 allowed.extend([False] * (n - len(allowed)))
 
         interval_hours = max(1, int(self._config.interval_minutes or 5)) / 60.0
+        capacity_wh = max(0.0, float(self._config.battery_capacity_wh or 0))
+        efficiency = float(getattr(self._optimizer, "efficiency", 0.92) or 0.92)
+        min_export_floor = self._reserve_ratio(export_reserve_floor, None)
+        if min_export_floor is None:
+            min_export_floor = self._force_discharge_reserve_floor()
         new_actions: list[ScheduleAction] = list(actions)
         idx = 0
+
+        def _action_soc(pos: int) -> float | None:
+            if pos < 0 or pos >= len(new_actions):
+                return None
+            return self._reserve_ratio(getattr(new_actions[pos], "soc", None), None)
+
+        def _advance_export_soc(soc: float, export_w: float) -> float:
+            if capacity_wh <= 0:
+                return soc
+            removed_wh = max(0.0, export_w) * interval_hours / max(efficiency, 0.001)
+            return max(0.0, min(1.0, soc - removed_wh / capacity_wh))
+
+        def _available_export_w(soc: float, floor: float) -> float:
+            if capacity_wh <= 0:
+                return 0.0
+            available_wh = max(0.0, soc - floor) * capacity_wh
+            return available_wh * max(efficiency, 0.001) / interval_hours
+
         while idx < n:
             if not allowed[idx]:
                 idx += 1
@@ -4656,8 +4758,8 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 continue
 
             spread_positions = list(range(start, end))
-            floor = self._reserve_ratio(export_reserve_floor, None)
-            if floor is not None:
+            floor = self._reserve_ratio(min_export_floor, None)
+            if floor is not None and any(_action_soc(pos) is not None for pos in spread_positions):
                 spread_positions = [
                     pos
                     for pos in spread_positions
@@ -4671,6 +4773,17 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     > floor + 0.0001
                 ]
                 if not spread_positions:
+                    for pos in range(start, end):
+                        original = actions[pos]
+                        if getattr(original, "action", None) in ("export", "discharge"):
+                            new_actions[pos] = ScheduleAction(
+                                timestamp=original.timestamp,
+                                action="self_consumption",
+                                power_w=0.0,
+                                soc=original.soc,
+                                battery_charge_w=0.0,
+                                battery_discharge_w=0.0,
+                            )
                     continue
 
             target_w = min(
@@ -4681,16 +4794,56 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if target_w <= 0:
                 continue
 
+            soc_cursor = _action_soc(start - 1)
+            if soc_cursor is None:
+                soc_cursor = _action_soc(start)
             for pos in spread_positions:
                 original = actions[pos]
-                new_actions[pos] = ScheduleAction(
-                    timestamp=original.timestamp,
-                    action="export",
-                    power_w=target_w,
-                    soc=original.soc,
-                    battery_charge_w=0.0,
-                    battery_discharge_w=target_w,
-                )
+                slot_target_w = target_w
+                if floor is not None and soc_cursor is not None:
+                    slot_target_w = min(
+                        slot_target_w,
+                        _available_export_w(soc_cursor, floor),
+                    )
+                    slot_target_w = round(max(0.0, slot_target_w), 1)
+                if slot_target_w > 0:
+                    soc_after = (
+                        _advance_export_soc(soc_cursor, slot_target_w)
+                        if soc_cursor is not None
+                        else original.soc
+                    )
+                    new_actions[pos] = ScheduleAction(
+                        timestamp=original.timestamp,
+                        action="export",
+                        power_w=slot_target_w,
+                        soc=round(soc_after, 4) if soc_cursor is not None else original.soc,
+                        battery_charge_w=0.0,
+                        battery_discharge_w=slot_target_w,
+                    )
+                    if soc_cursor is not None:
+                        soc_cursor = soc_after
+                else:
+                    new_actions[pos] = ScheduleAction(
+                        timestamp=original.timestamp,
+                        action="self_consumption",
+                        power_w=0.0,
+                        soc=original.soc,
+                        battery_charge_w=0.0,
+                        battery_discharge_w=0.0,
+                    )
+            for pos in range(start, end):
+                if pos in spread_positions:
+                    continue
+                original = actions[pos]
+                if getattr(original, "action", None) in ("export", "discharge"):
+                    new_actions[pos] = ScheduleAction(
+                        timestamp=original.timestamp,
+                        action="self_consumption",
+                        power_w=0.0,
+                        soc=original.soc,
+                        battery_charge_w=0.0,
+                        battery_discharge_w=0.0,
+                    )
 
         return OptimizationSchedule(
             actions=new_actions,
@@ -7575,6 +7728,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 max_discharge_w=self._config.max_discharge_w,
                 max_grid_import_w=self._config.max_grid_import_w,
                 backup_reserve=self._config.backup_reserve,
+                horizon_hours=self._config.horizon_hours,
             )
             self._optimizer.max_grid_export_w = self._config.max_grid_export_w
             self._optimizer.terminal_weight = self._profit_max_terminal_weight()
@@ -7897,7 +8051,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # Debug: log SOC range for API response
             soc_vals = api_response.get("soc", [])
             if soc_vals:
-                _DECISION_LOGGER.info(
+                _DECISION_LOGGER.debug(
                     "Schedule API: %d points, SOC range %.2f-%.2f (first=%.4f, last=%.4f)",
                     len(soc_vals), min(soc_vals), max(soc_vals),
                     soc_vals[0], soc_vals[-1],
@@ -8098,6 +8252,16 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 reserve = config_updates["backup_reserve"]
                 if reserve > 1:
                     config_updates["backup_reserve"] = reserve / 100
+            if "horizon_hours" in config_updates:
+                try:
+                    horizon_hours = int(float(config_updates["horizon_hours"]))
+                except (TypeError, ValueError):
+                    config_updates.pop("horizon_hours", None)
+                else:
+                    if horizon_hours > 0:
+                        config_updates["horizon_hours"] = horizon_hours
+                    else:
+                        config_updates.pop("horizon_hours", None)
 
             self.update_config(**config_updates)
             response["changes"].append(f"config: {list(config_updates.keys())}")
@@ -8108,6 +8272,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 from ..const import (
                     CONF_OPTIMIZATION_BACKUP_RESERVE,
                     CONF_OPTIMIZATION_MANUAL_RESERVE,
+                    CONF_OPTIMIZATION_HORIZON,
                     CONF_OPTIMIZATION_BATTERY_CAPACITY_WH,
                     CONF_OPTIMIZATION_ALLOW_GRID_CHARGE,
                     CONF_OPTIMIZATION_MAX_CHARGE_W,
@@ -8122,12 +8287,19 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         reserve_value = reserve_value / 100
                     new_data[CONF_OPTIMIZATION_BACKUP_RESERVE] = reserve_value
                     new_options[CONF_OPTIMIZATION_BACKUP_RESERVE] = reserve_value
-                    if self.auto_apply_reserve_enabled:
-                        self._manual_backup_reserve = reserve_value
-                        self._config.manual_backup_reserve = reserve_value
-                        new_data[CONF_OPTIMIZATION_MANUAL_RESERVE] = reserve_value
-                        new_options[CONF_OPTIMIZATION_MANUAL_RESERVE] = reserve_value
-                        rerun_after_settings = True
+                    self._manual_backup_reserve = reserve_value
+                    self._config.manual_backup_reserve = reserve_value
+                    new_data[CONF_OPTIMIZATION_MANUAL_RESERVE] = reserve_value
+                    new_options[CONF_OPTIMIZATION_MANUAL_RESERVE] = reserve_value
+                    rerun_after_settings = True
+                if "horizon_hours" in settings:
+                    try:
+                        horizon_hours = int(float(settings["horizon_hours"]))
+                    except (TypeError, ValueError):
+                        horizon_hours = None
+                    if horizon_hours is not None and horizon_hours > 0:
+                        new_data[CONF_OPTIMIZATION_HORIZON] = horizon_hours
+                        new_options[CONF_OPTIMIZATION_HORIZON] = horizon_hours
                 if "battery_capacity_wh" in settings:
                     new_options[CONF_OPTIMIZATION_BATTERY_CAPACITY_WH] = int(settings["battery_capacity_wh"])
                 if "max_charge_w" in settings:

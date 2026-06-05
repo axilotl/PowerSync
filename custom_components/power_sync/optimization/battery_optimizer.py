@@ -306,6 +306,7 @@ class BatteryOptimizer:
         max_battery_export_w: float | None | object = _UNSET,
         efficiency: float | None = None,
         backup_reserve: float | None = None,
+        horizon_hours: int | None = None,
     ) -> None:
         """Update optimizer configuration."""
         if capacity_wh is not None:
@@ -337,6 +338,13 @@ class BatteryOptimizer:
             self.efficiency = efficiency
         if backup_reserve is not None:
             self.backup_reserve = backup_reserve
+        if horizon_hours is not None:
+            try:
+                parsed_horizon = int(float(horizon_hours))
+            except (TypeError, ValueError):
+                parsed_horizon = None
+            if parsed_horizon is not None and parsed_horizon > 0:
+                self.horizon_hours = parsed_horizon
 
     @staticmethod
     def _normalize_optional_power_w(value: float | None | object) -> float | None:

@@ -21,7 +21,11 @@ from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 
 from ..const import (
+    DEFAULT_SOLAR_FORECAST_PROVIDER,
     DEFAULT_SOLCAST_ESTIMATE_TYPE,
+    SOLAR_FORECAST_PROVIDER_OPEN_METEO,
+    SOLAR_FORECAST_PROVIDER_SOLCAST,
+    SOLAR_FORECAST_PROVIDERS,
     SOLCAST_ESTIMATE,
     SOLCAST_ESTIMATE10,
     SOLCAST_ESTIMATE90,
@@ -1011,8 +1015,8 @@ class SolcastForecaster:
     Wrapper for solar production forecasts.
 
     Retrieves solar production forecasts from supported Home Assistant
-    integrations, preferring Solcast and falling back to Open-Meteo Solar
-    Forecast when available.
+    integrations, using the configured provider preference and falling back to
+    the other supported provider when available.
     """
 
     def __init__(
@@ -1021,6 +1025,7 @@ class SolcastForecaster:
         solcast_entity: str | None = None,
         interval_minutes: int = 5,
         estimate_type: str = DEFAULT_SOLCAST_ESTIMATE_TYPE,
+        provider_preference: str = DEFAULT_SOLAR_FORECAST_PROVIDER,
     ):
         """
         Initialize Solcast forecaster.
@@ -1030,15 +1035,28 @@ class SolcastForecaster:
             solcast_entity: Solcast sensor entity ID
             interval_minutes: Forecast interval in minutes
             estimate_type: Solcast estimate to use: estimate, estimate10, or estimate90
+            provider_preference: Preferred forecast source: solcast or open_meteo
         """
         self.hass = hass
         self.solcast_entity = solcast_entity
         self.interval_minutes = interval_minutes
+        self.provider_preference = (
+            provider_preference
+            if provider_preference in SOLAR_FORECAST_PROVIDERS
+            else DEFAULT_SOLAR_FORECAST_PROVIDER
+        )
+        self.last_forecast_source: str | None = None
         self.estimate_type = (
             estimate_type
             if estimate_type in _SOLCAST_ESTIMATE_FIELDS
             else DEFAULT_SOLCAST_ESTIMATE_TYPE
         )
+
+    def _provider_order(self) -> tuple[str, str]:
+        """Return preferred provider first, then fallback provider."""
+        if self.provider_preference == SOLAR_FORECAST_PROVIDER_OPEN_METEO:
+            return (SOLAR_FORECAST_PROVIDER_OPEN_METEO, SOLAR_FORECAST_PROVIDER_SOLCAST)
+        return (SOLAR_FORECAST_PROVIDER_SOLCAST, SOLAR_FORECAST_PROVIDER_OPEN_METEO)
 
     def _get_pv_estimate(self, period: dict[str, Any]) -> float:
         """Return the configured Solcast estimate value for a forecast period."""
@@ -1075,22 +1093,54 @@ class SolcastForecaster:
 
         n_intervals = horizon_hours * 60 // self.interval_minutes
 
-        # Try to get Solcast forecast from coordinator data
-        forecast = await self._get_solcast_forecast(start_time, n_intervals)
-        if forecast is not None:
-            return forecast
-
-        forecast = self._get_open_meteo_forecast(start_time, n_intervals)
-        if forecast is not None:
-            return forecast
+        for provider in self._provider_order():
+            if provider == SOLAR_FORECAST_PROVIDER_SOLCAST:
+                forecast = await self._get_solcast_forecast(start_time, n_intervals)
+            else:
+                forecast = self._get_open_meteo_forecast(start_time, n_intervals)
+            if forecast is not None:
+                self.last_forecast_source = provider
+                return forecast
 
         # No solar forecast available — use zero solar so LP makes
         # purely price-based decisions rather than guessing production
+        self.last_forecast_source = None
         _LOGGER.warning(
             "Solar forecast not available — using zero solar forecast. "
             "Install Solcast Solar or Open-Meteo Solar Forecast for optimal battery scheduling."
         )
         return [0.0] * n_intervals
+
+    async def get_daily_summary(
+        self,
+        horizon_hours: int = 48,
+        start_time: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Return today/tomorrow kWh summary using the configured provider order."""
+        if start_time is None:
+            start_time = dt_util.now()
+
+        forecast = await self.get_forecast(horizon_hours=horizon_hours, start_time=start_time)
+        interval_hours = self.interval_minutes / 60
+        today = start_time.date()
+        tomorrow = today + timedelta(days=1)
+        today_kwh = 0.0
+        tomorrow_kwh = 0.0
+
+        for idx, watts in enumerate(forecast):
+            slot_time = start_time + timedelta(minutes=idx * self.interval_minutes)
+            kwh = max(0.0, float(watts or 0.0)) * interval_hours / 1000
+            if slot_time.date() == today:
+                today_kwh += kwh
+            elif slot_time.date() == tomorrow:
+                tomorrow_kwh += kwh
+
+        return {
+            "today_kwh": today_kwh,
+            "tomorrow_kwh": tomorrow_kwh,
+            "today_forecast_kwh": today_kwh,
+            "source": self.last_forecast_source,
+        }
 
     def _get_open_meteo_forecast(
         self,

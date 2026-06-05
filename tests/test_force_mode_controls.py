@@ -357,6 +357,21 @@ def test_restore_normal_suppresses_tesla_force_toggle_during_dynamic_sync():
     assert "Skipping force mode toggle" in sync_source
 
 
+def test_restore_normal_allows_monitoring_tou_sync_for_force_cleanup():
+    source = INIT_PATH.read_text()
+    tree = ast.parse(source)
+    restore = _find_function(tree, "handle_restore_normal")
+    restore_source = ast.get_source_segment(source, restore)
+
+    assert restore_source is not None
+    assert "force_mode_cleanup_restore = restore_was_force_discharging or restore_was_force_charging" in restore_source
+    assert "and (optimizer_owned_restore or force_mode_cleanup_restore)" in restore_source
+    assert "restore normal is cleaning up an active force tariff" in restore_source
+    assert restore_source.index("force_mode_cleanup_restore =") < restore_source.index(
+        "if _monitoring_mode_should_block_control(call) and not allow_monitoring_restore:"
+    )
+
+
 def test_restore_normal_treats_octopus_as_dynamic_sync_provider():
     source = INIT_PATH.read_text()
     tree = ast.parse(source)
@@ -386,6 +401,21 @@ def test_tesla_tou_upload_waits_for_site_info_readback():
     assert "tariff_content_v2" in confirm_source
     assert "_tesla_tariff_matches_readback(tariff_data, observed)" in confirm_source
     assert "_tariff_charge_rates(expected, sell=False)" in matcher_source
+
+
+def test_tesla_tou_upload_reports_accepted_before_readback_failure():
+    source = INIT_PATH.read_text()
+    tree = ast.parse(source)
+    function = _find_function(tree, "send_tariff_to_tesla")
+    function_source = ast.get_source_segment(source, function)
+
+    assert function_source is not None
+    assert "accepted_status: dict[str, bool] | None = None" in function_source
+    assert 'accepted_status["accepted"] = True' in function_source
+    assert function_source.index('accepted_status["accepted"] = True') < function_source.index(
+        "await _confirm_tesla_tariff_uploaded("
+    )
+    assert function_source.index("site_info did not confirm") < function_source.index("return False")
 
 
 def test_optimizer_restore_keeps_tesla_self_consumption_during_handoff():
@@ -748,6 +778,25 @@ def test_tesla_force_discharge_disables_grid_charging_before_tariff_upload():
     )
     tariff_upload_index = function_source.index("send_tariff_to_tesla(")
     assert grid_disable_index < tariff_upload_index
+
+
+def test_tesla_force_discharge_arms_cleanup_for_unconfirmed_accepted_upload():
+    source = INIT_PATH.read_text()
+    tree = ast.parse(source)
+    function = _find_function(tree, "handle_force_discharge")
+    function_source = ast.get_source_segment(source, function)
+
+    assert function_source is not None
+    assert "accepted_sites: list[str] = []" in function_source
+    assert "unconfirmed_sites: list[str] = []" in function_source
+    assert "accepted_status=upload_status" in function_source
+    assert 'upload_status.get("accepted")' in function_source
+    assert "FORCE DISCHARGE CLEANUP ARMED" in function_source
+    assert "if all_success or accepted_sites:" in function_source
+    assert '"_allow_monitoring_restore": True' in function_source
+    assert function_source.index("FORCE DISCHARGE CLEANUP ARMED") < function_source.rindex(
+        "async def auto_restore"
+    )
 
 
 def test_restore_normal_does_not_clear_newer_force_command():

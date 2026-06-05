@@ -33,9 +33,16 @@ def _load_estimator_module(monkeypatch):
     optimization_module.__path__ = [str(COMPONENT_ROOT / "optimization")]
     const_module = types.ModuleType("power_sync.const")
     const_module.DEFAULT_SOLCAST_ESTIMATE_TYPE = "estimate"
+    const_module.DEFAULT_SOLAR_FORECAST_PROVIDER = "solcast"
     const_module.SOLCAST_ESTIMATE = "estimate"
     const_module.SOLCAST_ESTIMATE10 = "estimate10"
     const_module.SOLCAST_ESTIMATE90 = "estimate90"
+    const_module.SOLAR_FORECAST_PROVIDER_OPEN_METEO = "open_meteo"
+    const_module.SOLAR_FORECAST_PROVIDER_SOLCAST = "solcast"
+    const_module.SOLAR_FORECAST_PROVIDERS = {
+        "solcast": "Solcast",
+        "open_meteo": "Open-Meteo",
+    }
     const_module.DOMAIN = "power_sync"
 
     monkeypatch.setitem(sys.modules, "homeassistant", ha_root)
@@ -345,6 +352,110 @@ def test_open_meteo_multiple_entries_are_summed(monkeypatch):
     forecast = _run(forecaster.get_forecast(horizon_hours=1, start_time=start))
 
     assert forecast == [1500.0] * 12
+
+
+def test_solar_forecast_default_prefers_solcast_when_both_providers_have_data(monkeypatch):
+    module = _load_estimator_module(monkeypatch)
+    start = datetime(2026, 5, 9, 10, 0, tzinfo=timezone.utc)
+    solcast_state = SimpleNamespace(
+        entity_id="sensor.solcast_pv_forecast_forecast_today",
+        state="12",
+        attributes={
+            "detailedForecast": [
+                {"period_start": start.isoformat(), "pv_estimate": 2.0},
+            ],
+        },
+    )
+    hass = SimpleNamespace(
+        data={
+            "open_meteo_solar_forecast": {
+                "entry-1": SimpleNamespace(data=SimpleNamespace(watts={start: 1000})),
+            }
+        },
+        states=_FakeStates([solcast_state], {
+            "sensor.solcast_pv_forecast_forecast_today": solcast_state,
+        }),
+    )
+    forecaster = module.SolcastForecaster(hass, interval_minutes=30)
+
+    forecast = _run(forecaster.get_forecast(horizon_hours=1, start_time=start))
+
+    assert forecast == [2000.0, 0.0]
+    assert forecaster.last_forecast_source == "solcast"
+
+
+def test_solar_forecast_open_meteo_preference_wins_when_both_providers_have_data(monkeypatch):
+    module = _load_estimator_module(monkeypatch)
+    start = datetime(2026, 5, 9, 10, 0, tzinfo=timezone.utc)
+    solcast_state = SimpleNamespace(
+        entity_id="sensor.solcast_pv_forecast_forecast_today",
+        state="12",
+        attributes={
+            "detailedForecast": [
+                {"period_start": start.isoformat(), "pv_estimate": 2.0},
+            ],
+        },
+    )
+    hass = SimpleNamespace(
+        data={
+            "open_meteo_solar_forecast": {
+                "entry-1": SimpleNamespace(data=SimpleNamespace(watts={start: 1000})),
+            }
+        },
+        states=_FakeStates([solcast_state], {
+            "sensor.solcast_pv_forecast_forecast_today": solcast_state,
+        }),
+    )
+    forecaster = module.SolcastForecaster(
+        hass,
+        interval_minutes=30,
+        provider_preference="open_meteo",
+    )
+
+    forecast = _run(forecaster.get_forecast(horizon_hours=1, start_time=start))
+
+    assert forecast == [1000.0, 1000.0]
+    assert forecaster.last_forecast_source == "open_meteo"
+
+
+def test_solar_forecast_preferred_provider_falls_back_when_unavailable(monkeypatch):
+    module = _load_estimator_module(monkeypatch)
+    start = datetime(2026, 5, 9, 10, 0, tzinfo=timezone.utc)
+    solcast_state = SimpleNamespace(
+        entity_id="sensor.solcast_pv_forecast_forecast_today",
+        state="12",
+        attributes={
+            "detailedForecast": [
+                {"period_start": start.isoformat(), "pv_estimate": 2.0},
+            ],
+        },
+    )
+    hass = SimpleNamespace(
+        data={},
+        states=_FakeStates([solcast_state], {
+            "sensor.solcast_pv_forecast_forecast_today": solcast_state,
+        }),
+    )
+    forecaster = module.SolcastForecaster(
+        hass,
+        interval_minutes=30,
+        provider_preference="open_meteo",
+    )
+
+    forecast = _run(forecaster.get_forecast(horizon_hours=1, start_time=start))
+
+    assert forecast == [2000.0, 0.0]
+    assert forecaster.last_forecast_source == "solcast"
+
+
+def test_solar_forecast_invalid_provider_normalizes_to_solcast(monkeypatch):
+    module = _load_estimator_module(monkeypatch)
+    forecaster = module.SolcastForecaster(
+        SimpleNamespace(data={}, states=_FakeStates()),
+        provider_preference="invalid",
+    )
+
+    assert forecaster.provider_preference == "solcast"
 
 
 def test_open_meteo_sensor_watts_attributes_are_used_without_hass_data(monkeypatch):

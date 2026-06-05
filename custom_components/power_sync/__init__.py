@@ -241,6 +241,9 @@ from .const import (
     DEFAULT_GLOBIRD_ZEROHERO_CREDIT_AMOUNT,
     DEFAULT_GLOBIRD_ZEROHERO_IMPORT_LIMIT_KW,
     # Solcast solar forecasting
+    CONF_SOLAR_FORECAST_PROVIDER,
+    DEFAULT_SOLAR_FORECAST_PROVIDER,
+    SOLAR_FORECAST_PROVIDERS,
     CONF_SOLCAST_ENABLED,
     CONF_SOLCAST_API_KEY,
     CONF_SOLCAST_RESOURCE_ID,
@@ -541,6 +544,7 @@ from .const import (
     CONF_OPTIMIZATION_BACKUP_RESERVE,
     CONF_OPTIMIZATION_AUTO_APPLY_RESERVE,
     CONF_OPTIMIZATION_MANUAL_RESERVE,
+    CONF_OPTIMIZATION_HORIZON,
     CONF_HARDWARE_BACKUP_RESERVE,
     CONF_OPTIMIZATION_BATTERY_CAPACITY_WH,
     CONF_OPTIMIZATION_ALLOW_GRID_CHARGE,
@@ -3036,6 +3040,7 @@ async def send_tariff_to_tesla(
     timeout_seconds: int = 60,
     fleet_base_url: str | None = None,
     confirm_readback: bool = True,
+    accepted_status: dict[str, bool] | None = None,
 ) -> bool:
     """Send tariff data to Tesla via the configured provider with retry logic.
 
@@ -3049,6 +3054,8 @@ async def send_tariff_to_tesla(
         timeout_seconds: Request timeout in seconds (default: 60)
         fleet_base_url: Regional Fleet API base URL override for EU/AP users.
         confirm_readback: Confirm the uploaded tariff appears in site_info before returning success.
+        accepted_status: Optional mutable status populated with ``accepted=True``
+            after Tesla accepts the upload, even if readback confirmation fails.
 
     Returns:
         True if successful, False otherwise
@@ -3142,6 +3149,8 @@ async def send_tariff_to_tesla(
             ) as response:
                 if response.status == 200:
                     result = await response.json()
+                    if accepted_status is not None:
+                        accepted_status["accepted"] = True
                     _LOGGER.info(
                         "Successfully synced TOU schedule to Tesla (attempt %d/%d)",
                         attempt + 1,
@@ -9879,6 +9888,7 @@ _SOLCAST_SETTINGS_KEYS = (
     CONF_SOLCAST_API_KEY,
     CONF_SOLCAST_RESOURCE_ID,
     CONF_SOLCAST_ESTIMATE_TYPE,
+    CONF_SOLAR_FORECAST_PROVIDER,
 )
 
 _SOLCAST_EXTERNAL_SENSOR_PATTERNS = (
@@ -9909,6 +9919,13 @@ def _solcast_builtin_configured(config: dict[str, Any]) -> bool:
         and str(config.get(CONF_SOLCAST_API_KEY) or "").strip()
         and str(config.get(CONF_SOLCAST_RESOURCE_ID) or "").strip()
     )
+
+
+def _normalize_solar_forecast_provider(value: Any) -> str:
+    """Return a supported solar forecast provider preference."""
+    if value in SOLAR_FORECAST_PROVIDERS:
+        return str(value)
+    return DEFAULT_SOLAR_FORECAST_PROVIDER
 
 
 class WeatherSolcastSettingsView(HomeAssistantView):
@@ -9962,6 +9979,9 @@ class WeatherSolcastSettingsView(HomeAssistantView):
             "success": True,
             "weather_location": opts.get(CONF_WEATHER_LOCATION, ""),
             "openweathermap_api_key": opts.get(CONF_OPENWEATHERMAP_API_KEY, ""),
+            "solar_forecast_provider": _normalize_solar_forecast_provider(
+                opts.get(CONF_SOLAR_FORECAST_PROVIDER)
+            ),
             "solcast_enabled": builtin_configured or external_solcast,
             "solcast_source": solcast_source,
             "solcast_api_key": opts.get(CONF_SOLCAST_API_KEY, ""),
@@ -9994,6 +10014,11 @@ class WeatherSolcastSettingsView(HomeAssistantView):
                 new_options[CONF_WEATHER_LOCATION] = data["weather_location"]
             if "openweathermap_api_key" in data:
                 new_options[CONF_OPENWEATHERMAP_API_KEY] = data["openweathermap_api_key"]
+            if "solar_forecast_provider" in data:
+                new_options[CONF_SOLAR_FORECAST_PROVIDER] = _normalize_solar_forecast_provider(
+                    data["solar_forecast_provider"]
+                )
+                new_data.pop(CONF_SOLAR_FORECAST_PROVIDER, None)
             if "solcast_enabled" in data:
                 new_options[CONF_SOLCAST_ENABLED] = bool(data["solcast_enabled"])
                 new_data.pop(CONF_SOLCAST_ENABLED, None)
@@ -13096,7 +13121,12 @@ class SurplusForecastView(HomeAssistantView):
             hours = int(request.query.get("hours", 24))
             hours = max(1, min(48, hours))  # Limit to 48 hours
 
-            forecaster = SurplusForecaster(self._hass)
+            entry = None
+            for config_entry in self._hass.config_entries.async_entries(DOMAIN):
+                entry = config_entry
+                break
+
+            forecaster = SurplusForecaster(self._hass, entry)
             forecast = await forecaster.forecast_surplus(hours)
 
             return web.json_response({
@@ -23067,7 +23097,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             # Step 4: Create and upload discharge tariff to all gateways
             discharge_tariff, actual_expiry = _create_discharge_tariff(tariff_duration)
             all_success = True
+            accepted_sites: list[str] = []
+            unconfirmed_sites: list[str] = []
             for site_id, current_token, provider in site_configs:
+                upload_status: dict[str, bool] = {}
                 success = await send_tariff_to_tesla(
                     hass,
                     site_id,
@@ -23075,14 +23108,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     current_token,
                     provider,
                     fleet_base_url=entry.data.get(CONF_FLEET_API_BASE_URL),
+                    accepted_status=upload_status,
                 )
+                if upload_status.get("accepted"):
+                    accepted_sites.append(site_id)
                 if not success:
-                    _LOGGER.error("Failed to upload discharge tariff to site %s", site_id)
-                    all_success = False
+                    if upload_status.get("accepted"):
+                        _LOGGER.warning(
+                            "Force discharge tariff was accepted by Tesla for site %s "
+                            "but readback did not confirm it; scheduling restore cleanup",
+                            site_id,
+                        )
+                        unconfirmed_sites.append(site_id)
+                    else:
+                        _LOGGER.error("Failed to upload discharge tariff to site %s", site_id)
+                        all_success = False
                 elif len(site_configs) > 1:
                     await asyncio.sleep(1)
 
-            if all_success:
+            if all_success or accepted_sites:
                 force_discharge_state["active"] = True
                 force_discharge_state["source"] = source
                 # Use the requested duration for the countdown timer, not the
@@ -23101,6 +23145,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     tariff_duration,
                     actual_expiry.strftime('%H:%M'),
                 )
+                if unconfirmed_sites:
+                    _LOGGER.warning(
+                        "FORCE DISCHARGE CLEANUP ARMED: Tesla accepted the tariff for %d "
+                        "gateway(s), but %d gateway(s) did not confirm readback; restore "
+                        "will still run after %dmin",
+                        len(accepted_sites),
+                        len(unconfirmed_sites),
+                        duration,
+                    )
 
                 # Dispatch event for switch entity
                 async_dispatcher_send(hass, f"{DOMAIN}_force_discharge_state", {
@@ -23120,7 +23173,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         return
                     if force_discharge_state["active"]:
                         _LOGGER.info("Force discharge expired, auto-restoring normal operation")
-                        await hass.services.async_call(DOMAIN, SERVICE_RESTORE_NORMAL, {}, blocking=True)
+                        await hass.services.async_call(
+                            DOMAIN,
+                            SERVICE_RESTORE_NORMAL,
+                            {"_allow_monitoring_restore": True},
+                            blocking=True,
+                        )
 
                 # Use async_track_point_in_utc_time for one-time expiry (not recurring daily)
                 force_discharge_state["cancel_expiry_timer"] = async_track_point_in_utc_time(
@@ -24716,12 +24774,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             or force_discharge_state.get("source") == "optimizer"
             or force_charge_state.get("source") == "optimizer"
         )
-        allow_monitoring_restore = bool(
-            call.data.get("_allow_monitoring_restore")
-            and optimizer_owned_restore
-        )
         restore_was_force_discharging = bool(force_discharge_state.get("active"))
         restore_was_force_charging = bool(force_charge_state.get("active"))
+        force_mode_cleanup_restore = restore_was_force_discharging or restore_was_force_charging
+        allow_monitoring_restore = bool(
+            call.data.get("_allow_monitoring_restore")
+            and (optimizer_owned_restore or force_mode_cleanup_restore)
+        )
 
         if _monitoring_mode_should_block_control(call) and not allow_monitoring_restore:
             _LOGGER.info(
@@ -24731,7 +24790,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             return
         if _is_monitoring_mode() and allow_monitoring_restore:
             _LOGGER.info(
-                "[MONITORING] Allowing optimizer shutdown restore so existing hardware control is released"
+                "[MONITORING] Allowing force-mode restore cleanup so existing hardware control is released"
             )
 
         # Clear user-facing state toggles (Hold SoC and Self-Use buttons).
@@ -25354,6 +25413,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     hass.data.setdefault(DOMAIN, {}).setdefault(entry.entry_id, {})[
                         "_allow_monitoring_tou_sync_once"
                     ] = "optimizer shutdown restore is releasing an active force tariff"
+                elif force_mode_cleanup_restore:
+                    hass.data.setdefault(DOMAIN, {}).setdefault(entry.entry_id, {})[
+                        "_allow_monitoring_tou_sync_once"
+                    ] = "restore normal is cleaning up an active force tariff"
                 await hass.services.async_call(DOMAIN, SERVICE_SYNC_TOU, {}, blocking=True)
                 if _restore_superseded("TOU sync"):
                     return
@@ -29738,6 +29801,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             saved_max_grid_import_w = _positive_int_setting(
                 CONF_OPTIMIZATION_MAX_GRID_IMPORT_W
             )
+            saved_horizon_hours = _positive_int_setting(CONF_OPTIMIZATION_HORIZON)
             saved_auto_apply_reserve = bool(
                 entry.options.get(
                     CONF_OPTIMIZATION_AUTO_APPLY_RESERVE,
@@ -29792,6 +29856,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             if saved_max_discharge_w is not None:
                 optimizer_config_updates["max_discharge_w"] = saved_max_discharge_w
             optimizer_config_updates["max_grid_import_w"] = saved_max_grid_import_w
+            if saved_horizon_hours is not None:
+                optimizer_config_updates["horizon_hours"] = saved_horizon_hours
             optimization_coordinator.update_config(**optimizer_config_updates)
             optimization_coordinator._auto_apply_reserve_enabled = saved_auto_apply_reserve
             optimization_coordinator._manual_backup_reserve = saved_manual_reserve
@@ -30105,7 +30171,7 @@ class OptimizationView(HomeAssistantView):
 
     async def get(self, request: web.Request) -> web.Response:
         """Handle GET request for optimization status."""
-        _LOGGER.info("Optimization status GET request")
+        _LOGGER.debug("Optimization status GET request")
 
         # Find the optimization coordinator
         opt_coordinator = None
@@ -30126,10 +30192,10 @@ class OptimizationView(HomeAssistantView):
             })
 
         api_data = opt_coordinator.get_api_data()
-        _LOGGER.info(f"Optimization GET response: enabled={api_data.get('enabled')}, "
-                     f"predicted_cost=${api_data.get('predicted_cost', 0):.2f}, "
-                     f"savings=${api_data.get('predicted_savings', 0):.2f}, "
-                     f"has_schedule={api_data.get('schedule') is not None}")
+        _LOGGER.debug(f"Optimization GET response: enabled={api_data.get('enabled')}, "
+                      f"predicted_cost=${api_data.get('predicted_cost', 0):.2f}, "
+                      f"savings=${api_data.get('predicted_savings', 0):.2f}, "
+                      f"has_schedule={api_data.get('schedule') is not None}")
         return web.json_response(api_data)
 
     async def post(self, request: web.Request) -> web.Response:
@@ -30345,6 +30411,11 @@ class OptimizationSettingsView(HomeAssistantView):
                         _entry_int_setting(CONF_OPTIMIZATION_MAX_GRID_IMPORT_W, 0)
                         if config_entry
                         else 0
+                    ),
+                    "horizon_hours": (
+                        _entry_int_setting(CONF_OPTIMIZATION_HORIZON, 48)
+                        if config_entry
+                        else 48
                     ),
                     "allow_grid_charge": bool(
                         config_entry.options.get(
@@ -30572,6 +30643,12 @@ class OptimizationSettingsView(HomeAssistantView):
 
             if "auto_apply_reserve_enabled" in settings:
                 auto_apply = bool(settings["auto_apply_reserve_enabled"])
+                was_auto_apply = bool(
+                    new_options.get(
+                        CONF_OPTIMIZATION_AUTO_APPLY_RESERVE,
+                        new_data.get(CONF_OPTIMIZATION_AUTO_APPLY_RESERVE, False),
+                    )
+                )
                 current_live = new_data.get(
                     CONF_OPTIMIZATION_BACKUP_RESERVE,
                     new_options.get(
@@ -30601,6 +30678,8 @@ class OptimizationSettingsView(HomeAssistantView):
                 if manual_restore > 1:
                     manual_restore = manual_restore / 100.0
                 manual_restore = max(0.0, min(1.0, manual_restore))
+                if auto_apply and not was_auto_apply:
+                    manual_restore = current_live
 
                 new_data[CONF_OPTIMIZATION_AUTO_APPLY_RESERVE] = auto_apply
                 new_options[CONF_OPTIMIZATION_AUTO_APPLY_RESERVE] = auto_apply
@@ -30640,9 +30719,8 @@ class OptimizationSettingsView(HomeAssistantView):
                     reserve = reserve / 100.0
                 new_data[CONF_OPTIMIZATION_BACKUP_RESERVE] = reserve
                 new_options[CONF_OPTIMIZATION_BACKUP_RESERVE] = reserve
-                if new_options.get(CONF_OPTIMIZATION_AUTO_APPLY_RESERVE, False):
-                    new_data[CONF_OPTIMIZATION_MANUAL_RESERVE] = reserve
-                    new_options[CONF_OPTIMIZATION_MANUAL_RESERVE] = reserve
+                new_data[CONF_OPTIMIZATION_MANUAL_RESERVE] = reserve
+                new_options[CONF_OPTIMIZATION_MANUAL_RESERVE] = reserve
                 changes.append(f"Set backup reserve to {int(reserve * 100)}%")
 
             if "hardware_backup_reserve" in settings:
@@ -30666,6 +30744,7 @@ class OptimizationSettingsView(HomeAssistantView):
                 "max_charge_w": CONF_OPTIMIZATION_MAX_CHARGE_W,
                 "max_discharge_w": CONF_OPTIMIZATION_MAX_DISCHARGE_W,
                 "max_grid_import_w": CONF_OPTIMIZATION_MAX_GRID_IMPORT_W,
+                "horizon_hours": CONF_OPTIMIZATION_HORIZON,
             }
             for payload_key, option_key in spec_key_map.items():
                 if payload_key not in settings:

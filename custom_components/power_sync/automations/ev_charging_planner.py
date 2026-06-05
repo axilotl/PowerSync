@@ -22,7 +22,17 @@ import re
 
 from homeassistant.util import dt as dt_util
 
-from ..const import DOMAIN, TESLA_INTEGRATIONS
+from ..const import (
+    CONF_SOLAR_FORECAST_PROVIDER,
+    CONF_SOLCAST_ESTIMATE_TYPE,
+    DEFAULT_SOLAR_FORECAST_PROVIDER,
+    DEFAULT_SOLCAST_ESTIMATE_TYPE,
+    DOMAIN,
+    SOLAR_FORECAST_PROVIDER_OPEN_METEO,
+    SOLAR_FORECAST_PROVIDERS,
+    TESLA_INTEGRATIONS,
+)
+from ..optimization.load_estimator import SolcastForecaster as SharedSolarForecaster
 from ..solar_surplus_config import (
     DEFAULT_SOLAR_SURPLUS_MIN_BATTERY_SOC,
     get_solar_surplus_min_battery_soc,
@@ -1225,19 +1235,29 @@ class LoadProfileEstimator:
 class SolarForecaster:
     """Gets solar production forecast from Solcast or estimates."""
 
-    def __init__(self, hass):
+    def __init__(self, hass, config_entry=None):
         """Initialize the forecaster.
 
         Args:
             hass: Home Assistant instance
+            config_entry: Optional PowerSync config entry with provider settings
         """
         self.hass = hass
+        self.config_entry = config_entry
+
+    def _option(self, key: str, default: Any) -> Any:
+        if not self.config_entry:
+            return default
+        return self.config_entry.options.get(
+            key,
+            self.config_entry.data.get(key, default),
+        )
 
     async def get_solar_forecast(self, hours: int = 24) -> List[Dict[str, Any]]:
         """
         Get hourly solar forecast.
 
-        Tries Solcast integration first, falls back to simple estimation.
+        Uses the configured provider preference, then falls back to simple estimation.
 
         Args:
             hours: Number of hours to forecast
@@ -1245,10 +1265,46 @@ class SolarForecaster:
         Returns:
             List of dicts with hour, pv_estimate_kw, confidence
         """
-        # Try Solcast integration
-        solcast_forecast = await self._get_solcast_forecast(hours)
-        if solcast_forecast:
-            return solcast_forecast
+        provider = self._option(
+            CONF_SOLAR_FORECAST_PROVIDER,
+            DEFAULT_SOLAR_FORECAST_PROVIDER,
+        )
+        if provider not in SOLAR_FORECAST_PROVIDERS:
+            provider = DEFAULT_SOLAR_FORECAST_PROVIDER
+        shared_forecaster = SharedSolarForecaster(
+            self.hass,
+            interval_minutes=30,
+            estimate_type=self._option(
+                CONF_SOLCAST_ESTIMATE_TYPE,
+                DEFAULT_SOLCAST_ESTIMATE_TYPE,
+            ),
+            provider_preference=provider,
+        )
+        start_time = dt_util.now()
+        interval_forecast = await shared_forecaster.get_forecast(
+            horizon_hours=hours,
+            start_time=start_time,
+        )
+        if shared_forecaster.last_forecast_source:
+            confidence = (
+                0.7
+                if shared_forecaster.last_forecast_source
+                == SOLAR_FORECAST_PROVIDER_OPEN_METEO
+                else 0.8
+            )
+            result = []
+            intervals_per_hour = max(1, 60 // shared_forecaster.interval_minutes)
+            for hour_idx in range(hours):
+                start = hour_idx * intervals_per_hour
+                values = interval_forecast[start:start + intervals_per_hour]
+                avg_kw = sum(values) / len(values) / 1000 if values else 0.0
+                result.append({
+                    "hour": (start_time + timedelta(hours=hour_idx)).isoformat(),
+                    "pv_estimate_kw": avg_kw,
+                    "confidence": confidence,
+                    "source": shared_forecaster.last_forecast_source,
+                })
+            return result
 
         # Fall back to simple estimation
         return await self._estimate_solar(hours)
@@ -1410,10 +1466,11 @@ class SolarForecaster:
 class SurplusForecaster:
     """Combines solar forecast with load estimation for surplus prediction."""
 
-    def __init__(self, hass):
+    def __init__(self, hass, config_entry=None):
         """Initialize the forecaster."""
         self.hass = hass
-        self.solar_forecaster = SolarForecaster(hass)
+        self.config_entry = config_entry
+        self.solar_forecaster = SolarForecaster(hass, config_entry)
         self.load_estimator = LoadProfileEstimator(hass)
 
     async def forecast_surplus(
@@ -1957,7 +2014,7 @@ class ChargingPlanner:
         """
         self.hass = hass
         self.config_entry = config_entry
-        self.surplus_forecaster = SurplusForecaster(hass)
+        self.surplus_forecaster = SurplusForecaster(hass, config_entry)
         self.price_forecaster = PriceForecaster(hass, config_entry)
         self._get_battery_schedule = battery_schedule_getter
         self._grid_capacity_kw = grid_capacity_kw

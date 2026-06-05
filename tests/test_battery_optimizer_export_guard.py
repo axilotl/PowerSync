@@ -82,6 +82,15 @@ def _optimizer(module):
     )
 
 
+def test_update_config_applies_horizon_hours(battery_optimizer_module):
+    optimizer = _optimizer(battery_optimizer_module)
+
+    optimizer.update_config(horizon_hours=12)
+
+    assert optimizer.horizon_hours == 12
+    assert optimizer._align_forecasts([0.1] * 200, [0.1] * 200, [0.0] * 200, [0.0] * 200) == 144
+
+
 def test_grid_import_limit_caps_grid_sourced_charge(battery_optimizer_module):
     optimizer = battery_optimizer_module.BatteryOptimizer(
         capacity_wh=100000,

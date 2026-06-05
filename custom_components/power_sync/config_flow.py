@@ -349,6 +349,9 @@ from .const import (
     SIGENERGY_CHARGER_TYPES,
     SIGENERGY_CHARGER_EVAC,
     # Solcast Solar Forecast configuration
+    CONF_SOLAR_FORECAST_PROVIDER,
+    DEFAULT_SOLAR_FORECAST_PROVIDER,
+    SOLAR_FORECAST_PROVIDERS,
     CONF_SOLCAST_ENABLED,
     CONF_SOLCAST_API_KEY,
     CONF_SOLCAST_RESOURCE_ID,
@@ -9309,6 +9312,13 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
     ) -> FlowResult:
         """Weather and solar forecast configuration in options flow."""
         if user_input is not None:
+            solar_forecast_provider = user_input.get(
+                CONF_SOLAR_FORECAST_PROVIDER,
+                DEFAULT_SOLAR_FORECAST_PROVIDER,
+            )
+            if solar_forecast_provider not in SOLAR_FORECAST_PROVIDERS:
+                solar_forecast_provider = DEFAULT_SOLAR_FORECAST_PROVIDER
+
             # Store weather and Solcast settings
             weather_options = {
                 CONF_WEATHER_LOCATION: user_input.get(CONF_WEATHER_LOCATION, ""),
@@ -9318,6 +9328,7 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 CONF_WEATHER_ENTITY: _normalize_optional_entity(
                     user_input.get(CONF_WEATHER_ENTITY)
                 ),
+                CONF_SOLAR_FORECAST_PROVIDER: solar_forecast_provider,
                 CONF_SOLCAST_ENABLED: user_input.get(CONF_SOLCAST_ENABLED, False),
                 CONF_SOLCAST_API_KEY: (
                     user_input.get(CONF_SOLCAST_API_KEY) or ""
@@ -9335,6 +9346,7 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     CONF_SOLCAST_API_KEY,
                     CONF_SOLCAST_RESOURCE_ID,
                     CONF_SOLCAST_ESTIMATE_TYPE,
+                    CONF_SOLAR_FORECAST_PROVIDER,
                 )
             )
 
@@ -9375,6 +9387,21 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
         self._add_weather_entity_selector(schema_dict)
         schema_dict.update(
             {
+                vol.Optional(
+                    CONF_SOLAR_FORECAST_PROVIDER,
+                    default=self._get_option(
+                        CONF_SOLAR_FORECAST_PROVIDER,
+                        DEFAULT_SOLAR_FORECAST_PROVIDER,
+                    ),
+                ): SelectSelector(
+                    SelectSelectorConfig(
+                        options=[
+                            SelectOptionDict(value=value, label=label)
+                            for value, label in SOLAR_FORECAST_PROVIDERS.items()
+                        ],
+                        mode=SelectSelectorMode.DROPDOWN,
+                    )
+                ),
                 vol.Optional(
                     CONF_SOLCAST_ENABLED,
                     default=self._get_option(CONF_SOLCAST_ENABLED, False),

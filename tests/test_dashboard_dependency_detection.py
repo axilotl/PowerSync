@@ -54,6 +54,20 @@ def test_optimizer_windows_use_combined_visual_card():
     assert "Future Force Charge" not in source
 
 
+def test_optimizer_plan_gets_are_browser_cached():
+    """Frequent dashboard updates must not hammer the optimization API."""
+    source = STRATEGY_PATH.read_text()
+
+    assert "OPTIMIZATION_PLAN_FETCH_INTERVAL_MS = 45000" in source
+    assert "window.__powerSyncOptimizationPlanCache" in source
+    assert "_restoreCachedData(path)" in source
+    assert "cached?.promise" in source
+    assert "_adoptLoadPromise(path, cached.promise)" in source
+    assert "this._hass.callApi('GET', path)" in source
+    assert "now - this._lastFetch < OPTIMIZATION_PLAN_FETCH_INTERVAL_MS" in source
+    assert "now - this._lastFetch < 60000" not in source
+
+
 def test_optimizer_plan_shows_calculated_auto_reserve():
     """Auto-applied optimizer reserve should be visible on the schedule graph."""
     source = STRATEGY_PATH.read_text()
