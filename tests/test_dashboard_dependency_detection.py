@@ -54,6 +54,22 @@ def test_optimizer_windows_use_combined_visual_card():
     assert "Future Force Charge" not in source
 
 
+def test_optimizer_action_plan_renders_full_scrollable_list():
+    """The 24-hour action plan should expose every action instead of hiding overflow."""
+    source = STRATEGY_PATH.read_text()
+    actions_css = source[
+        source.index("        .actions {"):
+        source.index("        .action-row {")
+    ]
+
+    assert "overflow-y: auto;" in actions_css
+    assert "max-height: min(58vh, 620px);" in actions_css
+    assert "scrollbar-gutter: stable;" in actions_css
+    assert "actions.map(action =>" in source
+    assert "actions.slice(0, 10)" not in source
+    assert "more actions" not in source
+
+
 def test_optimizer_plan_gets_are_browser_cached():
     """Frequent dashboard updates must not hammer the optimization API."""
     source = STRATEGY_PATH.read_text()

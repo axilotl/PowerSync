@@ -1875,6 +1875,11 @@ class PowerSyncOptimizationPlan extends HTMLElement {
         .actions {
           display: grid;
           gap: 8px;
+          max-height: min(58vh, 620px);
+          overflow-y: auto;
+          overscroll-behavior: contain;
+          padding-right: 2px;
+          scrollbar-gutter: stable;
         }
         .action-row {
           display: grid;
@@ -2400,7 +2405,7 @@ class PowerSyncOptimizationPlan extends HTMLElement {
     if (!actions.length) {
       return '<div class="empty">No optimizer actions scheduled in the next 24 hours.</div>';
     }
-    return `<div class="actions">${actions.slice(0, 10).map(action => {
+    return `<div class="actions">${actions.map(action => {
       const info = this._actionInfo(action.action);
       const priceStats = this._priceStatsForAction(action, model);
       const power = Number(action.power_w || 0);
@@ -2421,7 +2426,7 @@ class PowerSyncOptimizationPlan extends HTMLElement {
           <div class="soc">${this._escHtml(soc)}</div>
         </div>
       `;
-    }).join('')}${actions.length > 10 ? `<div class="empty">+${actions.length - 10} more actions</div>` : ''}</div>`;
+    }).join('')}</div>`;
   }
 
   _renderActionPriceStats(stats, action, priceMeta) {
