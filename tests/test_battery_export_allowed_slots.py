@@ -777,6 +777,46 @@ def test_auto_apply_reserve_ignores_home_load_export_bridge_floor(opt_module):
     assert recommendation["applied_optimizer_reserve_percent"] == 5
 
 
+def test_auto_export_reserve_floor_ignores_future_export_bridge(opt_module):
+    coordinator = _coordinator(
+        opt_module,
+        "flow_power",
+        profit_max=True,
+        optimization_backup_reserve=0.15,
+    )
+    coordinator._auto_apply_reserve_enabled = True
+    coordinator._config.backup_reserve = 0.15
+
+    floor = coordinator._auto_export_reserve_floor(
+        {
+            "home_load_export_floor_percent": 83,
+            "home_load_bridge_after_export_start": "2026-05-04T17:30:00+10:00",
+        }
+    )
+
+    assert floor is None
+
+
+def test_auto_export_reserve_floor_applies_same_day_export_bridge(opt_module):
+    coordinator = _coordinator(
+        opt_module,
+        "flow_power",
+        profit_max=True,
+        optimization_backup_reserve=0.15,
+    )
+    coordinator._auto_apply_reserve_enabled = True
+    coordinator._config.backup_reserve = 0.15
+
+    floor = coordinator._auto_export_reserve_floor(
+        {
+            "home_load_export_floor_percent": 83,
+            "home_load_bridge_after_export_start": "2026-05-03T17:30:00+10:00",
+        }
+    )
+
+    assert floor == pytest.approx(0.83)
+
+
 def test_auto_apply_reserve_ignores_relaxed_infeasible_result(opt_module):
     """A relaxed/infeasible solve must never lower the optimiser reserve.
 

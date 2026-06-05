@@ -1010,6 +1010,19 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         optimizer_floor = self._reserve_ratio(self._config.backup_reserve, 0.0) or 0.0
         if export_floor <= optimizer_floor + 0.0001:
             return None
+        bridge_export_start = reserve_recommendation.get(
+            "home_load_bridge_after_export_start"
+        )
+        if bridge_export_start:
+            try:
+                bridge_start = datetime.fromisoformat(str(bridge_export_start))
+                now = dt_util.now()
+                if bridge_start.tzinfo is not None:
+                    now = now.astimezone(bridge_start.tzinfo)
+                if bridge_start.date() != now.date():
+                    return None
+            except (TypeError, ValueError):
+                pass
         return export_floor
 
     def _force_discharge_reaches_reserve(
