@@ -2633,6 +2633,60 @@ def test_flow_power_no_idle_schedule_fills_zero_self_consumption_after_export(op
     assert converted.actions[2].soc < converted.actions[1].soc
 
 
+def test_flow_power_no_idle_schedule_keeps_export_soc_continuous(opt_module):
+    coordinator = _coordinator(opt_module, "flow_power")
+    coordinator._config.disable_idle_enabled = True
+    coordinator._config.battery_capacity_wh = 10000
+    coordinator._config.max_discharge_w = 5000
+    coordinator._config.backup_reserve = 0.30
+    coordinator._startup_backup_reserve = 5
+
+    start = datetime(2026, 5, 3, 17, 20, tzinfo=timezone.utc)
+    schedule = opt_module.OptimizationSchedule(
+        actions=[
+            opt_module.ScheduleAction(
+                timestamp=start,
+                action="self_consumption",
+                power_w=0,
+                soc=0.40,
+                battery_charge_w=0,
+                battery_discharge_w=0,
+            ),
+            opt_module.ScheduleAction(
+                timestamp=start + timedelta(minutes=5),
+                action="self_consumption",
+                power_w=0,
+                soc=0.40,
+                battery_charge_w=0,
+                battery_discharge_w=0,
+            ),
+            opt_module.ScheduleAction(
+                timestamp=start + timedelta(minutes=10),
+                action="export",
+                power_w=5000,
+                soc=0.90,
+                battery_charge_w=0,
+                battery_discharge_w=5000,
+            ),
+        ],
+        predicted_cost=1.23,
+        predicted_savings=0.45,
+        last_updated=start,
+    )
+
+    converted = coordinator._disable_idle_schedule(
+        schedule,
+        solar_forecast=[0.0, 0.0, 0.0],
+        load_forecast=[2.0, 2.0, 0.0],
+        initial_soc=0.40,
+    )
+
+    assert converted.actions[2].action == "export"
+    assert converted.actions[2].soc != 0.90
+    assert converted.actions[2].soc < converted.actions[1].soc
+    assert converted.actions[2].soc > 0.05
+
+
 def test_flow_power_no_idle_schedule_uses_hardware_floor_for_home_load(opt_module):
     coordinator = _coordinator(opt_module, "flow_power")
     coordinator._config.disable_idle_enabled = True

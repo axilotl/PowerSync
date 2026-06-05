@@ -3172,12 +3172,29 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 and action_discharge_w <= 0
             )
             if action_name != "idle" and not should_simulate_self_use:
-                new_actions.append(action)
-                soc_cursor = _advance_soc(
+                next_soc = _advance_soc(
                     soc_cursor,
                     action_charge_w,
                     action_discharge_w,
                 )
+                if soc_cursor is None:
+                    new_actions.append(action)
+                else:
+                    new_actions.append(
+                        ScheduleAction(
+                            timestamp=action.timestamp,
+                            action=action.action,
+                            power_w=action.power_w,
+                            soc=(
+                                round(next_soc, 4)
+                                if next_soc is not None
+                                else getattr(action, "soc", None)
+                            ),
+                            battery_charge_w=action.battery_charge_w,
+                            battery_discharge_w=action.battery_discharge_w,
+                        )
+                    )
+                soc_cursor = next_soc
                 continue
             changed = True
             discharge_w = round(_natural_discharge_w(index, soc_cursor), 1)
