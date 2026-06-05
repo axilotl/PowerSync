@@ -8666,13 +8666,14 @@ async def fetch_tesla_tariff_schedule(hass: HomeAssistant, entry: ConfigEntry) -
             data = await response.json()
             site_info = data.get("response", {})
 
-        # Get tariff_content from site_info
-        tariff = site_info.get("tariff_content", {})
+        # Get tariff_content from site_info. Newer Tesla API responses may only
+        # expose the v2 tariff shape, which the write/restore paths already use.
+        tariff = site_info.get("tariff_content_v2") or site_info.get("tariff_content", {})
         if not tariff:
-            _LOGGER.warning("No tariff_content in Tesla site_info response")
+            _LOGGER.warning("No tariff_content or tariff_content_v2 in Tesla site_info response")
             return None
 
-        _LOGGER.debug(f"Tesla tariff_content utility: {tariff.get('utility')}, name: {tariff.get('name')}")
+        _LOGGER.debug(f"Tesla tariff content utility: {tariff.get('utility')}, name: {tariff.get('name')}")
 
         # Reject PowerSync-generated fake tariffs (force charge/discharge).
         # If HA restarts while a force mode tariff is on the Tesla API, we must

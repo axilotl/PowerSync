@@ -630,6 +630,7 @@ def test_tesla_tariff_fetch_rejects_force_tariffs():
     function_source = ast.get_source_segment(source, function)
 
     assert function_source is not None
+    assert 'site_info.get("tariff_content_v2") or site_info.get("tariff_content", {})' in function_source
     assert "if _is_powersync_force_tariff(tariff):" in function_source
     assert '"last_restorable_tesla_tariff"' in function_source
 
