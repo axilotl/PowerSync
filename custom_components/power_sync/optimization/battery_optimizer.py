@@ -1077,7 +1077,13 @@ class BatteryOptimizer:
                 )
                 reserve_floor[t + 1] = max(self_consumption_floor, max_reachable)
 
-        export_reserve_floor = self._configured_export_reserve_floor()
+        # Even when a solve starts below the optimiser reserve and self-use is
+        # allowed down to the hardware floor, forced battery export must still
+        # respect the user's optimiser reserve once export is allowed again.
+        export_reserve_floor = max(
+            optimizer_reserve,
+            self._configured_export_reserve_floor(),
+        )
         if export_reserve_floor > self_consumption_floor:
             for t, allow_export in enumerate(p_allow_export):
                 if allow_export:
@@ -2309,11 +2315,7 @@ class BatteryOptimizer:
         soc = soc_0
         optimizer_reserve = max(0.0, min(1.0, self.backup_reserve))
         self_consumption_floor = self._natural_self_consumption_floor(soc_0)
-        export_floor = (
-            max(optimizer_reserve, self._configured_export_reserve_floor())
-            if soc_0 >= optimizer_reserve
-            else self_consumption_floor
-        )
+        export_floor = max(optimizer_reserve, self._configured_export_reserve_floor())
 
         for t in range(n):
             ts = now + timedelta(minutes=t * self.interval_minutes)
