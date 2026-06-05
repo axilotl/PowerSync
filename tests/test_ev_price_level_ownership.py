@@ -729,6 +729,68 @@ def test_scheduled_stops_external_charging_outside_window(monkeypatch, fake_acti
     assert scheduled.get_state()["last_decision"] == "stopped"
 
 
+def test_scheduled_leaves_solar_surplus_owned_session_alone(
+    monkeypatch,
+    fake_actions,
+):
+    fake_actions._dynamic_ev_state = {
+        "entry-1": {
+            VIN: {
+                "active": True,
+                "params": {
+                    "dynamic_mode": "solar_surplus",
+                    "owner_mode": "solar_surplus",
+                },
+            }
+        }
+    }
+    fake_actions._action_stop_ev_charging_dynamic = AsyncMock(return_value=True)
+
+    hass = _FakeHass()
+    hass.data["power_sync"]["entry-1"]["automation_store"]._data[
+        "scheduled_charging"
+    ] = {
+        "enabled": True,
+        "start_time": "11:00",
+        "end_time": "14:00",
+        "max_price_cents": 35,
+    }
+
+    async def at_home(*args, **kwargs):
+        return "home"
+
+    async def plugged_in(*args, **kwargs):
+        return True
+
+    active_probe = AsyncMock(return_value=True)
+    monkeypatch.setattr(ev_planner, "get_ev_location", at_home)
+    monkeypatch.setattr(ev_planner, "is_ev_plugged_in", plugged_in)
+    monkeypatch.setattr(ev_planner, "is_ev_actively_charging", active_probe)
+    monkeypatch.setattr(
+        ev_planner.dt_util,
+        "now",
+        lambda: datetime(2026, 5, 27, 15, 8, tzinfo=timezone.utc),
+    )
+
+    previous_executor = ev_planner.get_scheduled_charging_executor()
+    previous_price_executor = ev_planner.get_price_level_executor()
+    scheduled = ev_planner.ScheduledChargingExecutor(hass, _FakeConfigEntry())
+    coordinator = ev_planner.EVChargingModeCoordinator(hass, _FakeConfigEntry())
+
+    try:
+        ev_planner.set_scheduled_charging_executor(scheduled)
+        ev_planner.set_price_level_executor(None)
+
+        asyncio.run(coordinator.evaluate({}, 33))
+    finally:
+        ev_planner.set_scheduled_charging_executor(previous_executor)
+        ev_planner.set_price_level_executor(previous_price_executor)
+
+    active_probe.assert_not_awaited()
+    fake_actions._action_stop_ev_charging_dynamic.assert_not_awaited()
+    assert scheduled.get_state()["last_decision"] == "waiting"
+
+
 def test_scheduled_does_not_stop_external_charging_when_vehicle_away(
     monkeypatch,
     fake_actions,

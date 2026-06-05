@@ -7596,6 +7596,19 @@ async def _can_stop_external_scheduled_session(
     config_entry: "ConfigEntry",
 ) -> Tuple[bool, str]:
     """Return whether Scheduled Charging may stop an external session."""
+    try:
+        from .actions import DEFAULT_VEHICLE_ID
+        from .ev_ownership import get_active_ev_owner_mode, owner_family
+
+        active_mode = (
+            _get_active_dynamic_ev_mode(hass, config_entry, DEFAULT_VEHICLE_ID)
+            or get_active_ev_owner_mode(hass, config_entry, DEFAULT_VEHICLE_ID)
+        )
+        if active_mode and owner_family(active_mode) != owner_family("scheduled"):
+            return False, f"{active_mode} owns the active loadpoint"
+    except Exception as err:
+        _LOGGER.debug("Scheduled external-stop ownership guard failed: %s", err)
+
     opts = {**getattr(config_entry, "data", {}), **getattr(config_entry, "options", {})}
     charger_type = _configured_charger_type(opts)
     if charger_type in ("generic", "ocpp", "sigenergy", "zaptec"):
