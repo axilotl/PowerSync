@@ -1451,6 +1451,10 @@ if (!customElements.get('power-sync-battery-health')) {
 // ─── PowerSyncOptimizationPlan Custom Element ───────────────────
 // API-backed Smart Optimization card that mirrors the mobile 24-hour view.
 
+const OPTIMIZATION_PLAN_FETCH_INTERVAL_MS = 45000;
+const OPTIMIZATION_PLAN_CACHE = window.__powerSyncOptimizationPlanCache || new Map();
+window.__powerSyncOptimizationPlanCache = OPTIMIZATION_PLAN_CACHE;
+
 class PowerSyncOptimizationPlan extends HTMLElement {
   constructor() {
     super();
@@ -1466,10 +1470,15 @@ class PowerSyncOptimizationPlan extends HTMLElement {
   }
 
   setConfig(config) {
+    const previousPath = this._optimizationPath();
     this._config = config || {};
-    this._data = null;
-    this._error = null;
-    this._lastFetch = 0;
+    const nextPath = this._optimizationPath();
+    if (previousPath !== nextPath) {
+      this._data = null;
+      this._error = null;
+      this._lastFetch = 0;
+    }
+    this._restoreCachedData(nextPath);
     this._scheduleRender();
     this._maybeLoadData(true);
   }
@@ -1500,24 +1509,86 @@ class PowerSyncOptimizationPlan extends HTMLElement {
     return 6;
   }
 
+  _optimizationPath() {
+    return this._config?.optimizationPath || 'power_sync/optimization';
+  }
+
+  _restoreCachedData(path = this._optimizationPath()) {
+    const cached = OPTIMIZATION_PLAN_CACHE.get(path);
+    if (!cached?.data) return false;
+    const fetchedAt = cached.fetchedAt || 0;
+    if (Date.now() - fetchedAt >= OPTIMIZATION_PLAN_FETCH_INTERVAL_MS) return false;
+    this._data = cached.data;
+    this._error = null;
+    this._lastFetch = fetchedAt;
+    return true;
+  }
+
   _maybeLoadData(force) {
     if (!this._config || !this._hass || typeof this._hass.callApi !== 'function') return;
     const now = Date.now();
     if (this._loading) return;
-    if (!force && this._data && now - this._lastFetch < 60000) return;
-    this._loadData();
+    if (this._data && now - this._lastFetch < OPTIMIZATION_PLAN_FETCH_INTERVAL_MS) return;
+
+    const path = this._optimizationPath();
+    if (this._restoreCachedData(path)) {
+      this._scheduleRender();
+      return;
+    }
+
+    const cached = OPTIMIZATION_PLAN_CACHE.get(path);
+    if (cached?.promise) {
+      this._adoptLoadPromise(path, cached.promise);
+      return;
+    }
+
+    this._loadData(path);
   }
 
-  async _loadData() {
+  _adoptLoadPromise(path, promise) {
     this._loading = true;
-    const path = this._config.optimizationPath || 'power_sync/optimization';
+    promise
+      .then((response) => {
+        if (path !== this._optimizationPath()) return;
+        const cached = OPTIMIZATION_PLAN_CACHE.get(path);
+        this._data = response || null;
+        this._error = null;
+        this._lastFetch = cached?.fetchedAt || Date.now();
+      })
+      .catch((err) => {
+        if (path !== this._optimizationPath()) return;
+        this._error = err?.message || 'Optimization API unavailable';
+      })
+      .finally(() => {
+        this._loading = false;
+        this._scheduleRender();
+      });
+  }
+
+  async _loadData(path = this._optimizationPath()) {
+    this._loading = true;
+    const request = this._hass.callApi('GET', path);
+    const previous = OPTIMIZATION_PLAN_CACHE.get(path);
+    OPTIMIZATION_PLAN_CACHE.set(path, { ...(previous || {}), promise: request });
     try {
-      const response = await this._hass.callApi('GET', path);
+      const response = await request;
       this._data = response || null;
       this._error = null;
       this._lastFetch = Date.now();
+      OPTIMIZATION_PLAN_CACHE.set(path, {
+        data: this._data,
+        fetchedAt: this._lastFetch,
+      });
     } catch (err) {
       this._error = err?.message || 'Optimization API unavailable';
+      const cached = OPTIMIZATION_PLAN_CACHE.get(path);
+      if (cached?.promise === request) {
+        if (previous?.data) {
+          OPTIMIZATION_PLAN_CACHE.set(path, previous);
+        } else {
+          OPTIMIZATION_PLAN_CACHE.delete(path);
+        }
+      }
     } finally {
       this._loading = false;
       this._scheduleRender();
@@ -1804,6 +1875,11 @@ class PowerSyncOptimizationPlan extends HTMLElement {
         .actions {
           display: grid;
           gap: 8px;
+          max-height: min(58vh, 620px);
+          overflow-y: auto;
+          overscroll-behavior: contain;
+          padding-right: 2px;
+          scrollbar-gutter: stable;
         }
         .action-row {
           display: grid;
@@ -2329,7 +2405,7 @@ class PowerSyncOptimizationPlan extends HTMLElement {
     if (!actions.length) {
       return '<div class="empty">No optimizer actions scheduled in the next 24 hours.</div>';
     }
-    return `<div class="actions">${actions.slice(0, 10).map(action => {
+    return `<div class="actions">${actions.map(action => {
       const info = this._actionInfo(action.action);
       const priceStats = this._priceStatsForAction(action, model);
       const power = Number(action.power_w || 0);
@@ -2350,7 +2426,7 @@ class PowerSyncOptimizationPlan extends HTMLElement {
           <div class="soc">${this._escHtml(soc)}</div>
         </div>
       `;
-    }).join('')}${actions.length > 10 ? `<div class="empty">+${actions.length - 10} more actions</div>` : ''}</div>`;
+    }).join('')}</div>`;
   }
 
   _renderActionPriceStats(stats, action, priceMeta) {
@@ -2733,6 +2809,8 @@ class PowerSyncLayout extends HTMLElement {
     this._storageKey = 'power-sync-dashboard-layout-v2';
     this._hiddenStorageKey = 'power-sync-dashboard-hidden-v1';
     this._appliedLayoutSignature = '';
+    this._lastLayoutWidth = 0;
+    this._lastLayoutColumnCount = 0;
   }
 
   setConfig(config) {
@@ -2743,7 +2821,6 @@ class PowerSyncLayout extends HTMLElement {
     this._hass = hass;
     if (!this._built) this._buildLayout();
     for (const c of this._cards) c.hass = hass;
-    this._scheduleLayout();
   }
 
   disconnectedCallback() {
@@ -2764,10 +2841,31 @@ class PowerSyncLayout extends HTMLElement {
 
   _columnCount() {
     const width = this.getBoundingClientRect().width || window.innerWidth || 0;
+    return this._columnCountForWidth(width);
+  }
+
+  _columnCountForWidth(width) {
     const portrait = window.matchMedia?.('(orientation: portrait)')?.matches;
     if (width < 760 || (portrait && width < 1040)) return 1;
     if (width < 1280) return 2;
     return 3;
+  }
+
+  _scheduleLayoutForResize(entry) {
+    const box = Array.isArray(entry?.contentBoxSize)
+      ? entry.contentBoxSize[0]
+      : entry?.contentBoxSize;
+    const width = box?.inlineSize || entry?.contentRect?.width || this.getBoundingClientRect().width || window.innerWidth || 0;
+    const columnCount = this._columnCountForWidth(width);
+    const widthDelta = Math.abs(width - this._lastLayoutWidth);
+    if (
+      this._lastLayoutColumnCount &&
+      columnCount === this._lastLayoutColumnCount &&
+      widthDelta < 80
+    ) {
+      return;
+    }
+    this._scheduleLayout();
   }
 
   _flattenCards() {
@@ -3269,6 +3367,8 @@ class PowerSyncLayout extends HTMLElement {
     }
 
     const count = Math.min(this._columnCount(), visibleItems.length);
+    this._lastLayoutColumnCount = count;
+    this._lastLayoutWidth = this.getBoundingClientRect().width || window.innerWidth || 0;
     if (this._lanes.length !== count) {
       this._rebuildLanes(count);
     }
@@ -3483,7 +3583,7 @@ class PowerSyncLayout extends HTMLElement {
     root.appendChild(grid);
 
     if ('ResizeObserver' in window) {
-      this._resizeObserver = new ResizeObserver(() => this._scheduleLayout());
+      this._resizeObserver = new ResizeObserver((entries) => this._scheduleLayoutForResize(entries?.[0]));
       this._resizeObserver.observe(this);
     }
 

@@ -195,13 +195,15 @@
           "epex_region": "Bidding zone",
           "epex_surcharge": "Surcharge",
           "epex_tax_percent": "Tax",
-          "epex_export_rate": "Fixed export rate"
+          "epex_export_rate": "Fixed export rate",
+          "epex_export_price_entity": "Export price sensor"
         },
         "data_description": {
           "epex_region": "Your EPEX electricity market bidding zone. Most users need just their country code (DE, AT, BE, NL, FR, etc.).",
           "epex_surcharge": "Fixed network fees, levies, and other charges in ct/kWh. Added to the wholesale price before tax.",
           "epex_tax_percent": "VAT percentage applied on top of the total price. Example: 21 for Belgium, 19 for Germany.",
-          "epex_export_rate": "Fixed feed-in tariff in ct/kWh. Set to 0 to use the wholesale price for export valuation."
+          "epex_export_rate": "Fixed feed-in tariff in ct/kWh. Set to 0 to use the wholesale price for export valuation.",
+          "epex_export_price_entity": "Optional Home Assistant sensor for actual export earnings. Use ct/kWh or EUR/kWh; a price_values attribute can provide a forecast."
         },
         "submit": "Connect"
       },
@@ -741,6 +743,7 @@
           "weather_location": "Weather location",
           "openweathermap_api_key": "OpenWeatherMap API key",
           "weather_entity": "Home Assistant weather entity",
+          "solar_forecast_provider": "Solar forecast provider",
           "solcast_enabled": "Enable Solcast solar forecast",
           "solcast_api_key": "Solcast API key",
           "solcast_resource_id": "Solcast resource ID(s)",
@@ -750,6 +753,7 @@
           "weather_location": "Suburb, city, postcode, or lat,lon coordinates (e.g. 'Melbourne', '3000', '-37.81,144.96'). Leave blank to auto-detect from timezone.",
           "openweathermap_api_key": "Free API key from openweathermap.org for weather-based automations (sunny, cloudy, rain, snow, and storm triggers). Leave blank to disable.",
           "weather_entity": "Optional. Used for temperature-aware load forecasting if Home Assistant has a weather entity. Leave blank when using OpenWeatherMap.",
+          "solar_forecast_provider": "Choose which solar forecast provider PowerSync tries first. If the selected provider has no usable forecast, PowerSync falls back to the other supported provider.",
           "solcast_enabled": "Enable solar production forecasting. If the Solcast or Open-Meteo Solar Forecast HA integration is installed, PowerSync reads from its sensors automatically (no API calls needed).",
           "solcast_api_key": "Only needed if you do NOT have the Solcast HA integration. Get a free key from toolkit.solcast.com.au (10 calls/day on hobbyist tier).",
           "solcast_resource_id": "Only needed without the Solcast HA integration. For split arrays, enter comma-separated IDs (e.g. abc123,def456).",
@@ -1634,6 +1638,7 @@
           "epex_surcharge": "Surcharge",
           "epex_tax_percent": "Tax",
           "epex_export_rate": "Fixed export rate",
+          "epex_export_price_entity": "Export price sensor",
           "auto_sync_enabled": "Enable automatic TOU sync",
           "battery_curtailment_enabled": "Stop export below 1c"
         },
@@ -1642,6 +1647,7 @@
           "epex_surcharge": "Fixed network fees, levies, and other charges in ct/kWh. Added to the wholesale price before tax.",
           "epex_tax_percent": "VAT percentage applied on top of the total price. Example: 21 for Belgium, 19 for Germany.",
           "epex_export_rate": "Fixed feed-in tariff in ct/kWh. Set to 0 to use the wholesale price for export valuation.",
+          "epex_export_price_entity": "Optional Home Assistant sensor for actual export earnings. Use ct/kWh or EUR/kWh; a price_values attribute can provide a forecast.",
           "auto_sync_enabled": "Automatically upload TOU tariff schedules to your battery.",
           "battery_curtailment_enabled": "Stop battery from exporting when export earnings drop below 1c/kWh."
         },
@@ -1973,6 +1979,7 @@
           "weather_location": "Weather location",
           "openweathermap_api_key": "OpenWeatherMap API key",
           "weather_entity": "Home Assistant weather entity",
+          "solar_forecast_provider": "Solar forecast provider",
           "solcast_enabled": "Enable Solcast solar forecast",
           "solcast_api_key": "Solcast API key",
           "solcast_resource_id": "Solcast resource ID(s)",
@@ -1982,6 +1989,7 @@
           "weather_location": "Suburb, city, postcode, or lat,lon coordinates (e.g. 'Melbourne', '3000', '-37.81,144.96'). Leave blank to auto-detect from timezone.",
           "openweathermap_api_key": "Free API key from openweathermap.org for weather-based automations (sunny, cloudy, rain, snow, and storm triggers). Leave blank to disable.",
           "weather_entity": "Optional. Used for temperature-aware load forecasting if Home Assistant has a weather entity. Leave blank when using OpenWeatherMap.",
+          "solar_forecast_provider": "Choose which solar forecast provider PowerSync tries first. If the selected provider has no usable forecast, PowerSync falls back to the other supported provider.",
           "solcast_enabled": "Enable solar production forecasting. If the Solcast or Open-Meteo Solar Forecast HA integration is installed, PowerSync reads from its sensors automatically (no API calls needed).",
           "solcast_api_key": "Only needed if you do NOT have the Solcast HA integration. Get a free key from toolkit.solcast.com.au (10 calls/day on hobbyist tier).",
           "solcast_resource_id": "Only needed without the Solcast HA integration. For split arrays, enter comma-separated IDs (e.g. abc123,def456).",

@@ -16,7 +16,7 @@ except (FileNotFoundError, json.JSONDecodeError):
     POWER_SYNC_VERSION = "0.0.0"
 
 # Dashboard JS version — bump this to cache-bust the strategy JS independently of the app version
-DASHBOARD_JS_VERSION = "40"
+DASHBOARD_JS_VERSION = "41"
 
 # User-Agent for API identification
 POWER_SYNC_USER_AGENT = f"PowerSync/{POWER_SYNC_VERSION} HomeAssistant"
@@ -43,6 +43,14 @@ CONF_BATTERY_CURTAILMENT_ENABLED = "battery_curtailment_enabled"
 CONF_OPENWEATHERMAP_API_KEY = "openweathermap_api_key"
 CONF_WEATHER_LOCATION = "weather_location"
 CONF_WEATHER_ENTITY = "weather_entity"
+CONF_SOLAR_FORECAST_PROVIDER = "solar_forecast_provider"
+SOLAR_FORECAST_PROVIDER_SOLCAST = "solcast"
+SOLAR_FORECAST_PROVIDER_OPEN_METEO = "open_meteo"
+DEFAULT_SOLAR_FORECAST_PROVIDER = SOLAR_FORECAST_PROVIDER_SOLCAST
+SOLAR_FORECAST_PROVIDERS = {
+    SOLAR_FORECAST_PROVIDER_SOLCAST: "Solcast",
+    SOLAR_FORECAST_PROVIDER_OPEN_METEO: "Open-Meteo",
+}
 CONF_SOLCAST_ESTIMATE_TYPE = "solcast_estimate_type"
 SOLCAST_ESTIMATE = "estimate"
 SOLCAST_ESTIMATE10 = "estimate10"
@@ -657,6 +665,7 @@ CONF_EPEX_REGION = "epex_region"
 CONF_EPEX_SURCHARGE = "epex_surcharge"  # Fixed surcharge in ct/kWh (network fees, levies)
 CONF_EPEX_TAX_PERCENT = "epex_tax_percent"  # Tax percentage (e.g. 21% VAT in Belgium)
 CONF_EPEX_EXPORT_RATE = "epex_export_rate"  # Fixed feed-in rate in ct/kWh (0 = wholesale)
+CONF_EPEX_EXPORT_PRICE_ENTITY = "epex_export_price_entity"  # Optional HA sensor for export valuation
 EPEX_API_BASE_URL = "https://epexpredictor.batzill.com"
 EPEX_REGIONS = {
     "DE": "Germany",

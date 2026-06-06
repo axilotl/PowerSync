@@ -82,6 +82,15 @@ def _optimizer(module):
     )
 
 
+def test_update_config_applies_horizon_hours(battery_optimizer_module):
+    optimizer = _optimizer(battery_optimizer_module)
+
+    optimizer.update_config(horizon_hours=12)
+
+    assert optimizer.horizon_hours == 12
+    assert optimizer._align_forecasts([0.1] * 200, [0.1] * 200, [0.0] * 200, [0.0] * 200) == 144
+
+
 def test_grid_import_limit_caps_grid_sourced_charge(battery_optimizer_module):
     optimizer = battery_optimizer_module.BatteryOptimizer(
         capacity_wh=100000,
@@ -645,6 +654,42 @@ def test_below_optimizer_reserve_allows_later_export_after_recovery(
     assert any(action.action == "export" for action in later_actions)
     assert max(result.grid_export_w[12:]) > 1000
     assert min(action.soc for action in later_actions) >= 0.15
+
+
+def test_below_optimizer_reserve_later_export_respects_configured_floor(
+    battery_optimizer_module,
+):
+    if not battery_optimizer_module.HIGHS_AVAILABLE:
+        pytest.skip("Reserve recovery export gating is enforced by the LP optimizer")
+
+    optimizer = battery_optimizer_module.BatteryOptimizer(
+        capacity_wh=10000,
+        max_charge_w=5000,
+        max_discharge_w=5000,
+        backup_reserve=0.30,
+        hardware_reserve=0.05,
+        interval_minutes=5,
+        horizon_hours=3,
+    )
+    n = 36
+    export_slots = [False] * 12 + [True] * 24
+
+    result = optimizer.optimize(
+        import_prices=[0.05] * 12 + [0.40] * 24,
+        export_prices=[0.0] * 12 + [0.50] * 24,
+        solar_forecast=[0.0] * n,
+        load_forecast=[0.1] * n,
+        current_soc=0.14,
+        acquisition_cost_kwh=0.0,
+        allow_battery_export=export_slots,
+        block_battery_charge=export_slots,
+        allow_grid_charge=True,
+    )
+
+    export_actions = [action for action in result.schedule.actions if action.action == "export"]
+    assert export_actions
+    assert max(result.grid_export_w[12:]) > 1000
+    assert min(action.soc for action in export_actions) >= 0.30
 
 
 def test_below_optimizer_reserve_blocks_greedy_battery_export(

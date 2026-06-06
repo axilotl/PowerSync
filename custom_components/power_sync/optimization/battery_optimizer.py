@@ -254,6 +254,7 @@ class BatteryOptimizer:
         self.suppress_reserve_warning: bool = False
         self._below_reserve_recovery_target: float | None = None
         self.export_reserve_floor: float = 0.0
+        self.export_reserve_floor_slots: list[float] | None = None
 
         # Pre-window SOC floor: enforce soc[pre_window_slot - 1] >= target.
         # Used by the coordinator to guarantee the battery is filled before
@@ -306,6 +307,7 @@ class BatteryOptimizer:
         max_battery_export_w: float | None | object = _UNSET,
         efficiency: float | None = None,
         backup_reserve: float | None = None,
+        horizon_hours: int | None = None,
     ) -> None:
         """Update optimizer configuration."""
         if capacity_wh is not None:
@@ -337,6 +339,13 @@ class BatteryOptimizer:
             self.efficiency = efficiency
         if backup_reserve is not None:
             self.backup_reserve = backup_reserve
+        if horizon_hours is not None:
+            try:
+                parsed_horizon = int(float(horizon_hours))
+            except (TypeError, ValueError):
+                parsed_horizon = None
+            if parsed_horizon is not None and parsed_horizon > 0:
+                self.horizon_hours = parsed_horizon
 
     @staticmethod
     def _normalize_optional_power_w(value: float | None | object) -> float | None:
@@ -379,10 +388,26 @@ class BatteryOptimizer:
 
     def _configured_export_reserve_floor(self) -> float:
         """Return the transient reserve floor for forced battery export."""
+        slot_floors = getattr(self, "export_reserve_floor_slots", None)
+        slot_floor = max(slot_floors) if slot_floors else 0.0
         return max(
             0.0,
             min(1.0, float(getattr(self, "export_reserve_floor", 0.0) or 0.0)),
+            max(0.0, min(1.0, float(slot_floor or 0.0))),
         )
+
+    def _configured_export_reserve_floor_for_range(self, start: int, end: int) -> float:
+        """Return the transient export floor active for a base-slot range."""
+        floor = max(
+            0.0,
+            min(1.0, float(getattr(self, "export_reserve_floor", 0.0) or 0.0)),
+        )
+        slot_floors = getattr(self, "export_reserve_floor_slots", None)
+        if slot_floors:
+            active = slot_floors[max(0, start):max(0, end)]
+            if active:
+                floor = max(floor, max(0.0, min(1.0, max(active))))
+        return floor
 
     def optimize(
         self,
@@ -398,7 +423,7 @@ class BatteryOptimizer:
         allow_grid_charge: bool = True,
         export_bonus_prices: list[float] | None = None,
         export_bonus_cap_kwh: float | None = None,
-        export_reserve_floor: float | None = None,
+        export_reserve_floor: float | list[float] | None = None,
     ) -> OptimizerResult:
         """
         Run the LP optimization.
@@ -449,11 +474,23 @@ class BatteryOptimizer:
             block_battery_charge, n_steps
         )
         previous_export_floor = self.export_reserve_floor
+        previous_export_floor_slots = self.export_reserve_floor_slots
         if export_reserve_floor is not None:
-            self.export_reserve_floor = max(
-                0.0,
-                min(1.0, float(export_reserve_floor)),
-            )
+            if isinstance(export_reserve_floor, list):
+                floors = [
+                    max(0.0, min(1.0, float(value or 0.0)))
+                    for value in export_reserve_floor[:n_steps]
+                ]
+                if len(floors) < n_steps:
+                    floors.extend([0.0] * (n_steps - len(floors)))
+                self.export_reserve_floor = 0.0
+                self.export_reserve_floor_slots = floors
+            else:
+                self.export_reserve_floor = max(
+                    0.0,
+                    min(1.0, float(export_reserve_floor)),
+                )
+                self.export_reserve_floor_slots = None
 
         try:
             if HIGHS_AVAILABLE:
@@ -499,6 +536,7 @@ class BatteryOptimizer:
         finally:
             if export_reserve_floor is not None:
                 self.export_reserve_floor = previous_export_floor
+                self.export_reserve_floor_slots = previous_export_floor_slots
 
     def _align_forecasts(
         self,
@@ -1069,13 +1107,26 @@ class BatteryOptimizer:
                 )
                 reserve_floor[t + 1] = max(self_consumption_floor, max_reachable)
 
-        export_reserve_floor = self._configured_export_reserve_floor()
+        # Even when a solve starts below the optimiser reserve and self-use is
+        # allowed down to the hardware floor, forced battery export must still
+        # respect the user's optimiser reserve once export is allowed again.
+        export_reserve_floor = max(
+            optimizer_reserve,
+            self._configured_export_reserve_floor(),
+        )
         if export_reserve_floor > self_consumption_floor:
             for t, allow_export in enumerate(p_allow_export):
+                period_export_floor = max(
+                    optimizer_reserve,
+                    self._configured_export_reserve_floor_for_range(
+                        periods[t].start,
+                        periods[t].end,
+                    ),
+                )
                 if allow_export:
                     reserve_floor[t + 1] = max(
                         reserve_floor[t + 1],
-                        export_reserve_floor,
+                        period_export_floor,
                     )
 
         # Boundary-energy state model: power variables per period, battery energy
@@ -2301,14 +2352,13 @@ class BatteryOptimizer:
         soc = soc_0
         optimizer_reserve = max(0.0, min(1.0, self.backup_reserve))
         self_consumption_floor = self._natural_self_consumption_floor(soc_0)
-        export_floor = (
-            max(optimizer_reserve, self._configured_export_reserve_floor())
-            if soc_0 >= optimizer_reserve
-            else self_consumption_floor
-        )
 
         for t in range(n):
             ts = now + timedelta(minutes=t * self.interval_minutes)
+            export_floor = max(
+                optimizer_reserve,
+                self._configured_export_reserve_floor_for_range(t, t + 1),
+            )
 
             charge_kw = battery_charge[t]
             discharge_kw = battery_discharge[t]

@@ -54,6 +54,36 @@ def test_optimizer_windows_use_combined_visual_card():
     assert "Future Force Charge" not in source
 
 
+def test_optimizer_action_plan_renders_full_scrollable_list():
+    """The 24-hour action plan should expose every action instead of hiding overflow."""
+    source = STRATEGY_PATH.read_text()
+    actions_css = source[
+        source.index("        .actions {"):
+        source.index("        .action-row {")
+    ]
+
+    assert "overflow-y: auto;" in actions_css
+    assert "max-height: min(58vh, 620px);" in actions_css
+    assert "scrollbar-gutter: stable;" in actions_css
+    assert "actions.map(action =>" in source
+    assert "actions.slice(0, 10)" not in source
+    assert "more actions" not in source
+
+
+def test_optimizer_plan_gets_are_browser_cached():
+    """Frequent dashboard updates must not hammer the optimization API."""
+    source = STRATEGY_PATH.read_text()
+
+    assert "OPTIMIZATION_PLAN_FETCH_INTERVAL_MS = 45000" in source
+    assert "window.__powerSyncOptimizationPlanCache" in source
+    assert "_restoreCachedData(path)" in source
+    assert "cached?.promise" in source
+    assert "_adoptLoadPromise(path, cached.promise)" in source
+    assert "this._hass.callApi('GET', path)" in source
+    assert "now - this._lastFetch < OPTIMIZATION_PLAN_FETCH_INTERVAL_MS" in source
+    assert "now - this._lastFetch < 60000" not in source
+
+
 def test_optimizer_plan_shows_calculated_auto_reserve():
     """Auto-applied optimizer reserve should be visible on the schedule graph."""
     source = STRATEGY_PATH.read_text()
@@ -158,6 +188,29 @@ def test_dashboard_layout_can_hide_cards():
     assert "_hideItem(item)" in source
     assert "_showHiddenItems()" in source
     assert "_unhideItem(item)" in source
+
+
+def test_dashboard_layout_does_not_rebalance_on_every_state_tick():
+    """HA state updates should not run the expensive masonry layout loop."""
+    source = STRATEGY_PATH.read_text()
+    layout_source = source[source.index("class PowerSyncLayout extends HTMLElement {"):]
+    hass_setter = source[
+        source.index("  set hass(hass) {", source.index("class PowerSyncLayout extends HTMLElement {")):
+        source.index(
+            "  disconnectedCallback()",
+            source.index("  set hass(hass) {", source.index("class PowerSyncLayout extends HTMLElement {")),
+        )
+    ]
+    resize_scheduler = layout_source[
+        layout_source.index("  _scheduleLayoutForResize(entry) {"):
+        layout_source.index("  _flattenCards()", layout_source.index("  _scheduleLayoutForResize(entry) {"))
+    ]
+
+    assert "for (const c of this._cards) c.hass = hass;" in hass_setter
+    assert "this._scheduleLayout();" not in hass_setter
+    assert "_scheduleLayoutForResize(entries?.[0])" in source
+    assert "widthDelta < 80" in resize_scheduler
+    assert "columnCount === this._lastLayoutColumnCount" in resize_scheduler
     assert "_toggleItemHidden(item)" in source
     assert "const hideSurface = document.createElement('button');" in source
     assert "hideSurface.setAttribute('aria-label', 'Hide dashboard card')" in source

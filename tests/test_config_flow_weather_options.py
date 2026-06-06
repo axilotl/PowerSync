@@ -293,6 +293,18 @@ def test_weather_options_sanitizes_weather_entity_before_storing():
     assert "default=self._get_option(CONF_WEATHER_ENTITY, None)" not in method_source
 
 
+def test_weather_options_include_solar_forecast_provider_selector():
+    source = CONFIG_FLOW_PATH.read_text()
+    method = _options_flow_method("async_step_weather_options")
+    method_source = ast.get_source_segment(source, method)
+
+    assert method_source is not None
+    assert "CONF_SOLAR_FORECAST_PROVIDER" in method_source
+    assert "DEFAULT_SOLAR_FORECAST_PROVIDER" in method_source
+    assert "SOLAR_FORECAST_PROVIDERS.items()" in method_source
+    assert "SelectSelectorMode.DROPDOWN" in method_source
+
+
 def test_weather_entity_label_is_translated():
     for path in (STRINGS_PATH, TRANSLATIONS_PATH):
         data = json.loads(path.read_text())
@@ -300,6 +312,8 @@ def test_weather_entity_label_is_translated():
 
         assert step["data"]["weather_entity"] == "Home Assistant weather entity"
         assert "Optional" in step["data_description"]["weather_entity"]
+        assert step["data"]["solar_forecast_provider"] == "Solar forecast provider"
+        assert "falls back" in step["data_description"]["solar_forecast_provider"]
 
 
 def test_ev_charging_options_include_fallback_generic_soc_sensor():

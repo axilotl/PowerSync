@@ -349,6 +349,9 @@ from .const import (
     SIGENERGY_CHARGER_TYPES,
     SIGENERGY_CHARGER_EVAC,
     # Solcast Solar Forecast configuration
+    CONF_SOLAR_FORECAST_PROVIDER,
+    DEFAULT_SOLAR_FORECAST_PROVIDER,
+    SOLAR_FORECAST_PROVIDERS,
     CONF_SOLCAST_ENABLED,
     CONF_SOLCAST_API_KEY,
     CONF_SOLCAST_RESOURCE_ID,
@@ -382,6 +385,7 @@ from .const import (
     CONF_EPEX_SURCHARGE,
     CONF_EPEX_TAX_PERCENT,
     CONF_EPEX_EXPORT_RATE,
+    CONF_EPEX_EXPORT_PRICE_ENTITY,
     EPEX_REGIONS,
     # Smart Optimization configuration
     CONF_BATTERY_MANAGEMENT_MODE,
@@ -2172,6 +2176,9 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             surcharge = user_input.get(CONF_EPEX_SURCHARGE, 0.0)
             tax_percent = user_input.get(CONF_EPEX_TAX_PERCENT, 0.0)
             export_rate = user_input.get(CONF_EPEX_EXPORT_RATE, 0.0)
+            export_price_entity = _normalize_optional_entity(
+                user_input.get(CONF_EPEX_EXPORT_PRICE_ENTITY)
+            )
 
             # Validate by fetching prices from EPEX API
             try:
@@ -2194,13 +2201,16 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     CONF_EPEX_TAX_PERCENT: tax_percent,
                     CONF_EPEX_EXPORT_RATE: export_rate,
                 }
+                if export_price_entity:
+                    self._epex_data[CONF_EPEX_EXPORT_PRICE_ENTITY] = export_price_entity
 
                 _LOGGER.info(
-                    "EPEX config validated: region=%s, surcharge=%.1f ct, tax=%.1f%%, export=%.1f ct",
+                    "EPEX config validated: region=%s, surcharge=%.1f ct, tax=%.1f%%, export=%.1f ct, export_entity=%s",
                     region,
                     surcharge,
                     tax_percent,
                     export_rate,
+                    export_price_entity or "none",
                 )
 
                 # Route to battery system selection
@@ -2231,6 +2241,9 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     NumberSelectorConfig(
                         min=0, max=50, step=0.1, unit_of_measurement="ct/kWh",
                     )
+                ),
+                vol.Optional(CONF_EPEX_EXPORT_PRICE_ENTITY): EntitySelector(
+                    EntitySelectorConfig(domain="sensor")
                 ),
             }
         )
@@ -9309,6 +9322,13 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
     ) -> FlowResult:
         """Weather and solar forecast configuration in options flow."""
         if user_input is not None:
+            solar_forecast_provider = user_input.get(
+                CONF_SOLAR_FORECAST_PROVIDER,
+                DEFAULT_SOLAR_FORECAST_PROVIDER,
+            )
+            if solar_forecast_provider not in SOLAR_FORECAST_PROVIDERS:
+                solar_forecast_provider = DEFAULT_SOLAR_FORECAST_PROVIDER
+
             # Store weather and Solcast settings
             weather_options = {
                 CONF_WEATHER_LOCATION: user_input.get(CONF_WEATHER_LOCATION, ""),
@@ -9318,6 +9338,7 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 CONF_WEATHER_ENTITY: _normalize_optional_entity(
                     user_input.get(CONF_WEATHER_ENTITY)
                 ),
+                CONF_SOLAR_FORECAST_PROVIDER: solar_forecast_provider,
                 CONF_SOLCAST_ENABLED: user_input.get(CONF_SOLCAST_ENABLED, False),
                 CONF_SOLCAST_API_KEY: (
                     user_input.get(CONF_SOLCAST_API_KEY) or ""
@@ -9335,6 +9356,7 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     CONF_SOLCAST_API_KEY,
                     CONF_SOLCAST_RESOURCE_ID,
                     CONF_SOLCAST_ESTIMATE_TYPE,
+                    CONF_SOLAR_FORECAST_PROVIDER,
                 )
             )
 
@@ -9375,6 +9397,21 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
         self._add_weather_entity_selector(schema_dict)
         schema_dict.update(
             {
+                vol.Optional(
+                    CONF_SOLAR_FORECAST_PROVIDER,
+                    default=self._get_option(
+                        CONF_SOLAR_FORECAST_PROVIDER,
+                        DEFAULT_SOLAR_FORECAST_PROVIDER,
+                    ),
+                ): SelectSelector(
+                    SelectSelectorConfig(
+                        options=[
+                            SelectOptionDict(value=value, label=label)
+                            for value, label in SOLAR_FORECAST_PROVIDERS.items()
+                        ],
+                        mode=SelectSelectorMode.DROPDOWN,
+                    )
+                ),
                 vol.Optional(
                     CONF_SOLCAST_ENABLED,
                     default=self._get_option(CONF_SOLCAST_ENABLED, False),
@@ -10700,6 +10737,9 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             surcharge = user_input.get(CONF_EPEX_SURCHARGE, 0.0)
             tax_percent = user_input.get(CONF_EPEX_TAX_PERCENT, 0.0)
             export_rate = user_input.get(CONF_EPEX_EXPORT_RATE, 0.0)
+            export_price_entity = _normalize_optional_entity(
+                user_input.get(CONF_EPEX_EXPORT_PRICE_ENTITY)
+            )
 
             # Validate by fetching prices
             try:
@@ -10728,12 +10768,19 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                         CONF_BATTERY_CURTAILMENT_ENABLED, False
                     ),
                 }
+                if export_price_entity:
+                    self._amber_options[CONF_EPEX_EXPORT_PRICE_ENTITY] = export_price_entity
+                else:
+                    self._amber_options[CONF_EPEX_EXPORT_PRICE_ENTITY] = None
                 return await self.async_step_demand_charge_options()
 
         current_region = self._get_option(CONF_EPEX_REGION, "DE")
         current_surcharge = self._get_option(CONF_EPEX_SURCHARGE, 0.0)
         current_tax = self._get_option(CONF_EPEX_TAX_PERCENT, 0.0)
         current_export = self._get_option(CONF_EPEX_EXPORT_RATE, 0.0)
+        current_export_price_entity = _normalize_optional_entity(
+            self._get_option(CONF_EPEX_EXPORT_PRICE_ENTITY, None)
+        )
 
         return self.async_show_form(
             step_id="epex_options",
@@ -10766,6 +10813,14 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                         min=0.0, max=100.0, step=0.01, unit_of_measurement="ct/kWh",
                         mode=NumberSelectorMode.BOX,
                     )),
+                    vol.Optional(
+                        CONF_EPEX_EXPORT_PRICE_ENTITY,
+                        description=(
+                            {"suggested_value": current_export_price_entity}
+                            if current_export_price_entity
+                            else None
+                        ),
+                    ): EntitySelector(EntitySelectorConfig(domain="sensor")),
                     vol.Optional(
                         CONF_AUTO_SYNC_ENABLED,
                         default=self._get_option(CONF_AUTO_SYNC_ENABLED, True),
