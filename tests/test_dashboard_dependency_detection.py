@@ -188,6 +188,29 @@ def test_dashboard_layout_can_hide_cards():
     assert "_hideItem(item)" in source
     assert "_showHiddenItems()" in source
     assert "_unhideItem(item)" in source
+
+
+def test_dashboard_layout_does_not_rebalance_on_every_state_tick():
+    """HA state updates should not run the expensive masonry layout loop."""
+    source = STRATEGY_PATH.read_text()
+    layout_source = source[source.index("class PowerSyncLayout extends HTMLElement {"):]
+    hass_setter = source[
+        source.index("  set hass(hass) {", source.index("class PowerSyncLayout extends HTMLElement {")):
+        source.index(
+            "  disconnectedCallback()",
+            source.index("  set hass(hass) {", source.index("class PowerSyncLayout extends HTMLElement {")),
+        )
+    ]
+    resize_scheduler = layout_source[
+        layout_source.index("  _scheduleLayoutForResize(entry) {"):
+        layout_source.index("  _flattenCards()", layout_source.index("  _scheduleLayoutForResize(entry) {"))
+    ]
+
+    assert "for (const c of this._cards) c.hass = hass;" in hass_setter
+    assert "this._scheduleLayout();" not in hass_setter
+    assert "_scheduleLayoutForResize(entries?.[0])" in source
+    assert "widthDelta < 80" in resize_scheduler
+    assert "columnCount === this._lastLayoutColumnCount" in resize_scheduler
     assert "_toggleItemHidden(item)" in source
     assert "const hideSurface = document.createElement('button');" in source
     assert "hideSurface.setAttribute('aria-label', 'Hide dashboard card')" in source

@@ -2809,6 +2809,8 @@ class PowerSyncLayout extends HTMLElement {
     this._storageKey = 'power-sync-dashboard-layout-v2';
     this._hiddenStorageKey = 'power-sync-dashboard-hidden-v1';
     this._appliedLayoutSignature = '';
+    this._lastLayoutWidth = 0;
+    this._lastLayoutColumnCount = 0;
   }
 
   setConfig(config) {
@@ -2819,7 +2821,6 @@ class PowerSyncLayout extends HTMLElement {
     this._hass = hass;
     if (!this._built) this._buildLayout();
     for (const c of this._cards) c.hass = hass;
-    this._scheduleLayout();
   }
 
   disconnectedCallback() {
@@ -2840,10 +2841,31 @@ class PowerSyncLayout extends HTMLElement {
 
   _columnCount() {
     const width = this.getBoundingClientRect().width || window.innerWidth || 0;
+    return this._columnCountForWidth(width);
+  }
+
+  _columnCountForWidth(width) {
     const portrait = window.matchMedia?.('(orientation: portrait)')?.matches;
     if (width < 760 || (portrait && width < 1040)) return 1;
     if (width < 1280) return 2;
     return 3;
+  }
+
+  _scheduleLayoutForResize(entry) {
+    const box = Array.isArray(entry?.contentBoxSize)
+      ? entry.contentBoxSize[0]
+      : entry?.contentBoxSize;
+    const width = box?.inlineSize || entry?.contentRect?.width || this.getBoundingClientRect().width || window.innerWidth || 0;
+    const columnCount = this._columnCountForWidth(width);
+    const widthDelta = Math.abs(width - this._lastLayoutWidth);
+    if (
+      this._lastLayoutColumnCount &&
+      columnCount === this._lastLayoutColumnCount &&
+      widthDelta < 80
+    ) {
+      return;
+    }
+    this._scheduleLayout();
   }
 
   _flattenCards() {
@@ -3345,6 +3367,8 @@ class PowerSyncLayout extends HTMLElement {
     }
 
     const count = Math.min(this._columnCount(), visibleItems.length);
+    this._lastLayoutColumnCount = count;
+    this._lastLayoutWidth = this.getBoundingClientRect().width || window.innerWidth || 0;
     if (this._lanes.length !== count) {
       this._rebuildLanes(count);
     }
@@ -3559,7 +3583,7 @@ class PowerSyncLayout extends HTMLElement {
     root.appendChild(grid);
 
     if ('ResizeObserver' in window) {
-      this._resizeObserver = new ResizeObserver(() => this._scheduleLayout());
+      this._resizeObserver = new ResizeObserver((entries) => this._scheduleLayoutForResize(entries?.[0]));
       this._resizeObserver.observe(this);
     }
 
