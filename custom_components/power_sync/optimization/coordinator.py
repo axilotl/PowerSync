@@ -3227,6 +3227,12 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         if soc_cursor is not None:
             self_consumption_floor = min(soc_cursor, self_consumption_floor)
+        profit_max_target_slot = self._next_profit_max_target_slot()
+        profit_max_target_soc = (
+            self._profit_max_target_soc()
+            if profit_max_target_slot is not None
+            else 0.0
+        )
 
         def _forecast_w(values: list[float] | None, index: int) -> float:
             if not values or index >= len(values):
@@ -3274,6 +3280,25 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 and action_charge_w <= 0
                 and action_discharge_w <= 0
             )
+            should_preserve_profit_max_hold = (
+                profit_max_target_slot is not None
+                and index < profit_max_target_slot
+                and soc_cursor is not None
+                and soc_cursor < profit_max_target_soc - 0.0001
+                and (action_name == "idle" or should_simulate_self_use)
+            )
+            if should_preserve_profit_max_hold:
+                new_actions.append(
+                    ScheduleAction(
+                        timestamp=action.timestamp,
+                        action=action.action,
+                        power_w=0.0,
+                        soc=round(soc_cursor, 4),
+                        battery_charge_w=0.0,
+                        battery_discharge_w=0.0,
+                    )
+                )
+                continue
             if action_name != "idle" and not should_simulate_self_use:
                 next_soc = _advance_soc(
                     soc_cursor,
@@ -3719,6 +3744,71 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         return True
 
+    def _force_discharge_hardware_needs_refresh(self, target_power_w: float) -> bool:
+        """Return True when telemetry shows a stale non-Tesla discharge command."""
+        if self.battery_system == "tesla":
+            return False
+
+        data = self._get_energy_data()
+        if not isinstance(data, dict):
+            return False
+
+        try:
+            target_w = float(target_power_w)
+        except (TypeError, ValueError):
+            return False
+        if target_w <= 0:
+            return False
+
+        mode_value = (
+            data.get("work_mode_name")
+            or data.get("mode")
+            or data.get("work_mode")
+            or data.get("ems_mode_name")
+        )
+        mode = str(mode_value or "").strip().lower()
+        if any(
+            token in mode
+            for token in (
+                "sell",
+                "discharge",
+                "export",
+                "eco_discharge",
+                "force_discharge",
+            )
+        ):
+            return False
+
+        try:
+            battery_power = float(data.get("battery_power", 0) or 0)
+        except (TypeError, ValueError):
+            battery_power = 0.0
+        battery_power_w = battery_power * 1000 if abs(battery_power) < 100 else battery_power
+        discharge_power_w = max(0.0, battery_power_w)
+
+        try:
+            grid_power = float(data.get("grid_power", 0) or 0)
+        except (TypeError, ValueError):
+            grid_power = 0.0
+        grid_power_w = grid_power * 1000 if abs(grid_power) < 100 else grid_power
+        export_power_w = max(0.0, -grid_power_w)
+
+        observed_power_w = max(discharge_power_w, export_power_w)
+        minimum_expected_w = max(500.0, target_w * 0.2)
+
+        if observed_power_w >= minimum_expected_w:
+            return False
+
+        _LOGGER.info(
+            "Optimizer: force discharge hardware appears inactive "
+            "(mode=%s, discharging %.0fW/exporting %.0fW below %.0fW target) — refreshing command",
+            mode_value,
+            discharge_power_w,
+            export_power_w,
+            target_w,
+        )
+        return True
+
     def _current_import_price_is_free(self) -> bool:
         prices = getattr(self, "_last_display_import_prices", None) or getattr(
             self, "_last_import_prices", None
@@ -3978,6 +4068,11 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         should_refresh_hardware = (
                             should_refresh_hardware
                             or self._force_charge_hardware_needs_refresh(force_power_w)
+                        )
+                    elif force_type == "discharge":
+                        should_refresh_hardware = (
+                            should_refresh_hardware
+                            or self._force_discharge_hardware_needs_refresh(force_power_w)
                         )
 
                     # Re-issue hardware writes when the hardware-side window is
@@ -5549,6 +5644,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if target_min >= happy_start_min:
             target_min = _hhmm_to_minutes(DEFAULT_PROFIT_MAX_TARGET_TIME)
         interval = self._config.interval_minutes
+        target_slot_min = (target_min // interval) * interval
         n_steps = int(self._config.horizon_hours * 60) // interval
         raw_now = dt_util.now()
         now = raw_now.replace(
@@ -5558,7 +5654,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         for t in range(n_steps):
             slot = now + timedelta(minutes=t * interval)
             slot_min = slot.hour * 60 + slot.minute
-            if slot_min == target_min:
+            if slot_min == target_slot_min:
                 # Skip t=0: the target is now, so there are no pre-window slots
                 # to charge in. The next matching target will be tomorrow.
                 if t == 0:

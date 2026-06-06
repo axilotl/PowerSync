@@ -849,7 +849,7 @@ def test_schedule_soc_display_uses_hardware_floor_when_known(
     assert schedule.to_api_response()["soc"][0] == schedule.actions[0].soc
 
 
-def test_schedule_export_display_keeps_optimizer_floor_when_hardware_floor_is_lower(
+def test_schedule_export_display_blocks_export_at_optimizer_floor(
     battery_optimizer_module,
 ):
     optimizer = battery_optimizer_module.BatteryOptimizer(
@@ -875,7 +875,8 @@ def test_schedule_export_display_keeps_optimizer_floor_when_hardware_floor_is_lo
         export_prices=[0.50],
     )
 
-    assert schedule.actions[0].action == "export"
+    assert schedule.actions[0].action == "self_consumption"
+    assert schedule.actions[0].battery_discharge_w == 0
     assert schedule.actions[0].soc == pytest.approx(0.20)
     assert schedule.to_api_response()["soc"][0] == schedule.actions[0].soc
 
@@ -1351,6 +1352,48 @@ def test_export_reserve_floor_limits_planned_battery_export_only(
     assert any(
         action.action == "self_consumption" and action.soc < 0.56
         for action in result.schedule.actions
+    )
+
+
+def test_build_schedule_caps_export_actions_at_optimizer_reserve(
+    battery_optimizer_module,
+):
+    optimizer = battery_optimizer_module.BatteryOptimizer(
+        capacity_wh=10000,
+        max_charge_w=5000,
+        max_discharge_w=5000,
+        backup_reserve=0.15,
+        hardware_reserve=0.05,
+        interval_minutes=5,
+        horizon_hours=1,
+    )
+    n = 6
+
+    schedule = optimizer._build_schedule(
+        n,
+        grid_import=[0.0] * n,
+        grid_export=[5.0] * n,
+        battery_charge=[0.0] * n,
+        battery_discharge=[5.0] * n,
+        solar=[0.0] * n,
+        load=[0.0] * n,
+        soc_0=0.20,
+        import_prices=[0.30] * n,
+        export_prices=[0.50] * n,
+        block_battery_charge=[True] * n,
+    )
+
+    export_actions = [a for a in schedule.actions if a.action == "export"]
+    assert export_actions
+    assert all(a.soc >= 0.15 - 1e-6 for a in export_actions)
+    assert any(a.action == "self_consumption" for a in schedule.actions)
+    assert all(
+        not (
+            action.action == "export"
+            and action.battery_discharge_w > 0
+            and action.soc < 0.15 - 1e-6
+        )
+        for action in schedule.actions
     )
 
 

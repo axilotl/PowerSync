@@ -2442,6 +2442,33 @@ class BatteryOptimizer:
             if free_import_slot and action == "charge":
                 reported_charge_w = power_w
                 reported_discharge_w = 0.0
+            elif action in ("discharge", "export"):
+                export_room_kw = (
+                    max(0.0, soc - export_floor) * cap * eff / dt
+                    if cap > 0 and dt > 0
+                    else 0.0
+                )
+                if export_room_kw <= threshold_kw:
+                    net_home_kw = max(0.0, load[t] - solar[t])
+                    natural_room_kw = (
+                        max(0.0, soc - self_consumption_floor) * cap * eff / dt
+                        if cap > 0 and dt > 0
+                        else 0.0
+                    )
+                    natural_discharge_kw = min(
+                        self.max_discharge_kw,
+                        net_home_kw,
+                        max(0.0, natural_room_kw),
+                    )
+                    action = "self_consumption"
+                    power_w = natural_discharge_kw * 1000
+                    reported_charge_w = 0.0
+                    reported_discharge_w = natural_discharge_kw * 1000
+                elif discharge_kw > export_room_kw:
+                    capped_discharge_w = export_room_kw * 1000
+                    reported_charge_w = 0.0
+                    reported_discharge_w = capped_discharge_w
+                    power_w = min(power_w, capped_discharge_w)
             elif (
                 action == "self_consumption"
                 and charge_kw < threshold_kw
