@@ -1069,6 +1069,49 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 pass
         return export_floor
 
+    def _auto_export_reserve_floor_slots(
+        self,
+        reserve_recommendation: dict[str, Any],
+        slot_count: int,
+    ) -> list[float] | None:
+        """Return future-scoped export reserve floors for the optimizer horizon."""
+        if not self.auto_apply_reserve_enabled or slot_count <= 0:
+            return None
+        export_floor = self._reserve_ratio(
+            reserve_recommendation.get("home_load_export_floor_percent"),
+            None,
+        )
+        if export_floor is None:
+            return None
+        optimizer_floor = self._reserve_ratio(self._config.backup_reserve, 0.0) or 0.0
+        if export_floor <= optimizer_floor + 0.0001:
+            return None
+        bridge_export_start = reserve_recommendation.get(
+            "home_load_bridge_after_export_start"
+        )
+        if not bridge_export_start:
+            return None
+        try:
+            bridge_start = datetime.fromisoformat(str(bridge_export_start))
+            now = dt_util.now()
+            if bridge_start.tzinfo is not None:
+                now = now.astimezone(bridge_start.tzinfo)
+            if bridge_start.date() == now.date():
+                return None
+            seconds_until_start = (bridge_start - now).total_seconds()
+        except (TypeError, ValueError):
+            return None
+        if seconds_until_start <= 0:
+            return None
+        interval_seconds = max(1, int(self._config.interval_minutes or 5)) * 60
+        start_slot = max(0, math.floor(seconds_until_start / interval_seconds))
+        if start_slot >= slot_count:
+            return None
+        floors = [0.0] * slot_count
+        for idx in range(start_slot, slot_count):
+            floors[idx] = export_floor
+        return floors
+
     def _force_discharge_reaches_reserve(
         self,
         action: Any,
@@ -2734,7 +2777,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
             async def _run_optimizer_once(
                 reserve_floor: float | None = None,
-                export_reserve_floor: float | None = None,
+                export_reserve_floor: float | list[float] | None = None,
             ) -> OptimizerResult:
                 if reserve_floor is not None:
                     self._optimizer.update_config(backup_reserve=reserve_floor)
@@ -2821,6 +2864,11 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             export_reserve_floor = self._auto_export_reserve_floor(
                 reserve_recommendation
             )
+            if export_reserve_floor is None:
+                export_reserve_floor = self._auto_export_reserve_floor_slots(
+                    reserve_recommendation,
+                    len(import_prices),
+                )
             if (
                 reserve_changed
                 or used_recommendation_floor
@@ -2880,7 +2928,16 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     if export_reserve_floor is not None:
                         result.reserve_recommendation.setdefault(
                             "applied_export_reserve_floor_percent",
-                            int(round(export_reserve_floor * 100)),
+                            int(
+                                round(
+                                    (
+                                        max(export_reserve_floor)
+                                        if isinstance(export_reserve_floor, list)
+                                        else export_reserve_floor
+                                    )
+                                    * 100
+                                )
+                            ),
                         )
                 self._last_update_time = dt_util.now()
 
@@ -4765,7 +4822,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self,
         schedule: OptimizationSchedule,
         allowed_slots: bool | list[bool],
-        export_reserve_floor: float | None = None,
+        export_reserve_floor: float | list[float] | None = None,
     ) -> OptimizationSchedule:
         """Spread planned export energy across each contiguous allowed window."""
         actions = list(schedule.actions or [])
@@ -4783,8 +4840,15 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         interval_hours = max(1, int(self._config.interval_minutes or 5)) / 60.0
         capacity_wh = max(0.0, float(self._config.battery_capacity_wh or 0))
         efficiency = float(getattr(self._optimizer, "efficiency", 0.92) or 0.92)
-        min_export_floor = self._reserve_ratio(export_reserve_floor, None)
-        if min_export_floor is None:
+        scoped_export_floors = (
+            export_reserve_floor if isinstance(export_reserve_floor, list) else None
+        )
+        min_export_floor = (
+            None
+            if scoped_export_floors is not None
+            else self._reserve_ratio(export_reserve_floor, None)
+        )
+        if min_export_floor is None and scoped_export_floors is None:
             min_export_floor = self._force_discharge_reserve_floor()
         new_actions: list[ScheduleAction] = list(actions)
         idx = 0
@@ -4815,6 +4879,15 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             while idx < n and allowed[idx]:
                 idx += 1
             end = idx
+            window_floor = min_export_floor
+            if scoped_export_floors is not None:
+                scoped_window = scoped_export_floors[start:end]
+                scoped_floor = max(scoped_window) if scoped_window else 0.0
+                window_floor = (
+                    scoped_floor
+                    if scoped_floor > 0
+                    else self._force_discharge_reserve_floor()
+                )
             window_actions = actions[start:end]
             export_power_field = (
                 "power_w"
@@ -4831,7 +4904,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 continue
 
             spread_positions = list(range(start, end))
-            floor = self._reserve_ratio(min_export_floor, None)
+            floor = self._reserve_ratio(window_floor, None)
             if floor is not None and any(_action_soc(pos) is not None for pos in spread_positions):
                 spread_positions = [
                     pos
@@ -6259,6 +6332,128 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             filled.append(last)
         return filled
 
+    def _epex_export_price_entity_id(self) -> str | None:
+        """Return the configured EPEX export valuation sensor, if any."""
+        if not self._entry:
+            return None
+
+        from ..const import (
+            CONF_ELECTRICITY_PROVIDER,
+            CONF_EPEX_EXPORT_PRICE_ENTITY,
+        )
+
+        provider = self._entry.options.get(
+            CONF_ELECTRICITY_PROVIDER,
+            self._entry.data.get(CONF_ELECTRICITY_PROVIDER, ""),
+        )
+        if provider != "epex":
+            return None
+
+        entity_id = self._entry.options.get(
+            CONF_EPEX_EXPORT_PRICE_ENTITY,
+            self._entry.data.get(CONF_EPEX_EXPORT_PRICE_ENTITY),
+        )
+        if isinstance(entity_id, str):
+            entity_id = entity_id.strip()
+        return entity_id or None
+
+    @staticmethod
+    def _epex_export_sensor_value_to_major(value: Any, unit: str | None) -> float | None:
+        """Convert an EPEX export sensor value to EUR/kWh."""
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(numeric):
+            return None
+
+        label = (unit or "").strip().lower()
+        if not label:
+            return numeric / 100.0
+        if "ct" in label or "cent" in label:
+            return numeric / 100.0
+        return numeric
+
+    def _epex_export_sensor_unit(self, attrs: dict[str, Any]) -> str | None:
+        """Pick the unit label for an EPEX export price sensor."""
+        for key in ("unit_of_measurement", "price_unit", "minor_price_unit"):
+            unit = attrs.get(key)
+            if isinstance(unit, str) and unit.strip():
+                return unit
+        return "ct/kWh"
+
+    def _read_epex_export_price_entity(
+        self,
+        n_steps: int,
+    ) -> tuple[list[float], list[float]] | None:
+        """Read the optional EPEX export price override sensor.
+
+        Returns display prices and LP prices in EUR/kWh. Display prices preserve
+        signed export earnings; LP prices are clamped so negative export value
+        cannot become profitable revenue.
+        """
+        entity_id = self._epex_export_price_entity_id()
+        if not entity_id:
+            return None
+
+        state_getter = getattr(
+            getattr(self.hass, "states", None),
+            "get",
+            lambda _eid: None,
+        )
+        state = state_getter(entity_id)
+        if state is None:
+            _LOGGER.warning(
+                "EPEX export price override sensor %s not found; using EPEX export prices",
+                entity_id,
+            )
+            return None
+
+        state_value = getattr(state, "state", None)
+        if str(state_value).lower() in ("unknown", "unavailable", "none", ""):
+            _LOGGER.debug(
+                "EPEX export price override sensor %s is %s; using EPEX export prices",
+                entity_id,
+                state_value,
+            )
+            return None
+
+        attrs = getattr(state, "attributes", {}) or {}
+        unit = self._epex_export_sensor_unit(attrs)
+        raw_values = attrs.get("price_values")
+
+        values: list[float | None] = []
+        if isinstance(raw_values, list) and raw_values:
+            values = [
+                self._epex_export_sensor_value_to_major(value, unit)
+                for value in raw_values
+            ]
+            display_prices = self._fill_price_gaps(values)
+        else:
+            value = self._epex_export_sensor_value_to_major(state_value, unit)
+            display_prices = [value] if value is not None else []
+
+        if not display_prices:
+            _LOGGER.warning(
+                "EPEX export price override sensor %s has no numeric price values; using EPEX export prices",
+                entity_id,
+            )
+            return None
+
+        if len(display_prices) < n_steps:
+            display_prices.extend([display_prices[-1]] * (n_steps - len(display_prices)))
+        display_prices = display_prices[:n_steps]
+        lp_prices = [max(0.0, price) for price in display_prices]
+
+        _LOGGER.info(
+            "EPEX export price override: using %s (%d steps, %.2f-%.2f ct/kWh)",
+            entity_id,
+            len(display_prices),
+            min(display_prices) * 100,
+            max(display_prices) * 100,
+        )
+        return display_prices, lp_prices
+
     async def _get_price_forecast(self) -> tuple[list[float], list[float]] | None:
         """Get price forecasts for optimizer.
 
@@ -6634,6 +6829,10 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                                         )
 
                     if import_prices:
+                        epex_override = self._read_epex_export_price_entity(n_steps)
+                        if epex_override is not None:
+                            display_export_raw, export_prices = epex_override
+
                         # Apply Flow Power export schedule before display storage.
                         # For Flow Power, the synthetic Happy Hour schedule IS the
                         # contractual truth, so it overrides the Amber-derived

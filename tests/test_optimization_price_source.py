@@ -122,11 +122,19 @@ def _install_power_sync_stubs() -> None:
     const_module.CONF_DEMAND_CHARGE_START_TIME = "demand_charge_start_time"
     const_module.CONF_DEMAND_CHARGE_END_TIME = "demand_charge_end_time"
     const_module.CONF_DEMAND_CHARGE_DAYS = "demand_charge_days"
+    const_module.CONF_EPEX_EXPORT_PRICE_ENTITY = "epex_export_price_entity"
     const_module.CONF_OPTIMIZATION_AUTO_APPLY_RESERVE = "optimization_auto_apply_reserve"
     const_module.CONF_OPTIMIZATION_BACKUP_RESERVE = "optimization_backup_reserve"
     const_module.CONF_OPTIMIZATION_EV_INTEGRATION = "optimization_ev_integration"
     const_module.CONF_OPTIMIZATION_MANUAL_RESERVE = "optimization_manual_reserve"
+    const_module.DEFAULT_SOLAR_FORECAST_PROVIDER = "solcast"
     const_module.DEFAULT_SOLCAST_ESTIMATE_TYPE = "estimate"
+    const_module.SOLAR_FORECAST_PROVIDER_OPEN_METEO = "open_meteo"
+    const_module.SOLAR_FORECAST_PROVIDER_SOLCAST = "solcast"
+    const_module.SOLAR_FORECAST_PROVIDERS = {
+        "solcast": "Solcast",
+        "open_meteo": "Open-Meteo",
+    }
     const_module.SOLCAST_ESTIMATE = "estimate"
     const_module.SOLCAST_ESTIMATE10 = "estimate10"
     const_module.SOLCAST_ESTIMATE90 = "estimate90"
@@ -201,6 +209,7 @@ class _State:
         state: str,
         unit: str = "kW",
         friendly_name: str | None = None,
+        attributes: dict | None = None,
     ) -> None:
         self.entity_id = entity_id
         self.state = state
@@ -208,6 +217,8 @@ class _State:
             "unit_of_measurement": unit,
             "friendly_name": friendly_name or entity_id,
         }
+        if attributes:
+            self.attributes.update(attributes)
 
 
 class _States:
@@ -309,6 +320,65 @@ def _coordinator_with_static_tou_provider(opt_coordinator):
     coordinator._octopus_gate_listener_unsub = None
     coordinator._last_display_import_prices = None
     coordinator._last_display_export_prices = None
+    return coordinator
+
+
+def _coordinator_with_epex_provider(
+    opt_coordinator,
+    states: list[_State],
+    provider: str = "epex",
+):
+    def price_entry(start: str, end: str, price: float, channel: str) -> dict:
+        return {
+            "valid_from": start,
+            "valid_to": end,
+            "duration": 60,
+            "perKwh": price,
+            "channelType": channel,
+            "type": "CurrentInterval",
+        }
+
+    coordinator = object.__new__(opt_coordinator.OptimizationCoordinator)
+    coordinator.hass = SimpleNamespace(
+        states=_States(states),
+        data={"power_sync": {"entry-1": {}}},
+    )
+    coordinator.entry_id = "entry-1"
+    coordinator._entry = SimpleNamespace(
+        entry_id="entry-1",
+        data={},
+        options={
+            "electricity_provider": provider,
+            "epex_export_price_entity": "sensor.actual_export_price",
+        },
+    )
+    coordinator._config = opt_coordinator.OptimizationConfig(horizon_hours=1)
+    coordinator.price_coordinator = SimpleNamespace(
+        data={
+            "current": [
+                price_entry(
+                    "2026-05-03T08:30:00+00:00",
+                    "2026-05-03T09:30:00+00:00",
+                    24.0,
+                    "general",
+                ),
+                price_entry(
+                    "2026-05-03T08:30:00+00:00",
+                    "2026-05-03T09:30:00+00:00",
+                    -8.0,
+                    "feedIn",
+                ),
+            ],
+            "forecast": [],
+        }
+    )
+    coordinator._last_display_import_prices = None
+    coordinator._last_display_export_prices = None
+    coordinator._apply_export_boost = lambda export, import_prices=None: (export, [])
+    coordinator._apply_saving_session_prices = lambda imports, exports: (imports, exports)
+    coordinator._apply_chip_mode = lambda exports: exports
+    coordinator._apply_demand_charge_penalty = lambda imports: imports
+    coordinator._apply_confidence_decay = lambda imports, exports, **kwargs: (imports, exports)
     return coordinator
 
 
@@ -452,6 +522,86 @@ def test_static_tou_provider_returns_none_when_tariff_missing(opt_module):
     assert result is None
     # And the AEMO coordinator's data is present but explicitly ignored.
     assert coordinator.price_coordinator.data is not None
+
+
+def test_epex_export_price_sensor_state_overrides_export_prices(opt_module):
+    coordinator = _coordinator_with_epex_provider(
+        opt_module,
+        [_State("sensor.actual_export_price", "1.3", unit="ct/kWh")],
+    )
+
+    import_prices, export_prices = asyncio.run(coordinator._get_price_forecast())
+
+    assert import_prices == [0.24] * 12
+    assert export_prices == pytest.approx([0.013] * 12)
+    assert coordinator._last_display_export_prices == pytest.approx([0.013] * 12)
+
+
+def test_epex_export_price_sensor_price_values_override_and_pad(opt_module):
+    coordinator = _coordinator_with_epex_provider(
+        opt_module,
+        [
+            _State(
+                "sensor.actual_export_price",
+                "0",
+                unit="ct/kWh",
+                attributes={"price_values": [1.0, 2.0, 3.0]},
+            )
+        ],
+    )
+
+    import_prices, export_prices = asyncio.run(coordinator._get_price_forecast())
+
+    assert import_prices == [0.24] * 12
+    assert export_prices[:3] == [0.01, 0.02, 0.03]
+    assert export_prices[3:] == [0.03] * 9
+    assert coordinator._last_display_export_prices == export_prices
+
+
+def test_epex_export_price_sensor_supports_major_unit(opt_module):
+    coordinator = _coordinator_with_epex_provider(
+        opt_module,
+        [_State("sensor.actual_export_price", "0.021", unit="EUR/kWh")],
+    )
+
+    _import_prices, export_prices = asyncio.run(coordinator._get_price_forecast())
+
+    assert export_prices == [0.021] * 12
+    assert coordinator._last_display_export_prices == [0.021] * 12
+
+
+def test_epex_export_price_sensor_missing_falls_back_to_epex_export(opt_module):
+    coordinator = _coordinator_with_epex_provider(opt_module, [])
+
+    _import_prices, export_prices = asyncio.run(coordinator._get_price_forecast())
+
+    assert export_prices == [0.08] * 12
+    assert coordinator._last_display_export_prices == [0.08] * 12
+
+
+def test_epex_export_price_sensor_non_numeric_falls_back_to_epex_export(opt_module):
+    coordinator = _coordinator_with_epex_provider(
+        opt_module,
+        [_State("sensor.actual_export_price", "not-a-price", unit="ct/kWh")],
+    )
+
+    _import_prices, export_prices = asyncio.run(coordinator._get_price_forecast())
+
+    assert export_prices == [0.08] * 12
+    assert coordinator._last_display_export_prices == [0.08] * 12
+
+
+def test_epex_export_price_sensor_is_ignored_for_other_providers(opt_module):
+    coordinator = _coordinator_with_epex_provider(
+        opt_module,
+        [_State("sensor.actual_export_price", "1.3", unit="ct/kWh")],
+        provider="octopus",
+    )
+
+    _import_prices, export_prices = asyncio.run(coordinator._get_price_forecast())
+
+    assert export_prices == [0.08] * 12
+    assert coordinator._last_display_export_prices == [0.08] * 12
 
 
 def test_static_tou_provider_does_not_attach_dynamic_aemo_listener(opt_module):
