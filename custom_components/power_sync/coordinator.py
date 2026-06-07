@@ -5507,6 +5507,7 @@ class GoodWeEnergyCoordinator(DataUpdateCoordinator):
         comm_addr: int = 0,
         entry_id: str = "",
         ems_entity_prefix: str | None = None,
+        entity_telemetry_prefix: str | None = None,
     ) -> None:
         """Initialize the coordinator."""
         from .inverters.goodwe_battery import GoodWeBatteryController
@@ -5524,7 +5525,18 @@ class GoodWeEnergyCoordinator(DataUpdateCoordinator):
         self._controller = GoodWeBatteryController(
             host=host, port=port, comm_addr=comm_addr
         )
+        self._telemetry_controller = self._controller
+        self._entity_telemetry_prefix = (entity_telemetry_prefix or "").strip()
+        self._using_entity_telemetry = bool(self._entity_telemetry_prefix)
+        if self._using_entity_telemetry:
+            from .inverters.goodwe_entity import GoodWeEntityTelemetryController
+
+            self._telemetry_controller = GoodWeEntityTelemetryController(
+                hass,
+                entity_prefix=self._entity_telemetry_prefix,
+            )
         self._connected = False
+        self._telemetry_validated = False
         self._energy_acc = EnergyAccumulator(hass, "goodwe")
         self._discharge_floor_pct: int = 10  # updated by set_backup_reserve
 
@@ -5540,11 +5552,17 @@ class GoodWeEnergyCoordinator(DataUpdateCoordinator):
         if not self._energy_acc._last_update:
             await self._energy_acc.async_restore()
         try:
-            if not self._connected:
-                await self._controller.connect()
-                self._connected = True
+            if self._using_entity_telemetry:
+                if not self._telemetry_validated:
+                    await self._telemetry_controller.connect()
+                    self._telemetry_validated = True
+                data = self._telemetry_controller.get_runtime_data()
+            else:
+                if not self._connected:
+                    await self._controller.connect()
+                    self._connected = True
 
-            data = await self._controller.get_runtime_data()
+                data = await self._controller.get_runtime_data()
 
             solar_kw = data["solar_power"]
             grid_kw = data["grid_power"]
@@ -5584,9 +5602,25 @@ class GoodWeEnergyCoordinator(DataUpdateCoordinator):
                 ),
                 "energy_summary": self._energy_acc.as_dict(),
             }
+            if data.get("work_mode") is not None:
+                energy_data["work_mode"] = data.get("work_mode")
+                energy_data["work_mode_name"] = data.get("work_mode_name")
+            if data.get("entity_telemetry"):
+                energy_data["entity_telemetry"] = True
+            for status_key, summary_key in (
+                ("daily_solar_energy_kwh", "pv_today_kwh"),
+                ("daily_grid_import_kwh", "grid_import_today_kwh"),
+                ("daily_grid_export_kwh", "grid_export_today_kwh"),
+                ("daily_battery_charge_kwh", "charge_today_kwh"),
+                ("daily_battery_discharge_kwh", "discharge_today_kwh"),
+            ):
+                value = data.get(status_key)
+                if isinstance(value, (int, float)) and value >= 0:
+                    energy_data["energy_summary"][summary_key] = round(float(value), 3)
 
             _LOGGER.debug(
-                "GoodWe data: solar=%.2f kW, grid=%.2f kW, battery=%.2f kW (%.0f%%), load=%.2f kW",
+                "GoodWe data%s: solar=%.2f kW, grid=%.2f kW, battery=%.2f kW (%.0f%%), load=%.2f kW",
+                " (entity telemetry)" if self._using_entity_telemetry else "",
                 energy_data["solar_power"],
                 energy_data["grid_power"],
                 energy_data["battery_power"],
@@ -5597,7 +5631,16 @@ class GoodWeEnergyCoordinator(DataUpdateCoordinator):
             return energy_data
 
         except Exception as err:
-            self._connected = False
+            if self._using_entity_telemetry and self.data:
+                _LOGGER.warning(
+                    "GoodWe entity telemetry read failed, returning stale data: %s",
+                    err,
+                )
+                return self.data
+            if self._using_entity_telemetry:
+                self._telemetry_validated = False
+            else:
+                self._connected = False
             raise UpdateFailed(f"Error fetching GoodWe data: {err}") from err
 
     def _goodwe_ems_mode_attempts(
@@ -5669,13 +5712,17 @@ class GoodWeEnergyCoordinator(DataUpdateCoordinator):
                 power_limit_log = capped_w
             elif reset_power_limit:
                 state = self.hass.states.get(power_entity)
-                raw_max = state.attributes.get("max") if state else None
+                rated_power_w = (self.data or {}).get("rated_power_w")
                 try:
-                    restore_limit = int(float(raw_max))
+                    restore_limit = int(float(rated_power_w))
+                    if restore_limit <= 0:
+                        raise ValueError
                 except (TypeError, ValueError):
-                    restore_limit = int(
-                        (self.data or {}).get("rated_power_w") or GOODWE_EMS_MAX_W
-                    )
+                    raw_max = state.attributes.get("max") if state else None
+                    try:
+                        restore_limit = int(float(raw_max))
+                    except (TypeError, ValueError):
+                        restore_limit = GOODWE_EMS_MAX_W
                 restore_limit = max(1, min(restore_limit, GOODWE_EMS_MAX_W))
                 try:
                     await self.hass.services.async_call(
@@ -5822,6 +5869,8 @@ class GoodWeEnergyCoordinator(DataUpdateCoordinator):
 
     async def async_shutdown(self) -> None:
         """Disconnect from GoodWe system on shutdown."""
+        if self._using_entity_telemetry:
+            await self._telemetry_controller.disconnect()
         await self._controller.disconnect()
         self._connected = False
 

@@ -1018,6 +1018,29 @@ def test_goodwe_runtime_auto_uses_entity_prefix_for_tcp_control():
     assert "_resolve_goodwe_ems_entity_prefix" in init_source
 
 
+def test_goodwe_runtime_auto_uses_entity_telemetry_for_tcp():
+    init_source = (
+        ROOT / "custom_components" / "power_sync" / "__init__.py"
+    ).read_text()
+
+    assert "_resolve_goodwe_entity_telemetry_prefix" in init_source
+    assert "GoodWe TCP setup detected telemetry entity prefix" in init_source
+    assert "entity_telemetry_prefix=goodwe_entity_telemetry_prefix" in init_source
+    assert "goodwe_protocol == \"tcp\"" in init_source
+    assert "DEFAULT_GOODWE_PORT_TCP" in init_source
+
+
+def test_goodwe_connection_flow_accepts_tcp_entity_telemetry_before_direct_probe():
+    source = CONFIG_FLOW_PATH.read_text()
+    method = _config_flow_method("async_step_goodwe_connection")
+    method_source = ast.get_source_segment(source, method)
+
+    assert method_source is not None
+    assert "resolve_goodwe_entity_telemetry_prefix" in method_source
+    assert "if entity_telemetry_prefix" in method_source
+    assert "else await test_goodwe_connection" in method_source
+
+
 class _GoodWeStates:
     def __init__(self, entity_ids: list[str]) -> None:
         self._entity_ids = set(entity_ids)

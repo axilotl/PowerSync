@@ -1267,6 +1267,22 @@ def validate_goodwe_ems_entity_prefix(
     return None
 
 
+async def resolve_goodwe_entity_telemetry_prefix(
+    hass: HomeAssistant,
+    prefix: str | None,
+) -> str:
+    """Return a validated GoodWe telemetry entity prefix, or empty string."""
+    from .inverters.goodwe_entity import GoodWeEntityTelemetryController
+
+    controller = GoodWeEntityTelemetryController(hass, entity_prefix=prefix or "")
+    try:
+        await controller.connect()
+        return controller.entity_prefix
+    except Exception as err:
+        _LOGGER.debug("GoodWe entity telemetry validation failed: %s", err)
+        return ""
+
+
 def _goodwe_ems_prefix_exists(hass: HomeAssistant, prefix: str) -> bool:
     """Return whether a GoodWe EMS prefix has the required HA entity pair."""
     return (
@@ -4413,8 +4429,17 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 if ems_error:
                     errors["base"] = ems_error
                 else:
-                    # Test connection
-                    result = await test_goodwe_connection(self.hass, host, port)
+                    entity_telemetry_prefix = ""
+                    if protocol == "tcp" or port == DEFAULT_GOODWE_PORT_TCP:
+                        entity_telemetry_prefix = await resolve_goodwe_entity_telemetry_prefix(
+                            self.hass,
+                            resolved_ems_prefix or ems_prefix,
+                        )
+                    result = (
+                        {"success": True, "has_battery": True}
+                        if entity_telemetry_prefix
+                        else await test_goodwe_connection(self.hass, host, port)
+                    )
 
                     if result.get("success"):
                         if not result.get("has_battery"):
@@ -4431,7 +4456,12 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                                     CONF_GOODWE_EMS_ENTITY_PREFIX
                                 ] = resolved_ems_prefix
                             _LOGGER.info(
-                                "GoodWe connection successful: %s (SN: %s, %sW)",
+                                "GoodWe connection successful%s: %s (SN: %s, %sW)",
+                                (
+                                    f" via telemetry entities '{entity_telemetry_prefix}'"
+                                    if entity_telemetry_prefix
+                                    else ""
+                                ),
                                 result.get("model_name"),
                                 result.get("serial_number"),
                                 result.get("rated_power"),

@@ -1098,11 +1098,42 @@ def test_goodwe_entity_mode_prefers_solar_first_charge_and_export_discharge_mode
     assert "restore_operation_mode=True" in restore_source
     assert "restore_limit" in ems_source
     assert "GOODWE_EMS_MAX_W" in ems_source
+    assert "rated_power_w = (self.data or {}).get(\"rated_power_w\")" in ems_source
+    assert "restore_limit = int(float(rated_power_w))" in ems_source
     assert '"value": restore_limit' in ems_source
+    assert ems_source.index("rated_power_w") < ems_source.index('state.attributes.get("max")')
     assert "select.{p}_inverter_operation_mode" in ems_restore_source
     assert "general_mode" in ems_restore_source
     assert '"options"' in attempts_source
     assert "fallback_option" in ems_source
+
+
+def test_goodwe_entity_telemetry_does_not_use_direct_polling_for_refresh():
+    source = COORDINATOR_PATH.read_text()
+    tree = ast.parse(source)
+    init = _find_class_method(tree, "GoodWeEnergyCoordinator", "__init__")
+    update = _find_class_method(tree, "GoodWeEnergyCoordinator", "_async_update_data")
+
+    init_source = ast.get_source_segment(source, init)
+    update_source = ast.get_source_segment(source, update)
+
+    assert init_source is not None
+    assert update_source is not None
+    assert "GoodWeEntityTelemetryController" in init_source
+    assert "entity_telemetry_prefix" in init_source
+    entity_branch = update_source.split("if self._using_entity_telemetry:", 1)[1]
+    entity_branch = entity_branch.split("else:", 1)[0]
+    assert "self._telemetry_controller.connect()" in entity_branch
+    assert "self._telemetry_controller.get_runtime_data()" in entity_branch
+    assert "self._controller.connect()" not in entity_branch
+    assert "self._controller.get_runtime_data()" not in entity_branch
+
+
+def test_amber_nem_region_map_accepts_sa_power_short_name():
+    source = INIT_PATH.read_text()
+
+    assert '"SA Power Networks": "SA1"' in source
+    assert '"SA Power": "SA1"' in source
 
 
 def _saj_force_charge_branch() -> str:

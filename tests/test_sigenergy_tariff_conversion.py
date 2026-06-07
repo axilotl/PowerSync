@@ -421,6 +421,13 @@ def test_sigenergy_client_defaults_unknown_region_to_aus(sigenergy_api_module):
     assert client.api_base_url == "https://api-aus.sigencloud.com"
 
 
+def test_sigenergy_tariff_region_map_accepts_sa_power_short_name(sigenergy_api_module):
+    source = Path(sigenergy_api_module.__file__).read_text()
+
+    assert '"SA Power Networks": "SA1"' in source
+    assert '"SA Power": "SA1"' in source
+
+
 def test_sigenergy_set_tariff_uses_configured_region_endpoint(
     sigenergy_api_module,
 ):

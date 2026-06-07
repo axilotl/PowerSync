@@ -605,6 +605,15 @@ def _is_foxess_entity_bridge_startup_failure(coordinator: Any, exc: Exception) -
     )
 
 
+def _is_goodwe_entity_telemetry_startup_failure(coordinator: Any, exc: Exception) -> bool:
+    """Return True when GoodWe telemetry entities are still restoring at HA startup."""
+    return (
+        isinstance(coordinator, GoodWeEnergyCoordinator)
+        and getattr(coordinator, "_using_entity_telemetry", False)
+        and "goodwe_entity_missing_entities:" in str(exc)
+    )
+
+
 def _is_solaredge_entity_bridge_startup_failure(coordinator: Any, exc: Exception) -> bool:
     """Return True when SolarEdge battery entities are still restoring at HA startup."""
     return (
@@ -1580,6 +1589,22 @@ def _resolve_goodwe_ems_entity_prefix(hass: HomeAssistant, prefix: str | None) -
         return candidates[0]
 
     return typed_prefix
+
+
+async def _resolve_goodwe_entity_telemetry_prefix(
+    hass: HomeAssistant,
+    prefix: str | None,
+) -> str:
+    """Return a validated GoodWe entity telemetry prefix, or empty string."""
+    from .inverters.goodwe_entity import GoodWeEntityTelemetryController
+
+    controller = GoodWeEntityTelemetryController(hass, entity_prefix=prefix or "")
+    try:
+        await controller.connect()
+        return controller.entity_prefix
+    except Exception as err:
+        _LOGGER.debug("GoodWe entity telemetry not available: %s", err)
+        return ""
 
 
 async def fetch_active_amber_site_id(hass: HomeAssistant, api_token: str) -> str | None:
@@ -16343,10 +16368,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     detected_ems_prefix,
                 )
 
+        goodwe_entity_telemetry_prefix = ""
+        if goodwe_protocol == "tcp" or goodwe_port == DEFAULT_GOODWE_PORT_TCP:
+            goodwe_entity_telemetry_prefix = await _resolve_goodwe_entity_telemetry_prefix(
+                hass,
+                goodwe_ems_prefix or configured_ems_prefix,
+            )
+            if goodwe_entity_telemetry_prefix:
+                _LOGGER.info(
+                    "GoodWe TCP setup detected telemetry entity prefix '%s'; "
+                    "using Home Assistant entities for telemetry to avoid a "
+                    "second direct TCP/502 polling client",
+                    goodwe_entity_telemetry_prefix,
+                )
+
         _LOGGER.info(
-            "Initializing GoodWe coordinator: %s:%s%s",
+            "Initializing GoodWe coordinator: %s:%s%s%s",
             goodwe_host, goodwe_port,
             f" (EMS relay via '{goodwe_ems_prefix}' entities)" if goodwe_ems_prefix else "",
+            f" (telemetry via '{goodwe_entity_telemetry_prefix}' entities)" if goodwe_entity_telemetry_prefix else "",
         )
         goodwe_coordinator = GoodWeEnergyCoordinator(
             hass,
@@ -16354,6 +16394,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             port=goodwe_port,
             entry_id=entry.entry_id,
             ems_entity_prefix=goodwe_ems_prefix,
+            entity_telemetry_prefix=goodwe_entity_telemetry_prefix,
         )
     elif is_alphaess:
         _LOGGER.info("Running in AlphaESS mode - Tesla credentials not required")
@@ -16638,8 +16679,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             await goodwe_coordinator.async_config_entry_first_refresh()
             _LOGGER.info("GoodWe coordinator initialized successfully")
         except Exception as e:
-            _LOGGER.warning("GoodWe coordinator failed to initialize: %s", e)
-            goodwe_coordinator = None
+            if _is_goodwe_entity_telemetry_startup_failure(goodwe_coordinator, e):
+                _LOGGER.warning(
+                    "GoodWe entity telemetry sensors are not ready yet; "
+                    "keeping coordinator active so it can retry: %s",
+                    e,
+                )
+            else:
+                _LOGGER.warning("GoodWe coordinator failed to initialize: %s", e)
+                goodwe_coordinator = None
     if alphaess_coordinator:
         try:
             await alphaess_coordinator.async_config_entry_first_refresh()
@@ -18291,6 +18339,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "Ergon Energy": "QLD1",
             # SA networks
             "SA Power Networks": "SA1",
+            "SA Power": "SA1",
             # TAS networks
             "TasNetworks": "TAS1",
         }

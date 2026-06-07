@@ -524,7 +524,7 @@
           "goodwe_host": "Local IP address of your GoodWe inverter.",
           "goodwe_protocol": "UDP uses direct GoodWe control on port 8899. TCP uses Modbus on port 502 for LAN/Kit-20 setups.",
           "goodwe_port": "Default: 8899 for UDP, 502 for TCP.",
-          "goodwe_ems_control_mode": "Choose how PowerSync sends GoodWe EMS commands. Direct IP requires UDP 8899 control. For TCP / LAN Kit-20 setups, PowerSync auto-uses detected GoodWe Experimental EMS entities because direct operation-mode writes do not reliably control the inverter. The IP address above is still used for telemetry.",
+          "goodwe_ems_control_mode": "Choose how PowerSync sends GoodWe EMS commands. Direct IP requires UDP 8899 control. For TCP / LAN Kit-20 setups, PowerSync auto-uses detected GoodWe Experimental EMS entities because direct operation-mode writes do not reliably control the inverter. TCP / LAN Kit-20 telemetry can also use detected GoodWe HA sensors to avoid a second direct TCP/502 polling client.",
           "goodwe_ems_entity_prefix": "Required only when EMS control method is Home Assistant entity control. PowerSync will auto-detect a matching EMS entity pair when possible. You can also enter only the prefix for the GoodWe Experimental EMS controls. Example: goodwe uses select.goodwe_ems_mode and number.goodwe_ems_power_limit."
         },
         "submit": "Connect"
@@ -1154,7 +1154,7 @@
           "goodwe_host": "Local IP address of your GoodWe inverter.",
           "goodwe_protocol": "UDP uses direct GoodWe control on port 8899. TCP uses Modbus on port 502 for LAN/Kit-20 setups.",
           "goodwe_port": "Default: 8899 for UDP, 502 for TCP.",
-          "goodwe_ems_control_mode": "Choose how PowerSync sends GoodWe EMS commands. Direct IP requires UDP 8899 control. For TCP / LAN Kit-20 setups, PowerSync auto-uses detected GoodWe Experimental EMS entities because direct operation-mode writes do not reliably control the inverter. The IP address above is still used for telemetry.",
+          "goodwe_ems_control_mode": "Choose how PowerSync sends GoodWe EMS commands. Direct IP requires UDP 8899 control. For TCP / LAN Kit-20 setups, PowerSync auto-uses detected GoodWe Experimental EMS entities because direct operation-mode writes do not reliably control the inverter. TCP / LAN Kit-20 telemetry can also use detected GoodWe HA sensors to avoid a second direct TCP/502 polling client.",
           "goodwe_ems_entity_prefix": "Required only when EMS control method is Home Assistant entity control. PowerSync will auto-detect a matching EMS entity pair when possible. You can also enter only the prefix for the GoodWe Experimental EMS controls. Example: goodwe uses select.goodwe_ems_mode and number.goodwe_ems_power_limit."
         },
         "submit": "Save"
@@ -1384,7 +1384,7 @@
           "goodwe_host": "Local IP address of your GoodWe inverter.",
           "goodwe_protocol": "UDP uses direct GoodWe control on port 8899. TCP uses Modbus on port 502 for LAN/Kit-20 setups.",
           "goodwe_port": "Default: 8899 for UDP, 502 for TCP.",
-          "goodwe_ems_control_mode": "Choose how PowerSync sends GoodWe EMS commands. Direct IP requires UDP 8899 control. For TCP / LAN Kit-20 setups, PowerSync auto-uses detected GoodWe Experimental EMS entities because direct operation-mode writes do not reliably control the inverter. The IP address above is still used for telemetry.",
+          "goodwe_ems_control_mode": "Choose how PowerSync sends GoodWe EMS commands. Direct IP requires UDP 8899 control. For TCP / LAN Kit-20 setups, PowerSync auto-uses detected GoodWe Experimental EMS entities because direct operation-mode writes do not reliably control the inverter. TCP / LAN Kit-20 telemetry can also use detected GoodWe HA sensors to avoid a second direct TCP/502 polling client.",
           "goodwe_ems_entity_prefix": "Required only when EMS control method is Home Assistant entity control. PowerSync will auto-detect a matching EMS entity pair when possible. You can also enter only the prefix for the GoodWe Experimental EMS controls. Example: goodwe uses select.goodwe_ems_mode and number.goodwe_ems_power_limit."
         },
         "submit": "Save"
