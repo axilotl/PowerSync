@@ -84,6 +84,28 @@ def test_optimizer_plan_gets_are_browser_cached():
     assert "now - this._lastFetch < 60000" not in source
 
 
+def test_optimizer_plan_does_not_rerender_on_unrelated_state_ticks():
+    """Cached optimizer charts should not rebuild for unrelated HA state updates."""
+    source = STRATEGY_PATH.read_text()
+    plan_start = source.index("class PowerSyncOptimizationPlan extends HTMLElement")
+    hass_setter = source[
+        source.index("  set hass(hass) {", plan_start):
+        source.index("  connectedCallback()", plan_start)
+    ]
+    render_signature = source[
+        source.index("  _renderSignature() {", plan_start):
+        source.index("  _render() {", plan_start)
+    ]
+
+    assert "this._scheduleRenderIfChanged();" in hass_setter
+    assert "this._scheduleRender();" not in hass_setter
+    assert "new ResizeObserver(() => this._scheduleRenderIfChanged())" in source[plan_start:]
+    assert "this._lastRenderSignature = this._renderSignature();" in source[plan_start:]
+    assert "priceMeta" in render_signature
+    assert "forceCharge: this._entityStateSignature(this._config?.forceChargeEntity, ['windows'])" in render_signature
+    assert "forceDischarge: this._entityStateSignature(this._config?.forceDischargeEntity, ['windows'])" in render_signature
+
+
 def test_optimizer_plan_shows_calculated_auto_reserve():
     """Auto-applied optimizer reserve should be visible on the schedule graph."""
     source = STRATEGY_PATH.read_text()

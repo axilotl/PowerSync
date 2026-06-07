@@ -1374,6 +1374,18 @@ def test_flow_power_profit_max_uses_configured_full_soc_target(opt_module):
     assert coordinator._next_profit_max_target_slot() == 90
 
 
+def test_flow_power_profit_max_floors_non_boundary_full_soc_target(opt_module):
+    coordinator = _coordinator(
+        opt_module,
+        "flow_power",
+        profit_max=True,
+        flow_power_state="NSW1",
+        profit_max_target_time="16:01",
+    )
+
+    assert coordinator._next_profit_max_target_slot() == 90
+
+
 def test_flow_power_profit_max_target_uses_live_coordinator_setting(opt_module):
     coordinator = _coordinator(
         opt_module,
@@ -2238,6 +2250,54 @@ def test_optimizer_owned_force_charge_accepts_sungrow_forced_charge_cmd(opt_modu
     assert coordinator._force_charge_hardware_needs_refresh(15000) is False
 
 
+def test_optimizer_owned_force_discharge_reissues_when_goodwe_stays_self_consumption(opt_module):
+    now = datetime(2026, 6, 6, 7, 35, tzinfo=timezone.utc)
+    opt_module.dt_util.utcnow = lambda *args, **kwargs: now
+    battery = _FakeBattery()
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.99)
+    coordinator.battery_system = "goodwe"
+    coordinator._config.max_discharge_w = 15000
+    coordinator.energy_coordinator = SimpleNamespace(
+        data={
+            "ems_mode_name": "self_consumption",
+            "battery_power": 0.31,
+            "grid_power": 0.0,
+        }
+    )
+    actions = [
+        SimpleNamespace(
+            action="export",
+            power_w=15000,
+            timestamp=now + idx * timedelta(minutes=5),
+        )
+        for idx in range(6)
+    ]
+    coordinator._current_schedule = SimpleNamespace(actions=actions)
+    coordinator._set_optimizer_force_state("discharge", 120, 15000)
+    coordinator._optimizer_force_state["hardware_expires_at"] = now + timedelta(hours=1)
+
+    asyncio.run(coordinator._execute_optimizer_action(actions[0]))
+
+    assert battery.force_discharge_calls == [(30, 15000, True, None)]
+    assert coordinator._optimizer_force_state["active"] is True
+    assert coordinator._optimizer_force_state["type"] == "discharge"
+
+
+def test_optimizer_owned_force_discharge_accepts_goodwe_sell_power_mode(opt_module):
+    battery = _FakeBattery()
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.99)
+    coordinator.battery_system = "goodwe"
+    coordinator.energy_coordinator = SimpleNamespace(
+        data={
+            "ems_mode_name": "sell_power",
+            "battery_power": 0.25,
+            "grid_power": 0.0,
+        }
+    )
+
+    assert coordinator._force_discharge_hardware_needs_refresh(15000) is False
+
+
 def test_optimizer_owned_force_charge_does_not_override_idle_with_lookahead_charge(opt_module):
     battery = _FakeBattery()
     coordinator = _execution_coordinator(opt_module, battery, soc=0.50)
@@ -2640,6 +2700,61 @@ def test_flow_power_no_idle_schedule_simulates_home_load(opt_module):
     assert [action.power_w for action in converted.actions] == [2000.0, 2000.0]
     assert converted.actions[0].soc < 0.65
     assert converted.actions[1].soc < converted.actions[0].soc
+
+
+def test_flow_power_no_idle_preserves_profit_max_prefill_hold(opt_module):
+    coordinator = _coordinator(
+        opt_module,
+        "flow_power",
+        profit_max=True,
+        flow_power_state="NSW1",
+        profit_max_target_time="16:01",
+        profit_max_target_soc=1.0,
+    )
+    coordinator._config.disable_idle_enabled = True
+    coordinator._config.battery_capacity_wh = 47900
+    coordinator._config.max_discharge_w = 23000
+    coordinator._config.backup_reserve = 0.15
+
+    start = datetime(2026, 5, 3, 8, 30, tzinfo=timezone.utc)
+    schedule = opt_module.OptimizationSchedule(
+        actions=[
+            opt_module.ScheduleAction(
+                timestamp=start,
+                action="self_consumption",
+                power_w=0,
+                soc=0.80,
+                battery_charge_w=0,
+                battery_discharge_w=0,
+            ),
+            opt_module.ScheduleAction(
+                timestamp=start + timedelta(minutes=5),
+                action="idle",
+                power_w=0,
+                soc=0.80,
+                battery_charge_w=0,
+                battery_discharge_w=0,
+            ),
+        ],
+        predicted_cost=1.23,
+        predicted_savings=0.45,
+        last_updated=start,
+    )
+
+    converted = coordinator._disable_idle_schedule(
+        schedule,
+        solar_forecast=[0.0, 0.0],
+        load_forecast=[2.0, 2.0],
+        initial_soc=0.80,
+    )
+
+    assert coordinator._next_profit_max_target_slot() == 90
+    assert [action.action for action in converted.actions] == [
+        "self_consumption",
+        "idle",
+    ]
+    assert [action.battery_discharge_w for action in converted.actions] == [0.0, 0.0]
+    assert [action.soc for action in converted.actions] == [0.80, 0.80]
 
 
 def test_flow_power_no_idle_schedule_fills_zero_self_consumption_after_export(opt_module):

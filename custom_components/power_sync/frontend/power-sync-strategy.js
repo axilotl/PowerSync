@@ -1467,6 +1467,7 @@ class PowerSyncOptimizationPlan extends HTMLElement {
     this._lastFetch = 0;
     this._renderQueued = false;
     this._resizeObserver = null;
+    this._lastRenderSignature = '';
   }
 
   setConfig(config) {
@@ -1478,6 +1479,7 @@ class PowerSyncOptimizationPlan extends HTMLElement {
       this._error = null;
       this._lastFetch = 0;
     }
+    this._lastRenderSignature = '';
     this._restoreCachedData(nextPath);
     this._scheduleRender();
     this._maybeLoadData(true);
@@ -1486,12 +1488,12 @@ class PowerSyncOptimizationPlan extends HTMLElement {
   set hass(hass) {
     this._hass = hass;
     this._maybeLoadData(false);
-    this._scheduleRender();
+    this._scheduleRenderIfChanged();
   }
 
   connectedCallback() {
     if (!this._resizeObserver && 'ResizeObserver' in window) {
-      this._resizeObserver = new ResizeObserver(() => this._scheduleRender());
+      this._resizeObserver = new ResizeObserver(() => this._scheduleRenderIfChanged());
       this._resizeObserver.observe(this);
     }
     this._maybeLoadData(true);
@@ -1604,8 +1606,39 @@ class PowerSyncOptimizationPlan extends HTMLElement {
     });
   }
 
+  _scheduleRenderIfChanged() {
+    const signature = this._renderSignature();
+    if (signature !== this._lastRenderSignature) {
+      this._scheduleRender();
+    }
+  }
+
+  _entityStateSignature(entityId, attributeNames = []) {
+    const state = this._hass?.states?.[entityId];
+    if (!state) return `${entityId || ''}:missing`;
+    const attrs = attributeNames.map(name => state.attributes?.[name]);
+    return JSON.stringify([entityId, state.state, ...attrs]);
+  }
+
+  _renderSignature() {
+    const width = this.getBoundingClientRect().width || 0;
+    const compact = width < 560 ? 'compact' : 'wide';
+    const priceMeta = _priceMeta(this._hass, this._config?.importPriceEntity);
+    return JSON.stringify({
+      path: this._optimizationPath(),
+      fetched: this._lastFetch,
+      loading: this._loading,
+      error: this._error,
+      compact,
+      priceMeta,
+      forceCharge: this._entityStateSignature(this._config?.forceChargeEntity, ['windows']),
+      forceDischarge: this._entityStateSignature(this._config?.forceDischargeEntity, ['windows']),
+    });
+  }
+
   _render() {
     if (!this._config) return;
+    this._lastRenderSignature = this._renderSignature();
 
     const model = this._buildModel();
     const hasSchedule = model.points.length > 0;
