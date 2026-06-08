@@ -5853,11 +5853,15 @@ def _with_configured_charger_entities(
         )
     elif charger_type == "sigenergy":
         from ..const import (
+            CONF_SIGENERGY_CHARGER_CHARGE_POWER_LIMIT_ENTITY,
+            CONF_SIGENERGY_CHARGER_DISCHARGE_POWER_LIMIT_ENTITY,
             CONF_SIGENERGY_CHARGER_HOST,
             CONF_SIGENERGY_CHARGER_PORT,
             CONF_SIGENERGY_CHARGER_SLAVE_ID,
             CONF_SIGENERGY_CHARGER_TYPE,
             CONF_SIGENERGY_MODBUS_HOST,
+            DEFAULT_SIGENERGY_EVDC_CHARGE_POWER_LIMIT_ENTITY,
+            DEFAULT_SIGENERGY_EVDC_DISCHARGE_POWER_LIMIT_ENTITY,
         )
 
         params["sigenergy_charger_host"] = params.get("sigenergy_charger_host") or opts.get(
@@ -5873,13 +5877,39 @@ def _with_configured_charger_entities(
         params["sigenergy_charger_type"] = params.get("sigenergy_charger_type") or opts.get(
             CONF_SIGENERGY_CHARGER_TYPE
         )
+        charge_limit_entity = str(
+            params.get(CONF_SIGENERGY_CHARGER_CHARGE_POWER_LIMIT_ENTITY)
+            or opts.get(CONF_SIGENERGY_CHARGER_CHARGE_POWER_LIMIT_ENTITY)
+            or ""
+        ).strip()
+        discharge_limit_entity = str(
+            params.get(CONF_SIGENERGY_CHARGER_DISCHARGE_POWER_LIMIT_ENTITY)
+            or opts.get(CONF_SIGENERGY_CHARGER_DISCHARGE_POWER_LIMIT_ENTITY)
+            or ""
+        ).strip()
+        if not charge_limit_entity and _valid_state(
+            hass.states.get(DEFAULT_SIGENERGY_EVDC_CHARGE_POWER_LIMIT_ENTITY)
+        ):
+            charge_limit_entity = DEFAULT_SIGENERGY_EVDC_CHARGE_POWER_LIMIT_ENTITY
+        if not discharge_limit_entity and _valid_state(
+            hass.states.get(DEFAULT_SIGENERGY_EVDC_DISCHARGE_POWER_LIMIT_ENTITY)
+        ):
+            discharge_limit_entity = DEFAULT_SIGENERGY_EVDC_DISCHARGE_POWER_LIMIT_ENTITY
+        if charge_limit_entity:
+            params[CONF_SIGENERGY_CHARGER_CHARGE_POWER_LIMIT_ENTITY] = charge_limit_entity
+        if discharge_limit_entity:
+            params[CONF_SIGENERGY_CHARGER_DISCHARGE_POWER_LIMIT_ENTITY] = discharge_limit_entity
         normalized_type = str(params.get("sigenergy_charger_type") or "evac").lower()
         is_evdc = normalized_type == "evdc"
         params["sigenergy_charger_type"] = "evdc" if is_evdc else "evac"
-        params["supports_rate_control"] = not is_evdc
+        params["supports_rate_control"] = (not is_evdc) or bool(charge_limit_entity)
         params["supports_restart_while_plugged"] = not is_evdc
         params["control_strategy"] = "one_shot" if is_evdc else "dynamic_rate"
-        params["solar_control_strategy"] = "native_handoff" if is_evdc else "dynamic_rate"
+        params["solar_control_strategy"] = (
+            "dynamic_rate"
+            if params["supports_rate_control"]
+            else "native_handoff"
+        )
         params["charger_capabilities"] = {
             "charger_type": params["sigenergy_charger_type"],
             "supports_start_stop": True,
@@ -5887,6 +5917,8 @@ def _with_configured_charger_entities(
             "supports_restart_while_plugged": params["supports_restart_while_plugged"],
             "control_strategy": params["control_strategy"],
             "solar_control_strategy": params["solar_control_strategy"],
+            CONF_SIGENERGY_CHARGER_CHARGE_POWER_LIMIT_ENTITY: charge_limit_entity,
+            CONF_SIGENERGY_CHARGER_DISCHARGE_POWER_LIMIT_ENTITY: discharge_limit_entity,
         }
     return params
 
@@ -5942,6 +5974,8 @@ def get_solar_surplus_vehicle_configs(
         "sigenergy_charger_port",
         "sigenergy_charger_slave_id",
         "sigenergy_charger_type",
+        "sigenergy_charger_charge_power_limit_entity",
+        "sigenergy_charger_discharge_power_limit_entity",
         "supports_rate_control",
         "supports_restart_while_plugged",
         "control_strategy",
@@ -6274,6 +6308,8 @@ def _get_vehicle_charger_params(
                         "sigenergy_charger_port",
                         "sigenergy_charger_slave_id",
                         "sigenergy_charger_type",
+                        "sigenergy_charger_charge_power_limit_entity",
+                        "sigenergy_charger_discharge_power_limit_entity",
                         "pre_charge_wake_entity",
                         "pre_charge_wake_duration_seconds",
                         "pre_charge_wake_on_service",
@@ -6309,6 +6345,8 @@ def _get_vehicle_charger_params(
                     "sigenergy_charger_port",
                     "sigenergy_charger_slave_id",
                     "sigenergy_charger_type",
+                    "sigenergy_charger_charge_power_limit_entity",
+                    "sigenergy_charger_discharge_power_limit_entity",
                     "pre_charge_wake_entity",
                     "pre_charge_wake_duration_seconds",
                     "pre_charge_wake_on_service",

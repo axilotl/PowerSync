@@ -61,6 +61,7 @@ from .const import (
     TESLA_SITE_INFO_CONTROL_MAX_AGE_SECONDS,
     TESLA_CAPABILITY_WAIT_SECONDS,
     POWERWALL_LOCAL_POLL_INTERVAL,
+    supports_no_idle_mode_provider,
 )
 
 # Providers that use TOU schedule syncing (Amber, Octopus, Flow Power)
@@ -286,7 +287,7 @@ async def async_setup_entry(
 
     hass.data[DOMAIN][entry.entry_id]["switch_add_profit_max"] = _add_profit_max_switch
 
-    if electricity_provider == "flow_power":
+    if supports_no_idle_mode_provider(electricity_provider):
         def _add_disable_idle_switch(coordinator: Any) -> None:
             async_add_entities([
                 DisableIdleModeSwitch(hass=hass, entry=entry, coordinator=coordinator)
@@ -1283,7 +1284,7 @@ class ProfitMaxModeSwitch(SwitchEntity):
 
 
 class DisableIdleModeSwitch(SwitchEntity):
-    """Switch to replace Flow Power optimizer idle holds with self-consumption."""
+    """Switch to replace optimizer idle holds with self-consumption."""
 
     _attr_has_entity_name = True
     _attr_entity_category = EntityCategory.CONFIG
@@ -1327,18 +1328,18 @@ class DisableIdleModeSwitch(SwitchEntity):
 
     @property
     def is_on(self) -> bool:
-        """Return True if Flow Power no-idle mode is active."""
+        """Return True if no-idle mode is active."""
         return self._coordinator.disable_idle_enabled
 
     async def async_turn_on(self, **kwargs: Any) -> None:
-        """Enable Flow Power no-idle mode."""
+        """Enable no-idle mode."""
         self._attr_is_on = True
         changed = self._coordinator.set_disable_idle_enabled(True)
         await _reoptimize_if_enabled(self._coordinator, changed)
         self.async_write_ha_state()
 
     async def async_turn_off(self, **kwargs: Any) -> None:
-        """Disable Flow Power no-idle mode."""
+        """Disable no-idle mode."""
         self._attr_is_on = False
         changed = self._coordinator.set_disable_idle_enabled(False)
         await _reoptimize_if_enabled(self._coordinator, changed)

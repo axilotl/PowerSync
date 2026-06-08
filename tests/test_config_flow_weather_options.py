@@ -52,6 +52,7 @@ CONFIG_OPTION_TEXT_STEP_PAIRS = (
     ("inverter_config_setup", "inverter_config"),
     ("solax_battery", "solax_battery_options"),
     ("flow_power_setup", "flow_power_options"),
+    ("flow_power_site", "flow_power_site_options"),
     ("flow_power_tariff", "flow_power_options"),
     ("flow_power_portal", "flow_power_options"),
     ("flow_power_portal_login", "flow_power_portal_reauth"),
@@ -80,9 +81,9 @@ def _module_tree() -> ast.Module:
     return ast.parse(CONFIG_FLOW_PATH.read_text())
 
 
-def _top_level_function(name: str) -> ast.FunctionDef:
+def _top_level_function(name: str) -> ast.FunctionDef | ast.AsyncFunctionDef:
     for node in _module_tree().body:
-        if isinstance(node, ast.FunctionDef) and node.name == name:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
             return node
     raise AssertionError(f"Function {name} not found")
 
@@ -388,6 +389,8 @@ def test_ev_charging_sigenergy_charger_fields_are_translated():
         "sigenergy_charger_host",
         "sigenergy_charger_port",
         "sigenergy_charger_slave_id",
+        "sigenergy_charger_charge_power_limit_entity",
+        "sigenergy_charger_discharge_power_limit_entity",
     )
 
     for path in (STRINGS_PATH, TRANSLATIONS_PATH):
@@ -546,6 +549,66 @@ def test_provider_portal_login_has_dedicated_options_sections():
         assert "connect_globird_portal" in globird_portal["data_description"]
 
 
+def test_flow_power_api_key_setup_validates_and_routes_sites():
+    source = CONFIG_FLOW_PATH.read_text()
+    setup_source = ast.get_source_segment(
+        source,
+        _config_flow_method("async_step_flow_power_setup"),
+    )
+    site_source = ast.get_source_segment(
+        source,
+        _config_flow_method("async_step_flow_power_site"),
+    )
+
+    assert setup_source is not None
+    assert site_source is not None
+    assert "CONF_FLOWPOWER_API_KEY" in setup_source
+    assert "validate_flow_power_api_key" in setup_source
+    assert 'user_input[CONF_FLOW_POWER_PRICE_SOURCE] = "kwatch" if api_key else "aemo"' in setup_source
+    assert "len(self._flow_power_sites) == 1" in setup_source
+    assert "async_step_flow_power_site()" in setup_source
+    assert "CONF_FLOWPOWER_NMI" in site_source
+    assert "_prefill_flow_power_network_tariff" in site_source
+
+
+def test_flow_power_options_collects_kwatch_key_before_network_options():
+    source = CONFIG_FLOW_PATH.read_text()
+    options_source = ast.get_source_segment(
+        source,
+        _options_flow_method("async_step_flow_power_options"),
+    )
+    api_source = ast.get_source_segment(
+        source,
+        _options_flow_method("async_step_flow_power_api_key_options"),
+    )
+    site_source = ast.get_source_segment(
+        source,
+        _options_flow_method("async_step_flow_power_site_options"),
+    )
+
+    assert options_source is not None
+    assert api_source is not None
+    assert site_source is not None
+    assert 'price_source == "kwatch"' in options_source
+    assert "async_step_flow_power_api_key_options()" in options_source
+    assert "validate_flow_power_api_key" in api_source
+    assert "CONF_FLOWPOWER_API_KEY" in api_source
+    assert "async_step_flow_power_site_options()" in api_source
+    assert "CONF_FLOWPOWER_NMI" in site_source
+
+
+def test_flow_power_network_tariff_prefill_preserves_manual_selection():
+    helper = ast.get_source_segment(
+        CONFIG_FLOW_PATH.read_text(),
+        _top_level_function("_prefill_flow_power_network_tariff"),
+    )
+
+    assert helper is not None
+    assert "CONF_FLOWPOWER_NETWORK_TARIFF" in helper
+    assert "flow_data.get(CONF_FP_NETWORK) or flow_data.get(CONF_FP_TARIFF_CODE)" in helper
+    assert "get_tariff_codes_for_network" in helper
+
+
 def test_provider_portal_login_errors_are_translated_for_setup_and_options():
     provider_error_keys = {
         "cannot_connect",
@@ -622,7 +685,8 @@ def test_optimization_options_exposes_enabled_toggle():
     assert "new_options[CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED] = spread_import_enabled" in method_source
     assert "CONF_OPTIMIZATION_DISABLE_IDLE" in method_source
     assert "new_options[CONF_OPTIMIZATION_DISABLE_IDLE] = disable_idle" in method_source
-    assert "if is_flow_power:" in method_source
+    assert "supports_no_idle_mode_provider(current_provider)" in method_source
+    assert "if supports_no_idle_mode:" in method_source
     assert "CONF_PROFIT_MAX_ENABLED" in method_source
     assert "new_options[CONF_PROFIT_MAX_ENABLED] = profit_max_enabled" in method_source
     assert (
@@ -641,7 +705,7 @@ def test_optimization_options_exposes_enabled_toggle():
             "data_description"
         ]["optimization_auto_apply_reserve"]
         assert step["data"]["optimization_disable_idle"] == "Disable idle mode"
-        assert "Flow Power plans" in step["data_description"][
+        assert "supported TOU plans" in step["data_description"][
             "optimization_disable_idle"
         ]
 
@@ -785,7 +849,8 @@ def test_initial_smart_optimization_configuration_exposes_enabled_toggle():
     assert "user_input.get(CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED" in method_source
     assert "CONF_OPTIMIZATION_DISABLE_IDLE" in method_source
     assert "user_input.get(CONF_OPTIMIZATION_DISABLE_IDLE, False)" in method_source
-    assert "if is_flow_power:" in method_source
+    assert "supports_no_idle_mode_provider(" in method_source
+    assert "if supports_no_idle_mode:" in method_source
     assert "CONF_PROFIT_MAX_ENABLED" in method_source
     assert "user_input.get(CONF_PROFIT_MAX_ENABLED, False)" in method_source
     assert (
@@ -803,12 +868,12 @@ def test_initial_smart_optimization_configuration_exposes_enabled_toggle():
             "data_description"
         ]["optimization_auto_apply_reserve"]
         assert step["data"]["optimization_disable_idle"] == "Disable idle mode"
-        assert "Flow Power plans" in step["data_description"][
+        assert "supported TOU plans" in step["data_description"][
             "optimization_disable_idle"
         ]
 
 
-def test_flow_power_no_idle_option_is_provider_scoped():
+def test_no_idle_option_is_provider_scoped():
     source = CONFIG_FLOW_PATH.read_text()
     initial_method = _config_flow_method("async_step_ml_options")
     initial_source = ast.get_source_segment(source, initial_method)
@@ -817,12 +882,12 @@ def test_flow_power_no_idle_option_is_provider_scoped():
 
     assert initial_source is not None
     assert options_source is not None
-    assert 'self._selected_electricity_provider == "flow_power"' in initial_source
-    assert 'current_provider == "flow_power"' in options_source
+    assert "supports_no_idle_mode_provider(" in initial_source
+    assert "supports_no_idle_mode_provider(current_provider)" in options_source
 
     for method_source in (initial_source, options_source):
         assert "CONF_OPTIMIZATION_DISABLE_IDLE" in method_source
-        assert "if is_flow_power:" in method_source
+        assert "if supports_no_idle_mode:" in method_source
         assert "else False" in method_source
 
 
@@ -1016,6 +1081,29 @@ def test_goodwe_runtime_auto_uses_entity_prefix_for_tcp_control():
     assert "goodwe_protocol == \"tcp\"" in init_source
     assert "DEFAULT_GOODWE_PORT_TCP" in init_source
     assert "_resolve_goodwe_ems_entity_prefix" in init_source
+
+
+def test_goodwe_runtime_auto_uses_entity_telemetry_for_tcp():
+    init_source = (
+        ROOT / "custom_components" / "power_sync" / "__init__.py"
+    ).read_text()
+
+    assert "_resolve_goodwe_entity_telemetry_prefix" in init_source
+    assert "GoodWe TCP setup detected telemetry entity prefix" in init_source
+    assert "entity_telemetry_prefix=goodwe_entity_telemetry_prefix" in init_source
+    assert "goodwe_protocol == \"tcp\"" in init_source
+    assert "DEFAULT_GOODWE_PORT_TCP" in init_source
+
+
+def test_goodwe_connection_flow_accepts_tcp_entity_telemetry_before_direct_probe():
+    source = CONFIG_FLOW_PATH.read_text()
+    method = _config_flow_method("async_step_goodwe_connection")
+    method_source = ast.get_source_segment(source, method)
+
+    assert method_source is not None
+    assert "resolve_goodwe_entity_telemetry_prefix" in method_source
+    assert "if entity_telemetry_prefix" in method_source
+    assert "else await test_goodwe_connection" in method_source
 
 
 class _GoodWeStates:

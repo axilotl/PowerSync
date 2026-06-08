@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 import importlib
 import importlib.util
 import json
@@ -25,6 +26,167 @@ def _method_source(file_path: Path, class_name: str, method_name: str) -> str:
                 if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name == method_name:
                     return ast.unparse(item)
     raise AssertionError(f"{class_name}.{method_name} not found")
+
+
+class _FakeResponse:
+    def __init__(self, payload, status=200):
+        self._payload = payload
+        self.status = status
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def text(self):
+        return json.dumps(self._payload)
+
+    async def json(self, content_type=None):
+        return self._payload
+
+
+class _FakeSession:
+    closed = False
+
+    def __init__(self, payloads):
+        self.payloads = payloads
+        self.calls = []
+
+    def post(self, url, json=None, headers=None, timeout=None):
+        endpoint = url.rsplit("/", 1)[-1]
+        self.calls.append((endpoint, json, headers))
+        payload = self.payloads[endpoint]
+        return _FakeResponse(payload)
+
+
+def _flow_power_api_module():
+    saved_power_sync = sys.modules.get("power_sync")
+    saved_ha = sys.modules.get("homeassistant")
+    saved_ha_util = sys.modules.get("homeassistant.util")
+    saved_ha_dt = sys.modules.get("homeassistant.util.dt")
+    fake_power_sync = types.ModuleType("power_sync")
+    fake_power_sync.__path__ = [str(COMPONENT_ROOT)]
+    fake_ha = types.ModuleType("homeassistant")
+    fake_ha_util = types.ModuleType("homeassistant.util")
+    fake_ha_dt = types.ModuleType("homeassistant.util.dt")
+    fake_ha_dt.UTC = timezone.utc
+    fake_ha_dt.utcnow = lambda: datetime(2026, 6, 8, 0, 0, tzinfo=timezone.utc)
+    fake_ha_util.dt = fake_ha_dt
+    sys.modules["power_sync"] = fake_power_sync
+    sys.modules["homeassistant"] = fake_ha
+    sys.modules["homeassistant.util"] = fake_ha_util
+    sys.modules["homeassistant.util.dt"] = fake_ha_dt
+    try:
+        sys.modules.pop("power_sync.flow_power_api", None)
+        return importlib.import_module("power_sync.flow_power_api")
+    finally:
+        if saved_power_sync is None:
+            sys.modules.pop("power_sync", None)
+        else:
+            sys.modules["power_sync"] = saved_power_sync
+        for name, saved in (
+            ("homeassistant", saved_ha),
+            ("homeassistant.util", saved_ha_util),
+            ("homeassistant.util.dt", saved_ha_dt),
+        ):
+            if saved is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = saved
+
+
+def test_flow_power_api_client_posts_key_and_normalizes_sites_summary_and_prices():
+    api = _flow_power_api_module()
+    session = _FakeSession(
+        {
+            "GetResidentialSites": {
+                "sites": [{"nmi": "4407000000", "networkTariff": "BLNREX2,BLNRSS2"}]
+            },
+            "GetResidentialSiteSummary": {
+                "LWAP": 16.3,
+                "TWAP": 18.7,
+                "LWAPImp": 23.6,
+                "TWAPImp": 18.7,
+                "PEATarget": 0.0,
+                "PEATargetImport": 0.0,
+                "GST": 1.1,
+            },
+            "dispatch5mins": {
+                "data": [{"timestamp": "2026-06-08T10:00:00+10:00", "price": 123.4}]
+            },
+            "predispatch30mins": {
+                "result": [{"periodDateTime": "2026/06/08 10:30:00", "RRP": 98.0}]
+            },
+        }
+    )
+    client = api.FlowPowerAPIClient("secret-key", session)
+
+    async def run():
+        sites = await client.get_residential_sites()
+        summary = await client.get_residential_site_summary("4407000000")
+        dispatch = await client.dispatch5mins("nsw")
+        forecast = await client.predispatch30mins("nsw")
+        return sites, summary, dispatch, forecast
+
+    sites, summary, dispatch, forecast = asyncio.run(run())
+
+    assert sites == [
+        {
+            "nmi": "4407000000",
+            "networkTariff": "BLNREX2,BLNRSS2",
+            "raw": {"nmi": "4407000000", "networkTariff": "BLNREX2,BLNRSS2"},
+        }
+    ]
+    assert summary["source"] == "api"
+    assert summary["bpea"] == 0.0
+    assert summary["gst_multiplier"] == 1.1
+    assert dispatch[0]["perKwh"] == 12.34
+    assert forecast[0]["perKwh"] == 9.8
+    assert all(call[2]["x-api-key"] == "secret-key" for call in session.calls)
+
+
+def test_kwatch_prices_to_amber_format_has_current_and_forecast_shape():
+    api = _flow_power_api_module()
+    entries = api.kwatch_prices_to_amber_format(
+        [{"nemTime": "2026-06-08T10:00:00+10:00", "perKwh": 12.34, "duration": 5}],
+        interval_type="CurrentInterval",
+        default_duration=5,
+    )
+
+    assert entries == [
+        {
+            "nemTime": "2026-06-08T10:05:00+10:00",
+            "perKwh": 12.34,
+            "channelType": "general",
+            "type": "CurrentInterval",
+            "duration": 5,
+            "wholesaleKWHPrice": 12.34,
+        },
+        {
+            "nemTime": "2026-06-08T10:05:00+10:00",
+            "perKwh": -12.34,
+            "channelType": "feedIn",
+            "type": "CurrentInterval",
+            "duration": 5,
+            "wholesaleKWHPrice": 12.34,
+        },
+    ]
+
+
+def test_flow_power_kwatch_coordinator_publishes_amber_compatible_data():
+    source = _method_source(
+        COMPONENT_ROOT / "coordinator.py",
+        "FlowPowerKWatchPriceCoordinator",
+        "_async_update_data",
+    )
+
+    assert "dispatch5mins" in source
+    assert "predispatch30mins" in source
+    assert "predispatch5mins" in source
+    assert "'current': current_prices" in source
+    assert "'forecast': forecast" in source
+    assert "'source': 'flow_power_kwatch'" in source
 
 
 def test_flow_power_sensor_uses_shared_pricing_context():

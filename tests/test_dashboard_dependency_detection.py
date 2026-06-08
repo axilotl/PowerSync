@@ -106,6 +106,65 @@ def test_optimizer_plan_does_not_rerender_on_unrelated_state_ticks():
     assert "forceDischarge: this._entityStateSignature(this._config?.forceDischargeEntity, ['windows'])" in render_signature
 
 
+def test_dashboard_ev_panel_is_registered_and_api_cached():
+    """HA dashboard EV controls should use the native API-backed panel."""
+    source = STRATEGY_PATH.read_text()
+    panel_start = source.index("class PowerSyncEVPanel extends HTMLElement")
+    hass_setter = source[
+        source.index("  set hass(hass) {", panel_start):
+        source.index("  connectedCallback()", panel_start)
+    ]
+    render_signature = source[
+        source.index("  _renderSignature() {", panel_start):
+        source.index("  _loadpoints() {", panel_start)
+    ]
+
+    assert "customElements.define('power-sync-ev-panel'" in source
+    assert "custom:power-sync-ev-panel" in source
+    assert "function _evPanel()" in source
+    assert "center.push(_evPanel());" in source
+    assert "EV_PANEL_FETCH_INTERVAL_MS = 30000" in source
+    assert "window.__powerSyncEVPanelCache" in source
+    assert "window.setInterval(() => this._maybeLoadData(false), EV_PANEL_FETCH_INTERVAL_MS)" in source
+    assert "this._hass.callApi('GET', 'power_sync/ev/loadpoints/status')" in source
+    assert "power_sync/ev/solar_surplus_config" in source
+    assert "power_sync/ev/price_level_charging/settings" in source
+    assert "power_sync/ev/scheduled_charging/settings" in source
+    assert "power_sync/ev/auto_schedule/status" in source
+    assert "power_sync/ev/auto_schedule/toggle" in source
+    assert "power_sync/ev/boost" in source
+    assert "start_policy_charging" in source
+    assert "this._scheduleRenderIfChanged();" in hass_setter
+    assert "this._scheduleRender();" not in hass_setter
+    assert "data: this._data" in render_signature
+    assert "policy: this._policy" in render_signature
+
+
+def test_generic_dashboard_charts_do_not_rerender_on_unrelated_state_ticks():
+    """Dashboard graph tooltips and legend buttons should survive unrelated HA ticks."""
+    source = STRATEGY_PATH.read_text()
+    chart_start = source.index("class PowerSyncChart extends HTMLElement")
+    chart_end = source.index("if (!customElements.get('power-sync-chart'))")
+    chart_source = source[chart_start:chart_end]
+    hass_setter = chart_source[
+        chart_source.index("  set hass(hass) {"):
+        chart_source.index("  getCardSize() {")
+    ]
+    render_signature = chart_source[
+        chart_source.index("  _renderSignature() {"):
+        chart_source.index("  _chartEntitySignature(")
+    ]
+
+    assert "this._scheduleRenderIfChanged();" in hass_setter
+    assert "this._scheduleRender();" not in hass_setter
+    assert "new ResizeObserver(() => this._scheduleRenderIfChanged())" in chart_source
+    assert "this._lastRenderSignature = this._renderSignature();" in chart_source
+    assert "clockBucket" in render_signature
+    assert "hiddenSeries: Array.from(this._hiddenSeries).sort()" in render_signature
+    assert "state: this._chartEntitySignature(mode, seriesConfig, config)" in render_signature
+    assert "cache: mode === 'history' ? this._historyCacheSignature(seriesConfig.entity) : undefined" in render_signature
+
+
 def test_optimizer_plan_shows_calculated_auto_reserve():
     """Auto-applied optimizer reserve should be visible on the schedule graph."""
     source = STRATEGY_PATH.read_text()

@@ -44,6 +44,7 @@ from .const import (
     DEFAULT_TWAP_WINDOW_DAYS,
     MIN_TWAP_SAMPLES,
     FLOW_POWER_MARKET_AVG,
+    FLOW_POWER_KWATCH_REGIONS,
     CONF_FLEET_API_BASE_URL,
     TESLA_SITE_INFO_CACHE_TTL_SECONDS,
     CONF_SIGENERGY_CHARGER_ENABLED,
@@ -3331,6 +3332,84 @@ class AEMOPriceCoordinator(DataUpdateCoordinator):
 AEMOSensorCoordinator = AEMOPriceCoordinator
 
 
+class FlowPowerKWatchPriceCoordinator(DataUpdateCoordinator):
+    """Coordinator that fetches Flow Power KWatch API prices."""
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        region: str,
+        api_key: str,
+        session: aiohttp.ClientSession,
+    ) -> None:
+        from .flow_power_api import FlowPowerAPIClient
+
+        self.region = region
+        self.api_region = FLOW_POWER_KWATCH_REGIONS.get(region, region.lower())
+        self._client = FlowPowerAPIClient(api_key, session)
+
+        super().__init__(
+            hass,
+            _LOGGER,
+            name=f"{DOMAIN}_flow_power_kwatch",
+            update_interval=timedelta(minutes=5),
+        )
+
+    async def _async_update_data(self) -> dict[str, Any]:
+        """Fetch current and forecast prices from Flow Power's KWatch API."""
+        from .flow_power_api import kwatch_prices_to_amber_format
+
+        try:
+            dispatch = await self._client.dispatch5mins(self.api_region, period=60)
+            forecast_30 = await self._client.predispatch30mins(self.api_region, period=2)
+            forecast_5 = await self._client.predispatch5mins(self.api_region, period=60)
+
+            if not dispatch:
+                raise UpdateFailed(f"No KWatch dispatch prices returned for {self.region}")
+
+            latest_dispatch = dispatch[-1:]
+            current_prices = kwatch_prices_to_amber_format(
+                latest_dispatch,
+                interval_type="CurrentInterval",
+                default_duration=5,
+            )
+            forecast = kwatch_prices_to_amber_format(
+                forecast_30,
+                interval_type="ForecastInterval",
+                default_duration=30,
+            )
+            forecast_5min = kwatch_prices_to_amber_format(
+                forecast_5 or dispatch,
+                interval_type="ForecastInterval",
+                default_duration=5,
+            )
+
+            if not forecast:
+                forecast = forecast_5min
+            if not forecast:
+                raise UpdateFailed(f"No KWatch forecast prices returned for {self.region}")
+
+            latest_cents = latest_dispatch[0]["perKwh"]
+            _LOGGER.info(
+                "Flow Power KWatch data for %s: current=%.2fc/kWh, forecast_periods=%d",
+                self.region,
+                latest_cents,
+                len(forecast) // 2,
+            )
+
+            return {
+                "current": current_prices,
+                "forecast": forecast,
+                "forecast_5min": forecast_5min,
+                "last_update": dt_util.utcnow(),
+                "source": "flow_power_kwatch",
+            }
+        except UpdateFailed:
+            raise
+        except Exception as err:
+            raise UpdateFailed(f"Error fetching Flow Power KWatch data: {err}") from err
+
+
 class EPEXPriceCoordinator(DataUpdateCoordinator):
     """Coordinator that fetches EPEX day-ahead price data.
 
@@ -5540,6 +5619,7 @@ class GoodWeEnergyCoordinator(DataUpdateCoordinator):
         comm_addr: int = 0,
         entry_id: str = "",
         ems_entity_prefix: str | None = None,
+        entity_telemetry_prefix: str | None = None,
     ) -> None:
         """Initialize the coordinator."""
         from .inverters.goodwe_battery import GoodWeBatteryController
@@ -5557,7 +5637,18 @@ class GoodWeEnergyCoordinator(DataUpdateCoordinator):
         self._controller = GoodWeBatteryController(
             host=host, port=port, comm_addr=comm_addr
         )
+        self._telemetry_controller = self._controller
+        self._entity_telemetry_prefix = (entity_telemetry_prefix or "").strip()
+        self._using_entity_telemetry = bool(self._entity_telemetry_prefix)
+        if self._using_entity_telemetry:
+            from .inverters.goodwe_entity import GoodWeEntityTelemetryController
+
+            self._telemetry_controller = GoodWeEntityTelemetryController(
+                hass,
+                entity_prefix=self._entity_telemetry_prefix,
+            )
         self._connected = False
+        self._telemetry_validated = False
         self._energy_acc = EnergyAccumulator(hass, "goodwe")
         self._discharge_floor_pct: int = 10  # updated by set_backup_reserve
 
@@ -5573,11 +5664,17 @@ class GoodWeEnergyCoordinator(DataUpdateCoordinator):
         if not self._energy_acc._last_update:
             await self._energy_acc.async_restore()
         try:
-            if not self._connected:
-                await self._controller.connect()
-                self._connected = True
+            if self._using_entity_telemetry:
+                if not self._telemetry_validated:
+                    await self._telemetry_controller.connect()
+                    self._telemetry_validated = True
+                data = self._telemetry_controller.get_runtime_data()
+            else:
+                if not self._connected:
+                    await self._controller.connect()
+                    self._connected = True
 
-            data = await self._controller.get_runtime_data()
+                data = await self._controller.get_runtime_data()
 
             solar_kw = data["solar_power"]
             grid_kw = data["grid_power"]
@@ -5617,9 +5714,25 @@ class GoodWeEnergyCoordinator(DataUpdateCoordinator):
                 ),
                 "energy_summary": self._energy_acc.as_dict(),
             }
+            if data.get("work_mode") is not None:
+                energy_data["work_mode"] = data.get("work_mode")
+                energy_data["work_mode_name"] = data.get("work_mode_name")
+            if data.get("entity_telemetry"):
+                energy_data["entity_telemetry"] = True
+            for status_key, summary_key in (
+                ("daily_solar_energy_kwh", "pv_today_kwh"),
+                ("daily_grid_import_kwh", "grid_import_today_kwh"),
+                ("daily_grid_export_kwh", "grid_export_today_kwh"),
+                ("daily_battery_charge_kwh", "charge_today_kwh"),
+                ("daily_battery_discharge_kwh", "discharge_today_kwh"),
+            ):
+                value = data.get(status_key)
+                if isinstance(value, (int, float)) and value >= 0:
+                    energy_data["energy_summary"][summary_key] = round(float(value), 3)
 
             _LOGGER.debug(
-                "GoodWe data: solar=%.2f kW, grid=%.2f kW, battery=%.2f kW (%.0f%%), load=%.2f kW",
+                "GoodWe data%s: solar=%.2f kW, grid=%.2f kW, battery=%.2f kW (%.0f%%), load=%.2f kW",
+                " (entity telemetry)" if self._using_entity_telemetry else "",
                 energy_data["solar_power"],
                 energy_data["grid_power"],
                 energy_data["battery_power"],
@@ -5630,7 +5743,16 @@ class GoodWeEnergyCoordinator(DataUpdateCoordinator):
             return energy_data
 
         except Exception as err:
-            self._connected = False
+            if self._using_entity_telemetry and self.data:
+                _LOGGER.warning(
+                    "GoodWe entity telemetry read failed, returning stale data: %s",
+                    err,
+                )
+                return self.data
+            if self._using_entity_telemetry:
+                self._telemetry_validated = False
+            else:
+                self._connected = False
             raise UpdateFailed(f"Error fetching GoodWe data: {err}") from err
 
     def _goodwe_ems_mode_attempts(
@@ -5702,13 +5824,17 @@ class GoodWeEnergyCoordinator(DataUpdateCoordinator):
                 power_limit_log = capped_w
             elif reset_power_limit:
                 state = self.hass.states.get(power_entity)
-                raw_max = state.attributes.get("max") if state else None
+                rated_power_w = (self.data or {}).get("rated_power_w")
                 try:
-                    restore_limit = int(float(raw_max))
+                    restore_limit = int(float(rated_power_w))
+                    if restore_limit <= 0:
+                        raise ValueError
                 except (TypeError, ValueError):
-                    restore_limit = int(
-                        (self.data or {}).get("rated_power_w") or GOODWE_EMS_MAX_W
-                    )
+                    raw_max = state.attributes.get("max") if state else None
+                    try:
+                        restore_limit = int(float(raw_max))
+                    except (TypeError, ValueError):
+                        restore_limit = GOODWE_EMS_MAX_W
                 restore_limit = max(1, min(restore_limit, GOODWE_EMS_MAX_W))
                 try:
                     await self.hass.services.async_call(
@@ -5855,6 +5981,8 @@ class GoodWeEnergyCoordinator(DataUpdateCoordinator):
 
     async def async_shutdown(self) -> None:
         """Disconnect from GoodWe system on shutdown."""
+        if self._using_entity_telemetry:
+            await self._telemetry_controller.disconnect()
         await self._controller.disconnect()
         self._connected = False
 
