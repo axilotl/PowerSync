@@ -106,6 +106,31 @@ def test_optimizer_plan_does_not_rerender_on_unrelated_state_ticks():
     assert "forceDischarge: this._entityStateSignature(this._config?.forceDischargeEntity, ['windows'])" in render_signature
 
 
+def test_generic_dashboard_charts_do_not_rerender_on_unrelated_state_ticks():
+    """Dashboard graph tooltips and legend buttons should survive unrelated HA ticks."""
+    source = STRATEGY_PATH.read_text()
+    chart_start = source.index("class PowerSyncChart extends HTMLElement")
+    chart_end = source.index("if (!customElements.get('power-sync-chart'))")
+    chart_source = source[chart_start:chart_end]
+    hass_setter = chart_source[
+        chart_source.index("  set hass(hass) {"):
+        chart_source.index("  getCardSize() {")
+    ]
+    render_signature = chart_source[
+        chart_source.index("  _renderSignature() {"):
+        chart_source.index("  _chartEntitySignature(")
+    ]
+
+    assert "this._scheduleRenderIfChanged();" in hass_setter
+    assert "this._scheduleRender();" not in hass_setter
+    assert "new ResizeObserver(() => this._scheduleRenderIfChanged())" in chart_source
+    assert "this._lastRenderSignature = this._renderSignature();" in chart_source
+    assert "clockBucket" in render_signature
+    assert "hiddenSeries: Array.from(this._hiddenSeries).sort()" in render_signature
+    assert "state: this._chartEntitySignature(mode, seriesConfig, config)" in render_signature
+    assert "cache: mode === 'history' ? this._historyCacheSignature(seriesConfig.entity) : undefined" in render_signature
+
+
 def test_optimizer_plan_shows_calculated_auto_reserve():
     """Auto-applied optimizer reserve should be visible on the schedule graph."""
     source = STRATEGY_PATH.read_text()

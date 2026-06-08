@@ -32,12 +32,14 @@ class PowerSyncChart extends HTMLElement {
     this._historyCache = new Map();
     this._historyRequestKey = null;
     this._hiddenSeries = new Set();
+    this._lastRenderSignature = '';
   }
 
   setConfig(config) {
     this._config = config;
     this._historyCache.clear();
     this._historyRequestKey = null;
+    this._lastRenderSignature = '';
     const validKeys = new Set((config.series || []).map((series, index) => this._seriesKey(series, index)));
     for (const key of Array.from(this._hiddenSeries)) {
       if (!validKeys.has(key)) this._hiddenSeries.delete(key);
@@ -47,7 +49,7 @@ class PowerSyncChart extends HTMLElement {
 
   set hass(hass) {
     this._hass = hass;
-    this._scheduleRender();
+    this._scheduleRenderIfChanged();
   }
 
   getCardSize() {
@@ -56,7 +58,7 @@ class PowerSyncChart extends HTMLElement {
 
   connectedCallback() {
     if (!this._resizeObserver && 'ResizeObserver' in window) {
-      this._resizeObserver = new ResizeObserver(() => this._scheduleRender());
+      this._resizeObserver = new ResizeObserver(() => this._scheduleRenderIfChanged());
       this._resizeObserver.observe(this);
     }
     this._scheduleRender();
@@ -78,8 +80,101 @@ class PowerSyncChart extends HTMLElement {
     });
   }
 
+  _scheduleRenderIfChanged() {
+    const signature = this._renderSignature();
+    if (signature !== this._lastRenderSignature) {
+      this._scheduleRender();
+    }
+  }
+
+  _renderSignature() {
+    if (!this._config || !this._hass) return '';
+    const config = this._config;
+    const mode = config.mode || 'forecast';
+    const width = this.getBoundingClientRect().width || Number(config.width) || 0;
+    const compact = width < 520 ? 'compact' : 'wide';
+    const intervalMs = Math.max(60000, Number(config.intervalMinutes || 5) * 60000);
+    const clockBucket = mode === 'forecast'
+      ? Math.floor(Date.now() / intervalMs)
+      : Math.floor(Date.now() / 300000);
+    const series = (config.series || []).map((seriesConfig, index) => ({
+      key: this._seriesKey(seriesConfig, index),
+      entity: seriesConfig.entity,
+      attribute: seriesConfig.attribute,
+      dataKey: seriesConfig.key,
+      name: seriesConfig.name,
+      color: seriesConfig.color,
+      fill: !!seriesConfig.fill,
+      strokeWidth: seriesConfig.strokeWidth,
+      minValue: seriesConfig.minValue,
+      maxValue: seriesConfig.maxValue,
+      state: this._chartEntitySignature(mode, seriesConfig, config),
+      cache: mode === 'history' ? this._historyCacheSignature(seriesConfig.entity) : undefined,
+    }));
+
+    return JSON.stringify({
+      mode,
+      clockBucket,
+      compact,
+      title: config.title,
+      height: config.height,
+      width: config.width,
+      yUnit: config.yUnit,
+      yUnitCompact: config.yUnitCompact,
+      yMultiplier: config.yMultiplier,
+      yMin: config.yMin,
+      yMax: config.yMax,
+      zeroBaseline: config.zeroBaseline,
+      hideZeroTickLabel: config.hideZeroTickLabel,
+      stepLine: config.stepLine,
+      historyHours: config.historyHours,
+      historyRange: config.historyRange,
+      entity: mode === 'tou' ? this._touEntitySignature(config) : undefined,
+      hiddenSeries: Array.from(this._hiddenSeries).sort(),
+      series,
+    });
+  }
+
+  _chartEntitySignature(mode, seriesConfig, config) {
+    if (mode === 'forecast') {
+      return this._stateSignature(seriesConfig.entity, [seriesConfig.attribute || 'forecast_values_kw']);
+    }
+    if (mode === 'history') {
+      return this._stateSignature(seriesConfig.entity);
+    }
+    if (mode === 'tou') {
+      return this._touEntitySignature(config);
+    }
+    return '';
+  }
+
+  _touEntitySignature(config) {
+    const keys = (config.series || [])
+      .map(seriesConfig => seriesConfig.key)
+      .filter(Boolean)
+      .flatMap(key => [`${key}_price`]);
+    return this._stateSignature(config.entity, ['schedule', 'tou_schedule', ...keys]);
+  }
+
+  _stateSignature(entityId, attributeNames = []) {
+    if (!entityId) return '';
+    const state = this._hass?.states?.[entityId];
+    if (!state) return `${entityId}:missing`;
+    const attrs = attributeNames.map(name => state.attributes?.[name]);
+    return JSON.stringify([entityId, state.state, state.last_updated, state.last_changed, ...attrs]);
+  }
+
+  _historyCacheSignature(entityId) {
+    const points = this._historyCache.get(entityId) || [];
+    if (!points.length) return `${entityId || ''}:empty`;
+    const first = points[0];
+    const last = points[points.length - 1];
+    return JSON.stringify([entityId, points.length, first?.[0], first?.[1], last?.[0], last?.[1]]);
+  }
+
   _render() {
     if (!this._config || !this._hass) return;
+    this._lastRenderSignature = this._renderSignature();
 
     const config = this._config;
     const hass = this._hass;
