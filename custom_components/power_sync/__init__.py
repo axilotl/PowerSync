@@ -14187,7 +14187,7 @@ class EVWidgetDataView(HomeAssistantView):
                         surplus_kw=surplus_kw,
                         capabilities=_configured_sigenergy_charger_capabilities(
                             self._config_entry,
-                            self.hass,
+                            self._hass,
                         ),
                     )
                 )
@@ -14708,7 +14708,7 @@ class EVLoadpointStatusView(HomeAssistantView):
                         sigenergy_state or configured_sigenergy_state,
                         capabilities=_configured_sigenergy_charger_capabilities(
                             self._config_entry,
-                            self.hass,
+                            self._hass,
                         ),
                     )
                 )
