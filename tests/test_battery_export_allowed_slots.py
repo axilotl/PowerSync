@@ -126,6 +126,17 @@ def _install_power_sync_stubs() -> None:
     const_module.CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED = "optimization_spread_export_enabled"
     const_module.CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED = "optimization_spread_import_enabled"
     const_module.CONF_OPTIMIZATION_DISABLE_IDLE = "optimization_disable_idle"
+    const_module.NO_IDLE_MODE_PROVIDERS = frozenset({
+        "flow_power",
+        "globird",
+        "aemo_vpp",
+        "other",
+        "tou_only",
+        "nz",
+    })
+    const_module.supports_no_idle_mode_provider = (
+        lambda provider: str(provider or "") in const_module.NO_IDLE_MODE_PROVIDERS
+    )
     const_module.CONF_OPTIMIZATION_MAX_CHARGE_W = "max_charge_w"
     const_module.CONF_OPTIMIZATION_MAX_DISCHARGE_W = "max_discharge_w"
     const_module.CONF_OPTIMIZATION_MAX_GRID_IMPORT_W = "max_grid_import_w"
@@ -2908,11 +2919,57 @@ def test_flow_power_no_idle_schedule_uses_hardware_floor_for_home_load(opt_modul
     assert converted.actions[0].soc < 0.20
 
 
-def test_no_idle_schedule_guard_is_flow_power_only(opt_module):
-    coordinator = _coordinator(opt_module, "amber")
+@pytest.mark.parametrize(
+    "provider",
+    ["flow_power", "globird", "aemo_vpp", "other", "tou_only", "nz"],
+)
+def test_no_idle_schedule_guard_supports_tou_providers(opt_module, provider):
+    coordinator = _coordinator(opt_module, provider)
+    coordinator._config.disable_idle_enabled = True
+
+    assert coordinator._should_disable_idle_schedule() is True
+
+
+@pytest.mark.parametrize("provider", ["amber", "octopus", "epex", "localvolts"])
+def test_no_idle_schedule_guard_blocks_unsupported_providers(opt_module, provider):
+    coordinator = _coordinator(opt_module, provider)
     coordinator._config.disable_idle_enabled = True
 
     assert coordinator._should_disable_idle_schedule() is False
+
+
+def test_no_idle_setting_coerces_unsupported_provider_false(opt_module):
+    coordinator = _coordinator(opt_module, "amber")
+    updates, run_calls, background_tasks = _prepare_enabled_settings_coordinator(
+        coordinator
+    )
+
+    result = asyncio.run(coordinator.set_settings({"disable_idle_enabled": True}))
+
+    assert result["success"] is True
+    assert result["changes"] == []
+    assert coordinator._config.disable_idle_enabled is False
+    assert coordinator.disable_idle_enabled is False
+    assert updates == []
+    assert run_calls == []
+    assert background_tasks == []
+
+
+def test_no_idle_setting_clears_stale_unsupported_provider_value(opt_module):
+    coordinator = _coordinator(opt_module, "amber")
+    coordinator._config.disable_idle_enabled = True
+    updates, run_calls, background_tasks = _prepare_enabled_settings_coordinator(
+        coordinator
+    )
+
+    result = asyncio.run(coordinator.set_settings({"disable_idle_enabled": True}))
+
+    assert result["success"] is True
+    assert result["changes"] == ["disable_idle_enabled: False"]
+    assert coordinator._config.disable_idle_enabled is False
+    assert updates[-1]["options"]["optimization_disable_idle"] is False
+    assert run_calls == []
+    assert background_tasks == ["powersync_settings_reoptimize"]
 
 
 def test_flow_power_no_idle_executor_overrides_idle(opt_module):

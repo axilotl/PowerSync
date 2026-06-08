@@ -198,6 +198,9 @@ from .const import (
     CONF_FLOW_POWER_PRICE_SOURCE,
     CONF_FLOWPOWER_EMAIL,
     CONF_FLOWPOWER_PASSWORD,
+    CONF_FLOWPOWER_API_KEY,
+    CONF_FLOWPOWER_NMI,
+    CONF_FLOWPOWER_NETWORK_TARIFF,
     CONF_AEMO_SENSOR_ENTITY,
     CONF_AEMO_SENSOR_5MIN,
     CONF_AEMO_SENSOR_30MIN,
@@ -344,6 +347,8 @@ from .const import (
     CONF_SIGENERGY_CHARGER_HOST,
     CONF_SIGENERGY_CHARGER_PORT,
     CONF_SIGENERGY_CHARGER_SLAVE_ID,
+    CONF_SIGENERGY_CHARGER_CHARGE_POWER_LIMIT_ENTITY,
+    CONF_SIGENERGY_CHARGER_DISCHARGE_POWER_LIMIT_ENTITY,
     DEFAULT_SIGENERGY_CHARGER_PORT,
     DEFAULT_SIGENERGY_CHARGER_SLAVE_ID,
     SIGENERGY_CHARGER_TYPES,
@@ -418,6 +423,7 @@ from .const import (
     DEFAULT_PROFIT_MAX_TARGET_SOC,
     BATTERY_CAPACITY_DEFAULTS,
     BATTERY_POWER_DEFAULTS,
+    supports_no_idle_mode_provider,
     # Optimization provider selection
     CONF_OPTIMIZATION_PROVIDER,
     OPT_PROVIDER_NATIVE,
@@ -863,6 +869,83 @@ async def validate_amber_token(hass: HomeAssistant, api_token: str) -> dict[str,
     except Exception as err:
         _LOGGER.exception("Unexpected error validating Amber token: %s", err)
         return {"success": False, "error": "unknown"}
+
+
+async def validate_flow_power_api_key(
+    hass: HomeAssistant,
+    api_key: str,
+) -> dict[str, Any]:
+    """Validate Flow Power KWatch API key and return residential sites."""
+    if not api_key:
+        return {"success": False, "error": "invalid_api_key"}
+
+    try:
+        from .flow_power_api import FlowPowerAPIClient, FlowPowerAPIError
+
+        client = FlowPowerAPIClient(api_key, async_get_clientsession(hass))
+        sites = await client.get_residential_sites()
+    except FlowPowerAPIError as err:
+        if str(err) == "invalid_api_key":
+            return {"success": False, "error": "invalid_api_key"}
+        return {"success": False, "error": "cannot_connect"}
+    except aiohttp.ClientError:
+        return {"success": False, "error": "cannot_connect"}
+    except Exception as err:
+        _LOGGER.exception("Flow Power API validation failed: %s", err)
+        return {"success": False, "error": "cannot_connect"}
+
+    if not sites:
+        return {"success": False, "error": "no_sites"}
+    return {"success": True, "sites": sites}
+
+
+def _flow_power_site_label(site: dict[str, Any]) -> str:
+    """Return a display label for a Flow Power site."""
+    nmi = site.get("nmi", "")
+    tariff = site.get("networkTariff")
+    return f"{nmi} — {tariff}" if tariff else str(nmi)
+
+
+async def _prefill_flow_power_network_tariff(
+    hass: HomeAssistant,
+    flow_data: dict[str, Any],
+    site: dict[str, Any] | None,
+) -> None:
+    """Prefill Flow Power network tariff from KWatch site metadata when unset."""
+    if not site:
+        return
+    network_tariff = site.get("networkTariff")
+    if network_tariff:
+        flow_data[CONF_FLOWPOWER_NETWORK_TARIFF] = network_tariff
+    if flow_data.get(CONF_FP_NETWORK) or flow_data.get(CONF_FP_TARIFF_CODE):
+        return
+    if not network_tariff:
+        return
+
+    wanted_codes = [
+        part.strip()
+        for part in str(network_tariff).replace(";", ",").split(",")
+        if part.strip()
+    ]
+    if not wanted_codes:
+        return
+
+    from .tariff_utils import get_tariff_codes_for_network
+
+    region = flow_data.get(CONF_FLOW_POWER_STATE, "NSW1")
+    for network_name in REGION_NETWORKS.get(region, []):
+        codes = await hass.async_add_executor_job(
+            get_tariff_codes_for_network,
+            network_name,
+        )
+        for wanted in wanted_codes:
+            if wanted in codes:
+                api_name = NETWORK_API_NAME.get(network_name, network_name.lower())
+                flow_data[CONF_FP_NETWORK] = network_name
+                flow_data[CONF_FP_TARIFF_CODE] = wanted
+                flow_data[CONF_NETWORK_DISTRIBUTOR] = api_name
+                flow_data[CONF_NETWORK_TARIFF_CODE] = wanted
+                return
 
 
 async def validate_localvolts_credentials(
@@ -1427,6 +1510,8 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._aemo_data: dict[str, Any] = {}
         self._globird_data: dict[str, Any] = {}
         self._flow_power_data: dict[str, Any] = {}
+        self._flow_power_sites: list[dict[str, Any]] = []
+        self._flow_power_main_options: dict[str, Any] = {}
         self._octopus_data: dict[str, Any] = {}  # Octopus Energy UK configuration
         self._localvolts_data: dict[str, Any] = {}  # Localvolts configuration
         self._epex_data: dict[str, Any] = {}  # EPEX Day-Ahead (EU) configuration
@@ -1656,7 +1741,8 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             # Apply sensible defaults for fields not shown during initial setup
-            user_input[CONF_FLOW_POWER_PRICE_SOURCE] = "aemo"
+            api_key = user_input.get(CONF_FLOWPOWER_API_KEY)
+            user_input[CONF_FLOW_POWER_PRICE_SOURCE] = "kwatch" if api_key else "aemo"
             user_input[CONF_PEA_ENABLED] = True
             user_input[CONF_PEA_CUSTOM_VALUE] = None
             user_input[CONF_NETWORK_USE_MANUAL_RATES] = False
@@ -1670,8 +1756,26 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._amber_data = {}
             self._aemo_only_mode = False
 
+            if api_key:
+                validation_result = await validate_flow_power_api_key(self.hass, api_key)
+                if not validation_result["success"]:
+                    errors["base"] = validation_result.get("error", "cannot_connect")
+                else:
+                    self._flow_power_sites = validation_result["sites"]
+                    if len(self._flow_power_sites) == 1:
+                        site = self._flow_power_sites[0]
+                        self._flow_power_data[CONF_FLOWPOWER_NMI] = site["nmi"]
+                        await _prefill_flow_power_network_tariff(
+                            self.hass,
+                            self._flow_power_data,
+                            site,
+                        )
+                        return await self.async_step_flow_power_tariff()
+                    return await self.async_step_flow_power_site()
+
             # Route to tariff selection (region-filtered)
-            return await self.async_step_flow_power_tariff()
+            if not errors:
+                return await self.async_step_flow_power_tariff()
 
         return self.async_show_form(
             step_id="flow_power_setup",
@@ -1697,6 +1801,51 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             mode=NumberSelectorMode.BOX,
                         )
                     ),
+                    vol.Optional(CONF_FLOWPOWER_API_KEY): TextSelector(
+                        TextSelectorConfig(type=TextSelectorType.PASSWORD)
+                    ),
+                }
+            ),
+            errors=errors,
+        )
+
+    async def async_step_flow_power_site(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> FlowResult:
+        """Select the Flow Power residential site for a KWatch API key."""
+        sites = getattr(self, "_flow_power_sites", [])
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            selected_nmi = user_input.get(CONF_FLOWPOWER_NMI)
+            site = next((item for item in sites if item.get("nmi") == selected_nmi), None)
+            if site:
+                self._flow_power_data[CONF_FLOWPOWER_NMI] = selected_nmi
+                await _prefill_flow_power_network_tariff(
+                    self.hass,
+                    self._flow_power_data,
+                    site,
+                )
+                return await self.async_step_flow_power_tariff()
+            errors["base"] = "invalid_site"
+
+        return self.async_show_form(
+            step_id="flow_power_site",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_FLOWPOWER_NMI): SelectSelector(
+                        SelectSelectorConfig(
+                            options=[
+                                SelectOptionDict(
+                                    value=site["nmi"],
+                                    label=_flow_power_site_label(site),
+                                )
+                                for site in sites
+                            ],
+                            mode=SelectSelectorMode.DROPDOWN,
+                        )
+                    )
                 }
             ),
             errors=errors,
@@ -1724,6 +1873,8 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 self._flow_power_data.pop(CONF_NETWORK_DISTRIBUTOR, None)
                 self._flow_power_data.pop(CONF_NETWORK_TARIFF_CODE, None)
 
+            if self._flow_power_data.get(CONF_FLOWPOWER_API_KEY):
+                return await self.async_step_battery_system()
             return await self.async_step_flow_power_portal()
 
         # Build combined network+tariff dropdown for the region — all options loaded at render time
@@ -2558,7 +2709,9 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Configure Smart Optimization options."""
         battery_system = self._selected_battery_system or BATTERY_SYSTEM_TESLA
         is_tesla = battery_system == BATTERY_SYSTEM_TESLA
-        is_flow_power = self._selected_electricity_provider == "flow_power"
+        supports_no_idle_mode = supports_no_idle_mode_provider(
+            self._selected_electricity_provider
+        )
         default_capacity_wh, default_charge_w, default_discharge_w = (
             _default_optimizer_specs_for(battery_system)
         )
@@ -2597,7 +2750,7 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 )
                 disable_idle = (
                     bool(user_input.get(CONF_OPTIMIZATION_DISABLE_IDLE, False))
-                    if is_flow_power
+                    if supports_no_idle_mode
                     else False
                 )
                 backup_reserve = (
@@ -2779,7 +2932,7 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     default=False,
                 ): BooleanSelector(),
             })
-        if is_flow_power:
+        if supports_no_idle_mode:
             schema_fields[
                 vol.Required(
                     CONF_OPTIMIZATION_DISABLE_IDLE,
@@ -7303,7 +7456,7 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             CONF_ELECTRICITY_PROVIDER,
             self.config_entry.data.get(CONF_ELECTRICITY_PROVIDER, "amber"),
         )
-        is_flow_power = current_provider == "flow_power"
+        supports_no_idle_mode = supports_no_idle_mode_provider(current_provider)
         if user_input is not None:
             optimization_provider = user_input.get(
                 CONF_OPTIMIZATION_PROVIDER, OPT_PROVIDER_NATIVE
@@ -7435,7 +7588,7 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 )
                 disable_idle = (
                     bool(user_input.get(CONF_OPTIMIZATION_DISABLE_IDLE, False))
-                    if is_flow_power
+                    if supports_no_idle_mode
                     else False
                 )
                 new_data[CONF_OPTIMIZATION_COST_FUNCTION] = COST_FUNCTION_COST
@@ -7503,7 +7656,7 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             # place (the same path the mobile app uses via set_settings), so the
             # change applies in well under a second. Structural changes —
             # provider, enable/disable, auto-apply toggle, monitoring mode, the
-            # Flow Power idle toggle, or the Neovolt surplus mode — still rebuild
+            # No Idle toggle, or the Neovolt surplus mode — still rebuild
             # the integration with a full reload.
             def _opt_changed(key: str, default: Any = None) -> bool:
                 current = self._get_option(
@@ -7810,7 +7963,7 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     default=bool(current_spread_import_enabled),
                 ): BooleanSelector(),
             })
-        if is_flow_power:
+        if supports_no_idle_mode:
             schema_fields[
                 vol.Required(
                     CONF_OPTIMIZATION_DISABLE_IDLE,
@@ -9928,6 +10081,20 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             ): NumberSelector(NumberSelectorConfig(
                 min=1, max=246, step=1, mode=NumberSelectorMode.BOX,
             )),
+            vol.Optional(
+                CONF_SIGENERGY_CHARGER_CHARGE_POWER_LIMIT_ENTITY,
+                default=self._get_option(
+                    CONF_SIGENERGY_CHARGER_CHARGE_POWER_LIMIT_ENTITY,
+                    "",
+                ),
+            ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
+            vol.Optional(
+                CONF_SIGENERGY_CHARGER_DISCHARGE_POWER_LIMIT_ENTITY,
+                default=self._get_option(
+                    CONF_SIGENERGY_CHARGER_DISCHARGE_POWER_LIMIT_ENTITY,
+                    "",
+                ),
+            ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
         }
 
         return self.async_show_form(
@@ -10016,6 +10183,12 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
         final_data[CONF_SIGENERGY_CHARGER_SLAVE_ID] = ev_input.get(
             CONF_SIGENERGY_CHARGER_SLAVE_ID, DEFAULT_SIGENERGY_CHARGER_SLAVE_ID
         )
+        final_data[CONF_SIGENERGY_CHARGER_CHARGE_POWER_LIMIT_ENTITY] = ev_input.get(
+            CONF_SIGENERGY_CHARGER_CHARGE_POWER_LIMIT_ENTITY, ""
+        ).strip()
+        final_data[CONF_SIGENERGY_CHARGER_DISCHARGE_POWER_LIMIT_ENTITY] = ev_input.get(
+            CONF_SIGENERGY_CHARGER_DISCHARGE_POWER_LIMIT_ENTITY, ""
+        ).strip()
 
         self._apply_legacy_data_key_removals()
         return self.async_create_entry(title="", data=final_data)
@@ -10093,6 +10266,8 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 CONF_AMBER_API_TOKEN
             ):
                 return await self.async_step_flow_power_amber_token()
+            if price_source == "kwatch" and not self._get_option(CONF_FLOWPOWER_API_KEY):
+                return await self.async_step_flow_power_api_key_options()
 
             return await self.async_step_flow_power_network_options()
 
@@ -10329,6 +10504,85 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             },
         )
 
+    async def async_step_flow_power_api_key_options(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> FlowResult:
+        """Collect Flow Power KWatch API key from the options flow."""
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            api_key = user_input.get(CONF_FLOWPOWER_API_KEY, "")
+            validation_result = await validate_flow_power_api_key(self.hass, api_key)
+            if validation_result["success"]:
+                self._flow_power_main_options[CONF_FLOWPOWER_API_KEY] = api_key
+                self._flow_power_sites = validation_result["sites"]
+                if len(self._flow_power_sites) == 1:
+                    site = self._flow_power_sites[0]
+                    self._flow_power_main_options[CONF_FLOWPOWER_NMI] = site["nmi"]
+                    await _prefill_flow_power_network_tariff(
+                        self.hass,
+                        self._flow_power_main_options,
+                        site,
+                    )
+                    return await self.async_step_flow_power_network_options()
+                return await self.async_step_flow_power_site_options()
+            errors["base"] = validation_result.get("error", "cannot_connect")
+
+        return self.async_show_form(
+            step_id="flow_power_api_key_options",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_FLOWPOWER_API_KEY): TextSelector(
+                        TextSelectorConfig(type=TextSelectorType.PASSWORD)
+                    ),
+                }
+            ),
+            errors=errors,
+        )
+
+    async def async_step_flow_power_site_options(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> FlowResult:
+        """Select Flow Power KWatch site in the options flow."""
+        sites = getattr(self, "_flow_power_sites", [])
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            selected_nmi = user_input.get(CONF_FLOWPOWER_NMI)
+            site = next((item for item in sites if item.get("nmi") == selected_nmi), None)
+            if site:
+                self._flow_power_main_options[CONF_FLOWPOWER_NMI] = selected_nmi
+                await _prefill_flow_power_network_tariff(
+                    self.hass,
+                    self._flow_power_main_options,
+                    site,
+                )
+                return await self.async_step_flow_power_network_options()
+            errors["base"] = "invalid_site"
+
+        return self.async_show_form(
+            step_id="flow_power_site_options",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_FLOWPOWER_NMI): SelectSelector(
+                        SelectSelectorConfig(
+                            options=[
+                                SelectOptionDict(
+                                    value=site["nmi"],
+                                    label=_flow_power_site_label(site),
+                                )
+                                for site in sites
+                            ],
+                            mode=SelectSelectorMode.DROPDOWN,
+                        )
+                    )
+                }
+            ),
+            errors=errors,
+        )
+
     async def async_step_flow_power_network_options(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
@@ -10363,7 +10617,11 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             self._amber_options = merged
             return await self.async_step_demand_charge_options()
 
-        current_region = self._get_option(CONF_FLOW_POWER_STATE, "NSW1")
+        pending_main = getattr(self, "_flow_power_main_options", {})
+        current_region = pending_main.get(
+            CONF_FLOW_POWER_STATE,
+            self._get_option(CONF_FLOW_POWER_STATE, "NSW1"),
+        )
         default_markup = DEFAULT_FP_AMBER_MARKUP.get(current_region, 4.0)
 
         # Build combined network+tariff dropdown for the region — all options in one pass
@@ -10378,8 +10636,14 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 fp_combined_options[f"{network_name}:{code}"] = f"{network_name} — {desc}"
 
         # Reconstruct current stored selection as combined key
-        stored_network = self._get_option(CONF_FP_NETWORK, "")
-        stored_tariff = self._get_option(CONF_FP_TARIFF_CODE, "")
+        stored_network = pending_main.get(
+            CONF_FP_NETWORK,
+            self._get_option(CONF_FP_NETWORK, ""),
+        )
+        stored_tariff = pending_main.get(
+            CONF_FP_TARIFF_CODE,
+            self._get_option(CONF_FP_TARIFF_CODE, ""),
+        )
         current_combined = f"{stored_network}:{stored_tariff}" if (stored_network and stored_tariff) else ""
         if current_combined not in fp_combined_options:
             current_combined = ""

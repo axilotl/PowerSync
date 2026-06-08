@@ -23,12 +23,25 @@
         "data": {
           "flow_power_state": "NEM region",
           "network_tariff_combined": "Network tariff",
-          "flow_power_base_rate": "Base rate"
+          "flow_power_base_rate": "Base rate",
+          "flowpower_api_key": "Flow Power API key"
         },
         "data_description": {
           "flow_power_state": "Your NEM region determines which wholesale price feed is used. Check your bill if unsure.",
           "network_tariff_combined": "Select the network tariff that matches your electricity bill.",
-          "flow_power_base_rate": "The base energy rate from your Flow Power contract, before wholesale adjustments."
+          "flow_power_base_rate": "The base energy rate from your Flow Power contract, before wholesale adjustments.",
+          "flowpower_api_key": "Optional. Get this from your Flow Power kWatch account page. When set, PowerSync can use the Flow Power API for prices and account metrics."
+        },
+        "submit": "Next"
+      },
+      "flow_power_site": {
+        "title": "Flow Power site",
+        "description": "Select the residential NMI PowerSync should use for Flow Power API account metrics.",
+        "data": {
+          "flowpower_nmi": "NMI"
+        },
+        "data_description": {
+          "flowpower_nmi": "PowerSync uses this site for Flow Power account metrics and tariff hints."
         },
         "submit": "Next"
       },
@@ -440,7 +453,7 @@
           "optimization_allow_grid_charge": "When disabled, Smart Optimization can still charge from solar surplus but will not plan forced battery charging from grid import.",
           "optimization_spread_export_enabled": "When enabled on supported batteries, Smart Optimization spreads planned battery export across the full eligible export window instead of using maximum discharge power.",
           "optimization_spread_import_enabled": "When enabled on supported batteries, Smart Optimization spreads planned grid charging across each same-price import window instead of using maximum charge power.",
-          "optimization_disable_idle": "For Flow Power plans, replace Smart Optimization idle hold actions with self-consumption.",
+          "optimization_disable_idle": "For supported TOU plans, replace Smart Optimization idle hold actions with self-consumption.",
           "profit_max_enabled": "Let Smart Optimization prioritise profitable export opportunities instead of holding battery charge for later by default.",
           "profit_max_target_time": "HH:MM time for Profit Max to reach the configured target SOC before the export window. Default 17:15.",
           "profit_max_target_soc": "Battery SOC Profit Max should target before the export window. Default 100%."
@@ -984,6 +997,8 @@
       "esy_sunhome_no_device": "No ESY Sunhome device found in the selected integration entry. Verify the ESY Sunhome integration is set up and has a paired device.",
       "invalid_credentials": "Email or password is incorrect. Check your Flow Power portal login credentials.",
       "invalid_mfa_code": "Verification code is incorrect or expired. Request a new SMS code and try again.",
+      "invalid_api_key": "Flow Power rejected that API key. Check the value from your kWatch account page and try again.",
+      "invalid_site": "Select a Flow Power site from the list.",
       "zaptec_auth_failed": "Zaptec Cloud login failed. Check that your email and password are correct.",
       "zaptec_missing_credentials": "Both email and password are required for Zaptec Cloud authentication.",
       "no_prices": "No prices found for this tariff and region combination. Verify your Octopus product and GSP region match your account.",
@@ -1293,7 +1308,7 @@
           "optimization_allow_grid_charge": "When disabled, Smart Optimization can still charge from solar surplus but will not plan forced battery charging from grid import.",
           "optimization_spread_export_enabled": "When enabled on supported batteries, Smart Optimization spreads planned battery export across the full eligible export window instead of using maximum discharge power.",
           "optimization_spread_import_enabled": "When enabled on supported batteries, Smart Optimization spreads planned grid charging across each same-price import window instead of using maximum charge power.",
-          "optimization_disable_idle": "For Flow Power plans, replace Smart Optimization idle hold actions with self-consumption.",
+          "optimization_disable_idle": "For supported TOU plans, replace Smart Optimization idle hold actions with self-consumption.",
           "profit_max_enabled": "Let Smart Optimization prioritise profitable export opportunities instead of holding battery charge for later by default.",
           "profit_max_target_time": "HH:MM time for Profit Max to reach the configured target SOC before the export window. Default 17:15.",
           "profit_max_target_soc": "Battery SOC Profit Max should target before the export window. Default 100%."
@@ -1507,7 +1522,7 @@
           "fp_amber_markup": "Amber comparison markup"
         },
         "data_description": {
-          "flow_power_price_source": "AEMO Direct fetches wholesale prices from NEMWeb (no API key). Amber API uses your Amber Electric account.",
+          "flow_power_price_source": "Flow Power API uses your KWatch API key. AEMO Direct fetches wholesale prices from NEMWeb without an API key. Amber API uses your Amber Electric account.",
           "flow_power_export_rate": "Fixed export credit paid during Flow Power Happy Hour. Set this if Flow Power has applied a promo or account-specific feed-in rate.",
           "pea_enabled": "PEA reflects how Flow Power actually bills you: final rate moves with wholesale prices. Disable for flat network tariff rates.",
           "auto_sync_enabled": "Automatically upload TOU tariff schedules to your battery based on current prices.",
@@ -1563,6 +1578,28 @@
           "amber_api_token": "Found in the Amber app under Profile > Developer > API key. Or visit [{amber_url}]({amber_url})."
         },
         "submit": "Connect"
+      },
+      "flow_power_api_key_options": {
+        "title": "Flow Power API key",
+        "description": "Enter the API key from your Flow Power kWatch account page.",
+        "data": {
+          "flowpower_api_key": "API key"
+        },
+        "data_description": {
+          "flowpower_api_key": "Stored in Home Assistant and sent to Flow Power as the x-api-key header."
+        },
+        "submit": "Connect"
+      },
+      "flow_power_site_options": {
+        "title": "Flow Power site",
+        "description": "Select the residential NMI PowerSync should use for Flow Power API account metrics.",
+        "data": {
+          "flowpower_nmi": "NMI"
+        },
+        "data_description": {
+          "flowpower_nmi": "PowerSync uses this site for Flow Power account metrics and tariff hints."
+        },
+        "submit": "Next"
       },
       "flow_power_network_options": {
         "title": "Flow Power advanced options",
@@ -1863,7 +1900,9 @@
           "sigenergy_charger_type": "Sigenergy charger type",
           "sigenergy_charger_host": "Sigenergy charger Modbus host",
           "sigenergy_charger_port": "Sigenergy charger Modbus port",
-          "sigenergy_charger_slave_id": "Sigenergy charger slave ID"
+          "sigenergy_charger_slave_id": "Sigenergy charger slave ID",
+          "sigenergy_charger_charge_power_limit_entity": "EVDC charge power limit entity",
+          "sigenergy_charger_discharge_power_limit_entity": "EVDC discharge power limit entity"
         },
         "data_description": {
           "ev_charging_enabled": "Enable smart charging for Tesla vehicles. Not required for OCPP or Zaptec chargers.",
@@ -1881,10 +1920,12 @@
           "generic_charger_soc_entity": "Entity ID reporting EV battery SoC as a percentage. Used for target SoC charging. Leave blank if unavailable.",
           "generic_charger_soc_entity_2": "Optional second EV battery SoC sensor. Used only when the primary SoC sensor is unavailable or invalid.",
           "sigenergy_charger_enabled": "Use Sigenergy Modbus for EVAC/EVDC charger status and start/stop control.",
-          "sigenergy_charger_type": "EVAC supports rate control and repeated starts. EVDC uses conservative one-shot scheduling, no dynamic amps, and native mySigen PV-surplus behavior.",
+          "sigenergy_charger_type": "EVAC supports repeated starts. EVDC keeps conservative one-shot start protection; dynamic rate control is enabled when a charge power limit number entity is configured or detected.",
           "sigenergy_charger_host": "IP address of the Sigenergy Modbus endpoint. Defaults to the inverter Modbus host when blank.",
           "sigenergy_charger_port": "Modbus TCP port. Default: 502.",
-          "sigenergy_charger_slave_id": "Modbus slave ID for the charger or inverter exposing the EV charger registers."
+          "sigenergy_charger_slave_id": "Modbus slave ID for the charger or inverter exposing the EV charger registers.",
+          "sigenergy_charger_charge_power_limit_entity": "Optional HA number entity for EVDC max charging power in kW. Leave blank to auto-detect number.sigen_inverter_dc_charger_max_charging_power_limit.",
+          "sigenergy_charger_discharge_power_limit_entity": "Optional HA number entity for EVDC max discharging power in kW. Stored for V2X capability visibility; PowerSync does not schedule EVDC discharge."
         },
         "submit": "Save"
       },
@@ -1936,7 +1977,9 @@
           "sigenergy_charger_type": "Sigenergy charger type",
           "sigenergy_charger_host": "Sigenergy charger Modbus host",
           "sigenergy_charger_port": "Sigenergy charger Modbus port",
-          "sigenergy_charger_slave_id": "Sigenergy charger slave ID"
+          "sigenergy_charger_slave_id": "Sigenergy charger slave ID",
+          "sigenergy_charger_charge_power_limit_entity": "EVDC charge power limit entity",
+          "sigenergy_charger_discharge_power_limit_entity": "EVDC discharge power limit entity"
         },
         "data_description": {
           "ev_charging_enabled": "Enable smart charging for Tesla vehicles. Not required for OCPP or Zaptec chargers.",
@@ -1954,10 +1997,12 @@
           "generic_charger_soc_entity": "Entity ID reporting EV battery SoC as a percentage. Leave blank if unavailable.",
           "generic_charger_soc_entity_2": "Optional second EV battery SoC sensor. Used only when the primary SoC sensor is unavailable or invalid.",
           "sigenergy_charger_enabled": "Use Sigenergy Modbus for EVAC/EVDC charger status and start/stop control.",
-          "sigenergy_charger_type": "EVAC supports rate control and repeated starts. EVDC uses conservative one-shot scheduling, no dynamic amps, and native mySigen PV-surplus behavior.",
+          "sigenergy_charger_type": "EVAC supports repeated starts. EVDC keeps conservative one-shot start protection; dynamic rate control is enabled when a charge power limit number entity is configured or detected.",
           "sigenergy_charger_host": "IP address of the Sigenergy Modbus endpoint. Defaults to the inverter Modbus host when blank.",
           "sigenergy_charger_port": "Modbus TCP port. Default: 502.",
-          "sigenergy_charger_slave_id": "Modbus slave ID for the charger or inverter exposing the EV charger registers."
+          "sigenergy_charger_slave_id": "Modbus slave ID for the charger or inverter exposing the EV charger registers.",
+          "sigenergy_charger_charge_power_limit_entity": "Optional HA number entity for EVDC max charging power in kW. Leave blank to auto-detect number.sigen_inverter_dc_charger_max_charging_power_limit.",
+          "sigenergy_charger_discharge_power_limit_entity": "Optional HA number entity for EVDC max discharging power in kW. Stored for V2X capability visibility; PowerSync does not schedule EVDC discharge."
         },
         "submit": "Save"
       },

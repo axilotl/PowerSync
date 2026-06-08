@@ -1452,6 +1452,78 @@ def test_dynamic_update_skips_sigenergy_evdc_rate_adjustment(monkeypatch):
     assert "rate control is unsupported" in state["reason"]
 
 
+def test_dynamic_update_uses_detected_sigenergy_evdc_rate_entity(monkeypatch):
+    set_amps_calls: list[tuple[int, dict]] = []
+
+    async def fake_set_vehicle_amps(hass, config_entry, vehicle_id, amps, params):
+        set_amps_calls.append((amps, dict(params)))
+        return True
+
+    monkeypatch.setattr(actions, "_set_vehicle_amps", fake_set_vehicle_amps)
+    actions._dynamic_ev_state.clear()
+    actions._dynamic_ev_state["entry-1"] = {
+        "sigenergy_charger": {
+            "active": True,
+            "current_amps": 32,
+            "target_amps": 32,
+            "params": {
+                "dynamic_mode": "battery_target",
+                "charger_type": "sigenergy",
+                "sigenergy_charger_type": "evdc",
+                "supports_rate_control": False,
+                "min_charge_amps": 6,
+                "max_charge_amps": 32,
+                "fixed_charge_amps": 16,
+                "voltage": 230,
+                "phases": 1,
+            },
+        }
+    }
+
+    hass = _Hass([
+        _State("number.sigen_inverter_dc_charger_max_charging_power_limit", "25")
+    ])
+    asyncio.run(actions._dynamic_ev_update(hass, _Entry(), "entry-1", "sigenergy_charger"))
+
+    state = actions._dynamic_ev_state["entry-1"]["sigenergy_charger"]
+    assert set_amps_calls == [
+        (
+            16,
+            {
+                "dynamic_mode": "battery_target",
+                "charger_type": "sigenergy",
+                "sigenergy_charger_type": "evdc",
+                "supports_rate_control": True,
+                "min_charge_amps": 6,
+                "max_charge_amps": 32,
+                "fixed_charge_amps": 16,
+                "voltage": 230,
+                "phases": 1,
+                "supports_restart_while_plugged": False,
+                "control_strategy": "one_shot",
+                "solar_control_strategy": "dynamic_rate",
+                "charger_capabilities": {
+                    "charger_type": "evdc",
+                    "supports_start_stop": True,
+                    "supports_rate_control": True,
+                    "supports_restart_while_plugged": False,
+                    "control_strategy": "one_shot",
+                    "solar_control_strategy": "dynamic_rate",
+                    "sigenergy_charger_charge_power_limit_entity": (
+                        "number.sigen_inverter_dc_charger_max_charging_power_limit"
+                    ),
+                    "sigenergy_charger_discharge_power_limit_entity": "",
+                },
+                "sigenergy_charger_charge_power_limit_entity": (
+                    "number.sigen_inverter_dc_charger_max_charging_power_limit"
+                ),
+            },
+        )
+    ]
+    assert state["current_amps"] == 16
+    assert state["target_amps"] == 16
+
+
 def test_dynamic_update_clears_unplugged_ble_session(monkeypatch):
     ev_planner = types.ModuleType("power_sync.automations.ev_charging_planner")
     plug_checks: list[str | None] = []
@@ -2542,7 +2614,7 @@ def test_sigenergy_evdc_dynamic_start_skips_unsupported_current_limit(monkeypatc
             entry,
             "sigenergy_charger",
             24,
-            {"charger_type": "sigenergy"},
+            {"charger_type": "sigenergy", "_sigenergy_start_after_rate_limit": True},
         )
     )
 
@@ -2606,7 +2678,7 @@ def test_sigenergy_evdc_one_shot_blocks_restart_until_unplug(monkeypatch):
             "sigenergy_charger_type": "evdc",
         },
     )
-    params = {"charger_type": "sigenergy"}
+    params = {"charger_type": "sigenergy", "_sigenergy_start_after_rate_limit": True}
 
     assert asyncio.run(actions._set_vehicle_amps(hass, entry, "sigenergy_charger", 24, params))
     assert asyncio.run(actions._set_vehicle_amps(hass, entry, "sigenergy_charger", 0, params))
@@ -2618,6 +2690,169 @@ def test_sigenergy_evdc_one_shot_blocks_restart_until_unplug(monkeypatch):
     assert [call[0] for call in calls].count("start_charging") == 2
     assert ("read_state", True) in calls
     assert ("read_state", False) in calls
+
+
+def test_sigenergy_evdc_rate_entity_sets_kw_then_starts(monkeypatch):
+    calls: list[tuple] = []
+
+    class _SigenergyController:
+        def __init__(self, **config):
+            calls.append(("init", config))
+
+        async def start_charging(self, amps=None):
+            calls.append(("start_charging", amps))
+            return True
+
+        async def disconnect(self):
+            calls.append(("disconnect",))
+
+    monkeypatch.setattr(
+        actions,
+        "_new_sigenergy_charger",
+        lambda config: _SigenergyController(**config),
+    )
+    hass = _Hass([
+        _State(
+            "number.sigen_inverter_dc_charger_max_charging_power_limit",
+            "25",
+            {"min": 0, "max": 25.0},
+        )
+    ])
+    entry = SimpleNamespace(
+        entry_id="entry-1",
+        data={},
+        options={
+            "sigenergy_charger_host": "192.0.2.40",
+            "sigenergy_charger_slave_id": 2,
+            "sigenergy_charger_type": "evdc",
+        },
+    )
+
+    result = asyncio.run(
+        actions._set_vehicle_amps(
+            hass,
+            entry,
+            "sigenergy_charger",
+            24,
+            {
+                "charger_type": "sigenergy",
+                "voltage": 230,
+                "phases": 1,
+                "_sigenergy_start_after_rate_limit": True,
+            },
+        )
+    )
+
+    assert result is True
+    assert hass.services.calls == [
+        (
+            "number",
+            "set_value",
+            {
+                "entity_id": "number.sigen_inverter_dc_charger_max_charging_power_limit",
+                "value": 5.52,
+            },
+        )
+    ]
+    assert calls == [
+        (
+            "init",
+            {
+                "host": "192.0.2.40",
+                "port": 502,
+                "slave_id": 2,
+                "charger_type": "evdc",
+            },
+        ),
+        ("start_charging", None),
+        ("disconnect",),
+    ]
+
+
+def test_sigenergy_evdc_rate_entity_clamps_to_entity_max(monkeypatch):
+    hass = _Hass([
+        _State(
+            "number.evdc_charge_limit",
+            "7",
+            {"min": 0, "max": 7.0},
+        )
+    ])
+    entry = SimpleNamespace(
+        entry_id="entry-1",
+        data={},
+        options={
+            "sigenergy_charger_host": "192.0.2.41",
+            "sigenergy_charger_slave_id": 2,
+            "sigenergy_charger_type": "evdc",
+            "sigenergy_charger_charge_power_limit_entity": "number.evdc_charge_limit",
+        },
+    )
+
+    result = asyncio.run(
+        actions._action_set_ev_charging_amps(
+            hass,
+            entry,
+            {
+                "charger_type": "sigenergy",
+                "amps": 40,
+                "voltage": 230,
+                "phases": 1,
+            },
+        )
+    )
+
+    assert result is True
+    assert hass.services.calls == [
+        (
+            "number",
+            "set_value",
+            {"entity_id": "number.evdc_charge_limit", "value": 7.0},
+        )
+    ]
+
+
+def test_sigenergy_evdc_rate_entity_uses_default_25kw_cap_without_entity_max(monkeypatch):
+    hass = _Hass([
+        _State(
+            "number.sigen_inverter_dc_charger_max_charging_power_limit",
+            "25",
+            {},
+        )
+    ])
+    entry = SimpleNamespace(
+        entry_id="entry-1",
+        data={},
+        options={
+            "sigenergy_charger_host": "192.0.2.42",
+            "sigenergy_charger_slave_id": 2,
+            "sigenergy_charger_type": "evdc",
+        },
+    )
+
+    result = asyncio.run(
+        actions._action_set_ev_charging_amps(
+            hass,
+            entry,
+            {
+                "charger_type": "sigenergy",
+                "amps": 200,
+                "voltage": 240,
+                "phases": 1,
+            },
+        )
+    )
+
+    assert result is True
+    assert hass.services.calls == [
+        (
+            "number",
+            "set_value",
+            {
+                "entity_id": "number.sigen_inverter_dc_charger_max_charging_power_limit",
+                "value": 25.0,
+            },
+        )
+    ]
 
 
 def test_sigenergy_evdc_solar_surplus_uses_native_handoff_without_amp_updates(monkeypatch):
@@ -2678,3 +2913,57 @@ def test_sigenergy_evdc_solar_surplus_uses_native_handoff_without_amp_updates(mo
     assert state["native_solar_mode_set"] is True
     assert state["target_amps"] == 0
     assert "native solar handoff" in state["reason"]
+
+
+def test_sigenergy_evdc_solar_surplus_uses_dynamic_rate_when_entity_detected(monkeypatch):
+    set_amps_calls = _install_solar_surplus_runtime_stubs(
+        monkeypatch,
+        {
+            "battery_soc": 100,
+            "battery_power": 0,
+            "grid_power": -2000,
+            "solar_power": 6000,
+            "load_power": 2000,
+        },
+    )
+
+    async def unexpected_controller(config_entry):
+        raise AssertionError("EVDC with rate entity should not use native solar handoff")
+
+    monkeypatch.setattr(actions, "_get_sigenergy_controller", unexpected_controller)
+    actions._dynamic_ev_state.clear()
+    actions._dynamic_ev_state["entry-1"] = {
+        "sigenergy_charger": {
+            "active": True,
+            "current_amps": 6,
+            "target_amps": 6,
+            "charging_started": True,
+            "entity_max_rechecked": True,
+            "params": {
+                "dynamic_mode": "solar_surplus",
+                "charger_type": "sigenergy",
+                "sigenergy_charger_type": "evdc",
+                "supports_rate_control": False,
+                "solar_control_strategy": "native_handoff",
+                "min_charge_amps": 6,
+                "max_charge_amps": 32,
+                "voltage": 240,
+                "phases": 1,
+                "household_buffer_kw": 0.5,
+                "surplus_calculation": "grid_based",
+                "min_battery_soc": 80,
+                "pause_below_soc": 70,
+            },
+        }
+    }
+
+    hass = _Hass([
+        _State("number.sigen_inverter_dc_charger_max_charging_power_limit", "25")
+    ])
+    asyncio.run(actions._dynamic_ev_update(hass, _Entry(), "entry-1", "sigenergy_charger"))
+
+    state = actions._dynamic_ev_state["entry-1"]["sigenergy_charger"]
+    assert set_amps_calls == [12]
+    assert state["target_amps"] == 12
+    assert state["params"]["supports_rate_control"] is True
+    assert state["params"]["solar_control_strategy"] == "dynamic_rate"

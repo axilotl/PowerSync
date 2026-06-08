@@ -77,7 +77,7 @@ def test_spread_export_switch_is_registered_and_capability_gated():
     assert "await _reoptimize_if_enabled(self._coordinator, changed)" in switch_source
 
 
-def test_flow_power_disable_idle_switch_is_registered_and_provider_gated():
+def test_disable_idle_switch_is_registered_for_supported_providers():
     const_source = CONST_PATH.read_text()
     switch_source = SWITCH_PATH.read_text()
     coordinator_source = COORDINATOR_PATH.read_text()
@@ -85,7 +85,11 @@ def test_flow_power_disable_idle_switch_is_registered_and_provider_gated():
 
     assert 'CONF_OPTIMIZATION_DISABLE_IDLE = "optimization_disable_idle"' in const_source
     assert 'SWITCH_TYPE_OPTIMIZATION_DISABLE_IDLE = "optimization_disable_idle"' in const_source
-    assert 'if electricity_provider == "flow_power":' in switch_source
+    assert "NO_IDLE_MODE_PROVIDERS = frozenset({" in const_source
+    for provider in ("flow_power", "globird", "aemo_vpp", "other", "tou_only", "nz"):
+        assert f'"{provider}"' in const_source
+    assert "def supports_no_idle_mode_provider(provider: str | None) -> bool:" in const_source
+    assert "supports_no_idle_mode_provider(electricity_provider)" in switch_source
     assert 'hass.data[DOMAIN][entry.entry_id]["switch_add_disable_idle"]' in switch_source
     assert "DisableIdleModeSwitch(" in switch_source
     assert "class DisableIdleModeSwitch(SwitchEntity):" in switch_source
@@ -93,9 +97,11 @@ def test_flow_power_disable_idle_switch_is_registered_and_provider_gated():
     assert "set_disable_idle_enabled(True)" in switch_source
     assert "set_disable_idle_enabled(False)" in switch_source
     assert "def set_disable_idle_enabled(self, enabled: bool) -> bool:" in coordinator_source
+    assert "supports_no_idle_mode_provider(self._provider_key())" in coordinator_source
     assert '"disable_idle_enabled": self.disable_idle_enabled' in coordinator_source
     assert '"disable_idle_enabled": opt_coordinator.disable_idle_enabled' in init_source
     assert "CONF_OPTIMIZATION_DISABLE_IDLE" in init_source
+    assert "supports_no_idle_mode_provider(electricity_provider)" in init_source
     assert "await _reoptimize_if_enabled(self._coordinator, changed)" in switch_source
 
 

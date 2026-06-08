@@ -151,6 +151,8 @@ CONF_SIGENERGY_CHARGER_TYPE = "sigenergy_charger_type"
 CONF_SIGENERGY_CHARGER_HOST = "sigenergy_charger_host"
 CONF_SIGENERGY_CHARGER_PORT = "sigenergy_charger_port"
 CONF_SIGENERGY_CHARGER_SLAVE_ID = "sigenergy_charger_slave_id"
+CONF_SIGENERGY_CHARGER_CHARGE_POWER_LIMIT_ENTITY = "sigenergy_charger_charge_power_limit_entity"
+CONF_SIGENERGY_CHARGER_DISCHARGE_POWER_LIMIT_ENTITY = "sigenergy_charger_discharge_power_limit_entity"
 SIGENERGY_CHARGER_EVAC = "evac"
 SIGENERGY_CHARGER_EVDC = "evdc"
 SIGENERGY_CHARGER_TYPES = {
@@ -159,6 +161,12 @@ SIGENERGY_CHARGER_TYPES = {
 }
 DEFAULT_SIGENERGY_CHARGER_PORT = 502
 DEFAULT_SIGENERGY_CHARGER_SLAVE_ID = 1
+DEFAULT_SIGENERGY_EVDC_CHARGE_POWER_LIMIT_ENTITY = (
+    "number.sigen_inverter_dc_charger_max_charging_power_limit"
+)
+DEFAULT_SIGENERGY_EVDC_DISCHARGE_POWER_LIMIT_ENTITY = (
+    "number.sigen_inverter_dc_charger_max_discharging_power_limit"
+)
 
 # Battery System Selection
 CONF_BATTERY_SYSTEM = "battery_system"
@@ -602,6 +610,21 @@ ELECTRICITY_PROVIDERS = {
     "other": "Other / Custom TOU — enter your own rates manually",
 }
 
+NO_IDLE_MODE_PROVIDERS = frozenset({
+    "flow_power",
+    "globird",
+    "aemo_vpp",
+    "other",
+    "tou_only",
+    "nz",
+})
+
+
+def supports_no_idle_mode_provider(provider: str | None) -> bool:
+    """Return whether a provider can replace optimizer idle holds."""
+    return str(provider or "") in NO_IDLE_MODE_PROVIDERS
+
+
 # GloBird ZeroHero plan configuration
 CONF_GLOBIRD_PLAN = "globird_plan"
 GLOBIRD_PLAN_NOT_ZEROHERO = "not_zerohero"
@@ -789,12 +812,22 @@ FLOW_POWER_STATES = {
     "VIC1": "Victoria (35c export)",
     "QLD1": "Queensland (45c export)",
     "SA1": "South Australia (45c export)",
+    "TAS1": "Tasmania",
 }
 
 # Flow Power price source options
 FLOW_POWER_PRICE_SOURCES = {
     "amber": "Amber API",
     "aemo": "AEMO Direct (NEMWeb)",
+    "kwatch": "Flow Power API (KWatch)",
+}
+
+FLOW_POWER_KWATCH_REGIONS = {
+    "NSW1": "nsw",
+    "VIC1": "vic",
+    "QLD1": "qld",
+    "SA1": "sa",
+    "TAS1": "tas",
 }
 
 # Network Tariff configuration (for Flow Power + AEMO)
@@ -1028,6 +1061,9 @@ FLOW_POWER_DEFAULT_BASE_RATE = 34.0  # Default Flow Power base rate (c/kWh)
 # Flow Power Portal configuration
 CONF_FLOWPOWER_EMAIL = "flowpower_email"
 CONF_FLOWPOWER_PASSWORD = "flowpower_password"
+CONF_FLOWPOWER_API_KEY = "flowpower_api_key"
+CONF_FLOWPOWER_NMI = "flowpower_nmi"
+CONF_FLOWPOWER_NETWORK_TARIFF = "flowpower_network_tariff"
 UPDATE_INTERVAL_FLOWPOWER = 1800  # 30 minutes
 
 # Portal account sensors — (sensor_type, name, data_key, unit, icon, source_label)

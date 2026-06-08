@@ -256,11 +256,14 @@ from .const import (
     CONF_ELECTRICITY_PROVIDER,
     CONF_FLOW_POWER_STATE,
     CONF_FLOW_POWER_PRICE_SOURCE,
+    CONF_FLOWPOWER_API_KEY,
+    CONF_FLOWPOWER_NMI,
     CONF_AEMO_SENSOR_ENTITY,
     CONF_AEMO_SENSOR_5MIN,
     CONF_AEMO_SENSOR_30MIN,
     AEMO_SENSOR_5MIN_PATTERN,
     AEMO_SENSOR_30MIN_PATTERN,
+    supports_no_idle_mode_provider,
     # Network Tariff configuration
     CONF_NETWORK_DISTRIBUTOR,
     CONF_NETWORK_TARIFF_CODE,
@@ -1292,6 +1295,49 @@ def _configured_sigenergy_charger_state(entry):
         charger_type=opts.get(CONF_SIGENERGY_CHARGER_TYPE, SIGENERGY_CHARGER_EVAC),
         status="unavailable",
     )
+
+
+def _configured_sigenergy_charger_capabilities(entry, hass=None):
+    """Return config-aware Sigenergy EV charger capability flags."""
+    from .const import (
+        CONF_SIGENERGY_CHARGER_CHARGE_POWER_LIMIT_ENTITY,
+        CONF_SIGENERGY_CHARGER_DISCHARGE_POWER_LIMIT_ENTITY,
+        CONF_SIGENERGY_CHARGER_ENABLED,
+        CONF_SIGENERGY_CHARGER_TYPE,
+        DEFAULT_SIGENERGY_EVDC_CHARGE_POWER_LIMIT_ENTITY,
+        DEFAULT_SIGENERGY_EVDC_DISCHARGE_POWER_LIMIT_ENTITY,
+        SIGENERGY_CHARGER_EVAC,
+        SIGENERGY_CHARGER_EVDC,
+    )
+    from .sigenergy_charger import sigenergy_charger_capabilities
+
+    opts = {**entry.data, **entry.options}
+    if not opts.get(CONF_SIGENERGY_CHARGER_ENABLED):
+        return None
+
+    charger_type = str(opts.get(CONF_SIGENERGY_CHARGER_TYPE, SIGENERGY_CHARGER_EVAC)).lower()
+    capabilities = sigenergy_charger_capabilities(charger_type).as_dict()
+    if charger_type != SIGENERGY_CHARGER_EVDC:
+        return capabilities
+
+    charge_entity = str(
+        opts.get(CONF_SIGENERGY_CHARGER_CHARGE_POWER_LIMIT_ENTITY) or ""
+    ).strip()
+    discharge_entity = str(
+        opts.get(CONF_SIGENERGY_CHARGER_DISCHARGE_POWER_LIMIT_ENTITY) or ""
+    ).strip()
+    states = getattr(hass, "states", None)
+    if not charge_entity and states and states.get(DEFAULT_SIGENERGY_EVDC_CHARGE_POWER_LIMIT_ENTITY):
+        charge_entity = DEFAULT_SIGENERGY_EVDC_CHARGE_POWER_LIMIT_ENTITY
+    if not discharge_entity and states and states.get(DEFAULT_SIGENERGY_EVDC_DISCHARGE_POWER_LIMIT_ENTITY):
+        discharge_entity = DEFAULT_SIGENERGY_EVDC_DISCHARGE_POWER_LIMIT_ENTITY
+
+    capabilities[CONF_SIGENERGY_CHARGER_CHARGE_POWER_LIMIT_ENTITY] = charge_entity
+    capabilities[CONF_SIGENERGY_CHARGER_DISCHARGE_POWER_LIMIT_ENTITY] = discharge_entity
+    if charge_entity:
+        capabilities["supports_rate_control"] = True
+        capabilities["solar_control_strategy"] = "dynamic_rate"
+    return capabilities
 
 
 class SensitiveDataFilter(logging.Filter):
@@ -11029,6 +11075,10 @@ class EVVehiclesView(HomeAssistantView):
                         state or configured_state,
                         updated_at=dt_util.now().isoformat(),
                         online=state is not None,
+                        capabilities=_configured_sigenergy_charger_capabilities(
+                            entry,
+                            hass,
+                        ),
                     )
                 )
                 _LOGGER.debug(
@@ -11751,6 +11801,39 @@ class EVVehicleCommandView(HomeAssistantView):
             return None
         return f"{owner_mode} already owns this loadpoint"
 
+    async def _loadpoint_ready_for_manual_start(
+        self,
+        vehicle_vin: str | None,
+        params: dict,
+    ) -> tuple[bool, str]:
+        """Return whether the selected loadpoint can be manually started."""
+        charger_type = params.get("charger_type", "tesla")
+
+        if charger_type == "generic":
+            ready, message = self._generic_charger_ready_for_start(params)
+            if not ready:
+                return False, message
+            switch_entity = params.get("charger_switch_entity", "").strip()
+            if not switch_entity:
+                return False, "Generic Charger: no switch entity configured"
+            if "." not in switch_entity:
+                return False, f"Generic Charger: switch entity '{switch_entity}' is not a valid entity_id (missing domain, e.g. 'switch.charger_charge')"
+            if not self._hass.states.get(switch_entity):
+                return False, f"Generic Charger: switch entity '{switch_entity}' not found in Home Assistant"
+
+        if charger_type == "tesla":
+            if not await self._is_vehicle_at_home(vehicle_vin):
+                msg = "Vehicle is not at home"
+                _LOGGER.warning(msg)
+                return False, msg
+
+            if not await self._is_vehicle_plugged_in(vehicle_vin):
+                msg = "Vehicle is not plugged in"
+                _LOGGER.warning(msg)
+                return False, msg
+
+        return True, ""
+
     def _schedule_manual_quick_stop(
         self,
         vehicle_vin: str | None,
@@ -11810,6 +11893,126 @@ class EVVehicleCommandView(HomeAssistantView):
         )
         return params["expires_at"]
 
+    def _schedule_policy_quick_stop(
+        self,
+        vehicle_vin: str | None,
+        duration_minutes: int,
+        source_mode: str,
+    ) -> str | None:
+        """Attach dashboard policy metadata and stop dynamic sessions on expiry."""
+        entry = self._get_powersync_entry()
+        if not entry:
+            return None
+
+        from .automations import actions as ev_actions
+        from .automations.ev_ownership import get_ev_ownership
+
+        loadpoint_id = self._manual_loadpoint_id(vehicle_vin)
+        state = ev_actions._dynamic_ev_state.get(entry.entry_id, {}).get(loadpoint_id)
+        if not state:
+            return None
+
+        params = state.setdefault("params", {})
+        params["quick_control"] = True
+        params["source_mode"] = source_mode
+        params["duration_minutes"] = duration_minutes
+
+        if quick_stop_timer := state.get("quick_stop_timer"):
+            quick_stop_timer()
+            state["quick_stop_timer"] = None
+
+        stops_at = dt_util.utcnow() + timedelta(minutes=duration_minutes)
+        params["expires_at"] = stops_at.isoformat()
+
+        _lease_id, lease = get_ev_ownership(self._hass, entry, loadpoint_id)
+        if lease:
+            lease.update({
+                "quick_control": True,
+                "source_mode": source_mode,
+                "duration_minutes": duration_minutes,
+                "expires_at": params["expires_at"],
+            })
+            state["ownership"] = lease
+
+        async def _stop_policy_quick_charge(_now) -> None:
+            entry_state = ev_actions._dynamic_ev_state.get(entry.entry_id, {}).get(loadpoint_id)
+            entry_params = (entry_state or {}).get("params") or {}
+            if not entry_state or not entry_params.get("quick_control"):
+                _LOGGER.info(
+                    "Dashboard EV policy stop skipped for %s because the session is no longer active",
+                    loadpoint_id,
+                )
+                return
+
+            await self._execute_manual_ev_action(
+                "stop_ev_charging_dynamic",
+                vehicle_vin,
+                {
+                    "vehicle_id": loadpoint_id,
+                    "stop_charging": True,
+                    "manual_stop": True,
+                    "stop_reason": "Quick EV charge duration elapsed",
+                },
+                "Quick EV charge duration elapsed",
+            )
+
+        state["quick_stop_timer"] = async_track_point_in_utc_time(
+            self._hass,
+            _stop_policy_quick_charge,
+            stops_at,
+        )
+        return params["expires_at"]
+
+    async def _start_policy_charging(
+        self,
+        policy: str | None,
+        vehicle_vin: str | None,
+        duration_minutes: int | None,
+    ) -> tuple[bool, str]:
+        """Start dashboard EV charging through a source policy."""
+        from .ev_policy import build_ev_policy_action
+
+        action = build_ev_policy_action(policy, duration_minutes)
+        duration = action.params["duration_minutes"]
+
+        if action.action_type == "start_ev_charging":
+            return await self._start_charging(
+                vehicle_vin,
+                duration,
+                action.params.get("source_mode"),
+            )
+
+        owner_message = self._active_non_manual_owner_message(vehicle_vin)
+        if owner_message:
+            return False, owner_message
+
+        params = self._manual_action_params(vehicle_vin)
+        ready, message = await self._loadpoint_ready_for_manual_start(vehicle_vin, params)
+        if not ready:
+            return False, message
+
+        success = await self._execute_manual_ev_action(
+            action.action_type,
+            vehicle_vin,
+            action.params,
+            "Manual EV policy start from HA dashboard",
+        )
+        if success:
+            expires_at = self._schedule_policy_quick_stop(
+                vehicle_vin,
+                duration,
+                action.params.get("source_mode") or str(policy),
+            )
+            if expires_at:
+                _LOGGER.info(
+                    "Dashboard EV policy charge for %s expires at %s",
+                    self._manual_loadpoint_id(vehicle_vin),
+                    expires_at,
+                )
+            return True, f"{action.label} for {duration} minutes"
+
+        return False, f"Failed to start {policy} charging"
+
     async def _start_charging(
         self,
         vehicle_vin: str | None = None,
@@ -11823,28 +12026,9 @@ class EVVehicleCommandView(HomeAssistantView):
         if owner_message:
             return False, owner_message
 
-        if charger_type == "generic":
-            ready, message = self._generic_charger_ready_for_start(params)
-            if not ready:
-                return False, message
-            switch_entity = params.get("charger_switch_entity", "").strip()
-            if not switch_entity:
-                return False, "Generic Charger: no switch entity configured"
-            if "." not in switch_entity:
-                return False, f"Generic Charger: switch entity '{switch_entity}' is not a valid entity_id (missing domain, e.g. 'switch.charger_charge')"
-            if not self._hass.states.get(switch_entity):
-                return False, f"Generic Charger: switch entity '{switch_entity}' not found in Home Assistant"
-
-        if charger_type == "tesla":
-            if not await self._is_vehicle_at_home(vehicle_vin):
-                msg = "Vehicle is not at home"
-                _LOGGER.warning(msg)
-                return False, msg
-
-            if not await self._is_vehicle_plugged_in(vehicle_vin):
-                msg = "Vehicle is not plugged in"
-                _LOGGER.warning(msg)
-                return False, msg
+        ready, message = await self._loadpoint_ready_for_manual_start(vehicle_vin, params)
+        if not ready:
+            return False, message
 
         success = await self._execute_manual_ev_action(
             "start_ev_charging",
@@ -11948,7 +12132,14 @@ class EVVehicleCommandView(HomeAssistantView):
                     "error": "Missing 'command' parameter"
                 }, status=400)
 
-            valid_commands = ["wake_up", "start_charging", "stop_charging", "set_charge_limit", "set_charging_amps"]
+            valid_commands = [
+                "wake_up",
+                "start_charging",
+                "start_policy_charging",
+                "stop_charging",
+                "set_charge_limit",
+                "set_charging_amps",
+            ]
             if command not in valid_commands:
                 return web.json_response({
                     "success": False,
@@ -11997,6 +12188,19 @@ class EVVehicleCommandView(HomeAssistantView):
                     duration_minutes,
                     source_mode,
                 )
+
+            elif command == "start_policy_charging":
+                try:
+                    success, message = await self._start_policy_charging(
+                        data.get("policy"),
+                        vehicle_vin,
+                        data.get("duration_minutes"),
+                    )
+                except ValueError as err:
+                    return web.json_response({
+                        "success": False,
+                        "error": str(err),
+                    }, status=400)
 
             elif command == "stop_charging":
                 success, message = await self._stop_charging(vehicle_vin)
@@ -13981,6 +14185,10 @@ class EVWidgetDataView(HomeAssistantView):
                     sigenergy_charger_state_to_widget(
                         sigenergy_state or configured_sigenergy_state,
                         surplus_kw=surplus_kw,
+                        capabilities=_configured_sigenergy_charger_capabilities(
+                            self._config_entry,
+                            self.hass,
+                        ),
                     )
                 )
 
@@ -14497,7 +14705,11 @@ class EVLoadpointStatusView(HomeAssistantView):
                 sigenergy_state = await _read_sigenergy_charger_state_for_entry(self._config_entry)
                 observed_vehicles.append(
                     sigenergy_charger_state_to_loadpoint_observation(
-                        sigenergy_state or configured_sigenergy_state
+                        sigenergy_state or configured_sigenergy_state,
+                        capabilities=_configured_sigenergy_charger_capabilities(
+                            self._config_entry,
+                            self.hass,
+                        ),
                     )
                 )
 
@@ -16018,6 +16230,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         electricity_provider == "flow_power" and
         flow_power_price_source in ("aemo_sensor", "aemo")
     )
+    has_flow_power_kwatch = (
+        electricity_provider == "flow_power"
+        and flow_power_price_source == "kwatch"
+        and bool(entry.options.get(CONF_FLOWPOWER_API_KEY, entry.data.get(CONF_FLOWPOWER_API_KEY)))
+    )
 
     # Check for Localvolts configuration
     has_localvolts = electricity_provider == "localvolts" and bool(
@@ -16064,6 +16281,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.info("Running in Localvolts mode with real-time pricing")
     elif has_flow_power_aemo:
         _LOGGER.info("Running in Flow Power mode with AEMO API pricing")
+    elif has_flow_power_kwatch:
+        _LOGGER.info("Running in Flow Power mode with KWatch API pricing")
     elif has_octopus:
         _LOGGER.info("Running in Octopus Energy UK mode with dynamic pricing")
     elif has_epex:
@@ -17004,6 +17223,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Initialize AEMO Price Coordinator for Flow Power AEMO mode
     # Now fetches directly from AEMO API - no external integration required
     aemo_sensor_coordinator = None  # Keep variable name for compatibility
+    flow_power_kwatch_coordinator = None
     # flow_power_price_source already defined at top of function
     flow_power_state = entry.options.get(
         CONF_FLOW_POWER_STATE,
@@ -17041,6 +17261,37 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             aemo_sensor_coordinator = None
     elif use_aemo_pricing and not flow_power_state:
         _LOGGER.warning("AEMO price source selected but no region configured")
+
+    use_kwatch_pricing = (
+        electricity_provider == "flow_power"
+        and flow_power_price_source == "kwatch"
+    )
+    if use_kwatch_pricing and flow_power_state:
+        api_key = entry.options.get(
+            CONF_FLOWPOWER_API_KEY,
+            entry.data.get(CONF_FLOWPOWER_API_KEY),
+        )
+        if api_key:
+            from .coordinator import FlowPowerKWatchPriceCoordinator
+
+            session = async_get_clientsession(hass)
+            flow_power_kwatch_coordinator = FlowPowerKWatchPriceCoordinator(
+                hass,
+                flow_power_state,
+                api_key,
+                session,
+            )
+            try:
+                await flow_power_kwatch_coordinator.async_config_entry_first_refresh()
+                _LOGGER.info(
+                    "Flow Power KWatch price coordinator initialized for region %s",
+                    flow_power_state,
+                )
+            except Exception as e:
+                _LOGGER.error("Failed to initialize Flow Power KWatch coordinator: %s", e)
+                flow_power_kwatch_coordinator = None
+        else:
+            _LOGGER.warning("Flow Power KWatch price source selected but no API key is configured")
 
     # Initialize Flow Power TWAP tracker for dynamic PEA pricing
     flow_power_twap_tracker = None
@@ -17092,35 +17343,64 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     flow_power_portal_data = None
     if electricity_provider == "flow_power":
         from .const import CONF_FLOWPOWER_EMAIL, CONF_FLOWPOWER_PASSWORD
+        fp_api_key = entry.options.get(
+            CONF_FLOWPOWER_API_KEY,
+            entry.data.get(CONF_FLOWPOWER_API_KEY),
+        )
+        fp_nmi = entry.options.get(
+            CONF_FLOWPOWER_NMI,
+            entry.data.get(CONF_FLOWPOWER_NMI),
+        )
+        if fp_api_key:
+            try:
+                from .flow_power_api import FlowPowerAPIClient
+
+                api_client = FlowPowerAPIClient(fp_api_key, async_get_clientsession(hass))
+                if not fp_nmi:
+                    sites = await api_client.get_residential_sites()
+                    if sites:
+                        fp_nmi = sites[0].get("nmi")
+                if fp_nmi:
+                    flow_power_portal_data = await api_client.get_residential_site_summary(fp_nmi)
+                    if flow_power_portal_data:
+                        _LOGGER.info("Flow Power: Account summary loaded via KWatch API")
+            except Exception as exc:
+                _LOGGER.warning(
+                    "Flow Power: KWatch account summary failed, trying portal fallback: %s",
+                    exc,
+                )
         fp_email = entry.options.get(CONF_FLOWPOWER_EMAIL, entry.data.get(CONF_FLOWPOWER_EMAIL))
         fp_password = entry.options.get(CONF_FLOWPOWER_PASSWORD, entry.data.get(CONF_FLOWPOWER_PASSWORD))
 
-        # Check for authenticated client from config flow
-        pending_client = hass.data.get(DOMAIN, {}).pop("_pending_fp_client", None)
-        if pending_client is not None:
-            flow_power_portal_client = pending_client
-            _LOGGER.info("Flow Power: Using authenticated portal client from config flow")
-        elif fp_email:
-            # Try to restore session from saved cookies
-            from .flow_power_portal import FlowPowerPortalClient
-            flow_power_portal_client = FlowPowerPortalClient()
-            store = Store(hass, 1, f"{DOMAIN}.fp_session.{entry.entry_id}")
-            try:
-                saved = await store.async_load()
-                if saved and saved.get("cookies"):
-                    flow_power_portal_client.import_session_cookies(saved["cookies"])
-                    if await flow_power_portal_client.restore_session():
-                        _LOGGER.info("Flow Power: Portal session restored from cookies")
-                        # Fetch initial account data
-                        flow_power_portal_data = await flow_power_portal_client.get_account_data()
+        if flow_power_portal_data is None:
+            # Check for authenticated client from config flow
+            pending_client = hass.data.get(DOMAIN, {}).pop("_pending_fp_client", None)
+            if pending_client is not None:
+                flow_power_portal_client = pending_client
+                _LOGGER.info("Flow Power: Using authenticated portal client from config flow")
+            elif fp_email:
+                # Try to restore session from saved cookies
+                from .flow_power_portal import FlowPowerPortalClient
+                flow_power_portal_client = FlowPowerPortalClient()
+                store = Store(hass, 1, f"{DOMAIN}.fp_session.{entry.entry_id}")
+                try:
+                    saved = await store.async_load()
+                    if saved and saved.get("cookies"):
+                        flow_power_portal_client.import_session_cookies(saved["cookies"])
+                        if await flow_power_portal_client.restore_session():
+                            _LOGGER.info("Flow Power: Portal session restored from cookies")
+                            # Fetch initial account data
+                            flow_power_portal_data = await flow_power_portal_client.get_account_data()
+                            if flow_power_portal_data:
+                                flow_power_portal_data["source"] = "portal_fallback" if fp_api_key else "portal"
+                        else:
+                            _LOGGER.warning("Flow Power: Saved session expired — re-authenticate via options")
+                            flow_power_portal_client = None
                     else:
-                        _LOGGER.warning("Flow Power: Saved session expired — re-authenticate via options")
                         flow_power_portal_client = None
-                else:
+                except Exception as exc:
+                    _LOGGER.warning("Flow Power: Error restoring portal session: %s", exc)
                     flow_power_portal_client = None
-            except Exception as exc:
-                _LOGGER.warning("Flow Power: Error restoring portal session: %s", exc)
-                flow_power_portal_client = None
 
     # Initialize GloBird portal coordinator for account, usage, cost, and
     # readiness sensors. This is additive to the existing GloBird tariff/AEMO
@@ -17381,6 +17661,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "aemo_spike_manager": aemo_spike_manager,
         "generic_aemo_spike_manager": generic_aemo_spike_manager,  # For non-Tesla AEMO spike detection
         "aemo_sensor_coordinator": aemo_sensor_coordinator,  # For Flow Power AEMO-only mode
+        "flow_power_kwatch_coordinator": flow_power_kwatch_coordinator,  # For Flow Power KWatch pricing
         "solcast_coordinator": solcast_coordinator,  # For Solcast solar forecasting
         "solcast_init_error": solcast_init_error,  # Last init failure reason, surfaced to mobile app
         "octopus_coordinator": octopus_coordinator,  # For Octopus Energy UK pricing
@@ -18298,7 +18579,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         via the guard inside `_handle_sync_tou_internal`.
         """
         # Skip if no price coordinator available (AEMO spike-only mode without pricing)
-        if not amber_coordinator and not aemo_sensor_coordinator and not octopus_coordinator:
+        if (
+            not amber_coordinator
+            and not aemo_sensor_coordinator
+            and not flow_power_kwatch_coordinator
+            and not octopus_coordinator
+        ):
             _LOGGER.debug("TOU sync skipped - no price coordinator available (AEMO spike-only mode)")
             return
 
@@ -19033,6 +19319,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             aemo_sensor_coordinator is not None and
             flow_power_price_source in ("aemo_sensor", "aemo")
         )
+        use_kwatch = (
+            flow_power_kwatch_coordinator is not None
+            and flow_power_price_source == "kwatch"
+        )
 
         # Check for Localvolts pricing source
         use_localvolts = (
@@ -19052,6 +19342,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.info("🐙 Using Octopus Energy UK for pricing data")
         elif use_aemo_sensor:
             _LOGGER.info("📊 Using AEMO API for pricing data")
+        elif use_kwatch:
+            _LOGGER.info("📊 Using Flow Power KWatch API for pricing data")
         else:
             _LOGGER.info("🟠 Using Amber for pricing data")
 
@@ -19121,6 +19413,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 general_price = current_actual_interval.get('general', {}).get('perKwh') if current_actual_interval.get('general') else None
                 feedin_price = current_actual_interval.get('feedIn', {}).get('perKwh') if current_actual_interval.get('feedIn') else None
                 _LOGGER.info(f"📊 Using AEMO API price for current interval: general={general_price:.2f}¢/kWh")
+        elif use_kwatch:
+            await flow_power_kwatch_coordinator.async_request_refresh()
+
+            if not flow_power_kwatch_coordinator.data:
+                _LOGGER.error("No Flow Power KWatch API data available")
+                return
+
+            current_prices = flow_power_kwatch_coordinator.data.get("current", [])
+            if current_prices:
+                current_actual_interval = {'general': None, 'feedIn': None}
+                for price in current_prices:
+                    channel = price.get('channelType')
+                    if channel in ['general', 'feedIn']:
+                        current_actual_interval[channel] = price
+                general_price = current_actual_interval.get('general', {}).get('perKwh') if current_actual_interval.get('general') else None
+                feedin_price = current_actual_interval.get('feedIn', {}).get('perKwh') if current_actual_interval.get('feedIn') else None
+                _LOGGER.info(f"📊 Using Flow Power KWatch price for current interval: general={general_price:.2f}¢/kWh")
         elif websocket_data:
             # WebSocket data received within 60s - use it directly as primary source
             current_actual_interval = websocket_data
@@ -19170,6 +19479,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 _LOGGER.error("No AEMO forecast data available from API")
                 return
             _LOGGER.info(f"Using AEMO API forecast: {len(forecast_data) // 2} periods")
+        elif use_kwatch:
+            forecast_data = flow_power_kwatch_coordinator.data.get("forecast", [])
+            if not forecast_data:
+                _LOGGER.error("No Flow Power KWatch forecast data available from API")
+                return
+            _LOGGER.info(f"Using Flow Power KWatch API forecast: {len(forecast_data) // 2} periods")
         else:
             # Amber coordinator already refreshed above (for current price) —
             # _async_update_data fetches both 5-min and 30-min in one call.
@@ -19193,6 +19508,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
         if (
             not use_aemo_sensor and
+            not use_kwatch and
             not use_octopus and  # Octopus doesn't have multiple forecast types
             forecast_discrepancy_alert_enabled and
             forecast_data
@@ -19626,11 +19942,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     twap_source=pricing.twap_source,
                     bpea_source=pricing.bpea_source,
                 )
-            elif flow_power_price_source in ("aemo_sensor", "aemo"):
-                # PEA disabled + AEMO: fall back to network tariff calculation
+            elif flow_power_price_source in ("aemo_sensor", "aemo", "kwatch"):
+                # PEA disabled + raw wholesale source: fall back to network tariff calculation
                 # (Amber prices already include network fees, no fallback needed)
                 from .tariff_converter import apply_network_tariff
-                _LOGGER.info("Applying network tariff to AEMO wholesale prices (PEA disabled)")
+                _LOGGER.info("Applying network tariff to Flow Power wholesale prices (PEA disabled)")
 
                 # Get network tariff config from options
                 # Primary: aemo_to_tariff library with distributor + tariff code
@@ -20191,6 +20507,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     amber_coordinator,
                     localvolts_coordinator,
                     aemo_sensor_coordinator,
+                    flow_power_kwatch_coordinator,
                     octopus_coordinator,
                 ),
             )
@@ -20311,6 +20628,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     amber_coordinator,
                     localvolts_coordinator,
                     aemo_sensor_coordinator,
+                    flow_power_kwatch_coordinator,
                     octopus_coordinator,
                 ),
             )
@@ -20425,6 +20743,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     amber_coordinator,
                     localvolts_coordinator,
                     aemo_sensor_coordinator,
+                    flow_power_kwatch_coordinator,
                     octopus_coordinator,
                 ),
             )
@@ -20498,6 +20817,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     amber_coordinator,
                     localvolts_coordinator,
                     aemo_sensor_coordinator,
+                    flow_power_kwatch_coordinator,
                     octopus_coordinator,
                 ),
             )
@@ -20664,6 +20984,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     amber_coordinator,
                     localvolts_coordinator,
                     aemo_sensor_coordinator,
+                    flow_power_kwatch_coordinator,
                     octopus_coordinator,
                 ),
             )
@@ -20848,6 +21169,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     amber_coordinator,
                     localvolts_coordinator,
                     aemo_sensor_coordinator,
+                    flow_power_kwatch_coordinator,
                     octopus_coordinator,
                 ),
             )
@@ -21048,6 +21370,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 amber_coordinator,
                 localvolts_coordinator,
                 aemo_sensor_coordinator,
+                flow_power_kwatch_coordinator,
                 octopus_coordinator,
             )
 
@@ -21421,6 +21744,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         amber_coordinator,
                         localvolts_coordinator,
                         aemo_sensor_coordinator,
+                        flow_power_kwatch_coordinator,
                         octopus_coordinator,
                     ),
                 )
@@ -29069,32 +29393,65 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.data[DOMAIN][entry.entry_id]["fp_midnight_cancel"] = fp_midnight_cancel
         _LOGGER.info("Flow Power v2 tariff refresh scheduled (every 5min + midnight recalc)")
 
-    # Set up portal data refresh (every 30 min) if portal client is connected
+    # Set up account data refresh (every 30 min) for KWatch API or portal data.
     if electricity_provider == "flow_power":
+        from .const import UPDATE_INTERVAL_FLOWPOWER
+
+        fp_api_key = entry.options.get(
+            CONF_FLOWPOWER_API_KEY,
+            entry.data.get(CONF_FLOWPOWER_API_KEY),
+        )
+        fp_nmi = entry.options.get(
+            CONF_FLOWPOWER_NMI,
+            entry.data.get(CONF_FLOWPOWER_NMI),
+        )
         _fp_portal = hass.data[DOMAIN][entry.entry_id].get("flow_power_portal_client")
-        if _fp_portal and _fp_portal.is_authenticated:
-            from .const import UPDATE_INTERVAL_FLOWPOWER
+        if fp_api_key or (_fp_portal and _fp_portal.is_authenticated):
 
             async def _refresh_fp_portal_data(now):
-                """Fetch latest account data from Flow Power portal."""
+                """Fetch latest account data from Flow Power API or portal fallback."""
+                data = None
+                if fp_api_key:
+                    try:
+                        from .flow_power_api import FlowPowerAPIClient
+
+                        client_api = FlowPowerAPIClient(
+                            fp_api_key,
+                            async_get_clientsession(hass),
+                        )
+                        nmi = fp_nmi
+                        if not nmi:
+                            sites = await client_api.get_residential_sites()
+                            if sites:
+                                nmi = sites[0].get("nmi")
+                        if nmi:
+                            data = await client_api.get_residential_site_summary(nmi)
+                    except Exception as exc:
+                        _LOGGER.warning(
+                            "Flow Power KWatch account refresh failed: %s",
+                            exc,
+                        )
+
                 client = hass.data[DOMAIN].get(entry.entry_id, {}).get("flow_power_portal_client")
-                if not client or not client.is_authenticated:
-                    return
-                data = await client.get_account_data()
+                if data is None and client and client.is_authenticated:
+                    data = await client.get_account_data()
+                    if data:
+                        data["source"] = "portal_fallback" if fp_api_key else "portal"
                 if data:
                     hass.data[DOMAIN][entry.entry_id]["flow_power_portal_data"] = data
-                    _LOGGER.debug("Flow Power portal data refreshed: PEA=%.2f, TWAP=%.2f",
+                    _LOGGER.debug("Flow Power account data refreshed: PEA=%.2f, TWAP=%.2f",
                                   data.get("pea_actual") or 0, data.get("twap") or 0)
                     # Save session cookies
-                    fp_store = Store(hass, 1, f"{DOMAIN}.fp_session.{entry.entry_id}")
-                    await fp_store.async_save({"cookies": client.export_session_cookies()})
+                    if client and client.is_authenticated:
+                        fp_store = Store(hass, 1, f"{DOMAIN}.fp_session.{entry.entry_id}")
+                        await fp_store.async_save({"cookies": client.export_session_cookies()})
 
             from homeassistant.helpers.event import async_track_time_interval as _track_fp
             fp_portal_cancel = _track_fp(
                 hass, _refresh_fp_portal_data, timedelta(seconds=UPDATE_INTERVAL_FLOWPOWER)
             )
             hass.data[DOMAIN][entry.entry_id]["fp_portal_cancel"] = fp_portal_cancel
-            _LOGGER.info("Flow Power portal data refresh scheduled (every 30min)")
+            _LOGGER.info("Flow Power account data refresh scheduled (every 30min)")
 
     # Set up fast load-following update (every 30 seconds) for responsive power limiting
     # This only updates the power limit when already in load-following mode, doesn't change curtail/restore decisions
@@ -29963,7 +30320,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 entry=entry,  # Pass entry so coordinator can persist settings
                 battery_system=battery_system,
                 battery_controller=battery_controller,
-                price_coordinator=amber_coordinator or localvolts_coordinator or octopus_coordinator or epex_coordinator or aemo_sensor_coordinator,
+                price_coordinator=amber_coordinator or localvolts_coordinator or octopus_coordinator or epex_coordinator or aemo_sensor_coordinator or flow_power_kwatch_coordinator,
                 energy_coordinator=energy_coordinator,
                 tariff_schedule=tariff_schedule,  # For Globird/TOU-based pricing
                 force_state_getter=get_force_state,  # For checking if force mode is active
@@ -30480,6 +30837,22 @@ class OptimizationSettingsView(HomeAssistantView):
                 except (TypeError, ValueError):
                     manual_reserve = None
 
+                electricity_provider = config_entry.options.get(
+                    CONF_ELECTRICITY_PROVIDER,
+                    config_entry.data.get(CONF_ELECTRICITY_PROVIDER, ""),
+                )
+                disable_idle_enabled = (
+                    supports_no_idle_mode_provider(electricity_provider)
+                    and bool(
+                        config_entry.options.get(
+                            CONF_OPTIMIZATION_DISABLE_IDLE,
+                            config_entry.data.get(CONF_OPTIMIZATION_DISABLE_IDLE, False),
+                        )
+                    )
+                )
+            else:
+                disable_idle_enabled = False
+
             return web.json_response({
                 "success": True,
                 "enabled": bool(
@@ -30520,13 +30893,7 @@ class OptimizationSettingsView(HomeAssistantView):
                         config_entry.data.get(CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED, False),
                     )
                 ),
-                "disable_idle_enabled": bool(
-                    config_entry
-                    and config_entry.options.get(
-                        CONF_OPTIMIZATION_DISABLE_IDLE,
-                        config_entry.data.get(CONF_OPTIMIZATION_DISABLE_IDLE, False),
-                    )
-                ),
+                "disable_idle_enabled": disable_idle_enabled,
                 "config": {
                     "battery_capacity_wh": _entry_int_setting(
                         CONF_OPTIMIZATION_BATTERY_CAPACITY_WH,
@@ -30574,14 +30941,7 @@ class OptimizationSettingsView(HomeAssistantView):
                         if config_entry
                         else False
                     ),
-                    "disable_idle_enabled": bool(
-                        config_entry.options.get(
-                            CONF_OPTIMIZATION_DISABLE_IDLE,
-                            config_entry.data.get(CONF_OPTIMIZATION_DISABLE_IDLE, False),
-                        )
-                        if config_entry
-                        else False
-                    ),
+                    "disable_idle_enabled": disable_idle_enabled,
                     "auto_apply_reserve_enabled": auto_apply_reserve,
                     "manual_backup_reserve": (
                         round(manual_reserve * 100)
@@ -30769,10 +31129,17 @@ class OptimizationSettingsView(HomeAssistantView):
                 changes.append(f"Set spread import to {settings['spread_import_enabled']}")
 
             if "disable_idle_enabled" in settings:
-                disable_idle = bool(settings["disable_idle_enabled"])
+                electricity_provider = new_options.get(
+                    CONF_ELECTRICITY_PROVIDER,
+                    new_data.get(CONF_ELECTRICITY_PROVIDER, ""),
+                )
+                disable_idle = (
+                    bool(settings["disable_idle_enabled"])
+                    and supports_no_idle_mode_provider(electricity_provider)
+                )
                 new_data[CONF_OPTIMIZATION_DISABLE_IDLE] = disable_idle
                 new_options[CONF_OPTIMIZATION_DISABLE_IDLE] = disable_idle
-                changes.append(f"Set Flow Power No Idle mode to {settings['disable_idle_enabled']}")
+                changes.append(f"Set No Idle mode to {disable_idle}")
 
             if "auto_apply_reserve_enabled" in settings:
                 auto_apply = bool(settings["auto_apply_reserve_enabled"])

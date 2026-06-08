@@ -24,7 +24,7 @@ from .schedule_reader import OptimizationSchedule, ScheduleAction
 from .executor import ScheduleExecutor, ExecutionStatus, BatteryAction
 from .load_estimator import LoadEstimator, SolcastForecaster
 from .ev_coordinator import EVCoordinator, EVConfig, EVChargingMode
-from ..const import DEFAULT_OPTIMIZATION_INTERVAL
+from ..const import DEFAULT_OPTIMIZATION_INTERVAL, supports_no_idle_mode_provider
 from ..flow_power_pricing import (
     FlowPowerPricingContext,
     calculate_flow_power_pea,
@@ -691,7 +691,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     @property
     def disable_idle_enabled(self) -> bool:
-        """Return whether Flow Power optimizer IDLE actions are disabled."""
+        """Return whether optimizer IDLE actions are disabled."""
         return self._should_disable_idle_schedule()
 
     @property
@@ -814,14 +814,15 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return True
 
     def set_disable_idle_enabled(self, enabled: bool) -> bool:
-        """Enable or disable Flow Power no-idle mode."""
-        if self._config.disable_idle_enabled == bool(enabled):
+        """Enable or disable no-idle mode."""
+        enabled = bool(enabled) and self._supports_disable_idle_mode()
+        if self._config.disable_idle_enabled == enabled:
             return False
-        self._config.disable_idle_enabled = bool(enabled)
+        self._config.disable_idle_enabled = enabled
         if self._load_estimator:
             self._load_estimator.invalidate_cache()
         _LOGGER.info(
-            "Flow Power No Idle mode %s",
+            "No Idle mode %s",
             "ENABLED" if enabled else "DISABLED",
         )
         if self.hass and self.entry_id:
@@ -832,15 +833,15 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             async_dispatcher_send(
                 self.hass,
                 f"{DOMAIN}_{self.entry_id}_disable_idle",
-                bool(enabled),
+                enabled,
             )
         if self._entry:
             from ..const import CONF_OPTIMIZATION_DISABLE_IDLE, DOMAIN
 
             new_data = dict(self._entry.data)
             new_options = dict(self._entry.options)
-            new_data[CONF_OPTIMIZATION_DISABLE_IDLE] = bool(enabled)
-            new_options[CONF_OPTIMIZATION_DISABLE_IDLE] = bool(enabled)
+            new_data[CONF_OPTIMIZATION_DISABLE_IDLE] = enabled
+            new_options[CONF_OPTIMIZATION_DISABLE_IDLE] = enabled
             self.hass.data.setdefault(DOMAIN, {}).setdefault(self.entry_id, {})["_skip_reload"] = True
             self.hass.config_entries.async_update_entry(
                 self._entry,
@@ -1832,14 +1833,17 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
             if self._config.spread_import_enabled:
                 _LOGGER.info("Spread Import Across Window: ENABLED")
-            self._config.disable_idle_enabled = bool(
+            raw_disable_idle = bool(
                 self._entry.options.get(
                     CONF_OPTIMIZATION_DISABLE_IDLE,
                     self._entry.data.get(CONF_OPTIMIZATION_DISABLE_IDLE, False),
                 )
             )
+            self._config.disable_idle_enabled = (
+                raw_disable_idle and self._supports_disable_idle_mode()
+            )
             if self._should_disable_idle_schedule():
-                _LOGGER.info("Flow Power No Idle: ENABLED")
+                _LOGGER.info("No Idle mode: ENABLED")
 
             profit_max = self._entry.options.get(
                 CONF_PROFIT_MAX_ENABLED,
@@ -3158,9 +3162,13 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         return int(max(1, requested))
 
+    def _supports_disable_idle_mode(self) -> bool:
+        """Return True when this provider can disable optimizer IDLE."""
+        return supports_no_idle_mode_provider(self._provider_key())
+
     def _should_disable_idle_schedule(self) -> bool:
-        """Return True when Flow Power users have disabled optimizer IDLE."""
-        return self._provider_key() == "flow_power" and bool(
+        """Return True when no-idle mode should replace optimizer IDLE."""
+        return self._supports_disable_idle_mode() and bool(
             self._config.disable_idle_enabled
         )
 
@@ -3172,7 +3180,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         load_forecast: list[float] | None = None,
         initial_soc: float | None = None,
     ) -> OptimizationSchedule:
-        """Replace optimizer IDLE slots with self-consumption for Flow Power."""
+        """Replace optimizer IDLE slots with self-consumption."""
         actions = getattr(schedule, "actions", None) or []
         if not actions:
             return schedule
@@ -3345,7 +3353,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if not changed:
             return schedule
 
-        _LOGGER.info("Flow Power No Idle: converted optimizer IDLE slots to self-consumption")
+        _LOGGER.info("No Idle mode: converted optimizer IDLE slots to self-consumption")
         return OptimizationSchedule(
             actions=new_actions,
             predicted_cost=schedule.predicted_cost,
@@ -4212,7 +4220,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
             if effective_action == "idle" and self._should_disable_idle_schedule():
                 _LOGGER.info(
-                    "Flow Power No Idle: overriding optimizer IDLE to self_consumption"
+                    "No Idle mode: overriding optimizer IDLE to self_consumption"
                 )
                 effective_action = "self_consumption"
 
@@ -8937,7 +8945,9 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             new_val = bool(settings["disable_idle_enabled"])
             changed = self.set_disable_idle_enabled(new_val)
             if changed:
-                response["changes"].append(f"disable_idle_enabled: {settings['disable_idle_enabled']}")
+                response["changes"].append(
+                    f"disable_idle_enabled: {self.disable_idle_enabled}"
+                )
                 rerun_after_settings = True
 
         if "profit_max_target_time" in settings and self._entry:

@@ -44,6 +44,7 @@ from .const import (
     DEFAULT_TWAP_WINDOW_DAYS,
     MIN_TWAP_SAMPLES,
     FLOW_POWER_MARKET_AVG,
+    FLOW_POWER_KWATCH_REGIONS,
     CONF_FLEET_API_BASE_URL,
     TESLA_SITE_INFO_CACHE_TTL_SECONDS,
     CONF_SIGENERGY_CHARGER_ENABLED,
@@ -3296,6 +3297,84 @@ class AEMOPriceCoordinator(DataUpdateCoordinator):
 
 # Keep old name as alias for backwards compatibility
 AEMOSensorCoordinator = AEMOPriceCoordinator
+
+
+class FlowPowerKWatchPriceCoordinator(DataUpdateCoordinator):
+    """Coordinator that fetches Flow Power KWatch API prices."""
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        region: str,
+        api_key: str,
+        session: aiohttp.ClientSession,
+    ) -> None:
+        from .flow_power_api import FlowPowerAPIClient
+
+        self.region = region
+        self.api_region = FLOW_POWER_KWATCH_REGIONS.get(region, region.lower())
+        self._client = FlowPowerAPIClient(api_key, session)
+
+        super().__init__(
+            hass,
+            _LOGGER,
+            name=f"{DOMAIN}_flow_power_kwatch",
+            update_interval=timedelta(minutes=5),
+        )
+
+    async def _async_update_data(self) -> dict[str, Any]:
+        """Fetch current and forecast prices from Flow Power's KWatch API."""
+        from .flow_power_api import kwatch_prices_to_amber_format
+
+        try:
+            dispatch = await self._client.dispatch5mins(self.api_region, period=60)
+            forecast_30 = await self._client.predispatch30mins(self.api_region, period=2)
+            forecast_5 = await self._client.predispatch5mins(self.api_region, period=60)
+
+            if not dispatch:
+                raise UpdateFailed(f"No KWatch dispatch prices returned for {self.region}")
+
+            latest_dispatch = dispatch[-1:]
+            current_prices = kwatch_prices_to_amber_format(
+                latest_dispatch,
+                interval_type="CurrentInterval",
+                default_duration=5,
+            )
+            forecast = kwatch_prices_to_amber_format(
+                forecast_30,
+                interval_type="ForecastInterval",
+                default_duration=30,
+            )
+            forecast_5min = kwatch_prices_to_amber_format(
+                forecast_5 or dispatch,
+                interval_type="ForecastInterval",
+                default_duration=5,
+            )
+
+            if not forecast:
+                forecast = forecast_5min
+            if not forecast:
+                raise UpdateFailed(f"No KWatch forecast prices returned for {self.region}")
+
+            latest_cents = latest_dispatch[0]["perKwh"]
+            _LOGGER.info(
+                "Flow Power KWatch data for %s: current=%.2fc/kWh, forecast_periods=%d",
+                self.region,
+                latest_cents,
+                len(forecast) // 2,
+            )
+
+            return {
+                "current": current_prices,
+                "forecast": forecast,
+                "forecast_5min": forecast_5min,
+                "last_update": dt_util.utcnow(),
+                "source": "flow_power_kwatch",
+            }
+        except UpdateFailed:
+            raise
+        except Exception as err:
+            raise UpdateFailed(f"Error fetching Flow Power KWatch data: {err}") from err
 
 
 class EPEXPriceCoordinator(DataUpdateCoordinator):

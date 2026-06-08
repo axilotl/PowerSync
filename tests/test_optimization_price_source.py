@@ -139,6 +139,7 @@ def _install_power_sync_stubs() -> None:
     const_module.SOLCAST_ESTIMATE10 = "estimate10"
     const_module.SOLCAST_ESTIMATE90 = "estimate90"
     const_module.DEFAULT_OPTIMIZATION_INTERVAL = 5
+    const_module.supports_no_idle_mode_provider = lambda provider: provider == "flow_power"
     const_module.FLOW_POWER_BENCHMARK = 1.7
     const_module.FLOW_POWER_DEFAULT_BASE_RATE = 34.0
     const_module.FLOW_POWER_EXPORT_RATES = {"NSW1": 0.45}
@@ -912,3 +913,12 @@ def test_flow_power_aemo_price_source_is_provider_gated():
     )
     assert 'electricity_provider == "flow_power"' in assignment_source
     assert 'flow_power_price_source in ("aemo_sensor", "aemo")' in assignment_source
+
+
+def test_flow_power_kwatch_price_source_is_provider_gated():
+    source = (COMPONENT_ROOT / "__init__.py").read_text()
+
+    assert 'flow_power_price_source == "kwatch"' in source
+    assert "FlowPowerKWatchPriceCoordinator" in source
+    assert '"flow_power_kwatch_coordinator": flow_power_kwatch_coordinator' in source
+    assert "or flow_power_kwatch_coordinator" in source

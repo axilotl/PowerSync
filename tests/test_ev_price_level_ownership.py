@@ -23,7 +23,17 @@ _ha_config_entries = sys.modules.setdefault(
     "homeassistant.config_entries", types.ModuleType("homeassistant.config_entries")
 )
 _ha_core = sys.modules.setdefault("homeassistant.core", types.ModuleType("homeassistant.core"))
+_ha_exceptions = sys.modules.setdefault(
+    "homeassistant.exceptions", types.ModuleType("homeassistant.exceptions")
+)
 _ha_helpers = sys.modules.setdefault("homeassistant.helpers", types.ModuleType("homeassistant.helpers"))
+_ha_storage = sys.modules.setdefault(
+    "homeassistant.helpers.storage", types.ModuleType("homeassistant.helpers.storage")
+)
+_ha_update = sys.modules.setdefault(
+    "homeassistant.helpers.update_coordinator",
+    types.ModuleType("homeassistant.helpers.update_coordinator"),
+)
 _ha_er = sys.modules.setdefault(
     "homeassistant.helpers.entity_registry",
     types.ModuleType("homeassistant.helpers.entity_registry"),
@@ -39,14 +49,27 @@ _ha_util = sys.modules.setdefault("homeassistant.util", types.ModuleType("homeas
 _ha_dt = sys.modules.setdefault("homeassistant.util.dt", types.ModuleType("homeassistant.util.dt"))
 _ha_core.HomeAssistant = type("HomeAssistant", (), {})
 _ha_config_entries.ConfigEntry = type("ConfigEntry", (), {})
+_ha_exceptions.ConfigEntryNotReady = type("ConfigEntryNotReady", (Exception,), {})
 _ha_er.async_get = lambda hass: getattr(hass, "entity_registry", SimpleNamespace(entities={}))
 _ha_dr.async_get = lambda hass: SimpleNamespace(devices={})
+_ha_storage.Store = type("Store", (), {"__init__": lambda self, *args, **kwargs: None})
+_ha_update.DataUpdateCoordinator = type(
+    "DataUpdateCoordinator",
+    (),
+    {
+        "__class_getitem__": classmethod(lambda cls, item: cls),
+        "__init__": lambda self, *args, **kwargs: None,
+    },
+)
 _ha_event.async_track_time_interval = lambda *args, **kwargs: (lambda: None)
+_ha_event.async_track_time_change = lambda *args, **kwargs: (lambda: None)
 _ha_event.async_track_point_in_time = lambda *args, **kwargs: (lambda: None)
 _ha_dt.now = getattr(_ha_dt, "now", lambda *args, **kwargs: None)
 _ha_dt.utcnow = getattr(_ha_dt, "utcnow", lambda *args, **kwargs: None)
 _ha_helpers.entity_registry = _ha_er
 _ha_helpers.device_registry = _ha_dr
+_ha_helpers.storage = _ha_storage
+_ha_helpers.update_coordinator = _ha_update
 _ha_helpers.event = _ha_event
 _ha_root.helpers = _ha_helpers
 _ha_util.dt = _ha_dt
@@ -1049,6 +1072,63 @@ def test_auto_schedule_rate_update_skips_sigenergy_evdc(
         executor._set_vehicle_charge_rate("sigenergy_charger", 3680, settings)
     )
     assert set_amps_calls == []
+
+
+def test_auto_schedule_rate_update_uses_configured_sigenergy_evdc_rate_entity(
+    monkeypatch,
+    fake_actions,
+):
+    set_amps_calls = []
+
+    async def set_vehicle_amps(hass, entry, vehicle_id, amps, params):
+        set_amps_calls.append((vehicle_id, amps, params))
+        return True
+
+    fake_actions._set_vehicle_amps = set_vehicle_amps
+    monkeypatch.setattr(
+        ev_planner.dt_util,
+        "now",
+        lambda: SimpleNamespace(weekday=lambda: 0),
+    )
+
+    class SigenergyEntry(_FakeConfigEntry):
+        options = {
+            "sigenergy_charger_enabled": True,
+            "sigenergy_charger_host": "192.0.2.24",
+            "sigenergy_charger_port": 502,
+            "sigenergy_charger_slave_id": 2,
+            "sigenergy_charger_type": "evdc",
+            "sigenergy_charger_charge_power_limit_entity": "number.evdc_charge_limit",
+        }
+
+    executor = ev_planner.AutoScheduleExecutor(
+        _FakeHass(),
+        SigenergyEntry(),
+        planner=SimpleNamespace(),
+    )
+    settings = ev_planner.AutoScheduleSettings(
+        vehicle_id="sigenergy_charger",
+        display_name="Sigenergy EVDC",
+        charger_type="",
+        min_charge_amps=6,
+        max_charge_amps=32,
+        voltage=230,
+        phases=1,
+    )
+
+    assert asyncio.run(
+        executor._set_vehicle_charge_rate("sigenergy_charger", 3680, settings)
+    )
+
+    assert len(set_amps_calls) == 1
+    vehicle_id, amps, params = set_amps_calls[0]
+    assert vehicle_id == "sigenergy_charger"
+    assert amps == 16
+    assert params["charger_type"] == "sigenergy"
+    assert params["sigenergy_charger_type"] == "evdc"
+    assert params["supports_rate_control"] is True
+    assert params["solar_control_strategy"] == "dynamic_rate"
+    assert params["sigenergy_charger_charge_power_limit_entity"] == "number.evdc_charge_limit"
 
 
 def test_price_level_ocpp_start_uses_detected_hacs_prefix(monkeypatch, fake_actions):

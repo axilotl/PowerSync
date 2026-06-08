@@ -167,6 +167,8 @@ from .const import (
     CONF_BATTERY_CURTAILMENT_ENABLED,
     CONF_ELECTRICITY_PROVIDER,
     CONF_FLOW_POWER_STATE,
+    CONF_FLOWPOWER_API_KEY,
+    CONF_FLOWPOWER_NETWORK_TARIFF,
     CONF_PEA_ENABLED,
     CONF_FLOW_POWER_BASE_RATE,
     CONF_FLOW_POWER_EXPORT_RATE,
@@ -1890,7 +1892,11 @@ async def async_setup_entry(
     )
     if electricity_provider == "flow_power":
         # Get the price coordinator (Amber or AEMO)
-        price_coordinator = amber_coordinator or domain_data.get("aemo_sensor_coordinator")
+        price_coordinator = (
+            amber_coordinator
+            or domain_data.get("aemo_sensor_coordinator")
+            or domain_data.get("flow_power_kwatch_coordinator")
+        )
         if price_coordinator:
             # Publish Flow Power-adjusted rates under the standard current_* sensor
             # ids so the mobile app and default dashboard read the retail price
@@ -1963,7 +1969,10 @@ async def async_setup_entry(
             fp_email = entry.options.get(
                 CONF_FLOWPOWER_EMAIL, entry.data.get(CONF_FLOWPOWER_EMAIL)
             )
-            if fp_email:
+            fp_api_key = entry.options.get(
+                CONF_FLOWPOWER_API_KEY, entry.data.get(CONF_FLOWPOWER_API_KEY)
+            )
+            if fp_email or fp_api_key:
                 for sensor_type, name, data_key, unit, icon, source in FLOW_POWER_PORTAL_SENSORS:
                     entities.append(
                         FlowPowerPortalSensor(
@@ -4844,7 +4853,17 @@ class FlowPowerPortalSensor(SensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        return {"source": self._source_label}
+        domain_data = self.hass.data.get(DOMAIN, {}).get(self._entry.entry_id, {})
+        portal_data = domain_data.get("flow_power_portal_data") or {}
+        source = portal_data.get("source", self._source_label)
+        attrs = {"source": source}
+        raw_network_tariff = self._entry.options.get(
+            CONF_FLOWPOWER_NETWORK_TARIFF,
+            self._entry.data.get(CONF_FLOWPOWER_NETWORK_TARIFF),
+        )
+        if raw_network_tariff:
+            attrs["network_tariff_raw"] = raw_network_tariff
+        return attrs
 
     @property
     def should_poll(self) -> bool:
