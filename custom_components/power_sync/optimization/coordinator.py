@@ -2775,6 +2775,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
             self._sync_grid_export_cap_to_optimizer()
             self._sync_optimizer_discharge_limits()
+            schedule_timestamps = self._price_timestamps(len(import_prices))
 
             def _auto_reserve_baseline_floor() -> float | None:
                 if not self.auto_apply_reserve_enabled:
@@ -2815,6 +2816,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         self._last_zerohero_bonus_prices,
                         self._last_zerohero_bonus_cap_kwh,
                         export_reserve_floor,
+                        schedule_timestamps,
                     )
                 finally:
                     if reserve_floor is not None:
