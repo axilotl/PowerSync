@@ -56,8 +56,12 @@ class _FakeSession:
     def post(self, url, json=None, headers=None, timeout=None):
         endpoint = url.rsplit("/", 1)[-1]
         self.calls.append((endpoint, json, headers))
-        payload = self.payloads[endpoint]
-        return _FakeResponse(payload)
+        response = self.payloads[endpoint]
+        if isinstance(response, tuple):
+            payload, status = response
+        else:
+            payload, status = response, 200
+        return _FakeResponse(payload, status=status)
 
 
 def _flow_power_api_module():
@@ -144,6 +148,44 @@ def test_flow_power_api_client_posts_key_and_normalizes_sites_summary_and_prices
     assert dispatch[0]["perKwh"] == 12.34
     assert forecast[0]["perKwh"] == 9.8
     assert all(call[2]["x-api-key"] == "secret-key" for call in session.calls)
+
+
+def test_flow_power_price_endpoints_can_work_when_site_lookup_fails():
+    api = _flow_power_api_module()
+    session = _FakeSession(
+        {
+            "GetResidentialSites": ({"error": "NMI not linked"}, 500),
+            "dispatch5mins": {
+                "data": [{"timestamp": "2026-06-08T10:00:00+10:00", "price": 123.4}]
+            },
+            "predispatch30mins": {
+                "result": [{"periodDateTime": "2026/06/08 10:30:00", "RRP": 98.0}]
+            },
+        }
+    )
+    client = api.FlowPowerAPIClient("secret-key", session)
+
+    async def run():
+        try:
+            await client.get_residential_sites()
+        except api.FlowPowerAPIError as err:
+            site_error = str(err)
+        else:
+            site_error = None
+        dispatch = await client.dispatch5mins("nsw", period=1)
+        forecast = await client.predispatch30mins("nsw", period=1)
+        return site_error, dispatch, forecast
+
+    site_error, dispatch, forecast = asyncio.run(run())
+
+    assert site_error == "api_status_500"
+    assert dispatch[0]["perKwh"] == 12.34
+    assert forecast[0]["perKwh"] == 9.8
+    assert [call[0] for call in session.calls] == [
+        "GetResidentialSites",
+        "dispatch5mins",
+        "predispatch30mins",
+    ]
 
 
 def test_kwatch_prices_to_amber_format_has_current_and_forecast_shape():

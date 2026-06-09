@@ -29413,7 +29413,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 data = None
                 if fp_api_key:
                     try:
-                        from .flow_power_api import FlowPowerAPIClient
+                        from .flow_power_api import FlowPowerAPIClient, FlowPowerAPIError
 
                         client_api = FlowPowerAPIClient(
                             fp_api_key,
@@ -29421,7 +29421,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         )
                         nmi = fp_nmi
                         if not nmi:
-                            sites = await client_api.get_residential_sites()
+                            try:
+                                sites = await client_api.get_residential_sites()
+                            except FlowPowerAPIError as exc:
+                                _LOGGER.debug(
+                                    "Flow Power KWatch residential site lookup unavailable: %s",
+                                    exc,
+                                )
+                                sites = []
                             if sites:
                                 nmi = sites[0].get("nmi")
                         if nmi:

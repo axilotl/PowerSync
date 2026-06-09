@@ -227,6 +227,7 @@ from .const import (
     DEFAULT_GLOBIRD_ZEROHERO_IMPORT_LIMIT_KW,
     FLOW_POWER_STATES,
     FLOW_POWER_PRICE_SOURCES,
+    FLOW_POWER_KWATCH_REGIONS,
     # Flow Power PEA configuration
     CONF_PEA_ENABLED,
     CONF_FLOW_POWER_BASE_RATE,
@@ -874,11 +875,13 @@ async def validate_amber_token(hass: HomeAssistant, api_token: str) -> dict[str,
 async def validate_flow_power_api_key(
     hass: HomeAssistant,
     api_key: str,
+    region: str = "NSW1",
 ) -> dict[str, Any]:
-    """Validate Flow Power KWatch API key and return residential sites."""
+    """Validate Flow Power KWatch API key and return residential sites when available."""
     if not api_key:
         return {"success": False, "error": "invalid_api_key"}
 
+    site_lookup_error: str | None = None
     try:
         from .flow_power_api import FlowPowerAPIClient, FlowPowerAPIError
 
@@ -887,16 +890,40 @@ async def validate_flow_power_api_key(
     except FlowPowerAPIError as err:
         if str(err) == "invalid_api_key":
             return {"success": False, "error": "invalid_api_key"}
+        site_lookup_error = str(err)
+        sites = []
+    except aiohttp.ClientError:
+        site_lookup_error = "cannot_connect"
+        sites = []
+    except Exception as err:
+        _LOGGER.exception("Flow Power API validation failed: %s", err)
+        site_lookup_error = "cannot_connect"
+        sites = []
+
+    if sites:
+        return {"success": True, "sites": sites}
+
+    api_region = FLOW_POWER_KWATCH_REGIONS.get(region, str(region).lower())
+    try:
+        dispatch = await client.dispatch5mins(api_region, period=1)
+        forecast = await client.predispatch30mins(api_region, period=1)
+    except FlowPowerAPIError as err:
+        if str(err) == "invalid_api_key":
+            return {"success": False, "error": "invalid_api_key"}
         return {"success": False, "error": "cannot_connect"}
     except aiohttp.ClientError:
         return {"success": False, "error": "cannot_connect"}
     except Exception as err:
-        _LOGGER.exception("Flow Power API validation failed: %s", err)
+        _LOGGER.exception("Flow Power API price validation failed: %s", err)
         return {"success": False, "error": "cannot_connect"}
 
-    if not sites:
-        return {"success": False, "error": "no_sites"}
-    return {"success": True, "sites": sites}
+    if dispatch and forecast:
+        return {
+            "success": True,
+            "sites": [],
+            "site_lookup_error": site_lookup_error or "no_sites",
+        }
+    return {"success": False, "error": "cannot_connect" if site_lookup_error else "no_sites"}
 
 
 def _flow_power_site_label(site: dict[str, Any]) -> str:
@@ -1757,11 +1784,15 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._aemo_only_mode = False
 
             if api_key:
-                validation_result = await validate_flow_power_api_key(self.hass, api_key)
+                validation_result = await validate_flow_power_api_key(
+                    self.hass,
+                    api_key,
+                    user_input.get(CONF_FLOW_POWER_STATE, "NSW1"),
+                )
                 if not validation_result["success"]:
                     errors["base"] = validation_result.get("error", "cannot_connect")
                 else:
-                    self._flow_power_sites = validation_result["sites"]
+                    self._flow_power_sites = validation_result.get("sites", [])
                     if len(self._flow_power_sites) == 1:
                         site = self._flow_power_sites[0]
                         self._flow_power_data[CONF_FLOWPOWER_NMI] = site["nmi"]
@@ -1771,7 +1802,8 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             site,
                         )
                         return await self.async_step_flow_power_tariff()
-                    return await self.async_step_flow_power_site()
+                    if self._flow_power_sites:
+                        return await self.async_step_flow_power_site()
 
             # Route to tariff selection (region-filtered)
             if not errors:
@@ -10513,10 +10545,18 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
 
         if user_input is not None:
             api_key = user_input.get(CONF_FLOWPOWER_API_KEY, "")
-            validation_result = await validate_flow_power_api_key(self.hass, api_key)
+            region = self._flow_power_main_options.get(
+                CONF_FLOW_POWER_STATE,
+                self._get_option(CONF_FLOW_POWER_STATE, "NSW1"),
+            )
+            validation_result = await validate_flow_power_api_key(
+                self.hass,
+                api_key,
+                region,
+            )
             if validation_result["success"]:
                 self._flow_power_main_options[CONF_FLOWPOWER_API_KEY] = api_key
-                self._flow_power_sites = validation_result["sites"]
+                self._flow_power_sites = validation_result.get("sites", [])
                 if len(self._flow_power_sites) == 1:
                     site = self._flow_power_sites[0]
                     self._flow_power_main_options[CONF_FLOWPOWER_NMI] = site["nmi"]
@@ -10526,7 +10566,9 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                         site,
                     )
                     return await self.async_step_flow_power_network_options()
-                return await self.async_step_flow_power_site_options()
+                if self._flow_power_sites:
+                    return await self.async_step_flow_power_site_options()
+                return await self.async_step_flow_power_network_options()
             errors["base"] = validation_result.get("error", "cannot_connect")
 
         return self.async_show_form(
