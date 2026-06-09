@@ -111,6 +111,13 @@ def _valid_state(state: Any) -> bool:
     return bool(state and state.state not in ("unavailable", "unknown", "None", None))
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 async def _read_sigenergy_charger_plugged_state(config_entry: "ConfigEntry") -> bool | None:
     """Read the configured Sigenergy EV charger connection state."""
     from ..const import (
@@ -3022,6 +3029,7 @@ class AutoScheduleSettings:
     consume_battery_level: int = 0  # Discharge home battery to X% for EV (0 = disabled)
     stop_at_battery_floor: bool = True  # When battery hits consume level, stop EV (no grid fallback)
     limit_grid_import: bool = False  # Dynamically adjust EV charge amps to match inverter capacity
+    preserve_home_battery: bool = False  # Request no-discharge mode while Smart Schedule is charging
     max_grid_price_cents: float = 25.0  # Don't charge from grid above this price (backend only, not in mobile UI)
 
     # Per-day constraint overrides (days without entries fall back to global settings above)
@@ -3029,6 +3037,7 @@ class AutoScheduleSettings:
     departure_consume_battery_level: Dict[int, int] = field(default_factory=dict)  # {day_index: percent}
     departure_stop_at_battery_floor: Dict[int, bool] = field(default_factory=dict)  # {day_index: True/False}
     departure_limit_grid_import: Dict[int, bool] = field(default_factory=dict)  # {day_index: True/False}
+    departure_preserve_home_battery: Dict[int, bool] = field(default_factory=dict)  # {day_index: True/False}
 
     # Charger settings
     charger_type: str = "tesla"  # tesla, ocpp, generic
@@ -3078,6 +3087,12 @@ class AutoScheduleSettings:
         if weekday in self.departure_stop_at_battery_floor:
             return self.departure_stop_at_battery_floor[weekday]
         return self.stop_at_battery_floor
+
+    def get_effective_preserve_home_battery(self, weekday: int) -> bool:
+        """Get the effective preserve_home_battery setting for a given weekday."""
+        if weekday in self.departure_preserve_home_battery:
+            return self.departure_preserve_home_battery[weekday]
+        return self.preserve_home_battery
 
     def get_effective_max_grid_price(self, weekday: int) -> float:
         """Get the effective max_grid_price_cents for a given weekday."""
@@ -3144,11 +3159,13 @@ class AutoScheduleSettings:
             "departure_consume_battery_level": {str(k): v for k, v in self.departure_consume_battery_level.items()},
             "departure_stop_at_battery_floor": {str(k): v for k, v in self.departure_stop_at_battery_floor.items()},
             "departure_limit_grid_import": {str(k): v for k, v in self.departure_limit_grid_import.items()},
+            "departure_preserve_home_battery": {str(k): v for k, v in self.departure_preserve_home_battery.items()},
             "priority": self.priority.value,
             "min_battery_to_start": self.min_battery_to_start,
             "consume_battery_level": self.consume_battery_level,
             "stop_at_battery_floor": self.stop_at_battery_floor,
             "limit_grid_import": self.limit_grid_import,
+            "preserve_home_battery": self.preserve_home_battery,
             "max_grid_price_cents": self.max_grid_price_cents,
             # Backward compat aliases for older mobile clients
             "home_battery_minimum": self.min_battery_to_start,
@@ -3194,6 +3211,9 @@ class AutoScheduleSettings:
         # New fields with defaults
         consume_battery_level = data.get("consume_battery_level", 0)
         stop_at_battery_floor = data.get("stop_at_battery_floor", True)
+        preserve_home_battery = data.get("preserve_home_battery", False)
+        if preserve_home_battery and consume_battery_level:
+            consume_battery_level = 0
 
         # Handle departure_priorities (per-day strategy overrides)
         departure_priorities: Dict[int, str] = {}
@@ -3230,6 +3250,14 @@ class AutoScheduleSettings:
         if isinstance(raw_dsabf, dict):
             departure_stop_at_battery_floor = {int(k): bool(v) for k, v in raw_dsabf.items()}
 
+        departure_preserve_home_battery: Dict[int, bool] = {}
+        raw_dphb = data.get("departure_preserve_home_battery")
+        if isinstance(raw_dphb, dict):
+            departure_preserve_home_battery = {int(k): bool(v) for k, v in raw_dphb.items()}
+            for day, preserve in departure_preserve_home_battery.items():
+                if preserve and departure_consume_battery_level.get(day, 0) > 0:
+                    departure_consume_battery_level[day] = 0
+
         # Handle departure_times migration from legacy format
         departure_times: Dict[int, str] = {}
         raw_departure_times = data.get("departure_times")
@@ -3256,11 +3284,13 @@ class AutoScheduleSettings:
             departure_consume_battery_level=departure_consume_battery_level,
             departure_stop_at_battery_floor=departure_stop_at_battery_floor,
             departure_limit_grid_import=departure_limit_grid_import,
+            departure_preserve_home_battery=departure_preserve_home_battery,
             priority=priority,
             min_battery_to_start=min_battery_to_start,
             consume_battery_level=consume_battery_level,
             stop_at_battery_floor=stop_at_battery_floor,
             limit_grid_import=limit_grid_import,
+            preserve_home_battery=preserve_home_battery,
             max_grid_price_cents=data.get("max_grid_price_cents", 25.0),
             charger_type=data.get("charger_type", "tesla"),
             min_charge_amps=data.get("min_charge_amps", 5),
@@ -3402,6 +3432,9 @@ class AutoScheduleExecutor:
         # Tracks when Smart Schedule is asking the battery optimiser to preserve
         # energy for a vehicle that is not currently available to charge.
         self._future_demand_preserve_active = False
+        self._future_demand_preserve_reason = ""
+        self._active_charging_preserve_vehicles: set[str] = set()
+        self._active_charging_preserve_reasons: Dict[str, str] = {}
 
     def _resolve_vehicle_vin(self, vehicle_id: str) -> Optional[str]:
         """Resolve sequential vehicle_id to actual VIN or BLE identifier.
@@ -3749,6 +3782,8 @@ class AutoScheduleExecutor:
                 value = {int(k): int(v) for k, v in value.items()}
             if key == "departure_stop_at_battery_floor" and isinstance(value, dict):
                 value = {int(k): bool(v) for k, v in value.items()}
+            if key == "departure_preserve_home_battery" and isinstance(value, dict):
+                value = {int(k): bool(v) for k, v in value.items()}
             # Backward compat: map old field names to new ones
             if key == "home_battery_minimum":
                 key = "min_battery_to_start"
@@ -3762,6 +3797,18 @@ class AutoScheduleExecutor:
                 value = {int(k): int(v) for k, v in value.items()}
             if hasattr(settings, key):
                 setattr(settings, key, value)
+                if key == "preserve_home_battery" and bool(value):
+                    settings.consume_battery_level = 0
+                elif key == "consume_battery_level" and _safe_int(value, 0) > 0:
+                    settings.preserve_home_battery = False
+                elif key == "departure_preserve_home_battery" and isinstance(value, dict):
+                    for day, preserve in value.items():
+                        if preserve:
+                            settings.departure_consume_battery_level[day] = 0
+                elif key == "departure_consume_battery_level" and isinstance(value, dict):
+                    for day, consume_level in value.items():
+                        if consume_level > 0:
+                            settings.departure_preserve_home_battery[day] = False
 
         return settings
 
@@ -4277,6 +4324,9 @@ class AutoScheduleExecutor:
 
         state = self.get_state(vehicle_id)
         now = datetime.now()
+        ha_now = dt_util.now()
+        weekday = ha_now.weekday() if hasattr(ha_now, "weekday") else now.weekday()
+        effective_preserve_home_battery = settings.get_effective_preserve_home_battery(weekday)
 
         # Resolve sequential vehicle_id to actual VIN/BLE identifier
         # so per-vehicle checks work correctly for multi-vehicle setups
@@ -4312,6 +4362,12 @@ class AutoScheduleExecutor:
                 state.is_charging = False
             state.last_decision = "away"
             state.last_decision_reason = f"Vehicle not at home (location: {location})"
+            self._sync_active_charging_preserve_intent(
+                vehicle_id,
+                effective_preserve_home_battery,
+                state,
+                state.last_decision_reason,
+            )
             _LOGGER.debug(f"Auto-schedule: Vehicle {vehicle_id} not at home ({location}), skipping")
             return
 
@@ -4322,6 +4378,12 @@ class AutoScheduleExecutor:
                 state.is_charging = False
             state.last_decision = "unplugged"
             state.last_decision_reason = "Vehicle not plugged in"
+            self._sync_active_charging_preserve_intent(
+                vehicle_id,
+                effective_preserve_home_battery,
+                state,
+                state.last_decision_reason,
+            )
             _LOGGER.debug(f"Auto-schedule: Vehicle {vehicle_id} not plugged in, skipping")
             return
 
@@ -4332,10 +4394,22 @@ class AutoScheduleExecutor:
                 await self._stop_charging(vehicle_id, settings, state)
                 state.last_decision = "complete"
                 state.last_decision_reason = f"EV reached target {settings.target_soc}%"
+                self._sync_active_charging_preserve_intent(
+                    vehicle_id,
+                    effective_preserve_home_battery,
+                    state,
+                    state.last_decision_reason,
+                )
                 return
             else:
                 state.last_decision = "complete"
                 state.last_decision_reason = f"EV at {ev_soc}% (target: {settings.target_soc}%)"
+                self._sync_active_charging_preserve_intent(
+                    vehicle_id,
+                    effective_preserve_home_battery,
+                    state,
+                    state.last_decision_reason,
+                )
                 return
 
         # =====================================================================
@@ -4374,6 +4448,12 @@ class AutoScheduleExecutor:
                 await self._set_vehicle_charge_rate(vehicle_id, power_w, settings)
                 state.last_decision = "charging"
                 state.last_decision_reason = reason
+                self._sync_active_charging_preserve_intent(
+                    vehicle_id,
+                    effective_preserve_home_battery,
+                    state,
+                    reason,
+                )
 
             else:
                 if next_start:
@@ -4385,12 +4465,24 @@ class AutoScheduleExecutor:
                     await self._stop_charging(vehicle_id, settings, state)
                     state.last_decision = "stopped"
                     state.last_decision_reason = reason
+                    self._sync_active_charging_preserve_intent(
+                        vehicle_id,
+                        effective_preserve_home_battery,
+                        state,
+                        reason,
+                    )
                     # Clear tracked charge rate
                     self._current_charge_amps.pop(vehicle_id, None)
                     _LOGGER.info(f"🤖 ML EV Charging: Stopping charge for {vehicle_id} - {reason}")
                 else:
                     state.last_decision = "waiting"
                     state.last_decision_reason = reason
+                    self._sync_active_charging_preserve_intent(
+                        vehicle_id,
+                        effective_preserve_home_battery,
+                        state,
+                        reason,
+                    )
 
             # Skip the normal planning logic when using Smart Optimization
             return
@@ -4402,6 +4494,12 @@ class AutoScheduleExecutor:
         if state.current_plan is None:
             state.last_decision = "no_plan"
             state.last_decision_reason = "No charging plan available"
+            self._sync_active_charging_preserve_intent(
+                vehicle_id,
+                effective_preserve_home_battery,
+                state,
+                state.last_decision_reason,
+            )
             return
 
         # Get current conditions
@@ -4420,7 +4518,7 @@ class AutoScheduleExecutor:
         # Note: min_battery_soc affects surplus calculation (prevents discharge),
         # but does NOT block EV charging from solar or grid.
         # The Powerwall's own backup reserve handles discharge protection.
-        weekday = dt_util.now().weekday()  # HA tz; container UTC would mis-classify weekday near midnight
+        # HA tz; container UTC would mis-classify weekday near midnight.
         effective_priority = settings.get_effective_priority(weekday)
         effective_limit_grid = settings.get_effective_limit_grid_import(weekday)
         effective_max_price = settings.get_effective_max_grid_price(weekday)
@@ -4443,6 +4541,12 @@ class AutoScheduleExecutor:
                     await self._stop_charging(vehicle_id, settings, state)
                 state.last_decision = "waiting"
                 state.last_decision_reason = reason
+                self._sync_active_charging_preserve_intent(
+                    vehicle_id,
+                    effective_preserve_home_battery,
+                    state,
+                    reason,
+                )
                 return
 
         # Use planner's should_charge_now logic
@@ -4602,6 +4706,12 @@ class AutoScheduleExecutor:
         else:
             state.last_decision = "charging" if state.is_charging else "waiting"
             state.last_decision_reason = reason
+        self._sync_active_charging_preserve_intent(
+            vehicle_id,
+            effective_preserve_home_battery,
+            state,
+            reason,
+        )
 
     async def _regenerate_plan(
         self,
@@ -4705,6 +4815,7 @@ class AutoScheduleExecutor:
         """Publish Smart Schedule preserve intent for future EV demand."""
         from ..const import DOMAIN
 
+        self._future_demand_preserve_reason = reason
         entry_data = self.hass.data.setdefault(DOMAIN, {}).setdefault(
             self.config_entry.entry_id,
             {},
@@ -4714,12 +4825,7 @@ class AutoScheduleExecutor:
             self._future_demand_preserve_active = True
             return
 
-        entry_data["scheduled_ev_preserve_state"] = {
-            "active": True,
-            "mode": "no_discharge_charge_allowed",
-            "source": "smart_schedule",
-            "reason": reason,
-        }
+        self._write_smart_schedule_preserve_state(reason)
         if not self._future_demand_preserve_active:
             _LOGGER.info(
                 "Smart Schedule: requested home battery preserve mode (%s)",
@@ -4740,19 +4846,102 @@ class AutoScheduleExecutor:
             self._future_demand_preserve_active = False
             return
 
+        self._future_demand_preserve_active = False
+        self._future_demand_preserve_reason = ""
+        if self._active_charging_preserve_vehicles:
+            self._write_smart_schedule_preserve_state(
+                self._smart_schedule_active_preserve_reason(reason)
+            )
+        else:
+            state.update({
+                "active": False,
+                "mode": "no_discharge_charge_allowed",
+                "source": "smart_schedule",
+                "reason": reason,
+            })
+        _LOGGER.info(
+            "Smart Schedule: cleared future-demand home battery preserve request%s",
+            f" ({reason})" if reason else "",
+        )
+
+    def _write_smart_schedule_preserve_state(self, reason: str) -> None:
+        """Publish Smart Schedule preserve state without overwriting other EV modes."""
+        from ..const import DOMAIN
+
+        entry_data = self.hass.data.setdefault(DOMAIN, {}).setdefault(
+            self.config_entry.entry_id,
+            {},
+        )
+        existing = entry_data.get("scheduled_ev_preserve_state", {})
+        if existing.get("active") and existing.get("source") not in (None, "smart_schedule"):
+            return
+        entry_data["scheduled_ev_preserve_state"] = {
+            "active": True,
+            "mode": "no_discharge_charge_allowed",
+            "source": "smart_schedule",
+            "reason": reason,
+        }
+
+    def _smart_schedule_active_preserve_reason(self, fallback: str = "") -> str:
+        """Return a representative reason for active Smart Schedule preserve."""
+        for vehicle_id in sorted(self._active_charging_preserve_vehicles):
+            reason = self._active_charging_preserve_reasons.get(vehicle_id)
+            if reason:
+                return reason
+        return fallback
+
+    def _set_active_charging_preserve_intent(self, vehicle_id: str, reason: str) -> None:
+        """Request no-discharge mode while Smart Schedule is actively charging."""
+        self._active_charging_preserve_vehicles.add(vehicle_id)
+        self._active_charging_preserve_reasons[vehicle_id] = reason
+        self._write_smart_schedule_preserve_state(reason)
+
+    def _clear_active_charging_preserve_intent(
+        self,
+        vehicle_id: str,
+        reason: str = "",
+    ) -> None:
+        """Clear Smart Schedule active-charge preserve intent."""
+        from ..const import DOMAIN
+
+        self._active_charging_preserve_vehicles.discard(vehicle_id)
+        self._active_charging_preserve_reasons.pop(vehicle_id, None)
+        entry_data = self.hass.data.get(DOMAIN, {}).get(
+            self.config_entry.entry_id,
+            {},
+        )
+        state = entry_data.setdefault("scheduled_ev_preserve_state", {})
+        if state.get("source") != "smart_schedule":
+            return
+        if self._active_charging_preserve_vehicles:
+            self._write_smart_schedule_preserve_state(
+                self._smart_schedule_active_preserve_reason(reason)
+            )
+            return
+        if self._future_demand_preserve_active:
+            self._write_smart_schedule_preserve_state(
+                self._future_demand_preserve_reason or reason
+            )
+            return
         state.update({
             "active": False,
             "mode": "no_discharge_charge_allowed",
             "source": "smart_schedule",
             "reason": reason,
         })
-        if not self._future_demand_preserve_active:
-            return
-        self._future_demand_preserve_active = False
-        _LOGGER.info(
-            "Smart Schedule: cleared home battery preserve request%s",
-            f" ({reason})" if reason else "",
-        )
+
+    def _sync_active_charging_preserve_intent(
+        self,
+        vehicle_id: str,
+        preserve_home_battery: bool,
+        state: AutoScheduleState,
+        reason: str,
+    ) -> None:
+        """Keep active Smart Schedule preserve aligned with charging state."""
+        if state.is_charging and preserve_home_battery:
+            self._set_active_charging_preserve_intent(vehicle_id, reason)
+        else:
+            self._clear_active_charging_preserve_intent(vehicle_id, reason)
 
     async def refresh_optimizer_forecast_plans(
         self,

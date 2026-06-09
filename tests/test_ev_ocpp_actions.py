@@ -20,8 +20,18 @@ def _install_ha_stubs() -> None:
         "homeassistant.config_entries", types.ModuleType("homeassistant.config_entries")
     )
     ha_core = sys.modules.setdefault("homeassistant.core", types.ModuleType("homeassistant.core"))
+    ha_exceptions = sys.modules.setdefault(
+        "homeassistant.exceptions", types.ModuleType("homeassistant.exceptions")
+    )
     ha_helpers = sys.modules.setdefault(
         "homeassistant.helpers", types.ModuleType("homeassistant.helpers")
+    )
+    ha_storage = sys.modules.setdefault(
+        "homeassistant.helpers.storage", types.ModuleType("homeassistant.helpers.storage")
+    )
+    ha_update = sys.modules.setdefault(
+        "homeassistant.helpers.update_coordinator",
+        types.ModuleType("homeassistant.helpers.update_coordinator"),
     )
     ha_er = sys.modules.setdefault(
         "homeassistant.helpers.entity_registry",
@@ -39,15 +49,28 @@ def _install_ha_stubs() -> None:
 
     ha_core.HomeAssistant = type("HomeAssistant", (), {})
     ha_config_entries.ConfigEntry = type("ConfigEntry", (), {})
+    ha_exceptions.ConfigEntryNotReady = type("ConfigEntryNotReady", (Exception,), {})
     ha_er.async_get = lambda hass: hass.entity_registry
     ha_dr.async_get = lambda hass: SimpleNamespace(devices={})
+    ha_storage.Store = type("Store", (), {"__init__": lambda self, *args, **kwargs: None})
+    ha_update.DataUpdateCoordinator = type(
+        "DataUpdateCoordinator",
+        (),
+        {
+            "__class_getitem__": classmethod(lambda cls, item: cls),
+            "__init__": lambda self, *args, **kwargs: None,
+        },
+    )
     ha_event.async_track_time_interval = lambda *args, **kwargs: (lambda: None)
+    ha_event.async_track_time_change = lambda *args, **kwargs: (lambda: None)
     ha_event.async_track_point_in_time = lambda *args, **kwargs: (lambda: None)
     ha_dt.now = getattr(ha_dt, "now", lambda *args, **kwargs: None)
     ha_dt.utcnow = getattr(ha_dt, "utcnow", lambda *args, **kwargs: None)
 
     ha_helpers.entity_registry = ha_er
     ha_helpers.device_registry = ha_dr
+    ha_helpers.storage = ha_storage
+    ha_helpers.update_coordinator = ha_update
     ha_helpers.event = ha_event
     ha_util.dt = ha_dt
     ha_root.helpers = ha_helpers
@@ -118,6 +141,77 @@ class _Entry:
     entry_id = "entry-1"
     data = {}
     options = {}
+
+
+def _tesla_entry():
+    return SimpleNamespace(
+        entry_id="entry-1",
+        data={"battery_system": "tesla"},
+        options={},
+    )
+
+
+def test_tesla_preserve_charge_holds_current_soc_with_backup_reserve():
+    hass = _Hass([])
+    hass.data["power_sync"]["entry-1"]["tesla_coordinator"] = SimpleNamespace(
+        data={"battery_level": 63.4}
+    )
+
+    result = asyncio.run(actions._action_preserve_charge(hass, _tesla_entry()))
+
+    assert result is True
+    assert hass.services.calls == [
+        (
+            "power_sync",
+            "set_backup_reserve",
+            {"percent": 63, "source": "automation_preserve_charge"},
+        )
+    ]
+
+
+def test_tesla_preserve_charge_caps_unsupported_mid_80s_soc_to_80_percent():
+    hass = _Hass([])
+    hass.data["power_sync"]["entry-1"]["tesla_coordinator"] = SimpleNamespace(
+        data={"battery_level": 91}
+    )
+
+    result = asyncio.run(actions._action_preserve_charge(hass, _tesla_entry()))
+
+    assert result is True
+    assert hass.services.calls == [
+        (
+            "power_sync",
+            "set_backup_reserve",
+            {"percent": 80, "source": "automation_preserve_charge"},
+        )
+    ]
+
+
+def test_tesla_preserve_charge_uses_100_percent_when_already_full():
+    hass = _Hass([])
+    hass.data["power_sync"]["entry-1"]["tesla_coordinator"] = SimpleNamespace(
+        data={"battery_level": 99}
+    )
+
+    result = asyncio.run(actions._action_preserve_charge(hass, _tesla_entry()))
+
+    assert result is True
+    assert hass.services.calls == [
+        (
+            "power_sync",
+            "set_backup_reserve",
+            {"percent": 100, "source": "automation_preserve_charge"},
+        )
+    ]
+
+
+def test_tesla_preserve_charge_fails_without_home_battery_soc():
+    hass = _Hass([])
+
+    result = asyncio.run(actions._action_preserve_charge(hass, _tesla_entry()))
+
+    assert result is False
+    assert hass.services.calls == []
 
 
 class _ZaptecClient:

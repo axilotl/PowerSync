@@ -3,7 +3,7 @@ Action execution logic for HA automations.
 
 Supported actions:
 - set_backup_reserve: Set battery backup reserve percentage (Tesla/Sigenergy)
-- preserve_charge: Prevent battery discharge (Tesla: set export to "never", Sigenergy: set discharge to 0)
+- preserve_charge: Prevent battery discharge (Tesla: hold current SOC via backup reserve, Sigenergy: set discharge to 0)
 - set_operation_mode: Set Powerwall operation mode (Tesla only)
 - force_discharge: Force battery discharge for a duration (Tesla/Sigenergy)
 - force_charge: Force battery charge for a duration (Tesla/Sigenergy)
@@ -207,6 +207,71 @@ def _is_sigenergy(config_entry: ConfigEntry) -> bool:
     """Check if this is a Sigenergy system."""
     from ..const import CONF_SIGENERGY_STATION_ID
     return bool(config_entry.data.get(CONF_SIGENERGY_STATION_ID))
+
+
+def _coerce_percent(value: Any) -> Optional[int]:
+    """Return a 0-100 percent integer from coordinator/entity values."""
+    if value in (None, "", "unknown", "unavailable"):
+        return None
+    try:
+        percent = float(value)
+    except (TypeError, ValueError):
+        return None
+    if 0 < percent <= 1:
+        percent *= 100
+    return max(0, min(100, int(round(percent))))
+
+
+def _tesla_preserve_reserve_percent(current_soc: int) -> int:
+    """Map current SOC to a Tesla-valid reserve value for preserve-charge."""
+    if current_soc >= 99:
+        return 100
+    if current_soc > 80:
+        return 80
+    return max(0, current_soc)
+
+
+def _get_current_home_battery_soc(hass: HomeAssistant, config_entry: ConfigEntry) -> Optional[int]:
+    """Resolve the current home battery SOC from runtime coordinators or HA states."""
+    entry_data = hass.data.get(DOMAIN, {}).get(config_entry.entry_id, {})
+
+    for key in (
+        "tesla_coordinator",
+        "powerwall_local_coordinator",
+        "sigenergy_coordinator",
+        "sungrow_coordinator",
+        "foxess_coordinator",
+        "goodwe_coordinator",
+    ):
+        coord = entry_data.get(key)
+        data = getattr(coord, "data", None)
+        if isinstance(data, dict):
+            for data_key in ("battery_level", "percentage_charged", "battery_soc"):
+                percent = _coerce_percent(data.get(data_key))
+                if percent is not None:
+                    return percent
+
+    local_runtime = entry_data.get("powerwall_local")
+    local_coord = local_runtime.get("coordinator") if isinstance(local_runtime, dict) else None
+    local_data = getattr(local_coord, "data", None)
+    if isinstance(local_data, dict):
+        for data_key in ("battery_level", "percentage_charged", "battery_soc"):
+            percent = _coerce_percent(local_data.get(data_key))
+            if percent is not None:
+                return percent
+
+    states = getattr(hass, "states", None)
+    if states is not None:
+        for entity_id in (
+            "sensor.power_sync_battery_level",
+            "sensor.power_sync_tesla_battery_level",
+        ):
+            state = states.get(entity_id)
+            percent = _coerce_percent(getattr(state, "state", None))
+            if percent is not None:
+                return percent
+
+    return None
 
 
 async def _get_tesla_ev_entity(
@@ -1786,17 +1851,38 @@ async def _action_preserve_charge(
         finally:
             await controller.disconnect()
 
-    from ..const import CONF_BATTERY_SYSTEM, BATTERY_SYSTEM_TESLA, DOMAIN, SERVICE_SET_GRID_EXPORT
+    from ..const import CONF_BATTERY_SYSTEM, BATTERY_SYSTEM_TESLA, DOMAIN, SERVICE_SET_BACKUP_RESERVE
     if config_entry.data.get(CONF_BATTERY_SYSTEM) != BATTERY_SYSTEM_TESLA:
-        _LOGGER.debug("preserve_charge via grid export not supported for non-Tesla systems")
+        _LOGGER.debug("preserve_charge not supported for this non-Tesla system")
         return None
+
+    current_soc = _get_current_home_battery_soc(hass, config_entry)
+    if current_soc is None:
+        _LOGGER.error("preserve_charge: could not determine current home battery SOC")
+        return False
+
+    reserve_percent = _tesla_preserve_reserve_percent(current_soc)
+    if current_soc > 80 and reserve_percent == 80:
+        _LOGGER.info(
+            "preserve_charge: Tesla rejects backup reserve values 81-99%%; "
+            "holding at 80%% for current SOC %d%%",
+            current_soc,
+        )
 
     try:
         await hass.services.async_call(
             DOMAIN,
-            SERVICE_SET_GRID_EXPORT,
-            {"rule": "never", "source": "automation"},
+            SERVICE_SET_BACKUP_RESERVE,
+            {
+                "percent": reserve_percent,
+                "source": "automation_preserve_charge",
+            },
             blocking=True,
+        )
+        _LOGGER.info(
+            "preserve_charge: set Tesla backup reserve to %d%% (current SOC %d%%)",
+            reserve_percent,
+            current_soc,
         )
         return True
     except Exception as e:

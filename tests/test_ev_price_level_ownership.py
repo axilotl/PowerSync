@@ -1486,6 +1486,112 @@ def test_auto_schedule_preserve_does_not_overwrite_price_level_intent(
     assert preserve_state["source"] == "price_level_charging"
 
 
+def test_auto_schedule_active_preserve_sets_optimizer_intent():
+    hass = _FakeHass()
+    executor = ev_planner.AutoScheduleExecutor(
+        hass,
+        _FakeConfigEntry(),
+        planner=SimpleNamespace(),
+    )
+    settings = ev_planner.AutoScheduleSettings(
+        vehicle_id=VIN,
+        preserve_home_battery=True,
+    )
+    state = ev_planner.AutoScheduleState(vehicle_id=VIN, is_charging=True)
+
+    executor._sync_active_charging_preserve_intent(
+        VIN,
+        True,
+        state,
+        "Smart Schedule charging",
+    )
+
+    preserve_state = hass.data["power_sync"]["entry-1"]["scheduled_ev_preserve_state"]
+    assert preserve_state["active"] is True
+    assert preserve_state["source"] == "smart_schedule"
+    assert preserve_state["mode"] == "no_discharge_charge_allowed"
+    assert preserve_state["reason"] == "Smart Schedule charging"
+
+
+def test_auto_schedule_active_preserve_waits_for_all_vehicles_before_clear():
+    hass = _FakeHass()
+    executor = ev_planner.AutoScheduleExecutor(
+        hass,
+        _FakeConfigEntry(),
+        planner=SimpleNamespace(),
+    )
+    settings = ev_planner.AutoScheduleSettings(preserve_home_battery=True)
+    first = ev_planner.AutoScheduleState(vehicle_id="ev-1", is_charging=True)
+    second = ev_planner.AutoScheduleState(vehicle_id="ev-2", is_charging=True)
+
+    executor._sync_active_charging_preserve_intent(
+        "ev-1",
+        True,
+        first,
+        "first vehicle charging",
+    )
+    executor._sync_active_charging_preserve_intent(
+        "ev-2",
+        True,
+        second,
+        "second vehicle charging",
+    )
+
+    first.is_charging = False
+    executor._sync_active_charging_preserve_intent(
+        "ev-1",
+        True,
+        first,
+        "first vehicle stopped",
+    )
+
+    preserve_state = hass.data["power_sync"]["entry-1"]["scheduled_ev_preserve_state"]
+    assert preserve_state["active"] is True
+    assert preserve_state["source"] == "smart_schedule"
+    assert preserve_state["reason"] == "second vehicle charging"
+
+    second.is_charging = False
+    executor._sync_active_charging_preserve_intent(
+        "ev-2",
+        True,
+        second,
+        "all smart schedule charging stopped",
+    )
+
+    preserve_state = hass.data["power_sync"]["entry-1"]["scheduled_ev_preserve_state"]
+    assert preserve_state["active"] is False
+    assert preserve_state["source"] == "smart_schedule"
+
+
+def test_auto_schedule_active_preserve_does_not_overwrite_other_ev_mode():
+    hass = _FakeHass()
+    hass.data["power_sync"]["entry-1"]["scheduled_ev_preserve_state"] = {
+        "active": True,
+        "mode": "no_discharge_charge_allowed",
+        "source": "price_level_charging",
+        "reason": "cheap price",
+    }
+    executor = ev_planner.AutoScheduleExecutor(
+        hass,
+        _FakeConfigEntry(),
+        planner=SimpleNamespace(),
+    )
+    settings = ev_planner.AutoScheduleSettings(preserve_home_battery=True)
+    state = ev_planner.AutoScheduleState(vehicle_id=VIN, is_charging=True)
+
+    executor._sync_active_charging_preserve_intent(
+        VIN,
+        True,
+        state,
+        "Smart Schedule charging",
+    )
+
+    preserve_state = hass.data["power_sync"]["entry-1"]["scheduled_ev_preserve_state"]
+    assert preserve_state["active"] is True
+    assert preserve_state["source"] == "price_level_charging"
+    assert preserve_state["reason"] == "cheap price"
+
+
 def test_auto_schedule_grid_start_uses_optimizer_battery_target(monkeypatch, fake_actions):
     fake_actions._action_start_ev_charging_dynamic = AsyncMock(return_value=True)
     monkeypatch.setattr(

@@ -15299,11 +15299,13 @@ class AutoScheduleStatusView(HomeAssistantView):
                     "departure_consume_battery_level": {str(k): v for k, v in vehicle_settings.departure_consume_battery_level.items()},
                     "departure_stop_at_battery_floor": {str(k): v for k, v in vehicle_settings.departure_stop_at_battery_floor.items()},
                     "departure_limit_grid_import": {str(k): v for k, v in vehicle_settings.departure_limit_grid_import.items()},
+                    "departure_preserve_home_battery": {str(k): v for k, v in vehicle_settings.departure_preserve_home_battery.items()},
                     # New field names
                     "min_battery_to_start": vehicle_settings.min_battery_to_start,
                     "consume_battery_level": vehicle_settings.consume_battery_level,
                     "stop_at_battery_floor": vehicle_settings.stop_at_battery_floor,
                     "limit_grid_import": vehicle_settings.limit_grid_import,
+                    "preserve_home_battery": vehicle_settings.preserve_home_battery,
                     # Backward compat aliases for older mobile clients
                     "home_battery_minimum": vehicle_settings.min_battery_to_start,
                     "no_grid_import": vehicle_settings.limit_grid_import,
@@ -27669,7 +27671,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 opt_coord is not None
                 and getattr(opt_coord, "_idle_reserve_adjustment", False)
             )
-            optimizer_write = reserve_source == "optimizer" or optimizer_is_idle
+            optimizer_write = (
+                reserve_source in ("optimizer", "automation_preserve_charge")
+                or optimizer_is_idle
+            )
             if not optimizer_write:
                 if opt_coord:
                     opt_coord._startup_backup_reserve = percent

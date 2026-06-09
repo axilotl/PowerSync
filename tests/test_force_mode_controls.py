@@ -100,6 +100,17 @@ def test_force_mode_persistence_uses_setup_store_reference():
     assert "await store.async_load()" in function_source
 
 
+def test_preserve_charge_backup_reserve_write_does_not_replace_user_reserve():
+    source = INIT_PATH.read_text()
+    tree = ast.parse(source)
+    function = _find_function(tree, "handle_set_backup_reserve")
+    function_source = ast.get_source_segment(source, function)
+
+    assert function_source is not None
+    assert '"automation_preserve_charge"' in function_source
+    assert 'reserve_source in ("optimizer", "automation_preserve_charge")' in function_source
+
+
 def test_monitoring_mode_optimizer_shutdown_releases_active_control():
     coordinator_source = OPTIMIZATION_COORDINATOR_PATH.read_text()
     coordinator_tree = ast.parse(coordinator_source)
@@ -850,7 +861,7 @@ def test_optimizer_backup_reserve_writes_do_not_persist_as_user_reserve():
 
     assert function_source is not None
     assert 'reserve_source = call.data.get("source")' in function_source
-    assert 'optimizer_write = reserve_source == "optimizer" or optimizer_is_idle' in function_source
+    assert 'reserve_source in ("optimizer", "automation_preserve_charge")' in function_source
     assert "if not optimizer_write:" in function_source
     persistence_branch = function_source.split("if not optimizer_write:", 1)[1]
     assert '"_user_backup_reserve": percent' in persistence_branch
