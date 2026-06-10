@@ -148,7 +148,8 @@ def test_initial_optimizer_pass_is_deferred_after_enable():
         in polling_loop_source
     )
     assert "await asyncio.sleep(startup_delay)" in polling_loop_source
-    assert "if self._initial_opt_task is not None:" in polling_loop_source
+    assert "not initial_task.done()" in polling_loop_source
+    assert "self._initial_opt_task = None" in initial_run_source
 
 
 def test_aemo_dispatch_sync_debounces_during_startup():

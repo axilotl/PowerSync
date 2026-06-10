@@ -269,6 +269,27 @@ def _coordinator(opt_module, provider: str, profit_max: bool = False, **options)
     return coordinator
 
 
+def test_initial_optimization_task_handle_clears_after_startup_pass(opt_module):
+    async def _run():
+        coordinator = _coordinator(opt_module, "globird")
+        coordinator.hass = SimpleNamespace(is_running=True)
+        coordinator._enabled = True
+        coordinator._initial_opt_task = asyncio.current_task()
+        calls = []
+
+        async def _run_optimization():
+            calls.append(True)
+
+        coordinator._run_optimization = _run_optimization
+
+        await coordinator._run_initial_optimization_after_startup_delay()
+
+        assert calls == [True]
+        assert coordinator._initial_opt_task is None
+
+    asyncio.run(_run())
+
+
 class _FakeMinSocCoordinator:
     def __init__(self) -> None:
         self.min_soc_calls = []
@@ -1582,6 +1603,15 @@ def _execution_coordinator(opt_module, battery: _FakeBattery, soc: float):
     coordinator._pre_idle_backup_reserve = None
     coordinator._idle_hold_reserve = None
     coordinator._scheduled_ev_no_discharge_active = False
+    coordinator._optimizer_force_state = {
+        "active": False,
+        "type": None,
+        "expires_at": None,
+        "hardware_expires_at": None,
+        "power_w": 0,
+        "source": "optimizer",
+        "scope": "optimizer",
+    }
     coordinator._last_export_prices = None
     coordinator.energy_coordinator = None
     coordinator.battery_system = "tesla"
@@ -1594,6 +1624,44 @@ def _execution_coordinator(opt_module, battery: _FakeBattery, soc: float):
 
     coordinator._get_battery_state = _battery_state
     return coordinator
+
+
+def test_coordinator_refresh_applies_cached_charge_at_action_boundary(opt_module):
+    battery = _FakeBattery()
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.25)
+    coordinator._enabled = True
+    coordinator._optimization_lock = SimpleNamespace(locked=lambda: False)
+    coordinator.get_api_data = lambda: {"ok": True}
+    boundary = datetime(2026, 5, 3, 11, 0, tzinfo=timezone.utc)
+    actions = [
+        SimpleNamespace(
+            action="self_consumption",
+            power_w=0,
+            timestamp=boundary - timedelta(minutes=5),
+        ),
+        SimpleNamespace(
+            action="charge",
+            power_w=5000,
+            timestamp=boundary,
+        ),
+        SimpleNamespace(
+            action="self_consumption",
+            power_w=0,
+            timestamp=boundary + timedelta(minutes=5),
+        ),
+    ]
+    coordinator._current_schedule = SimpleNamespace(actions=actions)
+    original_now = opt_module.dt_util.now
+    opt_module.dt_util.now = lambda *args, **kwargs: boundary
+
+    try:
+        result = asyncio.run(coordinator._async_update_data())
+    finally:
+        opt_module.dt_util.now = original_now
+
+    assert result == {"ok": True}
+    assert battery.force_charge_calls == [(5, 5000, False)]
+    assert coordinator._last_executed_action == "charge"
 
 
 def _enable_scheduled_ev_preserve(coordinator):
