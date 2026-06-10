@@ -8395,6 +8395,22 @@ class ProviderConfigView(HomeAssistantView):
                     f"{DOMAIN}_{entry.entry_id}_monitoring_mode",
                     bool(new_options.get(CONF_MONITORING_MODE, False)),
                 )
+                if (
+                    bool(new_options.get(CONF_MONITORING_MODE, False))
+                    and bool(entry.data.get(CONF_SIGENERGY_STATION_ID))
+                ):
+                    try:
+                        await self._hass.services.async_call(
+                            DOMAIN,
+                            SERVICE_RESTORE_NORMAL,
+                            {"source": "manual", "_native_control": True},
+                            blocking=True,
+                        )
+                    except Exception as err:
+                        _LOGGER.warning(
+                            "Monitoring mode enabled but Sigenergy native/VPP restore failed: %s",
+                            err,
+                        )
 
             _LOGGER.info("✅ Provider config updated successfully")
             return web.json_response({"success": True})
@@ -16328,6 +16344,34 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         """Check if monitoring mode is active (blocks all control commands)."""
         return entry.options.get(CONF_MONITORING_MODE, entry.data.get(CONF_MONITORING_MODE, False))
 
+    def _powersync_optimization_control_active() -> bool:
+        """Return True when PowerSync Smart Optimization owns dispatch."""
+        optimization_provider = entry.options.get(
+            CONF_OPTIMIZATION_PROVIDER,
+            entry.data.get(CONF_OPTIMIZATION_PROVIDER, OPT_PROVIDER_NATIVE),
+        )
+        optimization_enabled = entry.options.get(
+            CONF_OPTIMIZATION_ENABLED,
+            entry.data.get(
+                CONF_OPTIMIZATION_ENABLED,
+                optimization_provider == OPT_PROVIDER_POWERSYNC,
+            ),
+        )
+        return (
+            optimization_provider == OPT_PROVIDER_POWERSYNC
+            and bool(optimization_enabled)
+        )
+
+    def _sigenergy_restore_native_control(call: ServiceCall | None = None) -> bool:
+        """Return True when Sigenergy restore should hand back native/VPP control."""
+        if not is_sigenergy:
+            return False
+        if call is not None and bool(call.data.get("_native_control")):
+            return True
+        if _is_monitoring_mode():
+            return True
+        return not _powersync_optimization_control_active()
+
     def _control_call_source(call: ServiceCall) -> str:
         """Return the normalized source for a battery control service call."""
         source = str(call.data.get("source", "")).lower()
@@ -22424,10 +22468,36 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
 
             if _is_monitoring_mode():
-                _LOGGER.info(
-                    "[MONITORING] Persisted force %s was not replayed or restored after restart — blocked by monitoring mode",
-                    mode,
-                )
+                if is_sigenergy:
+                    _LOGGER.info(
+                        "[MONITORING] Persisted Sigenergy force %s will not be "
+                        "replayed; restoring native/VPP control",
+                        mode,
+                    )
+                    try:
+                        await hass.services.async_call(
+                            DOMAIN,
+                            SERVICE_RESTORE_NORMAL,
+                            {
+                                "source": persisted_source,
+                                "_native_control": True,
+                                "_allow_monitoring_restore": True,
+                            },
+                            blocking=True,
+                        )
+                    except Exception as e:
+                        _LOGGER.error(
+                            "Error restoring Sigenergy native/VPP control after "
+                            "persisted force %s: %s",
+                            mode,
+                            e,
+                            exc_info=True,
+                        )
+                else:
+                    _LOGGER.info(
+                        "[MONITORING] Persisted force %s was not replayed or restored after restart — blocked by monitoring mode",
+                        mode,
+                    )
                 if persisted_source == "optimizer":
                     hass.data[DOMAIN][entry.entry_id]["optimizer_force_restart_restore_pending"] = False
                 stored_data = await store.async_load() or {}
@@ -25716,18 +25786,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         restore_was_force_discharging = bool(force_discharge_state.get("active"))
         restore_was_force_charging = bool(force_charge_state.get("active"))
         force_mode_cleanup_restore = restore_was_force_discharging or restore_was_force_charging
+        sigenergy_native_control = _sigenergy_restore_native_control(call)
         allow_monitoring_restore = bool(
             call.data.get("_allow_monitoring_restore")
             and (optimizer_owned_restore or force_mode_cleanup_restore)
         )
+        monitoring_restore_allowed = allow_monitoring_restore or sigenergy_native_control
 
-        if _monitoring_mode_should_block_control(call) and not allow_monitoring_restore:
+        if _monitoring_mode_should_block_control(call) and not monitoring_restore_allowed:
             _LOGGER.info(
                 "[MONITORING] Would restore normal operation (source=%s) — blocked by monitoring mode",
                 source,
             )
             return
-        if _is_monitoring_mode() and allow_monitoring_restore:
+        if _is_monitoring_mode() and sigenergy_native_control:
+            _LOGGER.info(
+                "[MONITORING] Allowing Sigenergy native/VPP restore so Remote EMS is released"
+            )
+        elif _is_monitoring_mode() and monitoring_restore_allowed:
             _LOGGER.info(
                 "[MONITORING] Allowing force-mode restore cleanup so existing hardware control is released"
             )
@@ -25823,12 +25899,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         max_export_limit_kw=export_limit_kw,
                     )
 
-                    # Restore to self-consumption with export safety cap
-                    result = await controller.restore_normal()
+                    native_control = sigenergy_native_control
+                    result = await controller.restore_normal(
+                        native_control=native_control
+                    )
                     await controller.disconnect()
 
                     if result:
-                        _LOGGER.info("✅ Sigenergy normal operation restored (Remote EMS disabled)")
+                        if native_control:
+                            _LOGGER.info(
+                                "✅ Sigenergy normal operation restored (native/VPP control)"
+                            )
+                        else:
+                            _LOGGER.info(
+                                "✅ Sigenergy normal operation restored (Remote EMS mode 2)"
+                            )
                     else:
                         _LOGGER.warning("Sigenergy restore_normal failed")
 

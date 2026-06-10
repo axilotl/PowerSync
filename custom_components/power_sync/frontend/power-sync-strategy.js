@@ -280,7 +280,7 @@ class PowerSyncChart extends HTMLElement {
       const compactUnit = config.yUnitCompact || ['c', 'p', 'ct', 'c/kWh', 'p/kWh', 'ct/kWh'].includes(unit);
       const label = this._formatValue(tick, unit, compactUnit);
       if (!(config.hideZeroTickLabel && isZero)) {
-        svg += `<text x="${pad.left - 8}" y="${y + 4}" text-anchor="end" font-size="${compact ? 10 : 11}" fill="var(--secondary-text-color, #888)">${this._escSvg(label)}</text>`;
+        svg += `<text x="${pad.left - 6}" y="${y + 4}" text-anchor="end" font-size="${compact ? 10 : 11}" fill="var(--secondary-text-color, #888)">${this._escSvg(label)}</text>`;
       }
     }
 
@@ -2471,7 +2471,14 @@ class PowerSyncOptimizationPlan extends HTMLElement {
       line.style.left = `${cssX}px`;
       line.style.opacity = '0.75';
       tooltip.style.left = `${Math.min(Math.max(cssX, 84), rect.width - 84)}px`;
-      tooltip.style.top = `${Math.max(34, rect.height - chart.pad.bottom - 8)}px`;
+      const tooltipBottom = Math.max(34, rect.height - chart.pad.bottom - 8);
+      if (tooltip.offsetHeight && tooltipBottom - tooltip.offsetHeight < 8) {
+        tooltip.style.transform = 'translate(-50%, 0)';
+        tooltip.style.top = '8px';
+      } else {
+        tooltip.style.transform = 'translate(-50%, -100%)';
+        tooltip.style.top = `${tooltipBottom}px`;
+      }
       tooltip.style.opacity = '1';
     };
 
@@ -2488,7 +2495,7 @@ class PowerSyncOptimizationPlan extends HTMLElement {
       const y = pad.top + (chartH / 4) * i;
       svg += `<line x1="${pad.left}" y1="${y}" x2="${W - pad.right}" y2="${y}" stroke="var(--divider-color, #e0e0e0)" stroke-width="0.4" stroke-dasharray="4,3" opacity="0.65"/>`;
     }
-    svg += `<text x="${pad.left - 8}" y="${pad.top + 4}" text-anchor="end" font-size="${compact ? 9 : 10}" fill="var(--secondary-text-color, #888)">${this._escSvg(maxLabel)}</text>`;
+    svg += `<text x="${pad.left - 4}" y="${pad.top + 4}" text-anchor="end" font-size="${compact ? 9 : 10}" fill="var(--secondary-text-color, #888)">${this._escSvg(maxLabel)}</text>`;
     const labelEvery = Math.max(1, Math.round((6 * 60) / this._intervalMinutes(points.map(p => p.timestamp))));
     for (let i = 0; i < points.length; i += labelEvery) {
       const x = pad.left + (i / Math.max(1, points.length - 1)) * chartW;

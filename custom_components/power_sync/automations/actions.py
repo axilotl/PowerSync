@@ -209,6 +209,40 @@ def _is_sigenergy(config_entry: ConfigEntry) -> bool:
     return bool(config_entry.data.get(CONF_SIGENERGY_STATION_ID))
 
 
+def _sigenergy_native_control_active(config_entry: ConfigEntry) -> bool:
+    """Return True when Sigenergy native/VPP control should own dispatch."""
+    from ..const import (
+        CONF_MONITORING_MODE,
+        CONF_OPTIMIZATION_ENABLED,
+        CONF_OPTIMIZATION_PROVIDER,
+        OPT_PROVIDER_NATIVE,
+        OPT_PROVIDER_POWERSYNC,
+    )
+
+    if not _is_sigenergy(config_entry):
+        return False
+    if config_entry.options.get(
+        CONF_MONITORING_MODE,
+        config_entry.data.get(CONF_MONITORING_MODE, False),
+    ):
+        return True
+    optimization_provider = config_entry.options.get(
+        CONF_OPTIMIZATION_PROVIDER,
+        config_entry.data.get(CONF_OPTIMIZATION_PROVIDER, OPT_PROVIDER_NATIVE),
+    )
+    optimization_enabled = config_entry.options.get(
+        CONF_OPTIMIZATION_ENABLED,
+        config_entry.data.get(
+            CONF_OPTIMIZATION_ENABLED,
+            optimization_provider == OPT_PROVIDER_POWERSYNC,
+        ),
+    )
+    return (
+        optimization_provider != OPT_PROVIDER_POWERSYNC
+        or not bool(optimization_enabled)
+    )
+
+
 def _coerce_percent(value: Any) -> Optional[int]:
     """Return a 0-100 percent integer from coordinator/entity values."""
     if value in (None, "", "unknown", "unavailable"):
@@ -2053,7 +2087,7 @@ async def _action_disable_optimizer(
             await hass.services.async_call(
                 DOMAIN,
                 SERVICE_RESTORE_NORMAL,
-                {"source": "automation"},
+                {"source": "automation", "_native_control": True},
                 blocking=True,
             )
         except Exception as restore_err:
@@ -2388,26 +2422,6 @@ async def _action_restore_normal(
     config_entry: ConfigEntry
 ) -> bool:
     """Restore normal battery operation (cancel force charge/discharge)."""
-    if _is_sigenergy(config_entry):
-        # Sigenergy: Disable Remote EMS to return to native EMS
-        controller = await _get_sigenergy_controller(config_entry)
-        if not controller:
-            _LOGGER.error("restore_normal: Sigenergy Modbus not configured")
-            return False
-        try:
-            result = await controller.restore_normal()
-            if result:
-                _LOGGER.info("Sigenergy: Restored normal operation (Remote EMS disabled)")
-                return True
-            else:
-                _LOGGER.error("Sigenergy restore_normal() failed")
-                return False
-        except Exception as e:
-            _LOGGER.error(f"Failed to restore normal (Sigenergy): {e}")
-            return False
-        finally:
-            await controller.disconnect()
-
     from ..const import DOMAIN, SERVICE_RESTORE_NORMAL
 
     try:
@@ -5796,6 +5810,17 @@ async def _dynamic_ev_update_sigenergy_evdc_native_solar(
     live_status: dict,
 ) -> None:
     """Monitor EVDC solar handoff without sending dynamic rate commands."""
+    if _sigenergy_native_control_active(config_entry):
+        if not state.get("native_solar_mode_attempted"):
+            _LOGGER.info(
+                "Sigenergy EVDC solar surplus: native/VPP control active; "
+                "leaving Remote EMS disabled"
+            )
+        state["native_solar_mode_attempted"] = True
+        state["native_solar_mode_set"] = False
+        state["native_solar_mode_skipped"] = "native_control"
+        return
+
     if not state.get("native_solar_mode_attempted"):
         state["native_solar_mode_attempted"] = True
         controller = await _get_sigenergy_controller(config_entry)

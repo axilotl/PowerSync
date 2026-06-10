@@ -200,6 +200,7 @@ from .const import (
     CONF_SIGENERGY_TOKEN_EXPIRES_AT,
     DEFAULT_SIGENERGY_CLOUD_REGION,
     SIGENERGY_CLOUD_REGIONS,
+    SERVICE_RESTORE_NORMAL,
     # Sigenergy DC Curtailment via Modbus
     CONF_SIGENERGY_DC_CURTAILMENT_ENABLED,
     CONF_SIGENERGY_MODBUS_HOST,
@@ -8000,6 +8001,19 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             self.hass.config_entries.async_update_entry(
                 self.config_entry, data=new_data, options=new_options
             )
+            if battery_system == BATTERY_SYSTEM_SIGENERGY and monitoring_mode:
+                try:
+                    await self.hass.services.async_call(
+                        DOMAIN,
+                        SERVICE_RESTORE_NORMAL,
+                        {"source": "manual", "_native_control": True},
+                        blocking=True,
+                    )
+                except Exception as err:
+                    _LOGGER.warning(
+                        "Monitoring mode enabled but Sigenergy native/VPP restore failed: %s",
+                        err,
+                    )
 
             if structural_change:
                 self.hass.async_create_task(

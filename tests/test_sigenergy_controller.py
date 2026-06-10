@@ -320,3 +320,86 @@ def test_write_holding_registers_reconnects_once_after_not_connected(sigenergy_m
     assert success is True
     assert calls == 2
     assert connects == 1
+
+
+def test_restore_normal_keeps_remote_ems_for_powersync_control(sigenergy_module):
+    controller = sigenergy_module.SigenergyController(host="127.0.0.1")
+    controller._restore_backup_reserve_pct = 25
+    events: list[tuple[str, int | str, list[int] | None]] = []
+
+    async def connect():
+        return True
+
+    async def restore_export_limit():
+        events.append(("restore_export_limit", "called", None))
+        return True
+
+    async def restore_ess_limits():
+        events.append(("restore_ess_limits", "called", None))
+
+    async def write(address, values, slave_id=None):
+        events.append(("write", address, list(values)))
+        return True
+
+    async def set_backup_reserve(percent):
+        events.append(("set_backup_reserve", percent, None))
+        return True
+
+    controller.connect = connect
+    controller.restore_export_limit = restore_export_limit
+    controller._restore_ess_max_limits_to_rated = restore_ess_limits
+    controller._write_holding_registers = write
+    controller.set_backup_reserve = set_backup_reserve
+
+    assert asyncio.run(controller.restore_normal())
+
+    assert events == [
+        ("write", controller.REG_REMOTE_EMS_ENABLE, [1]),
+        (
+            "write",
+            controller.REG_REMOTE_EMS_CONTROL_MODE,
+            [controller.REMOTE_EMS_MODE_SELF_CONSUMPTION],
+        ),
+        ("restore_export_limit", "called", None),
+        ("restore_ess_limits", "called", None),
+        ("set_backup_reserve", 25, None),
+    ]
+
+
+def test_restore_normal_native_control_disables_remote_ems(sigenergy_module):
+    controller = sigenergy_module.SigenergyController(host="127.0.0.1")
+    controller._restore_backup_reserve_pct = 25
+    events: list[tuple[str, int | str, list[int] | None]] = []
+
+    async def connect():
+        return True
+
+    async def restore_export_limit():
+        events.append(("restore_export_limit", "called", None))
+        return True
+
+    async def restore_ess_limits():
+        events.append(("restore_ess_limits", "called", None))
+
+    async def write(address, values, slave_id=None):
+        events.append(("write", address, list(values)))
+        return True
+
+    async def set_backup_reserve(percent):
+        events.append(("set_backup_reserve", percent, None))
+        return True
+
+    controller.connect = connect
+    controller.restore_export_limit = restore_export_limit
+    controller._restore_ess_max_limits_to_rated = restore_ess_limits
+    controller._write_holding_registers = write
+    controller.set_backup_reserve = set_backup_reserve
+
+    assert asyncio.run(controller.restore_normal(native_control=True))
+
+    assert events == [
+        ("restore_export_limit", "called", None),
+        ("restore_ess_limits", "called", None),
+        ("write", controller.REG_REMOTE_EMS_ENABLE, [0]),
+        ("set_backup_reserve", 25, None),
+    ]

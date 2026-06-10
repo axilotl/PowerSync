@@ -337,6 +337,17 @@ def test_optimizer_plan_charts_have_tooltips():
     assert ".chart-tooltip-time" in source
 
 
+def test_optimizer_plan_chart_tooltips_stay_inside_android_webview():
+    """Android HA webview can render taller tooltip text, so keep it in bounds."""
+    source = STRATEGY_PATH.read_text()
+
+    assert "const tooltipBottom = Math.max(34, rect.height - chart.pad.bottom - 8);" in source
+    assert "tooltip.offsetHeight && tooltipBottom - tooltip.offsetHeight < 8" in source
+    assert "tooltip.style.transform = 'translate(-50%, 0)';" in source
+    assert "tooltip.style.top = '8px';" in source
+    assert 'x="${pad.left - 4}"' in source
+
+
 def test_dashboard_entity_resolver_accepts_ha_renamed_powersync_sensors():
     """HA may compose PowerSync sensor IDs from the integration/device name."""
     source = STRATEGY_PATH.read_text()

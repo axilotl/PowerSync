@@ -208,7 +208,7 @@ def test_monitoring_mode_blocks_automation_but_allows_manual_controls():
         source, _find_function(tree, "handle_restore_normal")
     )
     assert restore is not None
-    restore_guard = "if _monitoring_mode_should_block_control(call) and not allow_monitoring_restore:"
+    restore_guard = "if _monitoring_mode_should_block_control(call) and not monitoring_restore_allowed:"
     assert restore_guard in restore
     assert restore.index(restore_guard) < restore.index(
         '_cancel_all_force_timers("restore_normal")'
@@ -255,6 +255,9 @@ def test_monitoring_mode_blocks_persisted_force_replay_after_restart():
     assert restore.index("if _is_monitoring_mode():") < restore.index(
         "SERVICE_FORCE_DISCHARGE"
     )
+    assert "Persisted Sigenergy force %s will not be" in restore
+    assert '"_native_control": True' in restore
+    assert '"_allow_monitoring_restore": True' in restore
     assert 'stored_data["force_mode_state"] = None' in restore
 
 
@@ -379,8 +382,45 @@ def test_restore_normal_allows_monitoring_tou_sync_for_force_cleanup():
     assert "and (optimizer_owned_restore or force_mode_cleanup_restore)" in restore_source
     assert "restore normal is cleaning up an active force tariff" in restore_source
     assert restore_source.index("force_mode_cleanup_restore =") < restore_source.index(
-        "if _monitoring_mode_should_block_control(call) and not allow_monitoring_restore:"
+        "if _monitoring_mode_should_block_control(call) and not monitoring_restore_allowed:"
     )
+
+
+def test_sigenergy_restore_normal_uses_context_aware_native_control():
+    source = INIT_PATH.read_text()
+    tree = ast.parse(source)
+    owner_helper = _find_function(tree, "_powersync_optimization_control_active")
+    owner_helper_source = ast.get_source_segment(source, owner_helper)
+    helper = _find_function(tree, "_sigenergy_restore_native_control")
+    helper_source = ast.get_source_segment(source, helper)
+    restore = _find_function(tree, "handle_restore_normal")
+    restore_source = ast.get_source_segment(source, restore)
+
+    assert owner_helper_source is not None
+    assert helper_source is not None
+    assert restore_source is not None
+    assert 'call.data.get("_native_control")' in helper_source
+    assert "CONF_OPTIMIZATION_PROVIDER" in owner_helper_source
+    assert "CONF_OPTIMIZATION_ENABLED" in owner_helper_source
+    assert "OPT_PROVIDER_POWERSYNC" in owner_helper_source
+    assert "return not _powersync_optimization_control_active()" in helper_source
+    assert "sigenergy_native_control = _sigenergy_restore_native_control(call)" in restore_source
+    assert "monitoring_restore_allowed = allow_monitoring_restore or sigenergy_native_control" in restore_source
+    assert "native_control = sigenergy_native_control" in restore_source
+    assert "native_control=native_control" in restore_source
+
+
+def test_provider_config_monitoring_enable_restores_sigenergy_native_control():
+    source = INIT_PATH.read_text()
+    tree = ast.parse(source)
+    method = _find_class_method(tree, "ProviderConfigView", "post")
+    method_source = ast.get_source_segment(source, method)
+
+    assert method_source is not None
+    assert 'if "monitoring_mode" in data:' in method_source
+    assert "CONF_SIGENERGY_STATION_ID" in method_source
+    assert "SERVICE_RESTORE_NORMAL" in method_source
+    assert '{"source": "manual", "_native_control": True}' in method_source
 
 
 def test_restore_normal_treats_octopus_as_dynamic_sync_provider():

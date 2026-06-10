@@ -1078,6 +1078,28 @@ class SigenergyController(InverterController):
         """Restore from STANDBY to self-consumption mode."""
         return await self.set_self_consumption_mode()
 
+    async def disable_remote_ems(self) -> bool:
+        """Disable Remote EMS so Sigenergy native/VPP control can resume."""
+        transaction = self._modbus_transaction()
+        await transaction.__aenter__()
+        try:
+            if not await self.connect():
+                return False
+
+            result = await self._write_holding_registers(self.REG_REMOTE_EMS_ENABLE, [0])
+            if not result:
+                _LOGGER.error("Failed to disable Sigenergy Remote EMS")
+                return False
+
+            _LOGGER.info("Sigenergy Remote EMS disabled; native/VPP control restored")
+            return True
+
+        except Exception as e:
+            _LOGGER.error(f"Error disabling Sigenergy Remote EMS: {e}")
+            return False
+        finally:
+            await transaction.__aexit__(None, None, None)
+
     async def force_charge(self, power_kw: float = 10.0) -> bool:
         """Force battery to charge from grid.
 
@@ -1284,14 +1306,16 @@ class SigenergyController(InverterController):
         except Exception as e:
             _LOGGER.warning(f"Failed to restore ESS max limits to rated: {e}")
 
-    async def restore_normal(self) -> bool:
+    async def restore_normal(self, native_control: bool = False) -> bool:
         """Restore normal self-consumption operation.
 
-        Sets Remote EMS to maximum self-consumption mode (mode 2),
-        restores grid export limit to the safety cap, and restores ESS
-        max limits to rated values. Remote EMS stays enabled — mode 2
-        is equivalent to native self-consumption but allows instant
-        transitions to charge/discharge modes.
+        By default, sets Remote EMS to maximum self-consumption mode (mode 2),
+        restores grid export limit to the safety cap, and restores ESS max
+        limits to rated values. Remote EMS stays enabled so PowerSync can
+        transition to charge/discharge modes quickly.
+
+        When ``native_control`` is true, clears PowerSync limits and disables
+        Remote EMS so Sigenergy native/VPP control can resume.
 
         Returns:
             True if successful
@@ -1302,11 +1326,12 @@ class SigenergyController(InverterController):
             if not await self.connect():
                 return False
 
-            # 1. Set Remote EMS to self-consumption (leave enabled)
-            result = await self.set_self_consumption_mode()
-            if not result:
-                _LOGGER.error("Failed to set self-consumption mode during restore")
-                return False
+            if not native_control:
+                # 1. Set Remote EMS to self-consumption (leave enabled)
+                result = await self.set_self_consumption_mode()
+                if not result:
+                    _LOGGER.error("Failed to set self-consumption mode during restore")
+                    return False
 
             # 2. Restore grid export limit to safety cap
             # force_discharge sets this to a specific value — need to clear it
@@ -1317,6 +1342,11 @@ class SigenergyController(InverterController):
             # 3. Restore ESS max limits to rated values
             await self._restore_ess_max_limits_to_rated()
 
+            if native_control:
+                result = await self.disable_remote_ems()
+                if not result:
+                    return False
+
             # 4. Restore backup reserve if a target is set
             # Sigenergy firmware may reset backup SOC when Remote EMS mode
             # is toggled. Write it back to ensure the user's setting persists.
@@ -1326,6 +1356,10 @@ class SigenergyController(InverterController):
                     "Sigenergy backup reserve restored to %d%%",
                     self._restore_backup_reserve_pct,
                 )
+
+            if native_control:
+                _LOGGER.info("Sigenergy restored to native/VPP control")
+                return True
 
             _LOGGER.info("Sigenergy restored to self-consumption (Remote EMS mode 2, export limit restored)")
             return True

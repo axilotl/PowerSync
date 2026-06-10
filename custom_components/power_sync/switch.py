@@ -34,6 +34,7 @@ from .const import (
     CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED,
     CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED,
     CONF_POWERWALL_LOCAL_PAIRED,
+    CONF_SIGENERGY_STATION_ID,
     CONF_TESLA_ENERGY_SITE_ID,
     BATTERY_SYSTEM_TESLA,
     OPT_PROVIDER_POWERSYNC,
@@ -51,6 +52,7 @@ from .const import (
     SWITCH_TYPE_OPTIMIZATION_SPREAD_IMPORT,
     SWITCH_TYPE_OPTIMIZATION_ENABLED,
     SWITCH_TYPE_OPTIMIZATION_AUTO_APPLY_RESERVE,
+    SERVICE_RESTORE_NORMAL,
     DEFAULT_DISCHARGE_DURATION,
     ATTR_LAST_SYNC,
     ATTR_SYNC_STATUS,
@@ -1157,6 +1159,20 @@ class MonitoringModeSwitch(SwitchEntity):
             self._entry,
             options=new_options,
         )
+
+        if self._entry.data.get(CONF_SIGENERGY_STATION_ID):
+            try:
+                await self.hass.services.async_call(
+                    DOMAIN,
+                    SERVICE_RESTORE_NORMAL,
+                    {"source": "manual", "_native_control": True},
+                    blocking=True,
+                )
+            except Exception as err:
+                _LOGGER.warning(
+                    "Monitoring mode enabled but Sigenergy native/VPP restore failed: %s",
+                    err,
+                )
 
         self.async_write_ha_state()
 

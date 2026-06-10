@@ -79,8 +79,11 @@ def test_dpel_uses_structured_relay_config_when_base_missing_it():
         assert settings["enable_dynamic_limiting"] is True
         assert settings["installed_capacity"] == 4587.0
         assert settings["relay_config"] == {
-            "default_pct_limit": 100,
-            "limit_levels": [],
+            "default_pct_limit": 0.0,
+            "limit_levels": [
+                {"relays": f"{relay_state:04b}", "pct_limit": 0.0}
+                for relay_state in range(16)
+            ],
         }
     finally:
         restore_module()
@@ -114,9 +117,92 @@ def test_dpel_keeps_boolean_relay_config_fallbacks_after_structured_default():
             for payload in payloads[:3]
         ]
         assert relay_configs == [
-            {"default_pct_limit": 100, "limit_levels": []},
+            {
+                "default_pct_limit": 0.0,
+                "limit_levels": [
+                    {"relays": f"{relay_state:04b}", "pct_limit": 0.0}
+                    for relay_state in range(16)
+                ],
+            },
             False,
             True,
         ]
+    finally:
+        restore_module()
+
+
+def test_dpel_uses_load_following_percentage_relay_config():
+    module, restore_module = _load_enphase_controller_module()
+    try:
+        controller = module.EnphaseController("192.0.2.10")
+        payloads = []
+
+        async def get_installed_capacity_w() -> float:
+            return 4587.0
+
+        async def get_dpel_base_settings() -> None:
+            return None
+
+        async def post(endpoint: str, payload: dict) -> tuple[bool, int]:
+            payloads.append(payload)
+            return True, 200
+
+        controller._get_installed_capacity_w = get_installed_capacity_w
+        controller._get_dpel_base_settings = get_dpel_base_settings
+        controller._post = post
+
+        assert asyncio.run(
+            controller._set_dpel(
+                enabled=True,
+                limit_watts=2000,
+                use_production_limit=True,
+            )
+        ) == (True, True)
+
+        settings = payloads[0]["dynamic_pel_settings"]
+        expected_pct = 2000 / 4587.0 * 100.0
+        assert settings["export_limit"] is False
+        assert settings["limit_value_W"] == 2000.0
+        assert settings["relay_config"] == {
+            "default_pct_limit": expected_pct,
+            "limit_levels": [
+                {"relays": f"{relay_state:04b}", "pct_limit": expected_pct}
+                for relay_state in range(16)
+            ],
+        }
+    finally:
+        restore_module()
+
+
+def test_dpel_restore_uses_full_percentage_relay_config():
+    module, restore_module = _load_enphase_controller_module()
+    try:
+        controller = module.EnphaseController("192.0.2.10")
+        payloads = []
+
+        async def get_installed_capacity_w() -> float:
+            return 4587.0
+
+        async def get_dpel_base_settings() -> None:
+            return None
+
+        async def post(endpoint: str, payload: dict) -> tuple[bool, int]:
+            payloads.append(payload)
+            return True, 200
+
+        controller._get_installed_capacity_w = get_installed_capacity_w
+        controller._get_dpel_base_settings = get_dpel_base_settings
+        controller._post = post
+
+        assert asyncio.run(controller._set_dpel(enabled=False, limit_watts=0)) == (True, True)
+
+        settings = payloads[0]["dynamic_pel_settings"]
+        assert settings["relay_config"] == {
+            "default_pct_limit": 100.0,
+            "limit_levels": [
+                {"relays": f"{relay_state:04b}", "pct_limit": 100.0}
+                for relay_state in range(16)
+            ],
+        }
     finally:
         restore_module()

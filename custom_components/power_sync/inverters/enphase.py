@@ -61,9 +61,16 @@ class EnphaseController(InverterController):
     TOKEN_REFRESH_HOURS = 11
 
     @staticmethod
-    def _default_dpel_relay_config() -> dict:
-        """Return the neutral DPEL relay config expected by newer AU firmware."""
-        return {"default_pct_limit": 100, "limit_levels": []}
+    def _dpel_relay_config(pct_limit: float) -> dict:
+        """Return explicit DPEL relay limits expected by newer AU firmware."""
+        pct_limit = max(0.0, min(100.0, float(pct_limit)))
+        return {
+            "default_pct_limit": pct_limit,
+            "limit_levels": [
+                {"relays": f"{relay_state:04b}", "pct_limit": pct_limit}
+                for relay_state in range(16)
+            ],
+        }
 
     def __init__(
         self,
@@ -1039,6 +1046,14 @@ class EnphaseController(InverterController):
         # doesn't enforce — so the user thinks they're curtailed but isn't.
         installed_capacity_w = await self._get_installed_capacity_w()
 
+        if not enabled:
+            relay_pct_limit = 100.0
+        elif installed_capacity_w is not None and installed_capacity_w > 0:
+            relay_pct_limit = (float(limit_watts) / float(installed_capacity_w)) * 100.0
+        else:
+            relay_pct_limit = 0.0 if limit_watts <= 0 else 100.0
+        relay_config = self._dpel_relay_config(relay_pct_limit)
+
         # Strategy: read the gateway's current DPEL settings, merge in the
         # values we want to change, and POST the full thing. This handles
         # firmware that requires extra fields (relay_config, installed_capacity,
@@ -1060,11 +1075,9 @@ class EnphaseController(InverterController):
             if installed_capacity_w is not None and installed_capacity_w > 0:
                 merged_settings["installed_capacity"] = float(installed_capacity_w)
             # Some Envoy firmware (observed on AU D8.3.x with IQ8 systems)
-            # demands a structured `relay_config` object on every DPEL POST,
-            # but the matching GET /ivp/ss/dpel does NOT always return it. Use
-            # the neutral no-relay structure as the preferred fallback.
-            if "relay_config" not in merged_settings:
-                merged_settings["relay_config"] = self._default_dpel_relay_config()
+            # needs explicit 16-state relay coverage. Sparse or neutral
+            # relay_config values can return HTTP 200 without curtailing.
+            merged_settings["relay_config"] = relay_config
             _LOGGER.debug(
                 "Built DPEL payload by merging into gateway base: %s",
                 sorted(merged_settings.keys()),
@@ -1082,7 +1095,7 @@ class EnphaseController(InverterController):
         if installed_capacity_w is not None and installed_capacity_w > 0:
             primary_settings["installed_capacity"] = float(installed_capacity_w)
         # Same relay_config default as merged_settings — see comment above.
-        primary_settings["relay_config"] = self._default_dpel_relay_config()
+        primary_settings["relay_config"] = relay_config
 
         payloads = []
         # Preferred: merged payload (echoes back all gateway-required fields)
