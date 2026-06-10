@@ -424,6 +424,7 @@ class BatteryOptimizer:
         export_bonus_prices: list[float] | None = None,
         export_bonus_cap_kwh: float | None = None,
         export_reserve_floor: float | list[float] | None = None,
+        schedule_timestamps: list[datetime] | None = None,
     ) -> OptimizerResult:
         """
         Run the LP optimization.
@@ -444,6 +445,8 @@ class BatteryOptimizer:
             allow_grid_charge: Whether the optimizer may charge the battery
                 from grid import. When false, solar surplus can still charge
                 the battery.
+            schedule_timestamps: Optional per-slot timestamps aligned with the
+                price forecast.
 
         Returns:
             OptimizerResult with schedule and metadata
@@ -509,6 +512,7 @@ class BatteryOptimizer:
                         allow_grid_charge,
                         export_bonus_prices,
                         export_bonus_cap_kwh,
+                        schedule_timestamps,
                     )
                     result.solve_time_s = time.monotonic() - start_time
                     return result
@@ -530,6 +534,7 @@ class BatteryOptimizer:
                 allow_grid_charge,
                 export_bonus_prices,
                 export_bonus_cap_kwh,
+                schedule_timestamps,
             )
             result.solve_time_s = time.monotonic() - start_time
             return result
@@ -922,6 +927,7 @@ class BatteryOptimizer:
         allow_grid_charge: bool = True,
         export_bonus_prices: list[float] | None = None,
         export_bonus_cap_kwh: float | None = None,
+        schedule_timestamps: list[datetime] | None = None,
     ) -> OptimizerResult:
         """
         Solve the LP formulation using the HiGHS solver (highspy).
@@ -981,6 +987,7 @@ class BatteryOptimizer:
                 allow_grid_charge,
                 export_bonus_prices or [0.0] * n,
                 export_bonus_cap_kwh,
+                schedule_timestamps,
             )
         finally:
             if _soc_below_reserve:
@@ -1047,6 +1054,7 @@ class BatteryOptimizer:
         allow_grid_charge: bool = True,
         export_bonus_prices: list[float] | None = None,
         export_bonus_cap_kwh: float | None = None,
+        schedule_timestamps: list[datetime] | None = None,
     ) -> OptimizerResult:
         """Inner LP solver (separated for SOC-below-reserve guard in _solve_lp)."""
         formulation_start = time.monotonic()
@@ -1645,6 +1653,7 @@ class BatteryOptimizer:
                     allow_grid_charge,
                     export_bonus_prices,
                     export_bonus_cap_kwh,
+                    schedule_timestamps,
                 )
                 hold.lp_stats = {**lp_stats, "fallback_reason": "infeasible_self_consumption_hold"}
                 return hold
@@ -1657,6 +1666,7 @@ class BatteryOptimizer:
                 allow_grid_charge,
                 export_bonus_prices,
                 export_bonus_cap_kwh,
+                schedule_timestamps,
             )
             greedy.lp_stats = {**lp_stats, "fallback_reason": "solver_failed"}
             return greedy
@@ -1691,6 +1701,7 @@ class BatteryOptimizer:
             n, grid_import, grid_export, battery_charge, battery_discharge,
             solar, load, soc_0, import_prices, effective_export_prices,
             block_battery_charge,
+            schedule_timestamps,
         )
 
         # Calculate costs for first 24 hours only (display as daily cost)
@@ -2020,6 +2031,7 @@ class BatteryOptimizer:
             solar, load, soc_0, import_prices,
             [export_prices[t] + export_bonus_prices[t] for t in range(n)],
             block_battery_charge,
+            schedule_timestamps,
         )
 
         n_24h = min(n, int(24 * 60 / self.interval_minutes))
@@ -2065,6 +2077,7 @@ class BatteryOptimizer:
         allow_grid_charge: bool = True,
         export_bonus_prices: list[float] | None = None,
         export_bonus_cap_kwh: float | None = None,
+        schedule_timestamps: list[datetime] | None = None,
     ) -> OptimizerResult:
         """
         Greedy fallback optimizer.
@@ -2259,6 +2272,7 @@ class BatteryOptimizer:
             n, grid_import, grid_export, battery_charge, battery_discharge,
             solar, load, soc_0, import_prices, effective_export_prices,
             block_battery_charge,
+            schedule_timestamps,
         )
 
         # Calculate costs for first 24 hours only (display as daily cost)
@@ -2320,6 +2334,7 @@ class BatteryOptimizer:
         import_prices: list[float] | None = None,
         export_prices: list[float] | None = None,
         block_battery_charge: list[bool] | None = None,
+        schedule_timestamps: list[datetime] | None = None,
     ) -> OptimizationSchedule:
         """
         Map LP solution to battery actions.
@@ -2338,13 +2353,17 @@ class BatteryOptimizer:
         dt = self.dt_hours
         eff = self.efficiency
         cap = self.capacity_kwh
-        # Snap to previous interval boundary so schedule timestamps
-        # align with hour/TOU boundaries (e.g. :00, :05, :10 for 5-min)
-        raw_now = dt_util.now()
-        now = raw_now.replace(
-            minute=(raw_now.minute // self.interval_minutes) * self.interval_minutes,
-            second=0, microsecond=0,
-        )
+        # Prefer caller-supplied forecast timestamps so displayed actions stay
+        # aligned with the price slots that produced them, even if solving
+        # crosses a 5-minute boundary in the executor thread.
+        if schedule_timestamps:
+            now = schedule_timestamps[0]
+        else:
+            raw_now = dt_util.now()
+            now = raw_now.replace(
+                minute=(raw_now.minute // self.interval_minutes) * self.interval_minutes,
+                second=0, microsecond=0,
+            )
         threshold_kw = ACTION_THRESHOLD_W / 1000.0
 
         block_battery_charge = block_battery_charge or [False] * n
@@ -2354,7 +2373,11 @@ class BatteryOptimizer:
         self_consumption_floor = self._natural_self_consumption_floor(soc_0)
 
         for t in range(n):
-            ts = now + timedelta(minutes=t * self.interval_minutes)
+            ts = (
+                schedule_timestamps[t]
+                if schedule_timestamps and t < len(schedule_timestamps)
+                else now + timedelta(minutes=t * self.interval_minutes)
+            )
             export_floor = max(
                 optimizer_reserve,
                 self._configured_export_reserve_floor_for_range(t, t + 1),

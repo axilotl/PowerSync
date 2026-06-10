@@ -350,6 +350,7 @@ def test_ev_charging_save_allows_clearing_generic_charger_entities():
         "CONF_GENERIC_CHARGER_SWITCH_ENTITY",
         "CONF_GENERIC_CHARGER_AMPS_ENTITY",
         "CONF_GENERIC_CHARGER_STATUS_ENTITY",
+        "CONF_GENERIC_CHARGER_POWER_ENTITY",
         "CONF_GENERIC_CHARGER_SOC_ENTITY",
         "CONF_GENERIC_CHARGER_SOC_ENTITY_2",
     ):
@@ -358,6 +359,7 @@ def test_ev_charging_save_allows_clearing_generic_charger_entities():
         "if generic_switch:",
         "if generic_amps:",
         "if generic_status:",
+        "if generic_power:",
         "if generic_soc:",
         "if generic_soc_2:",
     ):
@@ -377,6 +379,13 @@ def test_ev_charging_fallback_generic_soc_sensor_is_translated():
                 step["data"]["generic_charger_soc_entity_2"]
                 == "Fallback EV battery SoC sensor"
             )
+            assert (
+                step["data"]["generic_charger_power_entity"]
+                == "EV charging power sensor"
+            )
+            assert "measured EV charging power" in step["data_description"][
+                "generic_charger_power_entity"
+            ]
             assert "primary SoC sensor" in step["data_description"][
                 "generic_charger_soc_entity_2"
             ]
@@ -551,6 +560,10 @@ def test_provider_portal_login_has_dedicated_options_sections():
 
 def test_flow_power_api_key_setup_validates_and_routes_sites():
     source = CONFIG_FLOW_PATH.read_text()
+    validate_source = ast.get_source_segment(
+        source,
+        _top_level_function("validate_flow_power_api_key"),
+    )
     setup_source = ast.get_source_segment(
         source,
         _config_flow_method("async_step_flow_power_setup"),
@@ -560,13 +573,20 @@ def test_flow_power_api_key_setup_validates_and_routes_sites():
         _config_flow_method("async_step_flow_power_site"),
     )
 
+    assert validate_source is not None
     assert setup_source is not None
     assert site_source is not None
+    assert "FLOW_POWER_KWATCH_REGIONS" in validate_source
+    assert "client.dispatch5mins(api_region, period=1)" in validate_source
+    assert "client.predispatch30mins(api_region, period=1)" in validate_source
+    assert '"site_lookup_error": site_lookup_error or "no_sites"' in validate_source
     assert "CONF_FLOWPOWER_API_KEY" in setup_source
     assert "validate_flow_power_api_key" in setup_source
+    assert 'user_input.get(CONF_FLOW_POWER_STATE, "NSW1")' in setup_source
     assert 'user_input[CONF_FLOW_POWER_PRICE_SOURCE] = "kwatch" if api_key else "aemo"' in setup_source
     assert "len(self._flow_power_sites) == 1" in setup_source
     assert "async_step_flow_power_site()" in setup_source
+    assert "if self._flow_power_sites" in setup_source
     assert "CONF_FLOWPOWER_NMI" in site_source
     assert "_prefill_flow_power_network_tariff" in site_source
 
@@ -593,7 +613,9 @@ def test_flow_power_options_collects_kwatch_key_before_network_options():
     assert "async_step_flow_power_api_key_options()" in options_source
     assert "validate_flow_power_api_key" in api_source
     assert "CONF_FLOWPOWER_API_KEY" in api_source
+    assert 'self._get_option(CONF_FLOW_POWER_STATE, "NSW1")' in api_source
     assert "async_step_flow_power_site_options()" in api_source
+    assert "async_step_flow_power_network_options()" in api_source
     assert "CONF_FLOWPOWER_NMI" in site_source
 
 

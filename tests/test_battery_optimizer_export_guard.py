@@ -5,7 +5,7 @@ from __future__ import annotations
 import importlib
 import sys
 import types
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -1055,6 +1055,56 @@ def test_zerohero_free_import_window_reports_continuous_force_charge(
     assert all(action.battery_charge_w == 12000 for action in free_window)
     assert max(action.battery_discharge_w for action in free_window) <= 1e-6
     assert result.schedule.charge_w[free_start:free_start + free_slots] == [12000] * 36
+
+
+def test_zerohero_schedule_uses_forecast_timestamps_when_solver_clock_drifts(
+    battery_optimizer_module,
+):
+    battery_optimizer_module.dt_util.now = (
+        lambda *args, **kwargs: datetime(2026, 6, 10, 8, 15, tzinfo=timezone.utc)
+    )
+    optimizer = battery_optimizer_module.BatteryOptimizer(
+        capacity_wh=48000,
+        max_charge_w=12000,
+        max_discharge_w=12000,
+        backup_reserve=0.20,
+        interval_minutes=5,
+        horizon_hours=14,
+    )
+    n = 14 * 12
+    forecast_start = datetime(2026, 6, 10, 8, 0, tzinfo=timezone.utc)
+    schedule_timestamps = [
+        forecast_start + timedelta(minutes=5 * idx)
+        for idx in range(n)
+    ]
+    free_start = 3 * 12
+    free_slots = 3 * 12
+    prices = [0.363] * n
+    for idx in range(free_start, free_start + free_slots):
+        prices[idx] = 0.0
+
+    result = optimizer.optimize(
+        import_prices=prices,
+        export_prices=[0.0] * n,
+        solar_forecast=[0.0] * n,
+        load_forecast=[1.0] * n,
+        current_soc=0.42,
+        acquisition_cost_kwh=0.0,
+        allow_battery_export=False,
+        block_battery_charge=False,
+        schedule_timestamps=schedule_timestamps,
+    )
+
+    free_window = result.schedule.actions[free_start:free_start + free_slots]
+
+    assert all(action.action == "charge" for action in free_window)
+    assert free_window[0].timestamp == datetime(
+        2026, 6, 10, 11, 0, tzinfo=timezone.utc
+    )
+    assert free_window[-1].timestamp + timedelta(minutes=5) == datetime(
+        2026, 6, 10, 14, 0, tzinfo=timezone.utc
+    )
+    assert result.schedule.last_updated == forecast_start
 
 
 def test_zerohero_free_import_before_positive_fit_schedules_export(

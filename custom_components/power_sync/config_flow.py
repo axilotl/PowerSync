@@ -85,6 +85,7 @@ from .const import (
     BATTERY_SYSTEM_FRONIUS_RESERVA,
     BATTERY_SYSTEM_NEOVOLT,
     BATTERY_SYSTEM_SOLAREDGE,
+    BATTERY_SYSTEM_ANKER_SOLIX,
     BATTERY_SYSTEM_CUSTOM,
     BATTERY_SYSTEMS,
     CONF_CUSTOM_BATTERY_LEVEL_ENTITY,
@@ -141,6 +142,25 @@ from .const import (
     DEFAULT_SOLAREDGE_PORT,
     DEFAULT_SOLAREDGE_SLAVE_ID,
     DEFAULT_SOLAREDGE_RATED_POWER_W,
+    # Anker Solix battery system configuration
+    CONF_ANKER_SOLIX_CONNECTION_TYPE,
+    CONF_ANKER_SOLIX_MODBUS_HOST,
+    CONF_ANKER_SOLIX_MODBUS_PORT,
+    CONF_ANKER_SOLIX_MODBUS_SLAVE_ID,
+    CONF_ANKER_SOLIX_CONFIG_ENTRY_ID,
+    CONF_ANKER_SOLIX_ENTITY_PREFIX,
+    CONF_ANKER_SOLIX_BATTERY_CAPACITY_KWH,
+    CONF_ANKER_SOLIX_MAX_CHARGE_KW,
+    CONF_ANKER_SOLIX_MAX_DISCHARGE_KW,
+    ANKER_SOLIX_CONNECTION_TYPES,
+    ANKER_SOLIX_CONNECTION_MODBUS,
+    ANKER_SOLIX_CONNECTION_OFFICIAL_HA,
+    ANKER_SOLIX_CONNECTION_CLOUD_HA,
+    DEFAULT_ANKER_SOLIX_MODBUS_PORT,
+    DEFAULT_ANKER_SOLIX_MODBUS_SLAVE_ID,
+    DEFAULT_ANKER_SOLIX_BATTERY_CAPACITY_KWH,
+    DEFAULT_ANKER_SOLIX_MAX_CHARGE_KW,
+    DEFAULT_ANKER_SOLIX_MAX_DISCHARGE_KW,
     # AlphaESS battery system configuration
     CONF_ALPHAESS_MODBUS_HOST,
     CONF_ALPHAESS_MODBUS_PORT,
@@ -227,6 +247,7 @@ from .const import (
     DEFAULT_GLOBIRD_ZEROHERO_IMPORT_LIMIT_KW,
     FLOW_POWER_STATES,
     FLOW_POWER_PRICE_SOURCES,
+    FLOW_POWER_KWATCH_REGIONS,
     # Flow Power PEA configuration
     CONF_PEA_ENABLED,
     CONF_FLOW_POWER_BASE_RATE,
@@ -339,6 +360,7 @@ from .const import (
     CONF_GENERIC_CHARGER_SWITCH_ENTITY,
     CONF_GENERIC_CHARGER_AMPS_ENTITY,
     CONF_GENERIC_CHARGER_STATUS_ENTITY,
+    CONF_GENERIC_CHARGER_POWER_ENTITY,
     CONF_GENERIC_CHARGER_SOC_ENTITY,
     CONF_GENERIC_CHARGER_SOC_ENTITY_2,
     # Sigenergy EV charger configuration
@@ -874,11 +896,13 @@ async def validate_amber_token(hass: HomeAssistant, api_token: str) -> dict[str,
 async def validate_flow_power_api_key(
     hass: HomeAssistant,
     api_key: str,
+    region: str = "NSW1",
 ) -> dict[str, Any]:
-    """Validate Flow Power KWatch API key and return residential sites."""
+    """Validate Flow Power KWatch API key and return residential sites when available."""
     if not api_key:
         return {"success": False, "error": "invalid_api_key"}
 
+    site_lookup_error: str | None = None
     try:
         from .flow_power_api import FlowPowerAPIClient, FlowPowerAPIError
 
@@ -887,16 +911,40 @@ async def validate_flow_power_api_key(
     except FlowPowerAPIError as err:
         if str(err) == "invalid_api_key":
             return {"success": False, "error": "invalid_api_key"}
+        site_lookup_error = str(err)
+        sites = []
+    except aiohttp.ClientError:
+        site_lookup_error = "cannot_connect"
+        sites = []
+    except Exception as err:
+        _LOGGER.exception("Flow Power API validation failed: %s", err)
+        site_lookup_error = "cannot_connect"
+        sites = []
+
+    if sites:
+        return {"success": True, "sites": sites}
+
+    api_region = FLOW_POWER_KWATCH_REGIONS.get(region, str(region).lower())
+    try:
+        dispatch = await client.dispatch5mins(api_region, period=1)
+        forecast = await client.predispatch30mins(api_region, period=1)
+    except FlowPowerAPIError as err:
+        if str(err) == "invalid_api_key":
+            return {"success": False, "error": "invalid_api_key"}
         return {"success": False, "error": "cannot_connect"}
     except aiohttp.ClientError:
         return {"success": False, "error": "cannot_connect"}
     except Exception as err:
-        _LOGGER.exception("Flow Power API validation failed: %s", err)
+        _LOGGER.exception("Flow Power API price validation failed: %s", err)
         return {"success": False, "error": "cannot_connect"}
 
-    if not sites:
-        return {"success": False, "error": "no_sites"}
-    return {"success": True, "sites": sites}
+    if dispatch and forecast:
+        return {
+            "success": True,
+            "sites": [],
+            "site_lookup_error": site_lookup_error or "no_sites",
+        }
+    return {"success": False, "error": "cannot_connect" if site_lookup_error else "no_sites"}
 
 
 def _flow_power_site_label(site: dict[str, Any]) -> str:
@@ -1757,11 +1805,15 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._aemo_only_mode = False
 
             if api_key:
-                validation_result = await validate_flow_power_api_key(self.hass, api_key)
+                validation_result = await validate_flow_power_api_key(
+                    self.hass,
+                    api_key,
+                    user_input.get(CONF_FLOW_POWER_STATE, "NSW1"),
+                )
                 if not validation_result["success"]:
                     errors["base"] = validation_result.get("error", "cannot_connect")
                 else:
-                    self._flow_power_sites = validation_result["sites"]
+                    self._flow_power_sites = validation_result.get("sites", [])
                     if len(self._flow_power_sites) == 1:
                         site = self._flow_power_sites[0]
                         self._flow_power_data[CONF_FLOWPOWER_NMI] = site["nmi"]
@@ -1771,7 +1823,8 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             site,
                         )
                         return await self.async_step_flow_power_tariff()
-                    return await self.async_step_flow_power_site()
+                    if self._flow_power_sites:
+                        return await self.async_step_flow_power_site()
 
             # Route to tariff selection (region-filtered)
             if not errors:
@@ -2033,6 +2086,8 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return await self.async_step_neovolt_battery()
         elif self._selected_battery_system == BATTERY_SYSTEM_SOLAREDGE:
             return await self.async_step_solaredge()
+        elif self._selected_battery_system == BATTERY_SYSTEM_ANKER_SOLIX:
+            return await self.async_step_anker_solix()
         elif self._selected_battery_system == BATTERY_SYSTEM_CUSTOM:
             return await self.async_step_custom_battery()
         else:
@@ -2066,6 +2121,7 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             **getattr(self, "_fronius_reserva_data", {}),
             **getattr(self, "_neovolt_data", {}),
             **getattr(self, "_solaredge_data", {}),
+            **getattr(self, "_anker_solix_data", {}),
             **getattr(self, "_custom_battery_data", {}),
             CONF_ELECTRICITY_PROVIDER: self._selected_electricity_provider,
         }
@@ -2110,6 +2166,7 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             BATTERY_SYSTEM_FRONIUS_RESERVA: "Fronius GEN24 storage",
             BATTERY_SYSTEM_NEOVOLT: "Neovolt",
             BATTERY_SYSTEM_SOLAREDGE: "SolarEdge",
+            BATTERY_SYSTEM_ANKER_SOLIX: "Anker Solix",
             BATTERY_SYSTEM_CUSTOM: "Custom",
         }.get(self._selected_battery_system, "")
 
@@ -3573,6 +3630,264 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     ): BooleanSelector(),
                 }
             ),
+            errors=errors,
+        )
+
+    async def async_step_anker_solix(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Configure Anker Solix direct Modbus or HA integration bridge."""
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            connection_type = user_input.get(
+                CONF_ANKER_SOLIX_CONNECTION_TYPE,
+                ANKER_SOLIX_CONNECTION_MODBUS,
+            )
+            capacity_kwh = float(
+                user_input.get(
+                    CONF_ANKER_SOLIX_BATTERY_CAPACITY_KWH,
+                    DEFAULT_ANKER_SOLIX_BATTERY_CAPACITY_KWH,
+                )
+            )
+            max_charge_kw = float(
+                user_input.get(
+                    CONF_ANKER_SOLIX_MAX_CHARGE_KW,
+                    DEFAULT_ANKER_SOLIX_MAX_CHARGE_KW,
+                )
+            )
+            max_discharge_kw = float(
+                user_input.get(
+                    CONF_ANKER_SOLIX_MAX_DISCHARGE_KW,
+                    DEFAULT_ANKER_SOLIX_MAX_DISCHARGE_KW,
+                )
+            )
+            data = {
+                CONF_ANKER_SOLIX_CONNECTION_TYPE: connection_type,
+                CONF_ANKER_SOLIX_BATTERY_CAPACITY_KWH: capacity_kwh,
+                CONF_ANKER_SOLIX_MAX_CHARGE_KW: max_charge_kw,
+                CONF_ANKER_SOLIX_MAX_DISCHARGE_KW: max_discharge_kw,
+            }
+
+            try:
+                if connection_type == ANKER_SOLIX_CONNECTION_MODBUS:
+                    host = (
+                        user_input.get(CONF_ANKER_SOLIX_MODBUS_HOST) or ""
+                    ).strip()
+                    port = int(
+                        user_input.get(
+                            CONF_ANKER_SOLIX_MODBUS_PORT,
+                            DEFAULT_ANKER_SOLIX_MODBUS_PORT,
+                        )
+                    )
+                    slave_id = int(
+                        user_input.get(
+                            CONF_ANKER_SOLIX_MODBUS_SLAVE_ID,
+                            DEFAULT_ANKER_SOLIX_MODBUS_SLAVE_ID,
+                        )
+                    )
+                    if not host:
+                        errors["base"] = "anker_solix_host_required"
+                    else:
+                        from .inverters.anker_solix import AnkerSolixX1ModbusController
+
+                        controller = AnkerSolixX1ModbusController(
+                            host=host,
+                            port=port,
+                            slave_id=slave_id,
+                            battery_capacity_kwh=capacity_kwh,
+                            max_charge_kw=max_charge_kw,
+                            max_discharge_kw=max_discharge_kw,
+                        )
+                        try:
+                            if not await controller.connect():
+                                errors["base"] = "cannot_connect"
+                        finally:
+                            await controller.disconnect()
+                        data.update(
+                            {
+                                CONF_ANKER_SOLIX_MODBUS_HOST: host,
+                                CONF_ANKER_SOLIX_MODBUS_PORT: port,
+                                CONF_ANKER_SOLIX_MODBUS_SLAVE_ID: slave_id,
+                            }
+                        )
+                else:
+                    domain = (
+                        "anker_solix_official"
+                        if connection_type == ANKER_SOLIX_CONNECTION_OFFICIAL_HA
+                        else "anker_solix"
+                    )
+                    anker_entries = self.hass.config_entries.async_entries(domain)
+                    if not anker_entries:
+                        errors["base"] = "anker_solix_ha_not_installed"
+                    else:
+                        selected_entry_id = (
+                            anker_entries[0].entry_id
+                            if len(anker_entries) == 1
+                            else user_input.get(CONF_ANKER_SOLIX_CONFIG_ENTRY_ID, "")
+                        )
+                        entity_prefix = (
+                            user_input.get(CONF_ANKER_SOLIX_ENTITY_PREFIX) or ""
+                        ).strip()
+                        from .inverters.anker_solix import AnkerSolixEntityController
+
+                        controller = AnkerSolixEntityController(
+                            self.hass,
+                            integration_domain=domain,
+                            config_entry_id=selected_entry_id,
+                            entity_prefix=entity_prefix,
+                            battery_capacity_kwh=capacity_kwh,
+                            max_charge_kw=max_charge_kw,
+                            max_discharge_kw=max_discharge_kw,
+                        )
+                        await controller.connect()
+                        data.update(
+                            {
+                                CONF_ANKER_SOLIX_CONFIG_ENTRY_ID: selected_entry_id,
+                                CONF_ANKER_SOLIX_ENTITY_PREFIX: entity_prefix,
+                            }
+                        )
+            except Exception as exc:
+                _LOGGER.debug("Anker Solix setup validation failed: %s", exc)
+                errors["base"] = "cannot_connect"
+
+            if not errors:
+                self._anker_solix_data = data
+                return self._create_final_entry()
+
+        current = user_input or getattr(self, "_anker_solix_data", {})
+        connection_type = current.get(
+            CONF_ANKER_SOLIX_CONNECTION_TYPE,
+            ANKER_SOLIX_CONNECTION_MODBUS,
+        )
+        schema_fields: dict[Any, Any] = {
+            vol.Required(
+                CONF_ANKER_SOLIX_CONNECTION_TYPE,
+                default=connection_type,
+            ): SelectSelector(
+                SelectSelectorConfig(
+                    options=[
+                        SelectOptionDict(value=k, label=v)
+                        for k, v in ANKER_SOLIX_CONNECTION_TYPES.items()
+                    ],
+                    mode=SelectSelectorMode.DROPDOWN,
+                )
+            ),
+        }
+
+        if connection_type == ANKER_SOLIX_CONNECTION_MODBUS:
+            schema_fields[
+                vol.Required(
+                    CONF_ANKER_SOLIX_MODBUS_HOST,
+                    default=current.get(CONF_ANKER_SOLIX_MODBUS_HOST, ""),
+                )
+            ] = TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT))
+            schema_fields[
+                vol.Required(
+                    CONF_ANKER_SOLIX_MODBUS_PORT,
+                    default=current.get(
+                        CONF_ANKER_SOLIX_MODBUS_PORT,
+                        DEFAULT_ANKER_SOLIX_MODBUS_PORT,
+                    ),
+                )
+            ] = NumberSelector(
+                NumberSelectorConfig(min=1, max=65535, step=1, mode=NumberSelectorMode.BOX)
+            )
+            schema_fields[
+                vol.Required(
+                    CONF_ANKER_SOLIX_MODBUS_SLAVE_ID,
+                    default=current.get(
+                        CONF_ANKER_SOLIX_MODBUS_SLAVE_ID,
+                        DEFAULT_ANKER_SOLIX_MODBUS_SLAVE_ID,
+                    ),
+                )
+            ] = NumberSelector(
+                NumberSelectorConfig(min=1, max=247, step=1, mode=NumberSelectorMode.BOX)
+            )
+        else:
+            domain = (
+                "anker_solix_official"
+                if connection_type == ANKER_SOLIX_CONNECTION_OFFICIAL_HA
+                else "anker_solix"
+            )
+            anker_entries = self.hass.config_entries.async_entries(domain)
+            if len(anker_entries) > 1:
+                schema_fields[
+                    vol.Required(
+                        CONF_ANKER_SOLIX_CONFIG_ENTRY_ID,
+                        default=current.get(CONF_ANKER_SOLIX_CONFIG_ENTRY_ID, ""),
+                    )
+                ] = SelectSelector(
+                    SelectSelectorConfig(
+                        options=[
+                            SelectOptionDict(value=e.entry_id, label=e.title or e.entry_id)
+                            for e in anker_entries
+                        ],
+                        mode=SelectSelectorMode.DROPDOWN,
+                    )
+                )
+            schema_fields[
+                vol.Optional(
+                    CONF_ANKER_SOLIX_ENTITY_PREFIX,
+                    default=current.get(CONF_ANKER_SOLIX_ENTITY_PREFIX, ""),
+                )
+            ] = TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT))
+
+        schema_fields[
+            vol.Required(
+                CONF_ANKER_SOLIX_BATTERY_CAPACITY_KWH,
+                default=current.get(
+                    CONF_ANKER_SOLIX_BATTERY_CAPACITY_KWH,
+                    DEFAULT_ANKER_SOLIX_BATTERY_CAPACITY_KWH,
+                ),
+            )
+        ] = NumberSelector(
+            NumberSelectorConfig(
+                min=1,
+                max=200,
+                step=0.1,
+                unit_of_measurement="kWh",
+                mode=NumberSelectorMode.BOX,
+            )
+        )
+        schema_fields[
+            vol.Required(
+                CONF_ANKER_SOLIX_MAX_CHARGE_KW,
+                default=current.get(
+                    CONF_ANKER_SOLIX_MAX_CHARGE_KW,
+                    DEFAULT_ANKER_SOLIX_MAX_CHARGE_KW,
+                ),
+            )
+        ] = NumberSelector(
+            NumberSelectorConfig(
+                min=0.1,
+                max=50,
+                step=0.1,
+                unit_of_measurement="kW",
+                mode=NumberSelectorMode.BOX,
+            )
+        )
+        schema_fields[
+            vol.Required(
+                CONF_ANKER_SOLIX_MAX_DISCHARGE_KW,
+                default=current.get(
+                    CONF_ANKER_SOLIX_MAX_DISCHARGE_KW,
+                    DEFAULT_ANKER_SOLIX_MAX_DISCHARGE_KW,
+                ),
+            )
+        ] = NumberSelector(
+            NumberSelectorConfig(
+                min=0.1,
+                max=50,
+                step=0.1,
+                unit_of_measurement="kW",
+                mode=NumberSelectorMode.BOX,
+            )
+        )
+
+        return self.async_show_form(
+            step_id="anker_solix",
+            data_schema=vol.Schema(schema_fields),
             errors=errors,
         )
 
@@ -10034,6 +10349,10 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 default=self._get_option(CONF_GENERIC_CHARGER_STATUS_ENTITY, ""),
             ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
             vol.Optional(
+                CONF_GENERIC_CHARGER_POWER_ENTITY,
+                default=self._get_option(CONF_GENERIC_CHARGER_POWER_ENTITY, ""),
+            ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
+            vol.Optional(
                 CONF_GENERIC_CHARGER_SOC_ENTITY,
                 default=self._get_option(CONF_GENERIC_CHARGER_SOC_ENTITY, ""),
             ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
@@ -10159,6 +10478,9 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
         ).strip()
         final_data[CONF_GENERIC_CHARGER_STATUS_ENTITY] = ev_input.get(
             CONF_GENERIC_CHARGER_STATUS_ENTITY, ""
+        ).strip()
+        final_data[CONF_GENERIC_CHARGER_POWER_ENTITY] = ev_input.get(
+            CONF_GENERIC_CHARGER_POWER_ENTITY, ""
         ).strip()
         final_data[CONF_GENERIC_CHARGER_SOC_ENTITY] = ev_input.get(
             CONF_GENERIC_CHARGER_SOC_ENTITY, ""
@@ -10513,10 +10835,18 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
 
         if user_input is not None:
             api_key = user_input.get(CONF_FLOWPOWER_API_KEY, "")
-            validation_result = await validate_flow_power_api_key(self.hass, api_key)
+            region = self._flow_power_main_options.get(
+                CONF_FLOW_POWER_STATE,
+                self._get_option(CONF_FLOW_POWER_STATE, "NSW1"),
+            )
+            validation_result = await validate_flow_power_api_key(
+                self.hass,
+                api_key,
+                region,
+            )
             if validation_result["success"]:
                 self._flow_power_main_options[CONF_FLOWPOWER_API_KEY] = api_key
-                self._flow_power_sites = validation_result["sites"]
+                self._flow_power_sites = validation_result.get("sites", [])
                 if len(self._flow_power_sites) == 1:
                     site = self._flow_power_sites[0]
                     self._flow_power_main_options[CONF_FLOWPOWER_NMI] = site["nmi"]
@@ -10526,7 +10856,9 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                         site,
                     )
                     return await self.async_step_flow_power_network_options()
-                return await self.async_step_flow_power_site_options()
+                if self._flow_power_sites:
+                    return await self.async_step_flow_power_site_options()
+                return await self.async_step_flow_power_network_options()
             errors["base"] = validation_result.get("error", "cannot_connect")
 
         return self.async_show_form(

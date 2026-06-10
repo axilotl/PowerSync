@@ -161,7 +161,7 @@ def _install_power_sync_stubs() -> None:
     const_module.DEFAULT_EXPORT_BOOST_START = "17:00"
     const_module.DEFAULT_EXPORT_BOOST_END = "21:00"
     const_module.DEFAULT_EXPORT_BOOST_THRESHOLD = 0.0
-    const_module.DISCHARGE_DURATIONS = [5, 10, 15, 30, 45, 60, 75, 90, 105, 120, 150, 180, 210, 240]
+    const_module.DISCHARGE_DURATIONS = [5, 10, 15, 30, 45, 60, 75, 90, 105, 120, 135, 150, 165, 180, 195, 210, 225, 240]
     const_module.TARGET_EXPORT_POWER_BATTERY_SYSTEMS = {
         "goodwe", "sigenergy", "sungrow", "foxess",
         "alphaess", "solax", "saj_h2", "fronius_reserva", "neovolt",
@@ -267,6 +267,27 @@ def _coordinator(opt_module, provider: str, profit_max: bool = False, **options)
     coordinator._optimizer = None
     coordinator.energy_coordinator = None
     return coordinator
+
+
+def test_initial_optimization_task_handle_clears_after_startup_pass(opt_module):
+    async def _run():
+        coordinator = _coordinator(opt_module, "globird")
+        coordinator.hass = SimpleNamespace(is_running=True)
+        coordinator._enabled = True
+        coordinator._initial_opt_task = asyncio.current_task()
+        calls = []
+
+        async def _run_optimization():
+            calls.append(True)
+
+        coordinator._run_optimization = _run_optimization
+
+        await coordinator._run_initial_optimization_after_startup_delay()
+
+        assert calls == [True]
+        assert coordinator._initial_opt_task is None
+
+    asyncio.run(_run())
 
 
 class _FakeMinSocCoordinator:
@@ -1582,6 +1603,15 @@ def _execution_coordinator(opt_module, battery: _FakeBattery, soc: float):
     coordinator._pre_idle_backup_reserve = None
     coordinator._idle_hold_reserve = None
     coordinator._scheduled_ev_no_discharge_active = False
+    coordinator._optimizer_force_state = {
+        "active": False,
+        "type": None,
+        "expires_at": None,
+        "hardware_expires_at": None,
+        "power_w": 0,
+        "source": "optimizer",
+        "scope": "optimizer",
+    }
     coordinator._last_export_prices = None
     coordinator.energy_coordinator = None
     coordinator.battery_system = "tesla"
@@ -1594,6 +1624,44 @@ def _execution_coordinator(opt_module, battery: _FakeBattery, soc: float):
 
     coordinator._get_battery_state = _battery_state
     return coordinator
+
+
+def test_coordinator_refresh_applies_cached_charge_at_action_boundary(opt_module):
+    battery = _FakeBattery()
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.25)
+    coordinator._enabled = True
+    coordinator._optimization_lock = SimpleNamespace(locked=lambda: False)
+    coordinator.get_api_data = lambda: {"ok": True}
+    boundary = datetime(2026, 5, 3, 11, 0, tzinfo=timezone.utc)
+    actions = [
+        SimpleNamespace(
+            action="self_consumption",
+            power_w=0,
+            timestamp=boundary - timedelta(minutes=5),
+        ),
+        SimpleNamespace(
+            action="charge",
+            power_w=5000,
+            timestamp=boundary,
+        ),
+        SimpleNamespace(
+            action="self_consumption",
+            power_w=0,
+            timestamp=boundary + timedelta(minutes=5),
+        ),
+    ]
+    coordinator._current_schedule = SimpleNamespace(actions=actions)
+    original_now = opt_module.dt_util.now
+    opt_module.dt_util.now = lambda *args, **kwargs: boundary
+
+    try:
+        result = asyncio.run(coordinator._async_update_data())
+    finally:
+        opt_module.dt_util.now = original_now
+
+    assert result == {"ok": True}
+    assert battery.force_charge_calls == [(5, 5000, False)]
+    assert coordinator._last_executed_action == "charge"
 
 
 def _enable_scheduled_ev_preserve(coordinator):
@@ -2089,6 +2157,27 @@ def test_idle_at_reserve_floor_is_not_overridden_to_self_consumption(opt_module)
 
     assert battery.self_consumption_calls == 1
     assert battery.backup_reserve_calls == [20]
+    assert coordinator._last_executed_action == "idle"
+
+
+def test_goodwe_idle_does_not_write_dod_reserve_hold(opt_module):
+    battery = _FakeBattery()
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.80)
+    coordinator.battery_system = "goodwe"
+    coordinator._config.backup_reserve = 0.20
+    coordinator._startup_backup_reserve = 5
+
+    asyncio.run(
+        coordinator._execute_optimizer_action(
+            SimpleNamespace(action="idle", power_w=0)
+        )
+    )
+
+    assert battery.self_consumption_calls == 1
+    assert battery.restore_normal_calls == 0
+    assert battery.backup_reserve_calls == []
+    assert coordinator._pre_idle_backup_reserve is None
+    assert coordinator._idle_hold_reserve is None
     assert coordinator._last_executed_action == "idle"
 
 

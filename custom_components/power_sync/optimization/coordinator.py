@@ -527,6 +527,20 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         soc_pct = int(soc * 100)
         configured_idle_floor = int(self._config.backup_reserve * 100)
 
+        if self.battery_system == "goodwe" and not preserve_charge:
+            if hasattr(battery, "set_self_consumption_mode"):
+                await battery.set_self_consumption_mode()
+            elif hasattr(battery, "restore_normal"):
+                await battery.restore_normal()
+            _LOGGER.info(
+                "Optimizer: IDLE — GoodWe self-consumption without DOD hold "
+                "(current_soc=%d%%, optimizer_floor=%d%%)",
+                soc_pct,
+                configured_idle_floor,
+            )
+            self._idle_hold_reserve = None
+            return True
+
         if self._pre_idle_backup_reserve is None:
             if self._startup_backup_reserve is not None:
                 self._pre_idle_backup_reserve = self._startup_backup_reserve
@@ -2325,36 +2339,40 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         now, so a long hold is no longer needed to keep the event loop
         responsive during startup.
         """
-        if not self.hass.is_running:
-            from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
+        try:
+            if not self.hass.is_running:
+                from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
 
-            _LOGGER.info("Deferring initial optimization until HA finishes starting")
-            started = asyncio.Event()
-            unsub = self.hass.bus.async_listen_once(
-                EVENT_HOMEASSISTANT_STARTED, lambda _event: started.set()
-            )
-            # Bounded by the legacy startup window so a missed start event can
-            # never hold the first solve forever.
-            cap = max(0.0, float(INITIAL_OPTIMIZATION_DELAY_SECONDS))
-            try:
-                await asyncio.wait_for(started.wait(), timeout=cap or None)
-            except asyncio.TimeoutError:
-                pass
-            finally:
-                # async_listen_once removes its own listener once it fires;
-                # calling unsub() again raises "unknown job listener". Only
-                # remove it on the timeout path where it never fired, and guard
-                # the boundary race where it fires just as we time out.
-                if not started.is_set():
-                    try:
-                        unsub()
-                    except ValueError:
-                        pass
+                _LOGGER.info("Deferring initial optimization until HA finishes starting")
+                started = asyncio.Event()
+                unsub = self.hass.bus.async_listen_once(
+                    EVENT_HOMEASSISTANT_STARTED, lambda _event: started.set()
+                )
+                # Bounded by the legacy startup window so a missed start event can
+                # never hold the first solve forever.
+                cap = max(0.0, float(INITIAL_OPTIMIZATION_DELAY_SECONDS))
+                try:
+                    await asyncio.wait_for(started.wait(), timeout=cap or None)
+                except asyncio.TimeoutError:
+                    pass
+                finally:
+                    # async_listen_once removes its own listener once it fires;
+                    # calling unsub() again raises "unknown job listener". Only
+                    # remove it on the timeout path where it never fired, and guard
+                    # the boundary race where it fires just as we time out.
+                    if not started.is_set():
+                        try:
+                            unsub()
+                        except ValueError:
+                            pass
 
-        if not self._enabled:
-            return
+            if not self._enabled:
+                return
 
-        await self._run_optimization()
+            await self._run_optimization()
+        finally:
+            if self._initial_opt_task is asyncio.current_task():
+                self._initial_opt_task = None
 
     def _seconds_until_initial_optimization_allowed(self) -> float:
         """Return remaining startup hold before the first LP solve may run.
@@ -2761,6 +2779,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
             self._sync_grid_export_cap_to_optimizer()
             self._sync_optimizer_discharge_limits()
+            schedule_timestamps = self._price_timestamps(len(import_prices))
 
             def _auto_reserve_baseline_floor() -> float | None:
                 if not self.auto_apply_reserve_enabled:
@@ -2801,6 +2820,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         self._last_zerohero_bonus_prices,
                         self._last_zerohero_bonus_cap_kwh,
                         export_reserve_floor,
+                        schedule_timestamps,
                     )
                 finally:
                     if reserve_floor is not None:
@@ -3057,8 +3077,10 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         break
                     # The dedicated initial optimization task owns the first
                     # post-startup solve. Resume polling at the next boundary.
-                    if self._initial_opt_task is not None:
+                    initial_task = self._initial_opt_task
+                    if initial_task is not None and not initial_task.done():
                         continue
+                    self._initial_opt_task = None
 
                 # Re-optimize on each interval (executes the resulting action internally)
                 await self._run_optimization()
@@ -3068,6 +3090,30 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             except Exception as e:
                 _LOGGER.error("Error in schedule polling: %s", e)
                 await asyncio.sleep(60)
+
+    async def _execute_cached_current_action_if_changed(self) -> None:
+        """Apply the cached schedule action when coordinator refresh crosses a boundary."""
+        if not getattr(self, "_enabled", False):
+            return
+        if not getattr(self, "_executor", None):
+            return
+
+        optimization_lock = getattr(self, "_optimization_lock", None)
+        if optimization_lock is not None and optimization_lock.locked():
+            return
+
+        current_action = self._get_current_action()
+        action_name = getattr(current_action, "action", None)
+        if not current_action or not action_name:
+            return
+        if action_name == getattr(self, "_last_executed_action", None):
+            return
+
+        _LOGGER.info(
+            "Optimizer: applying cached schedule action %s on coordinator refresh",
+            action_name,
+        )
+        await self._execute_optimizer_action(current_action)
 
     def _seconds_until_next_interval(self) -> float:
         """Return seconds until the next optimizer interval boundary."""
@@ -3151,7 +3197,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         try:
             from ..const import DISCHARGE_DURATIONS
         except Exception:
-            DISCHARGE_DURATIONS = [5, 10, 15, 30, 45, 60, 75, 90, 105, 120, 150, 180, 210, 240]
+            DISCHARGE_DURATIONS = [5, 10, 15, 30, 45, 60, 75, 90, 105, 120, 135, 150, 165, 180, 195, 210, 225, 240]
 
         supported = sorted(int(duration) for duration in DISCHARGE_DURATIONS)
         if allow_boundary_overrun:
@@ -9025,6 +9071,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         _initial_opt_task; running it here as well caused duplicate Modbus
         writes when both fired at the same 5-min boundary.
         """
+        await self._execute_cached_current_action_if_changed()
         return self.get_api_data()
 
     # ========================================
