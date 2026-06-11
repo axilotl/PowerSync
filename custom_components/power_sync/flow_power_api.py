@@ -101,7 +101,7 @@ class FlowPowerAPIClient:
             return [item for item in payload if isinstance(item, dict)]
         if isinstance(payload, dict):
             for key in keys + ("data", "result", "results", "items", "value"):
-                value = payload.get(key)
+                value = FlowPowerAPIClient._get_value(payload, key)
                 if isinstance(value, list):
                     return [item for item in value if isinstance(item, dict)]
                 if isinstance(value, dict):
@@ -112,9 +112,24 @@ class FlowPowerAPIClient:
         return []
 
     @staticmethod
+    def _normalize_key(key: str) -> str:
+        return "".join(ch for ch in key.lower() if ch.isalnum())
+
+    @staticmethod
+    def _get_value(record: dict[str, Any], key: str) -> Any:
+        if key in record:
+            return record[key]
+
+        wanted = FlowPowerAPIClient._normalize_key(key)
+        for record_key, value in record.items():
+            if FlowPowerAPIClient._normalize_key(str(record_key)) == wanted:
+                return value
+        return None
+
+    @staticmethod
     def _first_number(record: dict[str, Any], *keys: str) -> float | None:
         for key in keys:
-            value = record.get(key)
+            value = FlowPowerAPIClient._get_value(record, key)
             if value in (None, ""):
                 continue
             try:
@@ -128,7 +143,7 @@ class FlowPowerAPIClient:
     @staticmethod
     def _first_text(record: dict[str, Any], *keys: str) -> str | None:
         for key in keys:
-            value = record.get(key)
+            value = FlowPowerAPIClient._get_value(record, key)
             if value not in (None, ""):
                 return str(value)
         return None
@@ -149,6 +164,9 @@ class FlowPowerAPIClient:
             "%Y-%m-%dT%H:%M:%S",
             "%Y-%m-%d %H:%M:%S",
             "%Y/%m/%d %H:%M:%S",
+            "%Y/%m/%d %H:%M",
+            "%d/%m/%Y %H:%M:%S",
+            "%d/%m/%Y %H:%M",
         ):
             try:
                 if fmt is None:
@@ -159,6 +177,12 @@ class FlowPowerAPIClient:
             except ValueError:
                 continue
         return None
+
+    @staticmethod
+    def _align_to_interval(value: datetime, duration: int) -> datetime:
+        value = value if value.tzinfo else value.replace(tzinfo=dt_util.UTC)
+        minute = (value.minute // duration) * duration
+        return value.replace(minute=minute, second=0, microsecond=0)
 
     async def get_residential_sites(self) -> list[dict[str, Any]]:
         """Return residential sites available to the API key."""
@@ -240,11 +264,15 @@ class FlowPowerAPIClient:
             "PriceData",
         )
         normalized: list[dict[str, Any]] = []
-        for record in records:
+        fallback_start = self._align_to_interval(dt_util.utcnow(), duration)
+        inferred_timestamps = 0
+        for idx, record in enumerate(records):
             price_mwh = self._first_number(
                 record,
                 "price",
                 "Price",
+                "priceMwh",
+                "price_mwh",
                 "rrp",
                 "RRP",
                 "Rrp",
@@ -268,10 +296,21 @@ class FlowPowerAPIClient:
                     "DateTime",
                     "periodDateTime",
                     "PeriodDateTime",
+                    "intervalDateTime",
+                    "IntervalDateTime",
+                    "forecastDateTime",
+                    "ForecastDateTime",
+                    "tradingInterval",
+                    "TradingInterval",
+                    "tradingIntervalStart",
+                    "TradingIntervalStart",
+                    "startTime",
+                    "StartTime",
                 )
             )
             if period_time is None:
-                period_time = dt_util.utcnow()
+                period_time = fallback_start + timedelta(minutes=duration * idx)
+                inferred_timestamps += 1
             normalized.append(
                 {
                     "nemTime": period_time.isoformat(),
@@ -287,6 +326,13 @@ class FlowPowerAPIClient:
                 type(payload).__name__,
             )
             return []
+
+        if inferred_timestamps:
+            _LOGGER.debug(
+                "Flow Power API inferred %d/%d price timestamps from response order",
+                inferred_timestamps,
+                len(normalized),
+            )
 
         normalized.sort(key=lambda item: item["nemTime"])
         return normalized

@@ -181,6 +181,60 @@ def test_flow_power_api_client_decodes_nested_json_string_payloads():
     assert forecast[0]["perKwh"] == 9.8
 
 
+def test_flow_power_api_client_normalizes_uppercase_kwatch_fields():
+    api = _flow_power_api_module()
+    session = _FakeSession(
+        {
+            "dispatch5mins": {
+                "PriceData": [
+                    {"SETTLEMENT_DATE": "2026/06/08 10:00:00", "RRP": 123.4}
+                ]
+            },
+            "predispatch30mins": {
+                "RESULT": [
+                    {"FORECAST_DATETIME": "2026/06/08 10:30:00", "PRICE": 98.0}
+                ]
+            },
+        }
+    )
+    client = api.FlowPowerAPIClient("secret-key", session)
+
+    async def run():
+        dispatch = await client.dispatch5mins("nsw")
+        forecast = await client.predispatch30mins("nsw")
+        return dispatch, forecast
+
+    dispatch, forecast = asyncio.run(run())
+
+    assert dispatch[0]["nemTime"] == "2026-06-08T10:00:00+00:00"
+    assert dispatch[0]["perKwh"] == 12.34
+    assert forecast[0]["nemTime"] == "2026-06-08T10:30:00+00:00"
+    assert forecast[0]["perKwh"] == 9.8
+
+
+def test_flow_power_api_client_does_not_collapse_untimestamped_forecasts():
+    api = _flow_power_api_module()
+    client = api.FlowPowerAPIClient("secret-key", None)
+
+    forecast = client._normalize_price_records(
+        {
+            "data": [
+                {"RRP": 100.0},
+                {"RRP": 200.0},
+                {"RRP": 300.0},
+            ]
+        },
+        duration=30,
+    )
+
+    assert [entry["nemTime"] for entry in forecast] == [
+        "2026-06-08T00:00:00+00:00",
+        "2026-06-08T00:30:00+00:00",
+        "2026-06-08T01:00:00+00:00",
+    ]
+    assert [entry["perKwh"] for entry in forecast] == [10.0, 20.0, 30.0]
+
+
 def test_flow_power_price_endpoints_can_work_when_site_lookup_fails():
     api = _flow_power_api_module()
     session = _FakeSession(
