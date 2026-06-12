@@ -510,6 +510,47 @@ def test_other_custom_tou_options_route_directly_to_custom_tariff():
     assert "return await self._async_route_custom_tou_options(provider)" in provider_router
 
 
+def test_other_custom_tou_initial_setup_routes_directly_to_custom_tariff():
+    source = CONFIG_FLOW_PATH.read_text()
+    provider_step = ast.get_source_segment(
+        source,
+        _config_flow_method("async_step_provider_selection"),
+    )
+    custom_step = ast.get_source_segment(
+        source,
+        _config_flow_method("async_step_custom_tariff"),
+    )
+    period_step = ast.get_source_segment(
+        source,
+        _config_flow_method("async_step_tariff_period"),
+    )
+    create_entry = ast.get_source_segment(
+        source,
+        _config_flow_method("_create_final_entry"),
+    )
+
+    assert provider_step is not None
+    assert 'provider == "other"' in provider_step
+    assert "return await self.async_step_custom_tariff()" in provider_step
+    assert "return await self.async_step_aemo_config()" not in provider_step[
+        provider_step.index('provider == "other"') :
+    ]
+
+    assert custom_step is not None
+    assert 'step_id="custom_tariff"' in custom_step
+    assert "self._custom_tariff_data = self._build_tariff_from_periods" in custom_step
+    assert "return await self.async_step_battery_system()" in custom_step
+    assert "skip_tariff" in custom_step
+
+    assert period_step is not None
+    assert 'step_id="tariff_period"' in period_step
+    assert "self._custom_tariff_data = self._build_tariff_from_periods" in period_step
+
+    assert create_entry is not None
+    assert 'data["initial_custom_tariff"] = self._custom_tariff_data' in create_entry
+    assert 'title = "PowerSync Custom TOU"' in create_entry
+
+
 def test_globird_plan_strings_are_available_in_setup_and_options():
     for path in (STRINGS_PATH, TRANSLATIONS_PATH):
         data = json.loads(path.read_text())

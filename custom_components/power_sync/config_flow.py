@@ -1756,10 +1756,11 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 self._amber_data = {}
                 return await self.async_step_nz_retailer()
             elif provider == "other":
-                # Other/Custom TOU: AEMO spike optional + custom tariff builder
-                self._aemo_only_mode = True
+                # Other/Custom TOU: collect custom rates directly.
+                self._aemo_only_mode = False
                 self._amber_data = {}
-                return await self.async_step_aemo_config()
+                self._aemo_data = {CONF_AEMO_SPIKE_ENABLED: False}
+                return await self.async_step_custom_tariff()
             else:
                 # Default to Amber
                 self._aemo_only_mode = False
@@ -2181,6 +2182,8 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             title = "PowerSync Localvolts"
         elif self._selected_electricity_provider == "octopus":
             title = "PowerSync Octopus"
+        elif self._selected_electricity_provider == "other":
+            title = "PowerSync Custom TOU"
         else:
             title = "PowerSync Amber"
 
@@ -5480,6 +5483,228 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             errors=errors,
             description_placeholders={
                 "threshold_hint": threshold_hint,
+            },
+        )
+
+    async def async_step_custom_tariff(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Configure a custom tariff during initial setup."""
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            if user_input.get("skip_tariff", False):
+                self._custom_tariff_data = {}
+                return await self.async_step_battery_system()
+
+            tariff_type = user_input.get("tariff_type", "tou")
+            self._tariff_plan_name = user_input.get("plan_name", "")
+            self._tariff_offpeak_rate = user_input.get("offpeak_rate", 15) / 100
+            self._tariff_fit_rate = user_input.get("fit_rate", 5) / 100
+
+            if tariff_type == "flat":
+                flat_rate = user_input.get("flat_rate", 30) / 100
+                self._custom_tariff_data = self._build_tariff_from_periods(
+                    [
+                        {
+                            "name": "ALL",
+                            "start": 0,
+                            "end": 24,
+                            "days": "all_days",
+                            "import_rate": flat_rate,
+                            "export_rate": self._tariff_fit_rate,
+                        }
+                    ],
+                )
+                return await self.async_step_battery_system()
+
+            self._tariff_periods = []
+            return await self.async_step_tariff_period()
+
+        tariff_type_options = {
+            "flat": "Flat Rate (single rate all day)",
+            "tou": "Time of Use (multiple periods)",
+        }
+
+        return self.async_show_form(
+            step_id="custom_tariff",
+            data_schema=vol.Schema(
+                {
+                    vol.Optional("skip_tariff", default=False): BooleanSelector(),
+                    vol.Optional("plan_name", default=""): TextSelector(
+                        TextSelectorConfig(type=TextSelectorType.TEXT)
+                    ),
+                    vol.Required("tariff_type", default="tou"): SelectSelector(
+                        SelectSelectorConfig(
+                            options=[
+                                SelectOptionDict(value=k, label=v)
+                                for k, v in tariff_type_options.items()
+                            ],
+                            mode=SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
+                    vol.Optional("flat_rate", default=30): NumberSelector(
+                        NumberSelectorConfig(
+                            min=0,
+                            max=200,
+                            step=0.1,
+                            unit_of_measurement=self._selector_unit(),
+                            mode=NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Required("offpeak_rate", default=15): NumberSelector(
+                        NumberSelectorConfig(
+                            min=0,
+                            max=200,
+                            step=0.1,
+                            unit_of_measurement=self._selector_unit(),
+                            mode=NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Required("fit_rate", default=5): NumberSelector(
+                        NumberSelectorConfig(
+                            min=-100,
+                            max=100,
+                            step=0.1,
+                            unit_of_measurement=self._selector_unit(),
+                            mode=NumberSelectorMode.BOX,
+                        )
+                    ),
+                }
+            ),
+            errors=errors,
+            description_placeholders={
+                "info": (
+                    f"Configure your electricity tariff. All rates in "
+                    f"{self._selector_unit()}. For TOU, you'll add time periods "
+                    "in the next step."
+                ),
+                "skip_hint": "You can skip this and configure rates later.",
+            },
+        )
+
+    async def async_step_tariff_period(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Add a custom tariff period during initial setup."""
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            try:
+                start_hour = int(user_input.get("period_start", "15:00").split(":")[0])
+                end_hour = int(user_input.get("period_end", "21:00").split(":")[0])
+            except (ValueError, IndexError):
+                start_hour = 15
+                end_hour = 21
+
+            self._tariff_periods.append(
+                {
+                    "name": user_input.get("period_type", "PEAK"),
+                    "start": start_hour,
+                    "end": end_hour,
+                    "days": user_input.get("period_days", "weekdays"),
+                    "import_rate": user_input.get("import_rate", 45) / 100,
+                    "export_rate": user_input.get("export_rate", 5) / 100,
+                }
+            )
+
+            if user_input.get("add_another", False):
+                return await self.async_step_tariff_period()
+
+            self._custom_tariff_data = self._build_tariff_from_periods(
+                self._tariff_periods,
+            )
+            return await self.async_step_battery_system()
+
+        tariff_hour_options = [
+            SelectOptionDict(value=f"{h:02d}:00", label=f"{h:02d}:00")
+            for h in range(24)
+        ]
+        day_options = {
+            "weekdays": "Weekdays only (Mon-Fri)",
+            "all_days": "All days (Mon-Sun)",
+        }
+        period_types = {
+            "PEAK": "Peak",
+            "SHOULDER": "Shoulder",
+            "OFF_PEAK": "Off-Peak",
+            "SUPER_OFF_PEAK": "Super Off-Peak",
+        }
+
+        count = len(getattr(self, "_tariff_periods", []))
+        added_desc = ""
+        if count > 0:
+            lines = []
+            minor_unit = self._selector_unit()
+            for idx, period in enumerate(self._tariff_periods, 1):
+                lines.append(
+                    f"{idx}. {period['name']} {period['start']:02d}:00-"
+                    f"{period['end']:02d}:00, import "
+                    f"{period['import_rate'] * 100:.1f}{minor_unit}, export "
+                    f"{period['export_rate'] * 100:.1f}{minor_unit}"
+                )
+            added_desc = "Added periods:\n" + "\n".join(lines) + "\n\n"
+
+        return self.async_show_form(
+            step_id="tariff_period",
+            data_schema=vol.Schema(
+                {
+                    vol.Required("period_type", default="PEAK"): SelectSelector(
+                        SelectSelectorConfig(
+                            options=[
+                                SelectOptionDict(value=k, label=v)
+                                for k, v in period_types.items()
+                            ],
+                            mode=SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
+                    vol.Required("period_start", default="15:00"): SelectSelector(
+                        SelectSelectorConfig(
+                            options=tariff_hour_options,
+                            mode=SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
+                    vol.Required("period_end", default="21:00"): SelectSelector(
+                        SelectSelectorConfig(
+                            options=tariff_hour_options,
+                            mode=SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
+                    vol.Required("period_days", default="weekdays"): SelectSelector(
+                        SelectSelectorConfig(
+                            options=[
+                                SelectOptionDict(value=k, label=v)
+                                for k, v in day_options.items()
+                            ],
+                            mode=SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
+                    vol.Required("import_rate", default=45): NumberSelector(
+                        NumberSelectorConfig(
+                            min=0,
+                            max=200,
+                            step=0.1,
+                            unit_of_measurement=self._selector_unit(),
+                            mode=NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Required("export_rate", default=5): NumberSelector(
+                        NumberSelectorConfig(
+                            min=-100,
+                            max=200,
+                            step=0.1,
+                            unit_of_measurement=self._selector_unit(),
+                            mode=NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Optional("add_another", default=False): BooleanSelector(),
+                }
+            ),
+            errors=errors,
+            description_placeholders={
+                "period_info": added_desc
+                if added_desc
+                else "Add your first tariff period. Remaining hours will be off-peak.",
             },
         )
 
