@@ -17544,6 +17544,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Initialize Flow Power portal client for actual account data
     flow_power_portal_client = None
     flow_power_portal_data = None
+    flow_power_kwatch_summary_error = None
     if electricity_provider == "flow_power":
         from .const import CONF_FLOWPOWER_EMAIL, CONF_FLOWPOWER_PASSWORD
         fp_api_key = entry.options.get(
@@ -17568,10 +17569,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     if flow_power_portal_data:
                         _LOGGER.info("Flow Power: Account summary loaded via KWatch API")
             except Exception as exc:
-                _LOGGER.warning(
-                    "Flow Power: KWatch account summary failed, trying portal fallback: %s",
-                    exc,
-                )
+                flow_power_kwatch_summary_error = exc
         fp_email = entry.options.get(CONF_FLOWPOWER_EMAIL, entry.data.get(CONF_FLOWPOWER_EMAIL))
         fp_password = entry.options.get(CONF_FLOWPOWER_PASSWORD, entry.data.get(CONF_FLOWPOWER_PASSWORD))
 
@@ -17604,6 +17602,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 except Exception as exc:
                     _LOGGER.warning("Flow Power: Error restoring portal session: %s", exc)
                     flow_power_portal_client = None
+        if flow_power_kwatch_summary_error is not None:
+            if flow_power_portal_data is not None:
+                _LOGGER.info(
+                    "Flow Power: KWatch account summary unavailable (%s); using portal fallback",
+                    flow_power_kwatch_summary_error,
+                )
+            else:
+                _LOGGER.warning(
+                    "Flow Power: KWatch account summary failed and portal fallback did not load account data: %s",
+                    flow_power_kwatch_summary_error,
+                )
 
     # Initialize GloBird portal coordinator for account, usage, cost, and
     # readiness sensors. This is additive to the existing GloBird tariff/AEMO

@@ -150,6 +150,17 @@ def test_flow_power_api_client_posts_key_and_normalizes_sites_summary_and_prices
     assert all(call[2]["x-api-key"] == "secret-key" for call in session.calls)
 
 
+def test_flow_power_kwatch_account_summary_warning_waits_for_portal_fallback():
+    source = (COMPONENT_ROOT / "__init__.py").read_text()
+
+    assert "KWatch account summary failed, trying portal fallback" not in source
+    assert "KWatch account summary unavailable (%s); using portal fallback" in source
+    assert (
+        "KWatch account summary failed and portal fallback did not load account data: %s"
+        in source
+    )
+
+
 def test_flow_power_api_client_decodes_nested_json_string_payloads():
     api = _flow_power_api_module()
     session = _FakeSession(
