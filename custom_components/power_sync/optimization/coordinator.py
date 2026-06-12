@@ -8347,7 +8347,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             parsed = int(float(value))
         except (TypeError, ValueError):
             return None
-        return parsed if parsed >= 0 else None
+        return parsed if parsed > 0 else None
 
     async def force_reoptimize(self) -> Any:
         """Force immediate re-optimization."""

@@ -149,7 +149,7 @@ def test_grid_import_limit_still_allows_solar_assisted_full_charge(
     )
 
 
-def test_zero_grid_import_limit_blocks_grid_sourced_charge(
+def test_zero_grid_import_limit_is_treated_as_unset_cap(
     battery_optimizer_module,
 ):
     optimizer = battery_optimizer_module.BatteryOptimizer(
@@ -172,10 +172,10 @@ def test_zero_grid_import_limit_blocks_grid_sourced_charge(
         allow_grid_charge=True,
     )
 
-    assert optimizer.max_grid_import_w == 0
-    assert max(result.grid_import_w) <= 1e-6
-    assert max(action.battery_charge_w for action in result.schedule.actions) <= 500.1
-    assert all(action.action != "charge" for action in result.schedule.actions)
+    assert optimizer.max_grid_import_w is None
+    assert max(result.grid_import_w) > 500.0
+    assert max(action.battery_charge_w for action in result.schedule.actions) > 500.0
+    assert any(action.action == "charge" for action in result.schedule.actions)
 
 
 def test_self_consumption_schedule_soc_uses_hardware_floor_above_optimizer_reserve(
