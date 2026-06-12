@@ -336,7 +336,7 @@ async def _get_tesla_ev_entity(
     # EV-specific entity patterns that only vehicles have (not energy products)
     ev_entity_markers = [
         r"button\..*_charge",  # charge_start, force_data_update
-        r"switch\..*_charge$",  # charger switch
+        r"switch\..*(?<!dis)charge(?:_\d+)?$",  # charger switch
         r"number\..*_charge_limit",  # charge limit
         r"number\..*_charging_amps",  # charging amps
         r"sensor\..*_battery_level$",  # vehicle battery (not Powerwall)
@@ -3292,12 +3292,12 @@ async def _action_start_ev_charging(
         # Tesla Fleet uses switch.X_charge, not button.X_charge_start
         charge_switch_entity = await _get_tesla_ev_entity(
             hass,
-            r"switch\..*_charge$",
+            r"switch\..*(?<!dis)charge(?:_\d+)?$",
             vehicle_vin
         )
 
         if not charge_switch_entity:
-            _LOGGER.error("Could not find Tesla charge switch entity (switch.*_charge)")
+            _LOGGER.error("Could not find Tesla charge switch entity (switch.*charge)")
             return False
 
         try:
@@ -3492,12 +3492,12 @@ async def _action_stop_ev_charging(
         # Tesla Fleet uses switch.X_charge, not button.X_charge_stop
         charge_switch_entity = await _get_tesla_ev_entity(
             hass,
-            r"switch\..*_charge$",
+            r"switch\..*(?<!dis)charge(?:_\d+)?$",
             vehicle_vin
         )
 
         if not charge_switch_entity:
-            _LOGGER.error("Could not find Tesla charge switch entity (switch.*_charge)")
+            _LOGGER.error("Could not find Tesla charge switch entity (switch.*charge)")
             return False
 
         try:

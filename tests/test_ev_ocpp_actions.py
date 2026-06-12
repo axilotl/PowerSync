@@ -214,6 +214,52 @@ def test_tesla_preserve_charge_fails_without_home_battery_soc():
     assert hass.services.calls == []
 
 
+def test_tesla_stop_accepts_numbered_teslemetry_charge_switch(monkeypatch):
+    vin = "LRWYHCEKXTC687964"
+    device = SimpleNamespace(
+        id="device-yf88",
+        name="",
+        identifiers={("teslemetry", vin)},
+    )
+    hass = _Hass(
+        [_State("switch.charge_2", "on")],
+        registry_entities={
+            "switch.charge_2": SimpleNamespace(
+                entity_id="switch.charge_2",
+                device_id="device-yf88",
+            ),
+            "binary_sensor.charge_cable": SimpleNamespace(
+                entity_id="binary_sensor.charge_cable",
+                device_id="device-yf88",
+            ),
+        },
+    )
+
+    monkeypatch.setattr(
+        actions.dr,
+        "async_get",
+        lambda hass: SimpleNamespace(devices={"device-yf88": device}),
+    )
+
+    async def wake_success(*args, **kwargs):
+        return True
+
+    monkeypatch.setattr(actions, "_wake_tesla_ev", wake_success)
+
+    result = asyncio.run(
+        actions._action_stop_ev_charging(
+            hass,
+            _tesla_entry(),
+            {"charger_type": "tesla", "vehicle_vin": vin},
+        )
+    )
+
+    assert result is True
+    assert hass.services.calls == [
+        ("switch", "turn_off", {"entity_id": "switch.charge_2"})
+    ]
+
+
 class _ZaptecClient:
     def __init__(self) -> None:
         self.calls: list[tuple] = []
