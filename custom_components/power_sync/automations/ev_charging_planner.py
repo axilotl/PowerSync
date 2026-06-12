@@ -7934,6 +7934,65 @@ async def _can_stop_external_scheduled_session(
     return False, f"vehicle location is {location or 'unknown'}"
 
 
+async def _find_external_scheduled_charging_vehicle(
+    hass: "HomeAssistant",
+    config_entry: "ConfigEntry",
+) -> Tuple[Optional[str], bool, str]:
+    """Return the active Tesla VIN that Scheduled Charging may stop."""
+    opts = {**getattr(config_entry, "data", {}), **getattr(config_entry, "options", {})}
+    charger_type = _configured_charger_type(opts)
+    if charger_type in ("generic", "ocpp", "sigenergy", "zaptec"):
+        can_stop, reason = await _can_stop_external_scheduled_session(hass, config_entry)
+        if not can_stop:
+            return None, False, reason
+        if await is_ev_actively_charging(hass, config_entry):
+            return None, True, reason
+        return None, False, "no active external scheduled session"
+
+    blocked_reason = ""
+    vehicles = await discover_all_tesla_vehicles(hass, config_entry)
+    for vehicle in vehicles:
+        vehicle_vin = vehicle.get("vin")
+        if not vehicle_vin:
+            continue
+
+        try:
+            from .ev_ownership import get_active_ev_owner_mode, owner_family
+
+            active_mode = (
+                _get_active_dynamic_ev_mode(hass, config_entry, vehicle_vin)
+                or get_active_ev_owner_mode(hass, config_entry, vehicle_vin)
+            )
+            if active_mode and owner_family(active_mode) != owner_family("scheduled"):
+                blocked_reason = f"{active_mode} owns the active loadpoint"
+                continue
+        except Exception as err:
+            _LOGGER.debug(
+                "Scheduled external-stop ownership guard failed for %s: %s",
+                vehicle_vin,
+                err,
+            )
+            continue
+
+        location = await get_ev_location(hass, config_entry, vehicle_vin)
+        if location != "home":
+            blocked_reason = f"vehicle location is {location or 'unknown'}"
+            continue
+
+        if await is_ev_actively_charging(hass, config_entry, vehicle_vin):
+            return vehicle_vin, True, "vehicle is at home"
+
+    if vehicles:
+        return None, False, blocked_reason or "no active external scheduled session"
+
+    can_stop, reason = await _can_stop_external_scheduled_session(hass, config_entry)
+    if not can_stop:
+        return None, False, reason
+    if await is_ev_actively_charging(hass, config_entry):
+        return None, True, reason
+    return None, False, "no active external scheduled session"
+
+
 # ============================================================================
 # EV CHARGING MODE COORDINATOR
 # ============================================================================
@@ -8016,7 +8075,11 @@ class EVChargingModeCoordinator:
         _LOGGER.info(f"EV Coordinator: Stopped charging - {reason}")
         return True
 
-    async def _stop_external_scheduled_charging(self, reason: str) -> bool:
+    async def _stop_external_scheduled_charging(
+        self,
+        reason: str,
+        vehicle_vin: Optional[str] = None,
+    ) -> bool:
         """Stop an externally-started session that violates Scheduled Charging."""
         success = await _stop_coordinated_charging(
             self.hass,
@@ -8024,6 +8087,7 @@ class EVChargingModeCoordinator:
             self.config_entry,
             expected_owner_mode="scheduled",
             reason=reason,
+            vehicle_vin=vehicle_vin,
             command="stop_scheduled_external",
             stop_untracked=True,
             log_prefix="Scheduled charging",
@@ -8161,20 +8225,16 @@ class EVChargingModeCoordinator:
                 and not any_price_level_charging
                 and decisions[0].reason != "Scheduled charging is disabled"
             ):
-                can_stop_external, external_guard_reason = await _can_stop_external_scheduled_session(
-                    self.hass,
-                    self.config_entry,
+                external_vehicle_vin, external_charge, external_guard_reason = (
+                    await _find_external_scheduled_charging_vehicle(
+                        self.hass,
+                        self.config_entry,
+                    )
                 )
-                if not can_stop_external:
+                if not external_charge and external_guard_reason != "no active external scheduled session":
                     _LOGGER.info(
                         "Scheduled charging leaving external session alone: %s",
                         external_guard_reason,
-                    )
-                    external_charge = False
-                else:
-                    external_charge = await is_ev_actively_charging(
-                        self.hass,
-                        self.config_entry,
                     )
                 if external_charge:
                     scheduled_reason = decisions[0].reason or "Scheduled charging inactive"
@@ -8182,7 +8242,10 @@ class EVChargingModeCoordinator:
                         "Scheduled charging stopping external session: %s",
                         scheduled_reason,
                     )
-                    if await self._stop_external_scheduled_charging(scheduled_reason):
+                    if await self._stop_external_scheduled_charging(
+                        scheduled_reason,
+                        vehicle_vin=external_vehicle_vin,
+                    ):
                         scheduled_exec.update_charging_state(False, scheduled_reason)
                         scheduled_exec._state.last_decision = "stopped"
                         scheduled_exec._state.last_decision_reason = scheduled_reason
