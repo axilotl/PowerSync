@@ -192,6 +192,32 @@ def test_flow_power_api_client_decodes_nested_json_string_payloads():
     assert forecast[0]["perKwh"] == 9.8
 
 
+def test_flow_power_api_client_decodes_kwatch_key_value_price_strings():
+    api = _flow_power_api_module()
+    session = _FakeSession(
+        {
+            "dispatch5mins": json.dumps(
+                [
+                    {"Key": "2026-06-12T20:00:00+10:00", "Value": 65.7},
+                    {"Key": "2026-06-12T20:05:00+10:00", "Value": "72.5"},
+                ]
+            ),
+        }
+    )
+    client = api.FlowPowerAPIClient("secret-key", session)
+
+    async def run():
+        return await client.dispatch5mins("qld", period=60)
+
+    dispatch = asyncio.run(run())
+
+    assert [entry["nemTime"] for entry in dispatch] == [
+        "2026-06-12T20:00:00+10:00",
+        "2026-06-12T20:05:00+10:00",
+    ]
+    assert [entry["perKwh"] for entry in dispatch] == [6.57, 7.25]
+
+
 def test_flow_power_api_client_normalizes_uppercase_kwatch_fields():
     api = _flow_power_api_module()
     session = _FakeSession(
@@ -268,7 +294,7 @@ def test_flow_power_price_endpoints_can_work_when_site_lookup_fails():
             site_error = str(err)
         else:
             site_error = None
-        dispatch = await client.dispatch5mins("nsw", period=1)
+        dispatch = await client.dispatch5mins("nsw", period=60)
         forecast = await client.predispatch30mins("nsw", period=1)
         return site_error, dispatch, forecast
 
@@ -282,6 +308,7 @@ def test_flow_power_price_endpoints_can_work_when_site_lookup_fails():
         "dispatch5mins",
         "predispatch30mins",
     ]
+    assert session.calls[1][1]["period"] == 60
 
 
 def test_kwatch_prices_to_amber_format_has_current_and_forecast_shape():

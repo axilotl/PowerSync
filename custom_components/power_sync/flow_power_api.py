@@ -306,6 +306,8 @@ class FlowPowerAPIClient:
                     "TradingIntervalStart",
                     "startTime",
                     "StartTime",
+                    "key",
+                    "Key",
                 )
             )
             if period_time is None:
