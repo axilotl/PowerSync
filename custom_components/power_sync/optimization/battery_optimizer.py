@@ -1938,6 +1938,7 @@ class BatteryOptimizer:
         allow_grid_charge: bool = True,
         export_bonus_prices: list[float] | None = None,
         export_bonus_cap_kwh: float | None = None,
+        schedule_timestamps: list[datetime] | None = None,
     ) -> OptimizerResult:
         """Safe fallback when the LP is infeasible: hold in self-consumption.
 
