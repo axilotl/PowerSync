@@ -4098,7 +4098,11 @@ class PowerSyncLayout extends HTMLElement {
   _flattenCards() {
     const columns = this._config?.columns || [];
     const ordered = columns.length === 3 ? [columns[1], columns[0], columns[2]] : columns;
-    return ordered.flatMap(column => column || []);
+    const cards = ordered.flatMap(column => column || []);
+    if (!cards.some(card => card?.type === 'custom:power-sync-ev-panel')) {
+      cards.push(_evPanel());
+    }
+    return cards;
   }
 
   _cardKeyParts(cardConfig) {

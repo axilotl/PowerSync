@@ -123,6 +123,8 @@ def test_dashboard_ev_panel_is_registered_and_api_cached():
     assert "custom:power-sync-ev-panel" in source
     assert "function _evPanel()" in source
     assert "center.push(_evPanel());" in source
+    assert "cards.some(card => card?.type === 'custom:power-sync-ev-panel')" in source
+    assert "cards.push(_evPanel());" in source
     assert "EV_PANEL_FETCH_INTERVAL_MS = 30000" in source
     assert "window.__powerSyncEVPanelCache" in source
     assert "window.setInterval(() => this._maybeLoadData(false), EV_PANEL_FETCH_INTERVAL_MS)" in source
