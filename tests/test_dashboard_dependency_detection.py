@@ -327,16 +327,21 @@ def test_battery_health_uses_native_dashboard_card():
 def test_optimizer_plan_charts_have_tooltips():
     """Optimizer SOC/power and price charts should expose hover tooltips."""
     source = STRATEGY_PATH.read_text()
+    chart_start = source.index("class PowerSyncOptimizationPlan extends HTMLElement")
+    chart_end = source.index("if (!customElements.get('power-sync-optimization-plan'))")
+    chart_source = source[chart_start:chart_end]
 
     assert "class PowerSyncOptimizationPlan extends HTMLElement" in source
-    assert '<div class="chart-wrap soc-power-chart">' in source
-    assert '<div class="chart-wrap price-chart">' in source
-    assert "_attachOptimizerChartTooltip('.soc-power-chart', this._powerTooltipConfig(model, compact))" in source
-    assert "_attachOptimizerChartTooltip('.price-chart', this._priceTooltipConfig(model, compact, priceMeta))" in source
-    assert "_powerTooltipConfig(model, compact)" in source
-    assert "_priceTooltipConfig(model, compact, priceMeta)" in source
-    assert ".chart-tooltip-line" in source
-    assert ".chart-tooltip-time" in source
+    assert '<div class="chart-wrap soc-power-chart">' in chart_source
+    assert '<div class="chart-wrap price-chart">' in chart_source
+    assert "_attachOptimizerChartTooltip('.soc-power-chart', this._powerTooltipConfig(model, compact))" in chart_source
+    assert "_attachOptimizerChartTooltip('.price-chart', this._priceTooltipConfig(model, compact, priceMeta))" in chart_source
+    assert "_powerTooltipConfig(model, compact)" in chart_source
+    assert "_priceTooltipConfig(model, compact, priceMeta)" in chart_source
+    assert ".chart-tooltip-line" in chart_source
+    assert ".chart-tooltip-time" in chart_source
+    assert "background: color-mix(in srgb, var(--ha-card-background, var(--card-background-color, white)) 78%, transparent);" in chart_source
+    assert "backdrop-filter: blur(8px);" in chart_source
 
 
 def test_optimizer_plan_chart_tooltips_stay_inside_android_webview():
