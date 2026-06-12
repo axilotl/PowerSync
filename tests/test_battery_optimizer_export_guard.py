@@ -149,6 +149,35 @@ def test_grid_import_limit_still_allows_solar_assisted_full_charge(
     )
 
 
+def test_zero_grid_import_limit_blocks_grid_sourced_charge(
+    battery_optimizer_module,
+):
+    optimizer = battery_optimizer_module.BatteryOptimizer(
+        capacity_wh=100000,
+        max_charge_w=7000,
+        max_discharge_w=7000,
+        max_grid_import_w=0,
+        backup_reserve=0.05,
+        interval_minutes=5,
+        horizon_hours=1,
+    )
+    n = 12
+
+    result = optimizer.optimize(
+        import_prices=[0.05] * 6 + [0.50] * 6,
+        export_prices=[0.0] * n,
+        solar_forecast=[1.1] * n,
+        load_forecast=[0.6] * n,
+        current_soc=0.95,
+        allow_grid_charge=True,
+    )
+
+    assert optimizer.max_grid_import_w == 0
+    assert max(result.grid_import_w) <= 1e-6
+    assert max(action.battery_charge_w for action in result.schedule.actions) <= 500.1
+    assert all(action.action != "charge" for action in result.schedule.actions)
+
+
 def test_self_consumption_schedule_soc_uses_hardware_floor_above_optimizer_reserve(
     battery_optimizer_module,
 ):

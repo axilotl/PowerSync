@@ -353,7 +353,7 @@ class BatteryOptimizer:
             parsed = float(value)
         except (TypeError, ValueError):
             return None
-        return parsed if parsed > 0 else None
+        return parsed if parsed >= 0 else None
 
     def _charge_limit_kw(
         self,
