@@ -1848,12 +1848,15 @@ class PowerSyncOptimizationPlan extends HTMLElement {
           border: 1px solid var(--divider-color);
           background: rgba(127, 127, 127, 0.045);
           overflow: hidden;
+          isolation: isolate;
           touch-action: none;
         }
         svg {
           display: block;
           width: 100%;
           height: auto;
+          position: relative;
+          z-index: 1;
         }
         .chart-tooltip-line {
           position: absolute;
@@ -1864,6 +1867,7 @@ class PowerSyncOptimizationPlan extends HTMLElement {
           opacity: 0;
           pointer-events: none;
           transform: translateX(-0.5px);
+          z-index: 2;
         }
         .chart-tooltip {
           position: absolute;
@@ -1871,7 +1875,7 @@ class PowerSyncOptimizationPlan extends HTMLElement {
           max-width: min(260px, calc(100% - 16px));
           padding: 8px 10px;
           border-radius: 8px;
-          background: color-mix(in srgb, var(--ha-card-background, var(--card-background-color, white)) 78%, transparent);
+          background: color-mix(in srgb, var(--ha-card-background, var(--card-background-color, white)) 90%, transparent);
           backdrop-filter: blur(8px);
           -webkit-backdrop-filter: blur(8px);
           color: var(--primary-text-color);
@@ -1882,7 +1886,7 @@ class PowerSyncOptimizationPlan extends HTMLElement {
           opacity: 0;
           pointer-events: none;
           transform: translate(-50%, -100%);
-          z-index: 2;
+          z-index: 4;
         }
         .chart-tooltip-time {
           font-weight: 800;
