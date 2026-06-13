@@ -454,6 +454,7 @@ class PowerSyncChart extends HTMLElement {
         .chart-wrap {
           position: relative;
           z-index: 1;
+          isolation: isolate;
           touch-action: none;
         }
         .tooltip-line {
@@ -465,6 +466,7 @@ class PowerSyncChart extends HTMLElement {
           opacity: 0;
           pointer-events: none;
           transform: translateX(-0.5px);
+          z-index: 2;
         }
         .tooltip {
           position: absolute;
@@ -481,6 +483,7 @@ class PowerSyncChart extends HTMLElement {
           opacity: 0;
           pointer-events: none;
           transform: translate(-50%, -100%);
+          z-index: 4;
         }
         .tooltip-time {
           font-weight: 700;

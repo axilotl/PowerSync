@@ -167,6 +167,20 @@ def test_generic_dashboard_charts_do_not_rerender_on_unrelated_state_ticks():
     assert "cache: mode === 'history' ? this._historyCacheSignature(seriesConfig.entity) : undefined" in render_signature
 
 
+def test_generic_dashboard_chart_tooltips_render_above_svg_lines():
+    """Generic dashboard chart tooltips should sit above graph paths."""
+    source = STRATEGY_PATH.read_text()
+    chart_start = source.index("class PowerSyncChart extends HTMLElement")
+    chart_end = source.index("if (!customElements.get('power-sync-chart'))")
+    chart_source = source[chart_start:chart_end]
+
+    assert "isolation: isolate;" in chart_source
+    assert ".tooltip-line" in chart_source
+    assert ".tooltip" in chart_source
+    assert "z-index: 2;" in chart_source
+    assert "z-index: 4;" in chart_source
+
+
 def test_optimizer_plan_shows_calculated_auto_reserve():
     """Auto-applied optimizer reserve should be visible on the schedule graph."""
     source = STRATEGY_PATH.read_text()
@@ -340,7 +354,7 @@ def test_optimizer_plan_charts_have_tooltips():
     assert "_priceTooltipConfig(model, compact, priceMeta)" in chart_source
     assert ".chart-tooltip-line" in chart_source
     assert ".chart-tooltip-time" in chart_source
-    assert "background: color-mix(in srgb, var(--ha-card-background, var(--card-background-color, white)) 78%, transparent);" in chart_source
+    assert "background: color-mix(in srgb, var(--ha-card-background, var(--card-background-color, white)) 90%, transparent);" in chart_source
     assert "backdrop-filter: blur(8px);" in chart_source
 
 
