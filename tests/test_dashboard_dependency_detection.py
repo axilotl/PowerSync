@@ -75,12 +75,16 @@ def test_optimizer_plan_gets_are_browser_cached():
     source = STRATEGY_PATH.read_text()
 
     assert "OPTIMIZATION_PLAN_FETCH_INTERVAL_MS = 45000" in source
+    assert "OPTIMIZATION_PLAN_PENDING_RETRY_MS = 5000" in source
     assert "window.__powerSyncOptimizationPlanCache" in source
-    assert "_restoreCachedData(path)" in source
+    assert "_restoreCachedData(path, force)" in source
     assert "cached?.promise" in source
     assert "_adoptLoadPromise(path, cached.promise)" in source
     assert "this._hass.callApi('GET', path)" in source
-    assert "now - this._lastFetch < OPTIMIZATION_PLAN_FETCH_INTERVAL_MS" in source
+    assert "if (force) return false;" in source
+    assert "? OPTIMIZATION_PLAN_FETCH_INTERVAL_MS" in source
+    assert ": OPTIMIZATION_PLAN_PENDING_RETRY_MS" in source
+    assert "now - this._lastFetch < maxAge" in source
     assert "now - this._lastFetch < 60000" not in source
 
 

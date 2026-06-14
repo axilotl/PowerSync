@@ -1550,6 +1550,7 @@ if (!customElements.get('power-sync-battery-health')) {
 // API-backed Smart Optimization card that mirrors the mobile 24-hour view.
 
 const OPTIMIZATION_PLAN_FETCH_INTERVAL_MS = 45000;
+const OPTIMIZATION_PLAN_PENDING_RETRY_MS = 5000;
 const OPTIMIZATION_PLAN_CACHE = window.__powerSyncOptimizationPlanCache || new Map();
 window.__powerSyncOptimizationPlanCache = OPTIMIZATION_PLAN_CACHE;
 
@@ -1613,11 +1614,20 @@ class PowerSyncOptimizationPlan extends HTMLElement {
     return this._config?.optimizationPath || 'power_sync/optimization';
   }
 
-  _restoreCachedData(path = this._optimizationPath()) {
+  _hasDetailedSchedule(data = this._data) {
+    const schedule = data?.schedule || {};
+    return Array.isArray(schedule.timestamps) && schedule.timestamps.length > 0;
+  }
+
+  _restoreCachedData(path = this._optimizationPath(), force = false) {
+    if (force) return false;
     const cached = OPTIMIZATION_PLAN_CACHE.get(path);
     if (!cached?.data) return false;
     const fetchedAt = cached.fetchedAt || 0;
-    if (Date.now() - fetchedAt >= OPTIMIZATION_PLAN_FETCH_INTERVAL_MS) return false;
+    const maxAge = this._hasDetailedSchedule(cached.data)
+      ? OPTIMIZATION_PLAN_FETCH_INTERVAL_MS
+      : OPTIMIZATION_PLAN_PENDING_RETRY_MS;
+    if (Date.now() - fetchedAt >= maxAge) return false;
     this._data = cached.data;
     this._error = null;
     this._lastFetch = fetchedAt;
@@ -1628,10 +1638,15 @@ class PowerSyncOptimizationPlan extends HTMLElement {
     if (!this._config || !this._hass || typeof this._hass.callApi !== 'function') return;
     const now = Date.now();
     if (this._loading) return;
-    if (this._data && now - this._lastFetch < OPTIMIZATION_PLAN_FETCH_INTERVAL_MS) return;
+    if (this._data && !force) {
+      const maxAge = this._hasDetailedSchedule()
+        ? OPTIMIZATION_PLAN_FETCH_INTERVAL_MS
+        : OPTIMIZATION_PLAN_PENDING_RETRY_MS;
+      if (now - this._lastFetch < maxAge) return;
+    }
 
     const path = this._optimizationPath();
-    if (this._restoreCachedData(path)) {
+    if (this._restoreCachedData(path, force)) {
       this._scheduleRender();
       return;
     }
