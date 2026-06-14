@@ -296,7 +296,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         # Cached forecast data (populated each optimization run)
         self._last_solar_forecast: list[float] | None = None    # kW values
-        self._has_solar_forecast: bool = False  # True if real Solcast data, False if zeros
+        self._has_solar_forecast: bool | None = None  # None until the first forecast attempt
         self._last_load_forecast: list[float] | None = None     # kW values
         self._last_import_prices: list[float] | None = None     # $/kWh values (LP-adjusted)
         self._last_export_prices: list[float] | None = None     # $/kWh values (LP-adjusted)
@@ -7314,7 +7314,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _get_warnings(self) -> list[dict[str, str]]:
         """Get active warnings for the optimizer."""
         warnings = []
-        if not self._has_solar_forecast:
+        if getattr(self, "_has_solar_forecast", None) is False:
             warnings.append({
                 "type": "no_solar_forecast",
                 "title": "No Solar Forecast",

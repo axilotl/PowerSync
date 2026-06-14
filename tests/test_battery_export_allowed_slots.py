@@ -1710,6 +1710,20 @@ def test_api_current_action_uses_effective_runtime_action(opt_module):
     assert data["next_action"] == "self_consumption"
 
 
+def test_solar_forecast_warning_waits_for_forecast_attempt(opt_module):
+    coordinator = _coordinator(opt_module, "octopus")
+
+    coordinator._has_solar_forecast = None
+    assert coordinator._get_warnings() == []
+
+    coordinator._has_solar_forecast = False
+    warnings = coordinator._get_warnings()
+    assert [warning["type"] for warning in warnings] == ["no_solar_forecast"]
+
+    coordinator._has_solar_forecast = True
+    assert coordinator._get_warnings() == []
+
+
 def test_coordinator_refresh_applies_cached_charge_at_action_boundary(opt_module):
     battery = _FakeBattery()
     coordinator = _execution_coordinator(opt_module, battery, soc=0.25)
