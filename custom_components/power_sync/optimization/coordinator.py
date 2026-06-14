@@ -357,8 +357,9 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # the LP twice in quick succession can churn force mode commands.
         self._last_price_triggered_optimization: datetime | None = None
 
-        # Track last executed action for mode transitions.
+        # Track last executed action for mode transitions and status reporting.
         self._last_executed_action: str | None = None
+        self._last_executed_planned_action: str | None = None
         # Optimizer-issued force commands use a hardware-only service path for
         # non-Tesla systems so automated actions do not appear as manual force
         # countdowns in the UI. Track that private state here so a later LP
@@ -4042,6 +4043,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                                     await battery.restore_normal()
                                 elif hasattr(battery, "set_self_consumption_mode"):
                                     await battery.set_self_consumption_mode()
+                                self._last_executed_planned_action = action.action
                                 self._last_executed_action = "self_consumption"
                                 return
                         except Exception as reserve_err:
@@ -4237,7 +4239,8 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # peak demand — the opposite of what demand charge avoidance wants.
             # Self-consumption lets the battery discharge to cover home load,
             # minimizing grid import during the demand window.
-            effective_action = action.action
+            planned_action = action.action
+            effective_action = planned_action
 
             # --- Off-grid transition handling ---
             # If we're currently off-grid and the new action needs the grid,
@@ -4747,6 +4750,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                             )
                     _LOGGER.debug("Optimizer: Self-consumption mode (action=%s)", effective_action)
 
+            self._last_executed_planned_action = planned_action
             self._last_executed_action = effective_action
 
         except Exception as e:
@@ -8656,6 +8660,9 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         current_action = "idle"
         actual_battery_power_w = self._get_actual_battery_power_w()
         current_power_w = actual_battery_power_w
+        planned_current_action = current_action
+        planned_current_power_w = current_power_w
+        effective_current_action = current_action
         current_action_end_time = None  # When the current scheduled action segment ends
         next_action = "idle"
         next_action_time = None
@@ -8666,6 +8673,24 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if ca:
                 current_action = ca.action
                 current_power_w = ca.power_w
+                planned_current_action = current_action
+                planned_current_power_w = current_power_w
+                last_executed_action = getattr(self, "_last_executed_action", None)
+                last_executed_planned_action = getattr(
+                    self,
+                    "_last_executed_planned_action",
+                    None,
+                )
+                if (
+                    last_executed_action
+                    and last_executed_planned_action == planned_current_action
+                ):
+                    effective_current_action = last_executed_action
+                    current_action = effective_current_action
+                    if current_action in ("idle", "no_discharge", "self_consumption"):
+                        current_power_w = actual_battery_power_w
+                else:
+                    effective_current_action = current_action
 
             now = dt_util.now()
 
@@ -8680,7 +8705,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
             # Find next different action (used by the Next Scheduled Change sensor)
             for a in self._current_schedule.actions:
-                if a.timestamp > now and a.action != current_action:
+                if a.timestamp > now and a.action != planned_current_action:
                     next_action = a.action
                     next_action_time = a.timestamp.isoformat()
                     next_action_power_w = a.power_w
@@ -8756,6 +8781,9 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "optimization_status": "active" if optimizer_available else "not_available",
             "current_action": current_action,
             "current_power_w": current_power_w,
+            "planned_current_action": planned_current_action,
+            "planned_current_power_w": planned_current_power_w,
+            "effective_current_action": effective_current_action,
             "actual_battery_power_w": actual_battery_power_w,
             "current_action_end_time": current_action_end_time,
             "next_action": next_action,

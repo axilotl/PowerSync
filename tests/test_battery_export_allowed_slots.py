@@ -1626,6 +1626,90 @@ def _execution_coordinator(opt_module, battery: _FakeBattery, soc: float):
     return coordinator
 
 
+def _api_action(timestamp: datetime, action: str, power_w: float, soc: float):
+    return SimpleNamespace(
+        timestamp=timestamp,
+        action=action,
+        power_w=power_w,
+        soc=soc,
+        battery_charge_w=0,
+        battery_discharge_w=power_w if action in ("discharge", "export") else 0,
+        to_dict=lambda: {
+            "timestamp": timestamp.isoformat(),
+            "action": action,
+            "power_w": power_w,
+            "soc": soc,
+        },
+    )
+
+
+def test_api_current_action_uses_effective_runtime_action(opt_module):
+    coordinator = _coordinator(opt_module, "octopus")
+    now = datetime(2026, 5, 3, 8, 30, tzinfo=timezone.utc)
+    actions = [
+        _api_action(now, "export", 5000, 0.55),
+        _api_action(now + timedelta(minutes=5), "export", 5000, 0.54),
+        _api_action(now + timedelta(minutes=10), "self_consumption", 0, 0.54),
+    ]
+    coordinator._current_schedule = SimpleNamespace(
+        actions=actions,
+        to_api_response=lambda: {
+            "timestamps": [action.timestamp.isoformat() for action in actions],
+            "soc": [action.soc for action in actions],
+            "actions": [action.action for action in actions],
+        },
+    )
+    coordinator._optimizer = object()
+    coordinator._enabled = True
+    coordinator._cost_function = opt_module.CostFunction("cost")
+    coordinator._last_update_time = now
+    coordinator._last_optimizer_result = None
+    coordinator._last_executed_planned_action = "export"
+    coordinator._last_executed_action = "self_consumption"
+    coordinator._startup_backup_reserve = 20
+    coordinator._battery_specs_source = "config"
+    coordinator._planned_ev_load_entity_id = None
+    coordinator._ev_integration_enabled = False
+    coordinator._ev_configs = []
+    coordinator._ev_coordinator = None
+    coordinator._last_planned_ev_load_forecast_w = []
+    coordinator._last_import_prices = None
+    coordinator._last_export_prices = None
+    coordinator._last_display_import_prices = None
+    coordinator._last_display_export_prices = None
+    coordinator._actual_cost_today = 0.0
+    coordinator._actual_baseline_today = 0.0
+    coordinator._actual_import_cost_today = 0.0
+    coordinator._actual_export_earnings_today = 0.0
+    coordinator._actual_import_kwh_today = 0.0
+    coordinator._actual_export_kwh_today = 0.0
+    coordinator._actual_charge_kwh_today = 0.0
+    coordinator._actual_discharge_kwh_today = 0.0
+    coordinator.hass = SimpleNamespace(data={})
+    coordinator.entry_id = "entry-1"
+    coordinator._get_actual_battery_power_w = lambda: -300
+    coordinator._get_current_action = lambda: actions[0]
+    coordinator._get_daily_cost = lambda: 0.0
+    coordinator._get_daily_savings = lambda: 0.0
+    coordinator._get_predicted_cost_to_midnight = lambda: (0.0, 0.0)
+    coordinator._get_warnings = lambda: []
+    coordinator._summarise_load_forecast = lambda: None
+    coordinator._zerohero_cost_breakdown = lambda: {}
+    coordinator._should_spread_export_schedule = lambda: False
+    coordinator._should_spread_import_schedule = lambda: False
+    coordinator._get_demand_window_config = lambda: None
+    coordinator._is_in_demand_window_at = lambda timestamp: False
+
+    data = coordinator.get_api_data()
+
+    assert data["planned_current_action"] == "export"
+    assert data["planned_current_power_w"] == 5000
+    assert data["effective_current_action"] == "self_consumption"
+    assert data["current_action"] == "self_consumption"
+    assert data["current_power_w"] == -300
+    assert data["next_action"] == "self_consumption"
+
+
 def test_coordinator_refresh_applies_cached_charge_at_action_boundary(opt_module):
     battery = _FakeBattery()
     coordinator = _execution_coordinator(opt_module, battery, soc=0.25)
