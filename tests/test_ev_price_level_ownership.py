@@ -97,6 +97,11 @@ ev_planner = importlib.import_module("power_sync.automations.ev_charging_planner
 VIN = "LRWYHCEK3PC907290"
 
 
+def test_price_log_value_formats_unknown_without_cents_suffix():
+    assert ev_planner._format_price_log_value(None) == "unknown"
+    assert ev_planner._format_price_log_value(12) == "12.0c"
+
+
 class _FakeConfigEntry:
     entry_id = "entry-1"
     data = {}

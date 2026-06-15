@@ -89,6 +89,12 @@ FULL_EV_SOC = 100
 EXTERNAL_SCHEDULED_STOP_SUPPRESS_SECONDS = 15 * 60
 
 
+def _format_price_log_value(price_cents: Optional[float]) -> str:
+    if price_cents is None:
+        return "unknown"
+    return f"{price_cents:.1f}c"
+
+
 def _configured_ble_prefixes(
     config_entry: Optional["ConfigEntry"],
     vehicle_vin: Optional[str] = None,
@@ -7064,7 +7070,7 @@ class PriceLevelChargingExecutor:
 
         _LOGGER.debug(
             f"Price-level charging decision: enabled={settings.get('enabled')}, "
-            f"price={current_price_cents}c, recovery_soc={settings.get('recovery_soc')}, "
+            f"price={_format_price_log_value(current_price_cents)}, recovery_soc={settings.get('recovery_soc')}, "
             f"recovery_price={settings.get('recovery_price_cents')}c, "
             f"opportunity_price={settings.get('opportunity_price_cents')}c"
         )
@@ -7202,7 +7208,7 @@ class PriceLevelChargingExecutor:
 
         _LOGGER.debug(
             f"Price-level charging decision for VIN {vehicle_vin}: enabled={settings.get('enabled')}, "
-            f"price={current_price_cents}c"
+            f"price={_format_price_log_value(current_price_cents)}"
         )
 
         # Check if enabled
@@ -8126,7 +8132,7 @@ class EVChargingModeCoordinator:
         For Price-Level charging, evaluates all discovered vehicles independently.
         """
         _LOGGER.debug(
-            f"EV Coordinator evaluating: price={current_price_cents}c, "
+            f"EV Coordinator evaluating: price={_format_price_log_value(current_price_cents)}, "
             f"currently_charging={self._is_charging}"
         )
 
