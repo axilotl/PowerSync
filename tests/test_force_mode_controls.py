@@ -753,6 +753,7 @@ def test_optimizer_restart_restore_is_hidden_from_force_getter():
     function_source = ast.get_source_segment(source, function)
 
     assert function_source is not None
+    assert "hass.data.get(DOMAIN, {}).get(entry.entry_id, {})" in function_source
     assert '"optimizer_force_restart_restore_pending"' in function_source
     assert 'return {"active": False}' in function_source
 

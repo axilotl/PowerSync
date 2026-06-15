@@ -30968,7 +30968,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             # (the fake tariff rates would give incorrect cost calculations)
             def get_force_state() -> dict:
                 """Get current force charge/discharge state."""
-                if hass.data[DOMAIN][entry.entry_id].get("optimizer_force_restart_restore_pending"):
+                entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+                if entry_data.get("optimizer_force_restart_restore_pending"):
                     return {"active": False}
                 if force_charge_state.get("active"):
                     return {
