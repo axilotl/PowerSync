@@ -22272,6 +22272,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "saved_operation_mode": None,
         "saved_backup_reserve": None,
         "saved_export_rule": None,
+        "saved_grid_charging_enabled": None,
         "expires_at": None,
         "hardware_expires_at": None,
         "duration": None,
@@ -22285,6 +22286,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "saved_tariff": None,
         "saved_operation_mode": None,
         "saved_backup_reserve": None,
+        "saved_grid_charging_enabled": None,
         "expires_at": None,
         "hardware_expires_at": None,
         "duration": None,
@@ -22385,6 +22387,32 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             entry.data.get("initial_custom_tariff"),
         )
 
+    def _optional_bool(value: Any) -> bool | None:
+        """Return a bool for API booleans/strings, or None when unknown."""
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in ("true", "1", "yes", "on"):
+                return True
+            if lowered in ("false", "0", "no", "off"):
+                return False
+            return None
+        return bool(value)
+
+    def _tesla_grid_charging_enabled_from_site_info(site_info: dict[str, Any]) -> bool | None:
+        """Extract Tesla grid-charging state from site_info."""
+        components = site_info.get("components", {})
+        disallow = components.get("disallow_charge_from_grid_with_solar_installed")
+        if disallow is None:
+            disallow = site_info.get("disallow_charge_from_grid_with_solar_installed")
+        disallow_bool = _optional_bool(disallow)
+        if disallow_bool is None:
+            return None
+        return not disallow_bool
+
     def _coerce_force_power_w(value: Any) -> int:
         """Normalize service/store force-power values to a non-negative watt value."""
         try:
@@ -22444,6 +22472,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 "saved_tariff": _select_restorable_tesla_tariff(force_charge_state["saved_tariff"]),
                 "saved_operation_mode": force_charge_state["saved_operation_mode"],
                 "saved_backup_reserve": force_charge_state["saved_backup_reserve"],
+                "saved_grid_charging_enabled": force_charge_state.get("saved_grid_charging_enabled"),
             }
         elif force_discharge_state["active"]:
             state_to_save = {
@@ -22457,6 +22486,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 "saved_operation_mode": force_discharge_state["saved_operation_mode"],
                 "saved_backup_reserve": force_discharge_state["saved_backup_reserve"],
                 "saved_export_rule": force_discharge_state["saved_export_rule"],
+                "saved_grid_charging_enabled": force_discharge_state.get("saved_grid_charging_enabled"),
             }
 
         stored_data["force_mode_state"] = state_to_save
@@ -22567,6 +22597,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 state["saved_operation_mode"] = persisted_force_state.get("saved_operation_mode")
                 state["saved_backup_reserve"] = persisted_force_state.get("saved_backup_reserve")
                 state["saved_export_rule"] = persisted_force_state.get("saved_export_rule")
+                state["saved_grid_charging_enabled"] = persisted_force_state.get("saved_grid_charging_enabled")
 
                 try:
                     await hass.services.async_call(
@@ -22618,6 +22649,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 state["saved_operation_mode"] = persisted_force_state.get("saved_operation_mode")
                 state["saved_backup_reserve"] = saved_backup_reserve
                 state["saved_export_rule"] = persisted_force_state.get("saved_export_rule")
+                state["saved_grid_charging_enabled"] = persisted_force_state.get("saved_grid_charging_enabled")
 
                 # Use handle_restore_normal for full cleanup — it has direct API access
                 # and doesn't depend on battery_controller (which isn't created yet)
@@ -22651,6 +22683,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     )
                     force_charge_state["saved_operation_mode"] = persisted_force_state.get("saved_operation_mode")
                     force_charge_state["saved_backup_reserve"] = persisted_force_state.get("saved_backup_reserve")
+                    force_charge_state["saved_grid_charging_enabled"] = persisted_force_state.get("saved_grid_charging_enabled")
 
                     # Re-issue the charge command to the inverter
                     try:
@@ -22709,6 +22742,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     force_discharge_state["saved_operation_mode"] = persisted_force_state.get("saved_operation_mode")
                     force_discharge_state["saved_backup_reserve"] = persisted_force_state.get("saved_backup_reserve")
                     force_discharge_state["saved_export_rule"] = persisted_force_state.get("saved_export_rule")
+                    force_discharge_state["saved_grid_charging_enabled"] = persisted_force_state.get("saved_grid_charging_enabled")
 
                     # Re-issue the discharge command to the inverter.
                     # After restart, the inverter reverts to normal mode —
@@ -23143,6 +23177,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             force_discharge_state["saved_tariff"] = force_charge_state.get("saved_tariff")
             force_discharge_state["saved_operation_mode"] = force_charge_state.get("saved_operation_mode")
             force_discharge_state["saved_backup_reserve"] = force_charge_state.get("saved_backup_reserve")
+            force_discharge_state["saved_grid_charging_enabled"] = force_charge_state.get("saved_grid_charging_enabled")
             # saved_export_rule is left as-is; force_charge doesn't modify
             # the export rule, so any pre-existing value on
             # force_discharge_state is still accurate. If it's None (fresh
@@ -23152,6 +23187,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             force_charge_state["saved_tariff"] = None
             force_charge_state["saved_operation_mode"] = None
             force_charge_state["saved_backup_reserve"] = None
+            force_charge_state["saved_grid_charging_enabled"] = None
             force_charge_state["expires_at"] = None
 
         # Set force discharge state IMMEDIATELY so the optimizer sees it
@@ -23933,6 +23969,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                             site_state["saved_export_rule"] = saved_export_rule
                             _LOGGER.info("Site %s: saved export rule: %s", site_id, saved_export_rule)
 
+                            saved_grid_charging_enabled = _tesla_grid_charging_enabled_from_site_info(site_info)
+                            site_state["saved_grid_charging_enabled"] = saved_grid_charging_enabled
+                            _LOGGER.info(
+                                "Site %s: saved grid charging: %s",
+                                site_id,
+                                saved_grid_charging_enabled,
+                            )
+
                             if not site_state.get("saved_tariff"):
                                 site_tariff = site_info.get("tariff_content_v2") or site_info.get("tariff_content")
                                 saved_tariff = await _cache_restorable_tesla_tariff(
@@ -24030,6 +24074,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 force_discharge_state["saved_operation_mode"] = primary_state.get("saved_operation_mode")
                 force_discharge_state["saved_backup_reserve"] = primary_state.get("saved_backup_reserve")
                 force_discharge_state["saved_export_rule"] = primary_state.get("saved_export_rule")
+                force_discharge_state["saved_grid_charging_enabled"] = primary_state.get("saved_grid_charging_enabled")
 
             # Step 3: Switch to autonomous mode on all gateways
             mode_success = True
@@ -24534,11 +24579,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             force_charge_state["saved_tariff"] = force_discharge_state.get("saved_tariff")
             force_charge_state["saved_operation_mode"] = force_discharge_state.get("saved_operation_mode")
             force_charge_state["saved_backup_reserve"] = force_discharge_state.get("saved_backup_reserve")
+            force_charge_state["saved_grid_charging_enabled"] = force_discharge_state.get("saved_grid_charging_enabled")
             force_discharge_state["active"] = False
             force_discharge_state["saved_tariff"] = None
             force_discharge_state["saved_operation_mode"] = None
             force_discharge_state["saved_backup_reserve"] = None
             force_discharge_state["saved_export_rule"] = None
+            force_discharge_state["saved_grid_charging_enabled"] = None
             force_discharge_state["expires_at"] = None
             force_discharge_state["hardware_expires_at"] = None
 
@@ -25450,6 +25497,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                                          site_id, site_state["saved_operation_mode"],
                                          site_state["saved_backup_reserve"], api_reserve, pre_idle, startup_reserve)
 
+                            saved_grid_charging_enabled = _tesla_grid_charging_enabled_from_site_info(site_info)
+                            site_state["saved_grid_charging_enabled"] = saved_grid_charging_enabled
+                            _LOGGER.info(
+                                "Site %s: saved grid charging: %s",
+                                site_id,
+                                saved_grid_charging_enabled,
+                            )
+
                             if not site_state.get("saved_tariff"):
                                 site_tariff = site_info.get("tariff_content_v2") or site_info.get("tariff_content")
                                 saved_tariff = await _cache_restorable_tesla_tariff(
@@ -25497,6 +25552,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 force_charge_state["saved_tariff"] = primary_state.get("saved_tariff")
                 force_charge_state["saved_operation_mode"] = primary_state.get("saved_operation_mode")
                 force_charge_state["saved_backup_reserve"] = primary_state.get("saved_backup_reserve")
+                force_charge_state["saved_grid_charging_enabled"] = primary_state.get("saved_grid_charging_enabled")
 
             # Step 3: Switch to autonomous mode and set backup reserve on all gateways
             mode_success = True
@@ -26436,11 +26492,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _cached_restorable_tesla_tariff(),
             _configured_restorable_tesla_tariff(),
         )
+        saved_grid_charging_enabled = (
+            force_discharge_state.get("saved_grid_charging_enabled")
+            if force_discharge_state.get("saved_grid_charging_enabled") is not None
+            else force_charge_state.get("saved_grid_charging_enabled")
+        )
         has_saved_state = (
             restorable_saved_tariff or
             force_discharge_state.get("saved_operation_mode") or force_charge_state.get("saved_operation_mode") or
             force_discharge_state.get("saved_backup_reserve") is not None or
-            force_charge_state.get("saved_backup_reserve") is not None
+            force_charge_state.get("saved_backup_reserve") is not None or
+            saved_grid_charging_enabled is not None
         )
         if not has_active_force and not has_saved_state:
             _LOGGER.info("Restore normal: no force mode active and no saved state — nothing to restore")
@@ -26709,30 +26771,83 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 if _restore_superseded("mode/reserve restore"):
                     return
 
-            # Explicitly re-enable grid charging unless still in a demand peak period
+            # Restore grid charging to the user's pre-force setting unless a
+            # demand peak period requires it to stay disabled.
             entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
             dc_coordinator = entry_data.get("demand_charge_coordinator")
-            ts_coordinator = entry_data.get("tesla_coordinator")
-            if ts_coordinator:
-                if optimizer_owned_restore:
-                    _LOGGER.info(
-                        "Optimizer restore: leaving Tesla grid charging unchanged after tariff handoff; "
-                        "the next optimizer charge action will re-enable it if needed"
+            if optimizer_owned_restore:
+                _LOGGER.info(
+                    "Optimizer restore: leaving Tesla grid charging unchanged after tariff handoff; "
+                    "the next optimizer charge action will re-enable it if needed"
+                )
+            else:
+                in_peak = False
+                if dc_coordinator and not entry_data.get("demand_allow_grid_charging", False):
+                    in_peak = dc_coordinator._is_in_peak_period(dt_util.now())
+
+                discharge_saved = force_discharge_state.get("saved_states") or {}
+                charge_saved = force_charge_state.get("saved_states") or {}
+                for site_id, current_token, provider in site_configs:
+                    target_grid_charging_enabled = _optional_bool(
+                        discharge_saved.get(site_id, {}).get("saved_grid_charging_enabled")
                     )
-                else:
-                    in_peak = False
-                    if dc_coordinator and not entry_data.get("demand_allow_grid_charging", False):
-                        in_peak = dc_coordinator._is_in_peak_period(dt_util.now())
+                    if target_grid_charging_enabled is None:
+                        target_grid_charging_enabled = _optional_bool(
+                            charge_saved.get(site_id, {}).get("saved_grid_charging_enabled")
+                        )
+                    if target_grid_charging_enabled is None:
+                        target_grid_charging_enabled = _optional_bool(
+                            force_discharge_state.get("saved_grid_charging_enabled")
+                        )
+                    if target_grid_charging_enabled is None:
+                        target_grid_charging_enabled = _optional_bool(
+                            force_charge_state.get("saved_grid_charging_enabled")
+                        )
+
                     if in_peak:
-                        _LOGGER.info("Restore normal: still in demand peak period — keeping grid charging disabled")
+                        _LOGGER.info(
+                            "Restore normal: still in demand peak period — keeping grid charging disabled"
+                        )
+                        target_grid_charging_enabled = False
                         hass.data[DOMAIN][entry.entry_id]["grid_charging_disabled_for_demand"] = True
-                    else:
-                        success = await ts_coordinator.set_grid_charging_enabled(True)
-                        if success:
-                            hass.data[DOMAIN][entry.entry_id]["grid_charging_disabled_for_demand"] = False
-                            _LOGGER.info("Grid charging re-enabled after restore normal")
+                    elif target_grid_charging_enabled is None:
+                        _LOGGER.warning(
+                            "No saved grid charging state for site %s - leaving current Tesla setting unchanged",
+                            site_id,
+                        )
+                        continue
+
+                    headers = {
+                        "Authorization": f"Bearer {current_token}",
+                        "Content-Type": "application/json",
+                    }
+                    api_base = get_tesla_api_base_url(provider, entry.data.get(CONF_FLEET_API_BASE_URL))
+                    async with session.post(
+                        f"{api_base}/api/1/energy_sites/{site_id}/grid_import_export",
+                        headers=headers,
+                        json={
+                            "disallow_charge_from_grid_with_solar_installed": not target_grid_charging_enabled
+                        },
+                        timeout=aiohttp.ClientTimeout(total=30),
+                    ) as response:
+                        if response.status == 200:
+                            if not in_peak:
+                                hass.data[DOMAIN][entry.entry_id]["grid_charging_disabled_for_demand"] = False
+                            _LOGGER.info(
+                                "Restored grid charging to %s for site %s",
+                                "enabled" if target_grid_charging_enabled else "disabled",
+                                site_id,
+                            )
                         else:
-                            _LOGGER.warning("Failed to re-enable grid charging during restore normal")
+                            text = await response.text()
+                            _LOGGER.warning(
+                                "Failed to restore grid charging for site %s: %s - %s",
+                                site_id,
+                                response.status,
+                                text[:200],
+                            )
+                    if _restore_superseded("grid charging restore"):
+                        return
 
             # Clear discharge state
             force_discharge_state["active"] = False
@@ -26740,6 +26855,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             force_discharge_state["saved_operation_mode"] = None
             force_discharge_state["saved_backup_reserve"] = None
             force_discharge_state["saved_export_rule"] = None
+            force_discharge_state["saved_grid_charging_enabled"] = None
             force_discharge_state["saved_states"] = {}
             force_discharge_state["expires_at"] = None
 
@@ -26748,6 +26864,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             force_charge_state["saved_tariff"] = None
             force_charge_state["saved_operation_mode"] = None
             force_charge_state["saved_backup_reserve"] = None
+            force_charge_state["saved_grid_charging_enabled"] = None
             force_charge_state["saved_states"] = {}
             force_charge_state["expires_at"] = None
 

@@ -489,9 +489,32 @@ def test_optimizer_restore_does_not_reenable_grid_charging_during_handoff():
 
     assert function_source is not None
     skip_index = function_source.index("if optimizer_owned_restore:")
-    reenable_index = function_source.index("set_grid_charging_enabled(True)")
-    assert skip_index < reenable_index
+    restore_index = function_source.index('"grid charging restore"')
+    assert skip_index < restore_index
+    assert "set_grid_charging_enabled(True)" not in function_source
     assert "the next optimizer charge action will re-enable it if needed" in function_source
+
+
+def test_tesla_force_modes_persist_grid_charging_baseline():
+    source = INIT_PATH.read_text()
+    tree = ast.parse(source)
+    persist = ast.get_source_segment(
+        source,
+        _find_function(tree, "persist_force_mode_state"),
+    )
+    restore = ast.get_source_segment(
+        source,
+        _find_function(tree, "handle_restore_normal"),
+    )
+
+    assert persist is not None
+    assert restore is not None
+    assert '"saved_grid_charging_enabled": force_charge_state.get("saved_grid_charging_enabled")' in persist
+    assert '"saved_grid_charging_enabled": force_discharge_state.get("saved_grid_charging_enabled")' in persist
+    assert "_tesla_grid_charging_enabled_from_site_info(site_info)" in source
+    assert 'site_state["saved_grid_charging_enabled"] = saved_grid_charging_enabled' in source
+    assert '"disallow_charge_from_grid_with_solar_installed": not target_grid_charging_enabled' in restore
+    assert "No saved grid charging state" in restore
 
 
 def test_tesla_self_consumption_clears_force_toggle_state():
