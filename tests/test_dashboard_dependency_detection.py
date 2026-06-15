@@ -358,7 +358,7 @@ def test_optimizer_plan_charts_have_tooltips():
     assert "_priceTooltipConfig(model, compact, priceMeta)" in chart_source
     assert ".chart-tooltip-line" in chart_source
     assert ".chart-tooltip-time" in chart_source
-    assert "background: color-mix(in srgb, var(--ha-card-background, var(--card-background-color, white)) 90%, transparent);" in chart_source
+    assert "background: color-mix(in srgb, var(--ha-card-background, var(--card-background-color, white)) 78%, transparent);" in chart_source
     assert "backdrop-filter: blur(8px);" in chart_source
 
 

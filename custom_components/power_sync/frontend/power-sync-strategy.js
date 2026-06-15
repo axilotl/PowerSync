@@ -1893,7 +1893,7 @@ class PowerSyncOptimizationPlan extends HTMLElement {
           max-width: min(260px, calc(100% - 16px));
           padding: 8px 10px;
           border-radius: 8px;
-          background: color-mix(in srgb, var(--ha-card-background, var(--card-background-color, white)) 90%, transparent);
+          background: color-mix(in srgb, var(--ha-card-background, var(--card-background-color, white)) 78%, transparent);
           backdrop-filter: blur(8px);
           -webkit-backdrop-filter: blur(8px);
           color: var(--primary-text-color);
