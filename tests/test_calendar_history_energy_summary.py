@@ -299,6 +299,61 @@ def test_calendar_state_history_rows_convert_daily_totals_to_hourly_deltas():
     ]
 
 
+def test_calendar_state_history_rows_ignore_same_day_transient_drop():
+    namespace = _calendar_namespace()
+    start = datetime(2026, 5, 16, 0, 0, tzinfo=timezone.utc)
+    end = datetime(2026, 5, 16, 12, 0, tzinfo=timezone.utc)
+    history = {
+        "sensor.power_sync_daily_battery_charge_foxess": [
+            _history_state("47.0", datetime(2026, 5, 16, 9, 0, tzinfo=timezone.utc)),
+            _history_state("0", datetime(2026, 5, 16, 9, 5, tzinfo=timezone.utc)),
+            _history_state("47.6", datetime(2026, 5, 16, 9, 10, tzinfo=timezone.utc)),
+            _history_state("48.1", datetime(2026, 5, 16, 10, 0, tzinfo=timezone.utc)),
+        ],
+    }
+    entity_to_field = {
+        "sensor.power_sync_daily_battery_charge_foxess": "battery_charge",
+    }
+
+    rows = namespace["_calendar_time_series_from_state_history_rows"](
+        history,
+        entity_to_field,
+        "day",
+        start,
+        end,
+    )
+
+    assert sum(row["battery_charge"] for row in rows) == 48100
+    assert rows[0]["battery_charge"] == 47600
+    assert rows[1]["battery_charge"] == 500
+
+
+def test_calendar_state_history_rows_allow_next_day_reset():
+    namespace = _calendar_namespace()
+    start = datetime(2026, 5, 16, 0, 0, tzinfo=timezone.utc)
+    end = datetime(2026, 5, 18, 0, 0, tzinfo=timezone.utc)
+    history = {
+        "sensor.power_sync_daily_solar_energy": [
+            _history_state("8.0", datetime(2026, 5, 16, 23, 0, tzinfo=timezone.utc)),
+            _history_state("0.5", datetime(2026, 5, 17, 7, 0, tzinfo=timezone.utc)),
+            _history_state("3.0", datetime(2026, 5, 17, 12, 0, tzinfo=timezone.utc)),
+        ],
+    }
+    entity_to_field = {
+        "sensor.power_sync_daily_solar_energy": "solar_generation",
+    }
+
+    rows = namespace["_calendar_time_series_from_state_history_rows"](
+        history,
+        entity_to_field,
+        "week",
+        start,
+        end,
+    )
+
+    assert [row["solar_generation"] for row in rows] == [8000, 3000]
+
+
 def test_calendar_statistic_finder_accepts_foxess_daily_battery_aliases():
     namespace = _calendar_namespace()
     entities = {

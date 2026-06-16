@@ -4118,7 +4118,8 @@ def _calendar_time_series_from_state_history_rows(
                 or start_dt
             ),
         )
-        previous_wh = 0.0
+        previous_wh: float | None = None
+        previous_date = None
         for state in states:
             state_time = getattr(state, "last_changed", None) or getattr(
                 state, "last_updated", None
@@ -4130,19 +4131,26 @@ def _calendar_time_series_from_state_history_rows(
             if local_time < start_dt or local_time >= end_dt:
                 continue
 
+            state_date = local_time.date()
             current_wh = _calendar_energy_state_wh(state)
             if current_wh <= 0:
-                previous_wh = current_wh
+                if previous_wh is None or previous_date != state_date:
+                    previous_wh = current_wh
+                    previous_date = state_date
                 continue
 
             # Daily sensors reset to zero around midnight. Treat a lower value
-            # than the previous state as a new-day delta instead of dropping it.
-            delta_wh = (
-                current_wh
-                if current_wh < previous_wh
-                else current_wh - previous_wh
-            )
+            # on a later local date as a new-day delta. Ignore same-day drops,
+            # which can appear as transient restore/reload states and would
+            # otherwise duplicate the next good cumulative value.
+            if previous_wh is None or previous_date != state_date:
+                delta_wh = current_wh
+            elif current_wh >= previous_wh:
+                delta_wh = current_wh - previous_wh
+            else:
+                continue
             previous_wh = current_wh
+            previous_date = state_date
             if delta_wh <= 0:
                 continue
 
