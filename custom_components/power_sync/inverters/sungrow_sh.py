@@ -1181,6 +1181,10 @@ class SungrowSHController(InverterController):
             if daily_charge:
                 data["daily_battery_charge"] = round(daily_charge[0] * 0.1, 2)
 
+            inv_temp = await self._read_input_register(self.REG_INVERTER_TEMP, 1)
+            if inv_temp:
+                data["inverter_temperature"] = round(self._to_signed16(inv_temp[0]) * 0.1, 1)
+
             # Read daily energy registers (hardware-tracked, more reliable than
             # software accumulator which can be polluted by transient bad reads)
             daily_pv = await self._read_input_register(self.REG_DAILY_PV, 1)

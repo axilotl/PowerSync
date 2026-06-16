@@ -300,6 +300,7 @@ def test_battery_data_prefers_mkaiser_telemetry_registers_without_write_probe():
                 controller.REG_BATTERY_VOLTAGE: [5751, 59, 3398, 297, 980, 208, 298],
                 controller.REG_BATTERY_POWER_S32: [3398, 0],
                 controller.REG_BATTERY_CURRENT_PRECISE: [123],
+                controller.REG_INVERTER_TEMP: [312],
                 controller.REG_METER_ACTIVE_POWER: [1500, 0],
                 controller.REG_BMS_MAX_CHARGE_CURRENT: [40],
                 controller.REG_BMS_MAX_DISCHARGE_CURRENT: [35],
@@ -337,6 +338,7 @@ def test_battery_data_prefers_mkaiser_telemetry_registers_without_write_probe():
     assert data["battery_soc"] == 29.7
     assert data["battery_power"] == 3398
     assert data["battery_current"] == 12.3
+    assert data["inverter_temperature"] == 31.2
     assert data["meter_power"] == 1500
     assert data["charge_rate_limit_kw"] == 12.0
     assert data["discharge_rate_limit_kw"] == 15.0
@@ -518,6 +520,8 @@ def test_sungrow_coordinator_includes_ac_inverter_power_in_home_load():
                 "load_power": 0,
                 "pv_power": 4550,
                 "battery_soh": 98.0,
+                "battery_temp": 20.8,
+                "inverter_temperature": 31.2,
             }
 
     async def run_update():
@@ -545,6 +549,8 @@ def test_sungrow_coordinator_includes_ac_inverter_power_in_home_load():
 
     assert data["solar_power"] == 4.55
     assert data["ac_inverter_solar_power"] == 3.119
+    assert data["battery_temp"] == 20.8
+    assert data["inverter_temperature"] == 31.2
     assert round(data["load_power"], 3) == 1.979
     assert round(energy_acc.updates[-1][3], 3) == 1.979
 

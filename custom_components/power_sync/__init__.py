@@ -650,6 +650,33 @@ def _is_solaredge_entity_bridge_startup_failure(coordinator: Any, exc: Exception
     )
 
 
+def _configured_battery_capacity_kwh(entry: ConfigEntry) -> float | None:
+    """Return the configured optimizer battery capacity in kWh."""
+    raw_capacity_wh = entry.options.get(
+        CONF_OPTIMIZATION_BATTERY_CAPACITY_WH,
+        entry.data.get(CONF_OPTIMIZATION_BATTERY_CAPACITY_WH),
+    )
+    try:
+        capacity_wh = float(raw_capacity_wh or 0)
+    except (TypeError, ValueError):
+        return None
+    if capacity_wh <= 0:
+        return None
+    return round(capacity_wh / 1000.0, 2)
+
+
+def _current_capacity_from_soh_kwh(
+    rated_capacity_kwh: float | None,
+    soh_percent: float | None,
+) -> float | None:
+    """Estimate current usable capacity from rated capacity and BMS SOH."""
+    if rated_capacity_kwh is None or soh_percent is None:
+        return None
+    if rated_capacity_kwh <= 0 or soh_percent <= 0:
+        return None
+    return round(rated_capacity_kwh * soh_percent / 100.0, 2)
+
+
 def _resolve_ble_prefixes(hass, config: dict) -> list[str]:
     """Resolve Tesla BLE entity prefixes with auto-detection fallback.
 
@@ -5309,8 +5336,24 @@ class BatteryHealthView(HomeAssistantView):
             bms: dict = {}
 
             if brand == "sungrow":
-                if (v := d.get("battery_soh")) is not None: bms["soh_percent"] = round(float(v), 1)
+                soh_percent = None
+                if (v := d.get("battery_soh")) is not None:
+                    soh_percent = round(float(v), 1)
+                    bms["soh_percent"] = soh_percent
+                rated_capacity_kwh = d.get("battery_capacity_kwh")
+                if rated_capacity_kwh is None:
+                    rated_capacity_kwh = _configured_battery_capacity_kwh(entry)
+                if rated_capacity_kwh is not None:
+                    rated_capacity_kwh = round(float(rated_capacity_kwh), 2)
+                    bms["rated_capacity_kwh"] = rated_capacity_kwh
+                    current_capacity_kwh = _current_capacity_from_soh_kwh(
+                        rated_capacity_kwh,
+                        soh_percent,
+                    )
+                    if current_capacity_kwh is not None:
+                        bms["current_capacity_kwh"] = current_capacity_kwh
                 if (v := d.get("battery_temp")) is not None: bms["temperature_c"] = round(float(v), 1)
+                if (v := d.get("inverter_temperature")) is not None: bms["inverter_temperature_c"] = round(float(v), 1)
                 if (v := d.get("battery_voltage")) is not None: bms["voltage_v"] = round(float(v), 1)
                 if (v := d.get("battery_current")) is not None: bms["current_a"] = round(float(v), 1)
                 if (v := d.get("battery_level")) is not None: bms["soc_percent"] = round(float(v), 1)
@@ -7931,10 +7974,23 @@ class ConfigView(HomeAssistantView):
                     if coord and coord.data:
                         soh = coord.data.get("battery_soh")
                         if soh is not None and soh > 0:
+                            health_percent = round(float(soh), 1)
                             battery_health = {
-                                "health_percent": round(float(soh), 1),
+                                "health_percent": health_percent,
                                 "source": "inverter_modbus",
                             }
+                            rated_capacity_kwh = coord.data.get("battery_capacity_kwh")
+                            if rated_capacity_kwh is None and key == "sungrow_coordinator":
+                                rated_capacity_kwh = _configured_battery_capacity_kwh(entry)
+                            if rated_capacity_kwh is not None:
+                                rated_capacity_kwh = round(float(rated_capacity_kwh), 2)
+                                battery_health["original_capacity_kwh"] = rated_capacity_kwh
+                                current_capacity_kwh = _current_capacity_from_soh_kwh(
+                                    rated_capacity_kwh,
+                                    health_percent,
+                                )
+                                if current_capacity_kwh is not None:
+                                    battery_health["current_capacity_kwh"] = current_capacity_kwh
                             break
 
             # Look up actual entity_ids from the entity registry
