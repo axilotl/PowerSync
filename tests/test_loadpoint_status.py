@@ -726,6 +726,51 @@ def test_default_session_merges_with_single_observed_charging_vehicle():
     assert loadpoints[0]["confidence"] == "observed"
 
 
+def test_default_session_is_hidden_when_multiple_observed_vehicles_are_active():
+    loadpoints = build_loadpoint_status(
+        {
+            "_default": {
+                "active": True,
+                "current_amps": 10,
+                "target_amps": 10,
+                "charging_started": True,
+                "params": {
+                    "dynamic_mode": "scheduled",
+                    "charger_type": "tesla",
+                    "voltage": 240,
+                    "phases": 1,
+                },
+            }
+        },
+        [
+            {
+                "vehicle_id": "VIN_TESS",
+                "vehicle_name": "Tess",
+                "charger_type": "tesla",
+                "ev_power_kw": 5.8,
+                "ev_soc": 75,
+                "is_connected": True,
+                "is_charging": True,
+            },
+            {
+                "vehicle_id": "VIN_THEO",
+                "vehicle_name": "Theo",
+                "charger_type": "tesla",
+                "ev_power_kw": 11.7,
+                "ev_soc": 19,
+                "is_connected": True,
+                "is_charging": True,
+            },
+        ],
+    )
+
+    assert [loadpoint["vehicle_name"] for loadpoint in loadpoints] == ["Tess", "Theo"]
+    assert {loadpoint["loadpoint_id"] for loadpoint in loadpoints} == {
+        "VIN_TESS",
+        "VIN_THEO",
+    }
+
+
 def test_generic_charger_observation_reports_commanded_without_power():
     observation = build_generic_charger_observation(
         vehicle_name="Generic EV",

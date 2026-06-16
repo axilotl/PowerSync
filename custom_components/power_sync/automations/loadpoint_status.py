@@ -541,6 +541,27 @@ def _find_observation(
     return None, None
 
 
+def _has_ambiguous_default_observations(
+    observations: list[Mapping[str, Any]],
+    used_indexes: set[int],
+) -> bool:
+    matches = 0
+    for index, observation in enumerate(observations):
+        if index in used_indexes or _is_generic_observation(observation):
+            continue
+        power_kw = _float_value(
+            observation.get("ev_power_kw", observation.get("current_power_kw")),
+            0.0,
+        )
+        charging = bool(observation.get("is_charging")) or power_kw > ACTIVE_POWER_THRESHOLD_KW
+        connected = bool(observation.get("is_connected")) or charging
+        if connected:
+            matches += 1
+            if matches > 1:
+                return True
+    return False
+
+
 def _lookup_alias(
     values: Mapping[str, Mapping[str, Any]] | None,
     *keys: Any,
@@ -837,6 +858,12 @@ def build_loadpoint_status(
                     if _is_generic_observation(obs):
                         used_indexes.add(obs_index)
         ownership = _lookup_alias(ownerships, vehicle_id)
+        if (
+            index is None
+            and _is_default_loadpoint(vehicle_id, vehicle_name)
+            and _has_ambiguous_default_observations(observations, used_indexes)
+        ):
+            continue
         loadpoints.append(
             _dynamic_loadpoint(vehicle_id, state, observation, site_surplus_kw, ownership)
         )
