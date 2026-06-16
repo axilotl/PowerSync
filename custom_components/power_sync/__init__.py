@@ -18714,7 +18714,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 # Use load-following curtailment for supported brands
                 # Limit = home load + battery charge rate (so we don't export but still charge battery)
                 home_load_w = None
-                if inverter_brand in ("zeversolar", "sigenergy", "sungrow", "enphase", "foxess", "huawei", "goodwe", "solax", "alphaess", "solaredge"):
+                if inverter_brand in ("zeversolar", "sigenergy", "sungrow", "enphase", "foxess", "huawei", "goodwe", "solax", "alphaess", "solaredge", "fronius"):
                     live_status = await get_live_status()
                     if live_status and live_status.get("load_power"):
                         home_load_w = int(live_status.get("load_power", 0))
@@ -21551,6 +21551,61 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         except Exception as e:
             _LOGGER.error("Sungrow curtailment error: %s", e, exc_info=True)
 
+    async def handle_ac_inverter_curtailment_only(
+        feedin_price=None,
+        import_price=None,
+        price_source: str | None = None,
+        refresh_prices: bool = False,
+    ) -> None:
+        """Run configured AC inverter curtailment for non-Tesla entries.
+
+        Some battery systems, including Fronius GEN24 storage, do not have a
+        Tesla export-rule token to manage. They can still use the configured
+        AC inverter export-limit path, so avoid exiting before that path runs.
+        """
+        entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+        price_coordinators = (
+            amber_coordinator,
+            localvolts_coordinator,
+            aemo_sensor_coordinator,
+            flow_power_kwatch_coordinator,
+            octopus_coordinator,
+        )
+
+        if feedin_price is None:
+            if refresh_prices:
+                for price_coord in price_coordinators:
+                    if price_coord is None:
+                        continue
+                    refresh = getattr(price_coord, "async_request_refresh", None)
+                    if callable(refresh):
+                        await refresh()
+
+            feedin_price, import_price, price_source = get_current_prices_for_curtailment(
+                entry_data,
+                price_coordinators,
+            )
+
+        if feedin_price is None:
+            _LOGGER.warning("AC inverter curtailment: no feed-in price available")
+            return
+
+        export_earnings = -feedin_price
+        should_curtail_for_price = export_earnings < 1
+        _LOGGER.info(
+            "AC inverter curtailment check from %s: import=%sc/kWh, "
+            "export_earnings=%.2fc/kWh, action=%s",
+            price_source or "unknown",
+            import_price,
+            export_earnings,
+            "curtail" if should_curtail_for_price else "restore",
+        )
+        await apply_inverter_curtailment(
+            curtail=should_curtail_for_price,
+            import_price=import_price,
+            export_earnings=export_earnings,
+        )
+
     async def handle_solar_curtailment_check(call: ServiceCall = None) -> None:
         """
         Check export prices and curtail solar export when price is below 1c/kWh.
@@ -21610,6 +21665,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             return
 
         if token_getter is None:
+            ac_inverter_curtailment_enabled = entry.options.get(
+                CONF_AC_INVERTER_CURTAILMENT_ENABLED,
+                entry.data.get(CONF_AC_INVERTER_CURTAILMENT_ENABLED, False),
+            )
+            if ac_inverter_curtailment_enabled:
+                await handle_ac_inverter_curtailment_only(refresh_prices=True)
+                return
             _LOGGER.debug(
                 "Solar curtailment skipped - no Tesla API token getter available for this battery system"
             )
@@ -21972,6 +22034,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             return
 
         if token_getter is None:
+            ac_inverter_curtailment_enabled = entry.options.get(
+                CONF_AC_INVERTER_CURTAILMENT_ENABLED,
+                entry.data.get(CONF_AC_INVERTER_CURTAILMENT_ENABLED, False),
+            )
+            if ac_inverter_curtailment_enabled:
+                feedin_price = websocket_data.get('feedIn', {}).get('perKwh') if websocket_data else None
+                import_price = websocket_data.get('general', {}).get('perKwh') if websocket_data else None
+                await handle_ac_inverter_curtailment_only(
+                    feedin_price=feedin_price,
+                    import_price=import_price,
+                    price_source="websocket",
+                )
+                return
             _LOGGER.debug(
                 "Solar curtailment skipped - no Tesla API token getter available for this battery system"
             )
@@ -30333,7 +30408,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 return
 
             # Only brands with load-following curtail() support
-            if inverter_brand not in ("zeversolar", "sigenergy", "sungrow", "enphase", "foxess", "huawei", "goodwe", "solax", "alphaess", "solaredge"):
+            if inverter_brand not in ("zeversolar", "sigenergy", "sungrow", "enphase", "foxess", "huawei", "goodwe", "solax", "alphaess", "solaredge", "fronius"):
                 return
 
             if not inverter_host:

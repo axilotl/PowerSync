@@ -119,6 +119,24 @@ def test_ac_inverter_restore_keeps_heartbeat_but_skips_sungrow_verify_readback()
     assert controller_index < restore_index < verify_false_index
 
 
+def test_fronius_ac_inverter_uses_load_following_and_fast_refresh():
+    curtail_source = _function_source("apply_inverter_curtailment")
+    init_source = INIT_PATH.read_text()
+    refresh_source = init_source[
+        init_source.index("async def fast_load_following_update"):
+        init_source.index("# Set up automatic AEMO spike check")
+    ]
+
+    assert '"fronius"' in curtail_source[
+        curtail_source.index("if inverter_brand in ("):
+        curtail_source.index("_LOGGER.info(f\"🔴 Curtailing inverter")
+    ]
+    assert '"fronius"' in refresh_source[
+        refresh_source.index("if inverter_brand not in ("):
+        refresh_source.index("if not inverter_host:")
+    ]
+
+
 def test_sungrow_restore_can_skip_verification_readback():
     source = _class_method_source(SUNGROW_INVERTER_PATH, "SungrowController", "restore")
 
@@ -203,6 +221,17 @@ def test_periodic_solar_curtailment_routes_to_sungrow_before_tesla_path():
     assert "await handle_sungrow_curtailment()" in pre_tesla_path
 
 
+def test_periodic_solar_curtailment_routes_ac_inverter_without_tesla_token():
+    handler = _function_source("handle_solar_curtailment_check")
+    token_guard = handler[handler.index("if token_getter is None:"):]
+
+    assert "CONF_AC_INVERTER_CURTAILMENT_ENABLED" in token_guard
+    assert "await handle_ac_inverter_curtailment_only(refresh_prices=True)" in token_guard
+    assert token_guard.index("await handle_ac_inverter_curtailment_only") < token_guard.index(
+        "Solar curtailment skipped - no Tesla API token getter available"
+    )
+
+
 def test_solar_curtailment_is_not_blocked_by_monitoring_mode():
     periodic_handler = _function_source("handle_solar_curtailment_check")
     websocket_handler = _function_source("handle_solar_curtailment_with_websocket_data")
@@ -232,6 +261,18 @@ def test_websocket_solar_curtailment_routes_to_sungrow_with_prices():
         "await handle_sungrow_curtailment("
         "feedin_price=feedin_price, import_price=import_price)"
     ) in pre_tesla_path
+
+
+def test_websocket_solar_curtailment_routes_ac_inverter_without_tesla_token():
+    handler = _function_source("handle_solar_curtailment_with_websocket_data")
+    token_guard = handler[handler.index("if token_getter is None:"):]
+
+    assert "CONF_AC_INVERTER_CURTAILMENT_ENABLED" in token_guard
+    assert "await handle_ac_inverter_curtailment_only(" in token_guard
+    assert 'price_source="websocket"' in token_guard
+    assert token_guard.index("await handle_ac_inverter_curtailment_only") < token_guard.index(
+        "Solar curtailment skipped - no Tesla API token getter available"
+    )
 
 
 def test_websocket_tesla_curtailment_falls_back_to_any_provider_price_source():
