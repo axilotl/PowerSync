@@ -19,6 +19,8 @@ _LOGGER = logging.getLogger(__name__)
 _READ_ENTITIES: dict[str, tuple[str, ...]] = {
     "battery_level": (
         "state_of_charge",
+        "state_of_charge_2",
+        "state_of_charge_3",
         "soc",
         "battery_storage_soc",
         "reserva_state_of_charge_2",
