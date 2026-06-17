@@ -212,6 +212,53 @@ def test_force_discharge_uses_ess_first_mode_when_target_needs_battery(sigenergy
     ]
 
 
+def test_force_discharge_adds_site_load_headroom_to_ess_limit(sigenergy_module):
+    controller = sigenergy_module.SigenergyController(host="127.0.0.1")
+    writes: list[tuple[int, list[int]]] = []
+
+    async def connect():
+        return True
+
+    async def get_status():
+        return types.SimpleNamespace(
+            attributes={
+                "pv_power_kw": 0.0,
+                "grid_power_kw": -0.1,
+                "battery_power_kw": 1.06,
+            }
+        )
+
+    async def write(address, values, slave_id=None):
+        writes.append((address, list(values)))
+        return True
+
+    controller.connect = connect
+    controller.get_status = get_status
+    controller._write_holding_registers = write
+
+    assert asyncio.run(controller.force_discharge(power_kw=0.1))
+
+    assert writes == [
+        (controller.REG_REMOTE_EMS_ENABLE, [1]),
+        (
+            controller.REG_REMOTE_EMS_CONTROL_MODE,
+            [controller.REMOTE_EMS_MODE_DISCHARGE_ESS],
+        ),
+        (
+            controller.REG_ESS_MAX_DISCHARGE_LIMIT,
+            controller._from_unsigned32(1310),
+        ),
+        (
+            controller.REG_ACTIVE_POWER_FIXED_TARGET,
+            controller._from_signed32(-100),
+        ),
+        (
+            controller.REG_GRID_EXPORT_LIMIT,
+            controller._from_unsigned32(100),
+        ),
+    ]
+
+
 def test_force_discharge_mode_selection_uses_configured_export_cap(sigenergy_module):
     controller = sigenergy_module.SigenergyController(
         host="127.0.0.1",
