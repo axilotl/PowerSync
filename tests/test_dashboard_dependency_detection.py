@@ -171,6 +171,21 @@ def test_generic_dashboard_charts_do_not_rerender_on_unrelated_state_ticks():
     assert "cache: mode === 'history' ? this._historyCacheSignature(seriesConfig.entity) : undefined" in render_signature
 
 
+def test_dashboard_chart_tooltips_stay_visibly_transparent():
+    """Tooltip surfaces should not blur the graph into an opaque panel."""
+    source = STRATEGY_PATH.read_text()
+    tooltip_css = source[source.index("        .tooltip {"):source.index("        .tooltip-time {")]
+    chart_tooltip_css = source[
+        source.index("        .chart-tooltip {"):
+        source.index("        .chart-tooltip-time {")
+    ]
+
+    assert "rgba(var(--rgb-card-background-color, 255, 255, 255), 0.22)" in tooltip_css
+    assert "rgba(var(--rgb-card-background-color, 255, 255, 255), 0.22)" in chart_tooltip_css
+    assert "backdrop-filter" not in tooltip_css
+    assert "backdrop-filter" not in chart_tooltip_css
+
+
 def test_generic_dashboard_chart_tooltips_render_above_svg_lines():
     """Generic dashboard chart tooltips should sit above graph paths."""
     source = STRATEGY_PATH.read_text()
@@ -183,8 +198,8 @@ def test_generic_dashboard_chart_tooltips_render_above_svg_lines():
     assert ".tooltip" in chart_source
     assert "z-index: 2;" in chart_source
     assert "z-index: 4;" in chart_source
-    assert "background: rgba(var(--rgb-card-background-color, 255, 255, 255), 0.48);" in chart_source
-    assert "backdrop-filter: blur(10px) saturate(1.15);" in chart_source
+    assert "background: rgba(var(--rgb-card-background-color, 255, 255, 255), 0.22);" in chart_source
+    assert "backdrop-filter: blur(10px) saturate(1.15);" not in chart_source
 
 
 def test_optimizer_plan_shows_calculated_auto_reserve():
@@ -360,8 +375,8 @@ def test_optimizer_plan_charts_have_tooltips():
     assert "_priceTooltipConfig(model, compact, priceMeta)" in chart_source
     assert ".chart-tooltip-line" in chart_source
     assert ".chart-tooltip-time" in chart_source
-    assert "background: rgba(var(--rgb-card-background-color, 255, 255, 255), 0.48);" in chart_source
-    assert "backdrop-filter: blur(10px) saturate(1.15);" in chart_source
+    assert "background: rgba(var(--rgb-card-background-color, 255, 255, 255), 0.22);" in chart_source
+    assert "backdrop-filter: blur(10px) saturate(1.15);" not in chart_source
 
 
 def test_optimizer_plan_chart_tooltips_stay_inside_android_webview():
