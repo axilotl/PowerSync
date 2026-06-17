@@ -2383,10 +2383,15 @@ class BatteryOptimizer:
                 if schedule_timestamps and t < len(schedule_timestamps)
                 else now + timedelta(minutes=t * self.interval_minutes)
             )
-            export_floor = max(
-                optimizer_reserve,
-                self._configured_export_reserve_floor_for_range(t, t + 1),
+            configured_export_floor = self._configured_export_reserve_floor_for_range(
+                t, t + 1
             )
+            export_floor = max(optimizer_reserve, configured_export_floor)
+            active_export_floor = configured_export_floor > max(
+                self_consumption_floor,
+                optimizer_reserve,
+            ) + 1e-6
+            natural_floor = export_floor if active_export_floor else self_consumption_floor
 
             charge_kw = battery_charge[t]
             discharge_kw = battery_discharge[t]
@@ -2480,7 +2485,7 @@ class BatteryOptimizer:
                 if export_room_kw <= threshold_kw:
                     net_home_kw = max(0.0, load[t] - solar[t])
                     natural_room_kw = (
-                        max(0.0, soc - self_consumption_floor) * cap * eff / dt
+                        max(0.0, soc - natural_floor) * cap * eff / dt
                         if cap > 0 and dt > 0
                         else 0.0
                     )
@@ -2493,6 +2498,9 @@ class BatteryOptimizer:
                     power_w = natural_discharge_kw * 1000
                     reported_charge_w = 0.0
                     reported_discharge_w = natural_discharge_kw * 1000
+                    if active_export_floor and natural_discharge_kw <= threshold_kw:
+                        action = "idle"
+                        power_w = 0.0
                 elif discharge_kw > export_room_kw:
                     capped_discharge_w = export_room_kw * 1000
                     reported_charge_w = 0.0
@@ -2506,7 +2514,7 @@ class BatteryOptimizer:
                 net_home_kw = load[t] - solar[t]
                 if net_home_kw > threshold_kw:
                     available_kw = (
-                        max(0.0, soc - self_consumption_floor) * cap * eff / dt
+                        max(0.0, soc - natural_floor) * cap * eff / dt
                     )
                     natural_discharge_kw = min(
                         self.max_discharge_kw,
@@ -2516,6 +2524,9 @@ class BatteryOptimizer:
                     reported_discharge_w = natural_discharge_kw * 1000
                     reported_charge_w = 0.0
                     power_w = natural_discharge_kw * 1000
+                    if active_export_floor and natural_discharge_kw <= threshold_kw:
+                        action = "idle"
+                        power_w = 0.0
                 elif net_home_kw < -threshold_kw and not charge_blocked:
                     available_kw = (1.0 - soc) * cap / (eff * dt)
                     natural_charge_kw = min(
@@ -2532,7 +2543,7 @@ class BatteryOptimizer:
             soc += (effective_charge_kw * eff - effective_discharge_kw / eff) * dt / cap
             soc_floor = (
                 export_floor
-                if action in ("discharge", "export")
+                if action in ("discharge", "export") or active_export_floor
                 else self_consumption_floor
             )
             soc = max(soc_floor, min(1.0, soc))

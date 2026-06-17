@@ -1400,7 +1400,7 @@ def test_reserve_recommendation_reports_export_floor_for_home_load_bridge(
     assert recommendation["home_load_bridge_until"].startswith("2026-05-04T01:30")
 
 
-def test_export_reserve_floor_limits_planned_battery_export_only(
+def test_export_reserve_floor_limits_planned_export_and_home_load_projection(
     battery_optimizer_module,
 ):
     optimizer = battery_optimizer_module.BatteryOptimizer(
@@ -1428,10 +1428,44 @@ def test_export_reserve_floor_limits_planned_battery_export_only(
     export_actions = [a for a in result.schedule.actions if a.action == "export"]
     assert export_actions
     assert min(action.soc for action in export_actions) >= 0.55
-    assert any(
-        action.action == "self_consumption" and action.soc < 0.56
-        for action in result.schedule.actions
+    assert min(action.soc for action in result.schedule.actions) >= 0.56
+    assert any(action.action == "idle" for action in result.schedule.actions)
+
+
+def test_high_export_reserve_floor_limits_first_export_window(
+    battery_optimizer_module,
+):
+    optimizer = battery_optimizer_module.BatteryOptimizer(
+        capacity_wh=32000,
+        max_charge_w=15000,
+        max_discharge_w=15000,
+        backup_reserve=0.0,
+        hardware_reserve=0.0,
+        interval_minutes=5,
+        horizon_hours=4,
     )
+    optimizer.export_reserve_floor = 0.92
+    n = 6
+
+    schedule = optimizer._build_schedule(
+        n=n,
+        grid_import=[0.0, 0.0, 0.9, 0.9, 0.9, 0.9],
+        grid_export=[15.0, 15.0, 0.0, 0.0, 0.0, 0.0],
+        battery_charge=[0.0] * n,
+        battery_discharge=[15.0, 15.0, 0.0, 0.0, 0.0, 0.0],
+        solar=[0.0] * n,
+        load=[0.9] * n,
+        soc_0=0.975,
+        import_prices=[0.50] * n,
+        export_prices=[0.50] * n,
+    )
+
+    export_actions = [a for a in schedule.actions if a.action == "export"]
+    assert export_actions
+    assert min(action.soc for action in export_actions) >= 0.92
+    assert min(action.soc for action in schedule.actions) >= 0.92
+    assert schedule.actions[2].action == "idle"
+    assert schedule.actions[2].battery_discharge_w == 0
 
 
 def test_build_schedule_caps_export_actions_at_optimizer_reserve(
