@@ -5384,6 +5384,25 @@ class FoxESSCloudEnergyCoordinator(DataUpdateCoordinator):
                 data[str(key)] = item.get("value")
         return data
 
+    @staticmethod
+    def _soc_from_values(values: dict[str, Any]) -> float | None:
+        """Return battery SoC (%) from a flattened realtime map, or None if absent.
+
+        FoxESS Cloud realtime can omit the SoC variable for a device (cloud lag,
+        model variant, or a transient gap) or return it as null. Distinguish a
+        missing reading from a genuine 0% so callers can keep the previous SOC
+        instead of telling the optimizer the battery is empty.
+        """
+        raw = values.get("SoC")
+        if raw is None:
+            raw = values.get("soc")
+        if raw is None:
+            return None
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return None
+
     async def _load_stored_scheduler(self) -> None:
         if self._stored_scheduler_groups is not None or not self._store:
             return
@@ -5462,7 +5481,20 @@ class FoxESSCloudEnergyCoordinator(DataUpdateCoordinator):
                 export_kw = self._to_float(values.get("feedinPower")) / 1000.0
                 grid_kw = import_kw - export_kw
 
-            soc = self._to_float(values.get("SoC") or values.get("soc"))
+            # If FoxESS Cloud realtime returned no usable SoC, keep the previous
+            # readings rather than reporting SOC=0% — a 0% reading makes the
+            # optimizer think the battery is empty and schedule IDLE. This mirrors
+            # the Sungrow/Sigenergy Modbus coordinators' missing-battery-data guard.
+            soc = self._soc_from_values(values)
+            if soc is None:
+                if self.data:
+                    _LOGGER.warning(
+                        "FoxESS Cloud realtime returned no battery SoC — keeping previous readings"
+                    )
+                    return self.data
+                raise UpdateFailed(
+                    "FoxESS Cloud realtime returned no battery SoC — no data available"
+                )
 
             buy, sell = _get_current_prices(self.hass, self._entry_id)
             self._energy_acc.update(solar_kw, grid_kw, battery_kw, load_kw, buy, sell)
