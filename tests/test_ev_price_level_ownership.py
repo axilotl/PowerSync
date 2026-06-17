@@ -919,6 +919,50 @@ def test_scheduled_stops_active_second_tesla_outside_window(monkeypatch, fake_ac
     assert scheduled.get_state()["last_decision"] == "stopped"
 
 
+def test_unspecified_ev_location_prefers_home_vehicle(monkeypatch):
+    first_vin = "XP7YHCEL7TB811704"
+    second_vin = "LRWYHCEKXTC687964"
+    hass = _FakeHass(
+        states={
+            "device_tracker.tesla_flinn_location": "not_home",
+            "binary_sensor.tesla_yf88_located_at_home": "on",
+        }
+    )
+    hass.device_registry = SimpleNamespace(
+        devices={
+            "device-1": SimpleNamespace(
+                id="device-1",
+                identifiers={("tesla_fleet", first_vin)},
+            ),
+            "device-2": SimpleNamespace(
+                id="device-2",
+                identifiers={("tesla_fleet", second_vin)},
+            ),
+        }
+    )
+    hass.entity_registry = SimpleNamespace(
+        entities={
+            "device_tracker.tesla_flinn_location": SimpleNamespace(
+                entity_id="device_tracker.tesla_flinn_location",
+                device_id="device-1",
+            ),
+            "binary_sensor.tesla_yf88_located_at_home": SimpleNamespace(
+                entity_id="binary_sensor.tesla_yf88_located_at_home",
+                device_id="device-2",
+            ),
+        }
+    )
+    monkeypatch.setattr(_ha_dr, "async_get", lambda _hass: _hass.device_registry)
+
+    assert asyncio.run(ev_planner.get_ev_location(hass, _FakeConfigEntry())) == "home"
+    assert (
+        asyncio.run(
+            ev_planner.get_ev_location(hass, _FakeConfigEntry(), vehicle_vin=first_vin)
+        )
+        == "not_home"
+    )
+
+
 def test_scheduled_external_stop_is_not_repeated_while_tesla_state_is_stale(
     monkeypatch,
     fake_actions,

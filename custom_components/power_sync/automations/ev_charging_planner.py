@@ -405,8 +405,9 @@ async def get_ev_location(
     Args:
         hass: Home Assistant instance
         config_entry: Config entry
-        vehicle_vin: Optional VIN to check specific vehicle. If None, returns
-                     location of first vehicle found (backward compatible).
+        vehicle_vin: Optional VIN to check specific vehicle. If None, prefers
+                     any home vehicle before falling back to the first known
+                     vehicle location.
 
     Returns:
         Location string: "home", "work", "not_home", or "unknown"
@@ -451,16 +452,19 @@ async def get_ev_location(
                     loc_entity = f"device_tracker.{candidate}_location"
                     loc_state = hass.states.get(loc_entity)
                     if loc_state and loc_state.state not in ("unavailable", "unknown", "None", None):
-                        location = loc_state.state.lower()
-                        _LOGGER.debug(f"Teslemetry BT location from {loc_entity}: {location}")
-                        return location
+                        candidate_location = loc_state.state.lower()
+                        _LOGGER.debug(f"Teslemetry BT location from {loc_entity}: {candidate_location}")
+                        if vehicle_vin is not None or candidate_location == "home":
+                            return candidate_location
+                        if location == "unknown":
+                            location = candidate_location
 
     # Method 1: Check Tesla Fleet/Teslemetry device_tracker entities
     entity_registry = er.async_get(hass)
     device_registry = dr.async_get(hass)
 
     for device, device_vin in _iter_tesla_vehicle_devices(device_registry):
-        if location != "unknown":
+        if vehicle_vin is not None and location != "unknown":
             break
 
         # If specific VIN requested, skip other vehicles
@@ -477,8 +481,12 @@ async def get_ev_location(
             if entity_id.startswith("device_tracker.") and "_location" in entity_id_lower:
                 state = hass.states.get(entity_id)
                 if state and state.state not in ("unavailable", "unknown", "None", None):
-                    location = state.state.lower()
-                    _LOGGER.debug(f"Found EV location from {entity_id} (VIN: {device_vin}): {location}")
+                    candidate_location = state.state.lower()
+                    _LOGGER.debug(f"Found EV location from {entity_id} (VIN: {device_vin}): {candidate_location}")
+                    if vehicle_vin is not None or candidate_location == "home":
+                        location = candidate_location
+                    elif location == "unknown":
+                        location = candidate_location
                     break
 
             elif entity_id.startswith("binary_sensor.") and "located_at_home" in entity_id_lower:
@@ -487,6 +495,9 @@ async def get_ev_location(
                     location = "home"
                     _LOGGER.debug(f"Found EV at home from {entity_id} (VIN: {device_vin})")
                     break
+
+        if vehicle_vin is None and location == "home":
+            break
 
     # Method 2 (fallback): Tesla BLE - only current presence/plug signals imply home.
     # Do not treat the charger switch entity merely existing as presence; HA keeps

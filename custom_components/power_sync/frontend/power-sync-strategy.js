@@ -474,7 +474,7 @@ class PowerSyncChart extends HTMLElement {
           max-width: min(240px, calc(100% - 16px));
           padding: 8px 10px;
           border-radius: 8px;
-          background: color-mix(in srgb, var(--ha-card-background, var(--card-background-color, white)) 48%, transparent);
+          background: rgba(var(--rgb-card-background-color, 255, 255, 255), 0.48);
           backdrop-filter: blur(10px) saturate(1.15);
           -webkit-backdrop-filter: blur(10px) saturate(1.15);
           color: var(--primary-text-color, #333);
@@ -1895,7 +1895,7 @@ class PowerSyncOptimizationPlan extends HTMLElement {
           max-width: min(260px, calc(100% - 16px));
           padding: 8px 10px;
           border-radius: 8px;
-          background: color-mix(in srgb, var(--ha-card-background, var(--card-background-color, white)) 48%, transparent);
+          background: rgba(var(--rgb-card-background-color, 255, 255, 255), 0.48);
           backdrop-filter: blur(10px) saturate(1.15);
           -webkit-backdrop-filter: blur(10px) saturate(1.15);
           color: var(--primary-text-color);
