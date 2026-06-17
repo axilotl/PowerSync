@@ -2483,6 +2483,8 @@ _LOCAL_OVERRIDABLE = {
 # 30s is ~15 missed ticks — comfortably past transient blips, well before
 # the data turns into a "stuck at 41%" disaster.
 _LOCAL_STALE_SECONDS = 30
+_ENERGY_COORDINATOR_STALE_FACTOR = 4
+_ENERGY_COORDINATOR_MIN_STALE_SECONDS = 60
 
 
 def _local_data_is_fresh(local_coord: Any) -> bool:
@@ -2494,6 +2496,35 @@ def _local_data_is_fresh(local_coord: Any) -> bool:
         return False
     import time as _time
     return (_time.time() - last_ts) <= _LOCAL_STALE_SECONDS
+
+
+def _coordinator_data_is_fresh(coordinator: Any) -> bool:
+    """Return False when a coordinator is serving stale energy data."""
+    if not getattr(coordinator, "last_update_success", True):
+        return False
+    if getattr(coordinator, "data", None) is None:
+        return False
+
+    last_update = getattr(coordinator, "last_update_success_time", None)
+    update_interval = getattr(coordinator, "update_interval", None)
+    if last_update is None or update_interval is None:
+        return True
+
+    try:
+        stale_after = max(
+            update_interval * _ENERGY_COORDINATOR_STALE_FACTOR,
+            timedelta(seconds=_ENERGY_COORDINATOR_MIN_STALE_SECONDS),
+        )
+        now = dt_util.utcnow()
+        if getattr(now, "tzinfo", None) is None and getattr(last_update, "tzinfo", None) is not None:
+            now = now.replace(tzinfo=last_update.tzinfo)
+        elif getattr(now, "tzinfo", None) is not None and getattr(last_update, "tzinfo", None) is None:
+            last_update = last_update.replace(tzinfo=now.tzinfo)
+        age = now - last_update
+    except Exception:
+        return True
+
+    return age <= stale_after
 
 
 class TeslaEnergySensor(PowerSyncCurrencyMixin, CoordinatorEntity, RestoredNumericStateMixin, SensorEntity):
@@ -2543,6 +2574,11 @@ class TeslaEnergySensor(PowerSyncCurrencyMixin, CoordinatorEntity, RestoredNumer
             .get("powerwall_local", {})
         )
         return bucket.get("coordinator")
+
+    @property
+    def available(self) -> bool:
+        """Return False when the backing energy coordinator is stale."""
+        return _coordinator_data_is_fresh(self.coordinator)
 
     @property
     def native_value(self) -> Any:

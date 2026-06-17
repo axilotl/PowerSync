@@ -8,7 +8,7 @@ import sys
 import time
 import types
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -268,6 +268,42 @@ def test_sungrow_solar_sensor_adds_configured_ac_inverter_output():
     assert entity.extra_state_attributes["battery_inverter_solar_power_kw"] == 4.2
     assert entity.extra_state_attributes["ac_inverter_solar_power_kw"] == 5.1
     assert entity.extra_state_attributes["total_solar_power_kw"] == 9.3
+
+
+def test_energy_sensor_unavailable_when_coordinator_data_is_stale():
+    sensor = _sensor_module()
+    desc = next(d for d in sensor.ENERGY_SENSORS if d.key == "solar_power")
+    entity = sensor.TeslaEnergySensor(
+        SimpleNamespace(
+            data={"solar_power": 3.131},
+            last_update_success=True,
+            last_update_success_time=datetime(2026, 5, 3, 11, 55, tzinfo=timezone.utc),
+            update_interval=timedelta(seconds=15),
+        ),
+        desc,
+        _entry("amber"),
+    )
+    entity.hass = _hass("AUD")
+
+    assert entity.available is False
+
+
+def test_energy_sensor_available_when_coordinator_data_is_recent():
+    sensor = _sensor_module()
+    desc = next(d for d in sensor.ENERGY_SENSORS if d.key == "solar_power")
+    entity = sensor.TeslaEnergySensor(
+        SimpleNamespace(
+            data={"solar_power": 3.131},
+            last_update_success=True,
+            last_update_success_time=datetime(2026, 5, 3, 11, 59, 30, tzinfo=timezone.utc),
+            update_interval=timedelta(seconds=15),
+        ),
+        desc,
+        _entry("amber"),
+    )
+    entity.hass = _hass("AUD")
+
+    assert entity.available is True
 
 
 def test_local_powerwall_home_load_excludes_observed_ev_power():
