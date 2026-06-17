@@ -111,7 +111,6 @@ class SigenergyController(InverterController):
     EXPORT_LIMIT_INVALID = 0xFFFFFFFF    # Invalid register value (per Sigenergy Modbus docs)
     PV_POWER_LIMIT_ZERO = 0       # Set PV limit to 0 kW (full shutdown - not used)
     ACTIVE_POWER_PCT_ZERO = 0     # 0% active power
-    FORCE_DISCHARGE_LOAD_HEADROOM_KW = 0.25
 
     # Default Modbus settings
     # Sigenergy uses different slave IDs for different register levels:
@@ -184,28 +183,6 @@ class SigenergyController(InverterController):
             finally:
                 self._modbus_transaction_depth = 0
             self._modbus_transaction_owner = None
-
-    def _estimate_load_power_kw(self, attrs: dict) -> Optional[float]:
-        """Estimate current site load from Sigenergy telemetry attributes."""
-        explicit_load = attrs.get("load_power_kw")
-        if explicit_load is not None:
-            try:
-                return max(0.0, float(explicit_load))
-            except (TypeError, ValueError):
-                pass
-
-        if "grid_power_kw" not in attrs or "battery_power_kw" not in attrs:
-            return None
-
-        try:
-            solar_kw = max(0.0, float(attrs.get("pv_power_kw", 0) or 0))
-            solar_kw += max(0.0, float(attrs.get("third_party_pv_power_kw", 0) or 0))
-            grid_kw = float(attrs.get("grid_power_kw", 0) or 0)
-            battery_kw = float(attrs.get("battery_power_kw", 0) or 0)
-        except (TypeError, ValueError):
-            return None
-
-        return max(0.0, solar_kw + grid_kw + battery_kw)
 
     async def connect(self) -> bool:
         """Connect to the Sigenergy system via Modbus TCP."""
@@ -1199,9 +1176,10 @@ class SigenergyController(InverterController):
     async def force_discharge(self, power_kw: float = 10.0) -> bool:
         """Force battery to discharge to grid/load.
 
-        Enables Remote EMS mode, sets control mode to discharge, sets the
-        discharge command limit, and sets the grid export limit to the target
-        power as a safety ceiling.
+        Enables Remote EMS mode, sets control mode to discharge, and sets
+        the active power target plus grid export limit to the requested export
+        power. ESS max discharge is left unchanged so home load does not
+        consume the grid-export allowance.
 
         Args:
             power_kw: Target grid export power in kW (default: 10.0)
@@ -1284,43 +1262,8 @@ class SigenergyController(InverterController):
             _LOGGER.info("Remote EMS control mode set to %s", mode_name)
 
             scaled_value = int(effective_kw * self.GAIN_POWER)
-            ess_discharge_kw = effective_kw
-            load_kw = self._estimate_load_power_kw(attrs)
-            if load_kw is not None and load_kw > 0:
-                ess_discharge_kw = effective_kw + load_kw + self.FORCE_DISCHARGE_LOAD_HEADROOM_KW
 
-            ess_discharge_scaled_value = int(ess_discharge_kw * self.GAIN_POWER)
-            ess_discharge_scaled_value = min(max(ess_discharge_scaled_value, 0), 0xFFFFFFFE)
-
-            # 3. Set ESS max discharge limit. Register 40034 limits total
-            # battery output, so leave headroom for local load while the grid
-            # export target and export limit below keep export at effective_kw.
-            discharge_values = self._from_unsigned32(ess_discharge_scaled_value)
-            discharge_result = await self._write_holding_registers(
-                self.REG_ESS_MAX_DISCHARGE_LIMIT,
-                discharge_values,
-            )
-            if not discharge_result:
-                _LOGGER.error(
-                    "Failed to set Sigenergy ESS max discharge limit to %.2f kW",
-                    ess_discharge_kw,
-                )
-                return False
-            if load_kw is not None and load_kw > 0:
-                _LOGGER.info(
-                    "Sigenergy ESS max discharge limit set to %.2f kW for force "
-                    "discharge (target %.2f kW export + %.2f kW load headroom)",
-                    ess_discharge_kw,
-                    effective_kw,
-                    load_kw + self.FORCE_DISCHARGE_LOAD_HEADROOM_KW,
-                )
-            else:
-                _LOGGER.info(
-                    "Sigenergy ESS max discharge limit set to %.2f kW for force discharge",
-                    ess_discharge_kw,
-                )
-
-            # 4. Set active power target. The export limit below is only a
+            # 3. Set active power target. The export limit below is only a
             # ceiling; this signed target is what tells Sigenergy to actually
             # push power out instead of just covering local load.
             target_values = self._from_signed32(-scaled_value)
@@ -1337,7 +1280,7 @@ class SigenergyController(InverterController):
             else:
                 _LOGGER.info("Sigenergy active power target set to %.2f kW export", effective_kw)
 
-            # 5. Set grid export limit. The dynamic safety cap is bypassed because
+            # 4. Set grid export limit. The dynamic safety cap is bypassed because
             # path 5 of _get_effective_export_safety_cap_kw reads back
             # REG_GRID_EXPORT_LIMIT itself — a curtailment-set low value would
             # then clamp force_discharge to that low value. The user-configured

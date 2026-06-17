@@ -152,10 +152,6 @@ def test_force_discharge_uses_pv_first_mode_when_solar_can_cover_target(sigenerg
             [controller.REMOTE_EMS_MODE_DISCHARGE_PV],
         ),
         (
-            controller.REG_ESS_MAX_DISCHARGE_LIMIT,
-            controller._from_unsigned32(5000),
-        ),
-        (
             controller.REG_ACTIVE_POWER_FIXED_TARGET,
             controller._from_signed32(-5000),
         ),
@@ -198,10 +194,6 @@ def test_force_discharge_uses_ess_first_mode_when_target_needs_battery(sigenergy
             [controller.REMOTE_EMS_MODE_DISCHARGE_ESS],
         ),
         (
-            controller.REG_ESS_MAX_DISCHARGE_LIMIT,
-            controller._from_unsigned32(5000),
-        ),
-        (
             controller.REG_ACTIVE_POWER_FIXED_TARGET,
             controller._from_signed32(-5000),
         ),
@@ -212,7 +204,7 @@ def test_force_discharge_uses_ess_first_mode_when_target_needs_battery(sigenergy
     ]
 
 
-def test_force_discharge_adds_site_load_headroom_to_ess_limit(sigenergy_module):
+def test_force_discharge_leaves_ess_limit_unchanged_with_site_load(sigenergy_module):
     controller = sigenergy_module.SigenergyController(host="127.0.0.1")
     writes: list[tuple[int, list[int]]] = []
 
@@ -243,10 +235,6 @@ def test_force_discharge_adds_site_load_headroom_to_ess_limit(sigenergy_module):
         (
             controller.REG_REMOTE_EMS_CONTROL_MODE,
             [controller.REMOTE_EMS_MODE_DISCHARGE_ESS],
-        ),
-        (
-            controller.REG_ESS_MAX_DISCHARGE_LIMIT,
-            controller._from_unsigned32(1310),
         ),
         (
             controller.REG_ACTIVE_POWER_FIXED_TARGET,
@@ -289,10 +277,6 @@ def test_force_discharge_mode_selection_uses_configured_export_cap(sigenergy_mod
             [controller.REMOTE_EMS_MODE_DISCHARGE_PV],
         ),
         (
-            controller.REG_ESS_MAX_DISCHARGE_LIMIT,
-            controller._from_unsigned32(5000),
-        ),
-        (
             controller.REG_ACTIVE_POWER_FIXED_TARGET,
             controller._from_signed32(-5000),
         ),
@@ -328,10 +312,6 @@ def test_force_discharge_continues_when_active_power_target_write_fails(sigenerg
         (
             controller.REG_REMOTE_EMS_CONTROL_MODE,
             [controller.REMOTE_EMS_MODE_DISCHARGE_ESS],
-        ),
-        (
-            controller.REG_ESS_MAX_DISCHARGE_LIMIT,
-            controller._from_unsigned32(5000),
         ),
         (
             controller.REG_ACTIVE_POWER_FIXED_TARGET,
