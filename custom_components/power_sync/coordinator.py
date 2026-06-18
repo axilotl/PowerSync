@@ -67,7 +67,7 @@ _SOLCAST_ESTIMATE_FIELDS = {
 
 
 ENERGY_ACC_STORE_VERSION = 1
-ENERGY_ACC_SAVE_DELAY = 300  # Flush at most every 5 minutes
+ENERGY_ACC_SAVE_DELAY = 5  # Must be < UPDATE_INTERVAL_ENERGY (15s) so debounce fires between cycles
 SOLAREDGE_DAILY_TOTALS_STORE_VERSION = 1
 LIFETIME_TOTALS_STORE_VERSION = 1
 LIFETIME_TOTAL_KEYS = (
@@ -2939,7 +2939,16 @@ class DemandChargeCoordinator(DataUpdateCoordinator):
         if not self._store_loaded:
             stored = await self._store.async_load()
             if stored and isinstance(stored, dict):
-                self._peak_demand_kw = stored.get("peak_demand_kw", 0.0)
+                stored_billing_start = stored.get("billing_start")
+                current_billing_start = self._billing_start_str(now)
+                if stored_billing_start == current_billing_start:
+                    self._peak_demand_kw = stored.get("peak_demand_kw", 0.0)
+                else:
+                    _LOGGER.info(
+                        "Demand peak: billing cycle changed (stored=%s current=%s), resetting peak",
+                        stored_billing_start, current_billing_start,
+                    )
+                    self._peak_demand_kw = 0.0
             self._store_loaded = True
 
         # If we've crossed the billing day, reset peak demand
@@ -2977,8 +2986,10 @@ class DemandChargeCoordinator(DataUpdateCoordinator):
         if in_peak_period and rolling_avg_kw > self._peak_demand_kw:
             self._peak_demand_kw = rolling_avg_kw
             _LOGGER.info("New peak demand (rolling %d-min avg): %.2f kW", self.averaging_minutes, self._peak_demand_kw)
+            peak_snapshot = self._peak_demand_kw
+            billing_start = self._billing_start_str(now)
             self._store.async_delay_save(
-                lambda: {"peak_demand_kw": self._peak_demand_kw}, 60
+                lambda: {"peak_demand_kw": peak_snapshot, "billing_start": billing_start}, 5
             )
 
         # Calculate estimated demand charge cost (peak demand * rate)
@@ -3009,12 +3020,24 @@ class DemandChargeCoordinator(DataUpdateCoordinator):
             "last_update": dt_util.utcnow(),
         }
 
+    def _billing_start_str(self, now: datetime) -> str:
+        """Return ISO date string for the start of the current billing cycle."""
+        if now.day >= self.billing_day:
+            return now.replace(day=self.billing_day).date().isoformat()
+        first_of_month = now.replace(day=1)
+        last_month = first_of_month - timedelta(days=1)
+        try:
+            return last_month.replace(day=self.billing_day).date().isoformat()
+        except ValueError:
+            return last_month.date().isoformat()
+
     def reset_peak_demand(self) -> None:
         """Reset peak demand tracking (e.g., at start of new billing cycle)."""
         _LOGGER.info("Resetting peak demand from %.2f kW to 0", self._peak_demand_kw)
         self._peak_demand_kw = 0.0
+        billing_start = self._billing_start_str(dt_util.now())
         self._store.async_delay_save(
-            lambda: {"peak_demand_kw": self._peak_demand_kw}, 1
+            lambda: {"peak_demand_kw": 0.0, "billing_start": billing_start}, 1
         )
 
     def _calculate_days_elapsed(self, now: datetime) -> int:

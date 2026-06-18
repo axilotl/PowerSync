@@ -30955,6 +30955,17 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             except Exception as e:
                 _LOGGER.debug("Failed to flush lifetime totals for %s: %s", coord_key, e)
 
+    # Flush demand charge peak so it survives reloads
+    demand_coord = entry_data.get("demand_charge_coordinator")
+    if demand_coord and hasattr(demand_coord, "_store") and demand_coord._store:
+        try:
+            await demand_coord._store.async_save({
+                "peak_demand_kw": demand_coord._peak_demand_kw,
+                "billing_start": demand_coord._billing_start_str(dt_util.now()),
+            })
+        except Exception as e:
+            _LOGGER.debug("Failed to flush demand charge peak: %s", e)
+
     # Unload platforms
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
