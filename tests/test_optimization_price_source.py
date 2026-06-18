@@ -122,6 +122,7 @@ def _install_power_sync_stubs() -> None:
     const_module.CONF_DEMAND_CHARGE_START_TIME = "demand_charge_start_time"
     const_module.CONF_DEMAND_CHARGE_END_TIME = "demand_charge_end_time"
     const_module.CONF_DEMAND_CHARGE_DAYS = "demand_charge_days"
+    const_module.CONF_EPEX_IMPORT_PRICE_ENTITY = "epex_import_price_entity"
     const_module.CONF_EPEX_EXPORT_PRICE_ENTITY = "epex_export_price_entity"
     const_module.CONF_OPTIMIZATION_AUTO_APPLY_RESERVE = "optimization_auto_apply_reserve"
     const_module.CONF_OPTIMIZATION_BACKUP_RESERVE = "optimization_backup_reserve"
@@ -553,6 +554,7 @@ def _coordinator_with_epex_provider(
         data={},
         options={
             "electricity_provider": provider,
+            "epex_import_price_entity": "sensor.actual_import_price",
             "epex_export_price_entity": "sensor.actual_export_price",
         },
     )
@@ -741,6 +743,65 @@ def test_epex_export_price_sensor_state_overrides_export_prices(opt_module):
     assert coordinator._last_display_export_prices == pytest.approx([0.013] * 12)
 
 
+def test_epex_import_price_sensor_state_overrides_import_prices(opt_module):
+    coordinator = _coordinator_with_epex_provider(
+        opt_module,
+        [_State("sensor.actual_import_price", "31.5", unit="ct/kWh")],
+    )
+
+    import_prices, export_prices = asyncio.run(coordinator._get_price_forecast())
+
+    assert import_prices == pytest.approx([0.315] * 12)
+    assert export_prices == [0.08] * 12
+    assert coordinator._last_display_import_prices == pytest.approx([0.315] * 12)
+
+
+def test_epex_import_price_sensor_price_values_override_and_pad(opt_module):
+    coordinator = _coordinator_with_epex_provider(
+        opt_module,
+        [
+            _State(
+                "sensor.actual_import_price",
+                "0",
+                unit="ct/kWh",
+                attributes={"price_values": [25.0, 30.0, 35.0]},
+            )
+        ],
+    )
+
+    import_prices, _export_prices = asyncio.run(coordinator._get_price_forecast())
+
+    assert import_prices[:3] == [0.25, 0.30, 0.35]
+    assert import_prices[3:] == [0.35] * 9
+    assert coordinator._last_display_import_prices == import_prices
+
+
+def test_epex_import_price_sensor_timestamped_price_values_align_to_slots(opt_module):
+    coordinator = _coordinator_with_epex_provider(
+        opt_module,
+        [
+            _State(
+                "sensor.actual_import_price",
+                "0",
+                unit="ct/kWh",
+                attributes={
+                    "price_values": {
+                        "2026-05-03T10:00:00+02:00": 20.0,
+                        "2026-05-03T11:00:00+02:00": 30.0,
+                        "2026-05-03T12:00:00+02:00": 40.0,
+                    }
+                },
+            )
+        ],
+    )
+
+    import_prices, _export_prices = asyncio.run(coordinator._get_price_forecast())
+
+    assert import_prices[:6] == pytest.approx([0.20] * 6)
+    assert import_prices[6:] == pytest.approx([0.30] * 6)
+    assert coordinator._last_display_import_prices == pytest.approx(import_prices)
+
+
 def test_epex_export_price_sensor_price_values_override_and_pad(opt_module):
     coordinator = _coordinator_with_epex_provider(
         opt_module,
@@ -847,12 +908,16 @@ def test_epex_export_price_sensor_non_numeric_falls_back_to_epex_export(opt_modu
 def test_epex_export_price_sensor_is_ignored_for_other_providers(opt_module):
     coordinator = _coordinator_with_epex_provider(
         opt_module,
-        [_State("sensor.actual_export_price", "1.3", unit="ct/kWh")],
+        [
+            _State("sensor.actual_import_price", "31.5", unit="ct/kWh"),
+            _State("sensor.actual_export_price", "1.3", unit="ct/kWh"),
+        ],
         provider="octopus",
     )
 
     _import_prices, export_prices = asyncio.run(coordinator._get_price_forecast())
 
+    assert _import_prices == [0.24] * 12
     assert export_prices == [0.08] * 12
     assert coordinator._last_display_export_prices == [0.08] * 12
 

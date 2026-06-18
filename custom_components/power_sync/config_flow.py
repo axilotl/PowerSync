@@ -413,6 +413,7 @@ from .const import (
     CONF_EPEX_SURCHARGE,
     CONF_EPEX_TAX_PERCENT,
     CONF_EPEX_EXPORT_RATE,
+    CONF_EPEX_IMPORT_PRICE_ENTITY,
     CONF_EPEX_EXPORT_PRICE_ENTITY,
     EPEX_REGIONS,
     # Smart Optimization configuration
@@ -2405,6 +2406,9 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             surcharge = user_input.get(CONF_EPEX_SURCHARGE, 0.0)
             tax_percent = user_input.get(CONF_EPEX_TAX_PERCENT, 0.0)
             export_rate = user_input.get(CONF_EPEX_EXPORT_RATE, 0.0)
+            import_price_entity = _normalize_optional_entity(
+                user_input.get(CONF_EPEX_IMPORT_PRICE_ENTITY)
+            )
             export_price_entity = _normalize_optional_entity(
                 user_input.get(CONF_EPEX_EXPORT_PRICE_ENTITY)
             )
@@ -2430,15 +2434,20 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     CONF_EPEX_TAX_PERCENT: tax_percent,
                     CONF_EPEX_EXPORT_RATE: export_rate,
                 }
+                if import_price_entity:
+                    self._epex_data[CONF_EPEX_IMPORT_PRICE_ENTITY] = (
+                        import_price_entity
+                    )
                 if export_price_entity:
                     self._epex_data[CONF_EPEX_EXPORT_PRICE_ENTITY] = export_price_entity
 
                 _LOGGER.info(
-                    "EPEX config validated: region=%s, surcharge=%.1f ct, tax=%.1f%%, export=%.1f ct, export_entity=%s",
+                    "EPEX config validated: region=%s, surcharge=%.1f ct, tax=%.1f%%, export=%.1f ct, import_entity=%s, export_entity=%s",
                     region,
                     surcharge,
                     tax_percent,
                     export_rate,
+                    import_price_entity or "none",
                     export_price_entity or "none",
                 )
 
@@ -2470,6 +2479,9 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     NumberSelectorConfig(
                         min=0, max=50, step=0.1, unit_of_measurement="ct/kWh",
                     )
+                ),
+                vol.Optional(CONF_EPEX_IMPORT_PRICE_ENTITY): EntitySelector(
+                    EntitySelectorConfig(domain="sensor")
                 ),
                 vol.Optional(CONF_EPEX_EXPORT_PRICE_ENTITY): EntitySelector(
                     EntitySelectorConfig(domain="sensor")
@@ -11637,6 +11649,9 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             surcharge = user_input.get(CONF_EPEX_SURCHARGE, 0.0)
             tax_percent = user_input.get(CONF_EPEX_TAX_PERCENT, 0.0)
             export_rate = user_input.get(CONF_EPEX_EXPORT_RATE, 0.0)
+            import_price_entity = _normalize_optional_entity(
+                user_input.get(CONF_EPEX_IMPORT_PRICE_ENTITY)
+            )
             export_price_entity = _normalize_optional_entity(
                 user_input.get(CONF_EPEX_EXPORT_PRICE_ENTITY)
             )
@@ -11668,6 +11683,12 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                         CONF_BATTERY_CURTAILMENT_ENABLED, False
                     ),
                 }
+                if import_price_entity:
+                    self._amber_options[CONF_EPEX_IMPORT_PRICE_ENTITY] = (
+                        import_price_entity
+                    )
+                else:
+                    self._amber_options[CONF_EPEX_IMPORT_PRICE_ENTITY] = None
                 if export_price_entity:
                     self._amber_options[CONF_EPEX_EXPORT_PRICE_ENTITY] = export_price_entity
                 else:
@@ -11678,6 +11699,9 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
         current_surcharge = self._get_option(CONF_EPEX_SURCHARGE, 0.0)
         current_tax = self._get_option(CONF_EPEX_TAX_PERCENT, 0.0)
         current_export = self._get_option(CONF_EPEX_EXPORT_RATE, 0.0)
+        current_import_price_entity = _normalize_optional_entity(
+            self._get_option(CONF_EPEX_IMPORT_PRICE_ENTITY, None)
+        )
         current_export_price_entity = _normalize_optional_entity(
             self._get_option(CONF_EPEX_EXPORT_PRICE_ENTITY, None)
         )
@@ -11713,6 +11737,14 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                         min=0.0, max=100.0, step=0.01, unit_of_measurement="ct/kWh",
                         mode=NumberSelectorMode.BOX,
                     )),
+                    vol.Optional(
+                        CONF_EPEX_IMPORT_PRICE_ENTITY,
+                        description=(
+                            {"suggested_value": current_import_price_entity}
+                            if current_import_price_entity
+                            else None
+                        ),
+                    ): EntitySelector(EntitySelectorConfig(domain="sensor")),
                     vol.Optional(
                         CONF_EPEX_EXPORT_PRICE_ENTITY,
                         description=(

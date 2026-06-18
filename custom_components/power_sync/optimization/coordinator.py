@@ -6538,15 +6538,12 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             filled.append(last)
         return filled
 
-    def _epex_export_price_entity_id(self) -> str | None:
-        """Return the configured EPEX export valuation sensor, if any."""
+    def _epex_price_entity_id(self, conf_key: str) -> str | None:
+        """Return a configured EPEX price valuation sensor, if any."""
         if not self._entry:
             return None
 
-        from ..const import (
-            CONF_ELECTRICITY_PROVIDER,
-            CONF_EPEX_EXPORT_PRICE_ENTITY,
-        )
+        from ..const import CONF_ELECTRICITY_PROVIDER
 
         provider = self._entry.options.get(
             CONF_ELECTRICITY_PROVIDER,
@@ -6556,16 +6553,28 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return None
 
         entity_id = self._entry.options.get(
-            CONF_EPEX_EXPORT_PRICE_ENTITY,
-            self._entry.data.get(CONF_EPEX_EXPORT_PRICE_ENTITY),
+            conf_key,
+            self._entry.data.get(conf_key),
         )
         if isinstance(entity_id, str):
             entity_id = entity_id.strip()
         return entity_id or None
 
+    def _epex_import_price_entity_id(self) -> str | None:
+        """Return the configured EPEX import valuation sensor, if any."""
+        from ..const import CONF_EPEX_IMPORT_PRICE_ENTITY
+
+        return self._epex_price_entity_id(CONF_EPEX_IMPORT_PRICE_ENTITY)
+
+    def _epex_export_price_entity_id(self) -> str | None:
+        """Return the configured EPEX export valuation sensor, if any."""
+        from ..const import CONF_EPEX_EXPORT_PRICE_ENTITY
+
+        return self._epex_price_entity_id(CONF_EPEX_EXPORT_PRICE_ENTITY)
+
     @staticmethod
-    def _epex_export_sensor_value_to_major(value: Any, unit: str | None) -> float | None:
-        """Convert an EPEX export sensor value to EUR/kWh."""
+    def _epex_sensor_value_to_major(value: Any, unit: str | None) -> float | None:
+        """Convert an EPEX price sensor value to EUR/kWh."""
         try:
             numeric = float(value)
         except (TypeError, ValueError):
@@ -6580,8 +6589,8 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return numeric / 100.0
         return numeric
 
-    def _epex_export_sensor_unit(self, attrs: dict[str, Any]) -> str | None:
-        """Pick the unit label for an EPEX export price sensor."""
+    def _epex_sensor_unit(self, attrs: dict[str, Any]) -> str | None:
+        """Pick the unit label for an EPEX price sensor."""
         for key in ("unit_of_measurement", "price_unit", "minor_price_unit"):
             unit = attrs.get(key)
             if isinstance(unit, str) and unit.strip():
@@ -6617,7 +6626,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             start_dt = self._parse_price_timestamp(key)
             if start_dt is None:
                 continue
-            price = self._epex_export_sensor_value_to_major(raw_price, unit)
+            price = self._epex_sensor_value_to_major(raw_price, unit)
             if price is None:
                 continue
             if start_dt.tzinfo is None:
@@ -6670,17 +6679,13 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if self._parse_price_timestamp(key) is not None
         }
 
-    def _read_epex_export_price_entity(
+    def _read_epex_price_entity(
         self,
         n_steps: int,
-    ) -> tuple[list[float], list[float]] | None:
-        """Read the optional EPEX export price override sensor.
-
-        Returns display prices and LP prices in EUR/kWh. Display prices preserve
-        signed export earnings; LP prices are clamped so negative export value
-        cannot become profitable revenue.
-        """
-        entity_id = self._epex_export_price_entity_id()
+        entity_id: str | None,
+        price_kind: str,
+    ) -> list[float] | None:
+        """Read an optional EPEX price override sensor."""
         if not entity_id:
             return None
 
@@ -6692,28 +6697,32 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         state = state_getter(entity_id)
         if state is None:
             _LOGGER.warning(
-                "EPEX export price override sensor %s not found; using EPEX export prices",
+                "EPEX %s price override sensor %s not found; using EPEX %s prices",
+                price_kind,
                 entity_id,
+                price_kind,
             )
             return None
 
         state_value = getattr(state, "state", None)
         if str(state_value).lower() in ("unknown", "unavailable", "none", ""):
             _LOGGER.debug(
-                "EPEX export price override sensor %s is %s; using EPEX export prices",
+                "EPEX %s price override sensor %s is %s; using EPEX %s prices",
+                price_kind,
                 entity_id,
                 state_value,
+                price_kind,
             )
             return None
 
         attrs = getattr(state, "attributes", {}) or {}
-        unit = self._epex_export_sensor_unit(attrs)
+        unit = self._epex_sensor_unit(attrs)
         raw_values = attrs.get("price_values")
 
         values: list[float | None] = []
         if isinstance(raw_values, list) and raw_values:
             values = [
-                self._epex_export_sensor_value_to_major(value, unit)
+                self._epex_sensor_value_to_major(value, unit)
                 for value in raw_values
             ]
             display_prices = self._fill_price_gaps(values)
@@ -6732,28 +6741,62 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     n_steps,
                 )
             else:
-                value = self._epex_export_sensor_value_to_major(state_value, unit)
+                value = self._epex_sensor_value_to_major(state_value, unit)
                 display_prices = [value] if value is not None else []
 
         if not display_prices:
             _LOGGER.warning(
-                "EPEX export price override sensor %s has no numeric price values; using EPEX export prices",
+                "EPEX %s price override sensor %s has no numeric price values; "
+                "using EPEX %s prices",
+                price_kind,
                 entity_id,
+                price_kind,
             )
             return None
 
         if len(display_prices) < n_steps:
-            display_prices.extend([display_prices[-1]] * (n_steps - len(display_prices)))
+            display_prices.extend(
+                [display_prices[-1]] * (n_steps - len(display_prices))
+            )
         display_prices = display_prices[:n_steps]
-        lp_prices = [max(0.0, price) for price in display_prices]
 
         _LOGGER.info(
-            "EPEX export price override: using %s (%d steps, %.2f-%.2f ct/kWh)",
+            "EPEX %s price override: using %s (%d steps, %.2f-%.2f ct/kWh)",
+            price_kind,
             entity_id,
             len(display_prices),
             min(display_prices) * 100,
             max(display_prices) * 100,
         )
+        return display_prices
+
+    def _read_epex_import_price_entity(self, n_steps: int) -> list[float] | None:
+        """Read the optional EPEX import price override sensor."""
+        return self._read_epex_price_entity(
+            n_steps,
+            self._epex_import_price_entity_id(),
+            "import",
+        )
+
+    def _read_epex_export_price_entity(
+        self,
+        n_steps: int,
+    ) -> tuple[list[float], list[float]] | None:
+        """Read the optional EPEX export price override sensor.
+
+        Returns display prices and LP prices in EUR/kWh. Display prices preserve
+        signed export earnings; LP prices are clamped so negative export value
+        cannot become profitable revenue.
+        """
+        display_prices = self._read_epex_price_entity(
+            n_steps,
+            self._epex_export_price_entity_id(),
+            "export",
+        )
+        if display_prices is None:
+            return None
+
+        lp_prices = [max(0.0, price) for price in display_prices]
         return display_prices, lp_prices
 
     async def _get_price_forecast(self) -> tuple[list[float], list[float]] | None:
@@ -7131,6 +7174,12 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                                         )
 
                     if import_prices:
+                        epex_import_override = self._read_epex_import_price_entity(
+                            n_steps
+                        )
+                        if epex_import_override is not None:
+                            import_prices = epex_import_override
+
                         epex_override = self._read_epex_export_price_entity(n_steps)
                         if epex_override is not None:
                             display_export_raw, export_prices = epex_override
