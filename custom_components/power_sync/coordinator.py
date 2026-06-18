@@ -4463,27 +4463,63 @@ class SungrowEnergyCoordinator(DataUpdateCoordinator):
             return bool(normal_ok and limit_ok)
 
     async def _capture_discharge_limit_for_restore(self) -> None:
-        """Save the current Sungrow discharge limit before a temporary cap."""
+        """Save the normal Sungrow discharge limit before a temporary cap."""
         if getattr(self, "_pre_control_discharge_limit_kw", None) is not None:
             return
 
-        current_limit_kw = None
-        coord_data = getattr(self, "data", None) or {}
         try:
-            current_limit_kw = coord_data.get("battery_max_discharge_power")
-            discharge_limit_w = coord_data.get("battery_max_discharge_power_w")
-            if current_limit_kw is None and discharge_limit_w:
-                current_limit_kw = float(discharge_limit_w) / 1000.0
-            if current_limit_kw is None:
-                live_data = await self._controller.get_battery_data()
-                current_limit_kw = live_data.get("discharge_rate_limit_kw")
-            if current_limit_kw is not None and float(current_limit_kw) > 0:
-                self._pre_control_discharge_limit_kw = float(current_limit_kw)
+            current_limit_kw = await self._resolve_normal_discharge_limit_kw()
+            if current_limit_kw is not None:
+                self._pre_control_discharge_limit_kw = current_limit_kw
         except Exception as err:
             _LOGGER.debug(
                 "Could not capture Sungrow discharge limit before temporary cap: %s",
                 err,
             )
+
+    async def _resolve_normal_discharge_limit_kw(self) -> float | None:
+        """Resolve the Sungrow discharge cap to restore for self-consumption.
+
+        Sungrow's writable max-discharge register is both the current cap and the
+        value we temporarily lower for manual force discharge. Prefer the highest
+        known normal limit so self-consumption does not inherit a lower optimiser
+        or manual cap.
+        """
+        candidates: list[float] = []
+
+        def add_kw(value: Any) -> None:
+            try:
+                parsed = float(value)
+            except (TypeError, ValueError):
+                return
+            if parsed > 0:
+                candidates.append(parsed)
+
+        def add_w(value: Any) -> None:
+            try:
+                parsed = float(value)
+            except (TypeError, ValueError):
+                return
+            if parsed > 0:
+                candidates.append(parsed / 1000.0)
+
+        coord_data = getattr(self, "data", None) or {}
+        add_kw(coord_data.get("battery_max_discharge_power"))
+        add_w(coord_data.get("battery_max_discharge_power_w"))
+        add_kw(coord_data.get("discharge_rate_limit_kw"))
+        add_kw(coord_data.get("battery_max_charge_power"))
+        add_w(coord_data.get("battery_max_charge_power_w"))
+        add_kw(coord_data.get("charge_rate_limit_kw"))
+
+        try:
+            live_data = await self._controller.get_battery_data()
+        except Exception as err:
+            _LOGGER.debug("Could not read live Sungrow limits for restore target: %s", err)
+        else:
+            add_kw(live_data.get("discharge_rate_limit_kw"))
+            add_kw(live_data.get("charge_rate_limit_kw"))
+
+        return max(candidates) if candidates else None
 
     async def _capture_charge_limit_for_restore(self) -> None:
         """Save the current Sungrow charge limit before a temporary cap."""
@@ -4521,7 +4557,13 @@ class SungrowEnergyCoordinator(DataUpdateCoordinator):
 
     async def _restore_captured_discharge_limit(self) -> bool:
         """Restore a Sungrow discharge limit saved before temporary control."""
-        restore_limit_kw = getattr(self, "_pre_control_discharge_limit_kw", None)
+        restore_limit_kw = await self._resolve_normal_discharge_limit_kw()
+        captured_limit_kw = getattr(self, "_pre_control_discharge_limit_kw", None)
+        if captured_limit_kw is not None:
+            if restore_limit_kw is None:
+                restore_limit_kw = captured_limit_kw
+            else:
+                restore_limit_kw = max(restore_limit_kw, captured_limit_kw)
         if restore_limit_kw is None or restore_limit_kw <= 0:
             return True
 
