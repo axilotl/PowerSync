@@ -9004,7 +9004,17 @@ async def fetch_tesla_tariff_schedule(hass: HomeAssistant, entry: ConfigEntry) -
         site_id = entry.data.get(CONF_TESLA_ENERGY_SITE_ID)
 
         if not site_id or not current_token:
-            _LOGGER.warning("Missing Tesla site ID or token for tariff fetch")
+            # Only Tesla-energy systems configure a site_id. On other battery
+            # systems (Sungrow, FoxESS, Sigenergy, etc.) this Tesla tariff fetch
+            # is not applicable, so don't flood WARNINGs every poll — log at
+            # DEBUG. Keep a WARNING only when a site_id is set but the token is
+            # missing, which is a genuine Tesla misconfiguration worth surfacing.
+            if site_id:
+                _LOGGER.warning("Missing Tesla token for tariff fetch")
+            else:
+                _LOGGER.debug(
+                    "No Tesla energy site configured; skipping Tesla tariff fetch"
+                )
             return None
 
         session = async_get_clientsession(hass)

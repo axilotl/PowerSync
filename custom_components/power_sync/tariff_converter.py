@@ -1044,9 +1044,12 @@ def _build_rolling_24h_tariff(
                         period_key, last_valid_buy_price
                     )
                 else:
-                    # Mark as missing - will be counted below
+                    # First period(s) of the horizon with no earlier price to
+                    # carry forward (e.g. Flow Power's kwatch API publishes the
+                    # 00:00-00:30 slot only around midnight). Leave as None for
+                    # the leading-gap backfill below instead of flooding WARNINGs.
                     general_prices[period_key] = None
-                    _LOGGER.warning("%s: No price data available", period_key)
+                    _LOGGER.debug("%s: No buy price data yet, will backfill", period_key)
 
             if not include_sell_prices:
                 feedin_prices[period_key] = general_prices[period_key]
@@ -1088,9 +1091,33 @@ def _build_rolling_24h_tariff(
                         period_key, last_valid_sell_price
                     )
                 else:
-                    # Mark as missing - will be counted below
+                    # Leading-gap sell price (see buy-price note above): leave as
+                    # None for the backfill pass rather than warning every poll.
                     feedin_prices[period_key] = None
-                    _LOGGER.warning("%s: No sell price data available", period_key)
+                    _LOGGER.debug("%s: No sell price data yet, will backfill", period_key)
+
+    # Backfill leading gaps from the first published price. The forward
+    # carry-forward above can only fill a gap once an earlier valid price
+    # exists, so the very first period(s) of the horizon stay empty when a
+    # provider withholds them (e.g. Flow Power's kwatch API publishes the
+    # 00:00-00:30 slot only around midnight). Fill those leading Nones with the
+    # first available price so the midnight slot is no longer a gap.
+    def _backfill_leading_gaps(prices: dict, label: str) -> None:
+        first_valid = next((v for v in prices.values() if v is not None), None)
+        if first_valid is None:
+            return
+        for period_key, value in prices.items():
+            if value is not None:
+                break
+            prices[period_key] = first_valid
+            _LOGGER.info(
+                "%s: Backfilled missing %s price $%.4f from first published period",
+                period_key, label, first_valid,
+            )
+
+    _backfill_leading_gaps(general_prices, "buy")
+    if include_sell_prices:
+        _backfill_leading_gaps(feedin_prices, "sell")
 
     # Count missing periods and abort if too many are missing
     # This prevents sending bad tariffs when API is unreachable
