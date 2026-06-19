@@ -2541,12 +2541,13 @@ class BatteryOptimizer:
             effective_charge_kw = reported_charge_w / 1000
             effective_discharge_kw = reported_discharge_w / 1000
             soc += (effective_charge_kw * eff - effective_discharge_kw / eff) * dt / cap
-            soc_floor = (
-                export_floor
-                if action in ("discharge", "export") or active_export_floor
-                else self_consumption_floor
-            )
-            soc = max(soc_floor, min(1.0, soc))
+            # Floor the *reported* SOC at the real reserve only. The export floor
+            # already gates discharge and export through the room calculations
+            # above; using it here as a lower clamp would inflate a genuinely-low
+            # SOC up to the export floor — e.g. plotting the battery at the 45%
+            # export floor while it is really at 23%, and reporting that inflated
+            # value as minimum_forecast_soc.
+            soc = max(self_consumption_floor, min(1.0, soc))
 
             actions.append(ScheduleAction(
                 timestamp=ts,
