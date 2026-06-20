@@ -186,7 +186,7 @@ class FlowPowerAPIClient:
 
     async def get_residential_sites(self) -> list[dict[str, Any]]:
         """Return residential sites available to the API key."""
-        payload = await self._post("GetResidentialSites")
+        payload = await self._post("GetResidentialSites", {})
         sites = self._records(payload, "sites")
         return [
             {

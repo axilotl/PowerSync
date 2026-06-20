@@ -147,6 +147,7 @@ def test_flow_power_api_client_posts_key_and_normalizes_sites_summary_and_prices
     assert summary["gst_multiplier"] == 1.1
     assert dispatch[0]["perKwh"] == 12.34
     assert forecast[0]["perKwh"] == 9.8
+    assert session.calls[0][1] == {}
     assert all(call[2]["x-api-key"] == "secret-key" for call in session.calls)
 
 
