@@ -21481,7 +21481,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 "GoodWe curtailment RELEASED before %s: restoring export limit",
                 reason,
             )
-            success = await controller.restore()
+            success = await controller.restore(allow_zero_export_limit=False)
             if success:
                 entry_data["goodwe_curtailment_state"] = "normal"
                 entry_data.pop("_last_goodwe_curtailment_reapply", None)

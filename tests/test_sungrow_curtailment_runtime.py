@@ -183,6 +183,7 @@ def test_goodwe_curtailment_periodically_reapplies_export_limit():
 
 def test_goodwe_curtailment_releases_limit_before_force_discharge():
     handler = _function_source("handle_force_discharge")
+    helper = _function_source("_restore_goodwe_curtailment_for_export")
 
     assert handler.count("await _restore_goodwe_curtailment_for_export(") >= 2
     release_index = handler.index(
@@ -200,6 +201,7 @@ def test_goodwe_curtailment_releases_limit_before_force_discharge():
 
     assert release_index < optimizer_force_index
     assert manual_release_index < manual_force_index
+    assert "controller.restore(allow_zero_export_limit=False)" in helper
 
 
 def test_goodwe_curtailment_does_not_reapply_during_force_export():
