@@ -32063,6 +32063,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     except Exception as e:
                         _LOGGER.debug(f"VPP: Error checking AEMO prices: {e}")
 
+                async def _run_initial_aemo_spike_check():
+                    """Run the first VPP spike check without blocking setup."""
+                    try:
+                        await check_aemo_spike_for_vpp(None)
+                    except asyncio.CancelledError:
+                        _LOGGER.debug("VPP: Initial AEMO spike check cancelled")
+                        raise
+
                 # Store spike state for status endpoint
                 hass.data[DOMAIN][entry.entry_id]["vpp_spike_state"] = vpp_spike_state
 
@@ -32075,8 +32083,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 hass.data[DOMAIN][entry.entry_id]["vpp_aemo_cancel"] = vpp_aemo_cancel
                 _LOGGER.info(f"🔌 ML VPP AEMO spike response scheduled (region: {aemo_region}, threshold: $3000/MWh)")
 
-                # Initial check
-                await check_aemo_spike_for_vpp(None)
+                # Run the first network fetch in the background. HA can cancel
+                # long setup awaits during bootstrap; a cancelled AEMO request
+                # must not leave the config entry partially set up.
+                hass.data[DOMAIN][entry.entry_id]["vpp_aemo_initial_task"] = (
+                    hass.async_create_background_task(
+                        _run_initial_aemo_spike_check(),
+                        "powersync_vpp_aemo_initial_check",
+                    )
+                )
 
         except Exception as e:
             _LOGGER.error(f"Failed to initialize Smart Optimization coordinator: {e}", exc_info=True)
@@ -32939,6 +32954,14 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if generic_aemo_spike_cancel := entry_data.get("generic_aemo_spike_cancel"):
         generic_aemo_spike_cancel()
         _LOGGER.debug("Cancelled generic AEMO spike timer")
+
+    # Cancel the VPP AEMO spike timer / first-run task if they exist
+    if vpp_aemo_cancel := entry_data.get("vpp_aemo_cancel"):
+        vpp_aemo_cancel()
+        _LOGGER.debug("Cancelled VPP AEMO spike timer")
+    if vpp_aemo_initial_task := entry_data.get("vpp_aemo_initial_task"):
+        vpp_aemo_initial_task.cancel()
+        _LOGGER.debug("Cancelled initial VPP AEMO spike check")
 
     # Cancel the saving session timer if it exists
     if saving_session_cancel := entry_data.get("saving_session_cancel"):
