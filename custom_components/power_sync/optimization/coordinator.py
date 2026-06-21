@@ -1066,6 +1066,22 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 None,
             )
             if export_floor is not None:
+                bridge_export_start = recommendation.get(
+                    "home_load_bridge_after_export_start"
+                )
+                if bridge_export_start:
+                    try:
+                        bridge_start = datetime.fromisoformat(
+                            str(bridge_export_start)
+                        )
+                        now = dt_util.now()
+                        if bridge_start.tzinfo is not None:
+                            now = now.astimezone(bridge_start.tzinfo)
+                        if bridge_start.date() != now.date():
+                            export_floor = None
+                    except (TypeError, ValueError):
+                        pass
+            if export_floor is not None:
                 floor = max(floor, export_floor)
         return max(0.0, min(1.0, floor))
 
