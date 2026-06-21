@@ -432,6 +432,7 @@ from .const import (
     CONF_OPTIMIZATION_AUTO_APPLY_RESERVE,
     CONF_OPTIMIZATION_MANUAL_RESERVE,
     CONF_OPTIMIZATION_EV_INTEGRATION,
+    CONF_OPTIMIZATION_LOAD_ENTITY,
     CONF_OPTIMIZATION_PLANNED_EV_LOAD_ENTITY,
     CONF_OPTIMIZATION_COST_FUNCTION,
     CONF_OPTIMIZATION_BACKUP_RESERVE,
@@ -2893,6 +2894,11 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     CONF_OPTIMIZATION_EV_INTEGRATION: bool(
                         user_input.get(CONF_OPTIMIZATION_EV_INTEGRATION, False)
                     ),
+                    CONF_OPTIMIZATION_LOAD_ENTITY: (
+                        _normalize_optional_entity(
+                            user_input.get(CONF_OPTIMIZATION_LOAD_ENTITY)
+                        )
+                    ),
                     CONF_OPTIMIZATION_PLANNED_EV_LOAD_ENTITY: (
                         _normalize_optional_entity(
                             user_input.get(CONF_OPTIMIZATION_PLANNED_EV_LOAD_ENTITY)
@@ -2976,6 +2982,9 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 CONF_OPTIMIZATION_EV_INTEGRATION,
                 default=False,
             ): BooleanSelector(),
+            vol.Optional(
+                CONF_OPTIMIZATION_LOAD_ENTITY,
+            ): EntitySelector(EntitySelectorConfig(domain="sensor")),
             vol.Optional(
                 CONF_OPTIMIZATION_PLANNED_EV_LOAD_ENTITY,
             ): EntitySelector(EntitySelectorConfig(domain="sensor")),
@@ -8299,6 +8308,9 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 ev_integration_enabled = bool(
                     user_input.get(CONF_OPTIMIZATION_EV_INTEGRATION, False)
                 )
+                load_entity = _normalize_optional_entity(
+                    user_input.get(CONF_OPTIMIZATION_LOAD_ENTITY)
+                )
                 planned_ev_load_entity = _normalize_optional_entity(
                     user_input.get(CONF_OPTIMIZATION_PLANNED_EV_LOAD_ENTITY)
                 )
@@ -8308,6 +8320,8 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 new_options[CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED] = spread_import_enabled
                 new_data[CONF_OPTIMIZATION_DISABLE_IDLE] = disable_idle
                 new_options[CONF_OPTIMIZATION_DISABLE_IDLE] = disable_idle
+                new_data[CONF_OPTIMIZATION_LOAD_ENTITY] = load_entity
+                new_options[CONF_OPTIMIZATION_LOAD_ENTITY] = load_entity
                 new_data[CONF_OPTIMIZATION_EV_INTEGRATION] = ev_integration_enabled
                 new_options[CONF_OPTIMIZATION_EV_INTEGRATION] = ev_integration_enabled
                 new_data[CONF_OPTIMIZATION_PLANNED_EV_LOAD_ENTITY] = planned_ev_load_entity
@@ -8398,6 +8412,7 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                     "spread_export_enabled": spread_export_enabled,
                     "spread_import_enabled": spread_import_enabled,
                     "ev_integration": ev_integration_enabled,
+                    "load_entity": load_entity,
                     "planned_ev_load_entity": planned_ev_load_entity,
                 }
                 try:
@@ -8530,6 +8545,12 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
             CONF_OPTIMIZATION_EV_INTEGRATION,
             self.config_entry.data.get(CONF_OPTIMIZATION_EV_INTEGRATION, False),
         )
+        current_load_entity = _normalize_optional_entity(
+            self._get_option(
+                CONF_OPTIMIZATION_LOAD_ENTITY,
+                self.config_entry.data.get(CONF_OPTIMIZATION_LOAD_ENTITY),
+            )
+        )
         current_planned_ev_load_entity = _normalize_optional_entity(
             self._get_option(
                 CONF_OPTIMIZATION_PLANNED_EV_LOAD_ENTITY,
@@ -8582,6 +8603,14 @@ class PowerSyncOptionsFlow(config_entries.OptionsFlow):
                 CONF_OPTIMIZATION_EV_INTEGRATION,
                 default=bool(current_ev_integration_enabled),
             ): BooleanSelector(),
+            vol.Optional(
+                CONF_OPTIMIZATION_LOAD_ENTITY,
+                description=(
+                    {"suggested_value": current_load_entity}
+                    if current_load_entity
+                    else None
+                ),
+            ): EntitySelector(EntitySelectorConfig(domain="sensor")),
             vol.Optional(
                 CONF_OPTIMIZATION_PLANNED_EV_LOAD_ENTITY,
                 description=(

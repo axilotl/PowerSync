@@ -274,12 +274,18 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         # EV integration persisted flag (loaded from config entry)
         self._ev_integration_enabled = False
+        self._configured_load_entity_id: str | None = None
         self._planned_ev_load_entity_id: str | None = None
         if self._entry:
             from ..const import (
                 CONF_OPTIMIZATION_EV_INTEGRATION,
+                CONF_OPTIMIZATION_LOAD_ENTITY,
                 CONF_OPTIMIZATION_PLANNED_EV_LOAD_ENTITY,
             )
+            self._configured_load_entity_id = self._entry.options.get(
+                CONF_OPTIMIZATION_LOAD_ENTITY,
+                self._entry.data.get(CONF_OPTIMIZATION_LOAD_ENTITY),
+            ) or None
             self._ev_integration_enabled = self._entry.options.get(
                 CONF_OPTIMIZATION_EV_INTEGRATION,
                 self._entry.data.get(CONF_OPTIMIZATION_EV_INTEGRATION, False),
@@ -2017,6 +2023,22 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     def _get_load_entity_id(self) -> str | None:
         """Get the load entity ID based on battery system."""
+        if self._configured_load_entity_id:
+            configured_state = self.hass.states.get(self._configured_load_entity_id)
+            if self._is_usable_load_sensor_state(
+                configured_state
+            ) and not self._is_generated_load_forecast_sensor(configured_state):
+                _LOGGER.info(
+                    "Using configured load sensor: %s",
+                    self._configured_load_entity_id,
+                )
+                return self._configured_load_entity_id
+            _LOGGER.warning(
+                "Configured load sensor %s is unavailable or not a live load sensor; "
+                "falling back to auto-discovery",
+                self._configured_load_entity_id,
+            )
+
         # Try known sensor names first (most specific → least specific)
         fallbacks = [
             "sensor.power_sync_home_load",
@@ -9421,6 +9443,34 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
             if changed:
                 rerun_after_settings = True
+
+        if "load_entity" in settings:
+            raw_entity = settings.get("load_entity")
+            entity_id = raw_entity.strip() if isinstance(raw_entity, str) else None
+            entity_id = entity_id or None
+            changed = entity_id != self._configured_load_entity_id
+            self._configured_load_entity_id = entity_id
+            if self._entry:
+                from ..const import CONF_OPTIMIZATION_LOAD_ENTITY
+                new_data = dict(self._entry.data)
+                new_options = dict(self._entry.options)
+                new_data[CONF_OPTIMIZATION_LOAD_ENTITY] = entity_id
+                new_options[CONF_OPTIMIZATION_LOAD_ENTITY] = entity_id
+                from ..const import DOMAIN as _SKIP_DOM
+                self.hass.data.get(_SKIP_DOM, {}).get(self.entry_id, {})["_skip_reload"] = True
+                self.hass.config_entries.async_update_entry(
+                    self._entry,
+                    data=new_data,
+                    options=new_options,
+                )
+            if changed and self._load_estimator:
+                self._load_estimator.load_entity_id = self._get_load_entity_id()
+                self._load_estimator._history_cache.clear()
+                self._load_estimator._cache_time = None
+                rerun_after_settings = True
+            response["changes"].append(
+                f"load_entity: {entity_id or 'auto-discovery'}"
+            )
 
         if "profit_max_target_time" in settings and self._entry:
             from ..const import CONF_PROFIT_MAX_TARGET_TIME

@@ -127,6 +127,7 @@ def _install_power_sync_stubs() -> None:
     const_module.CONF_OPTIMIZATION_AUTO_APPLY_RESERVE = "optimization_auto_apply_reserve"
     const_module.CONF_OPTIMIZATION_BACKUP_RESERVE = "optimization_backup_reserve"
     const_module.CONF_OPTIMIZATION_EV_INTEGRATION = "optimization_ev_integration"
+    const_module.CONF_OPTIMIZATION_LOAD_ENTITY = "optimization_load_entity"
     const_module.CONF_OPTIMIZATION_PLANNED_EV_LOAD_ENTITY = "optimization_planned_ev_load_entity"
     const_module.CONF_OPTIMIZATION_MANUAL_RESERVE = "optimization_manual_reserve"
     const_module.DEFAULT_SOLAR_FORECAST_PROVIDER = "solcast"
@@ -266,6 +267,7 @@ def _planned_ev_load_coordinator(opt_module, states: list[_State]):
     coordinator._entry = None
     coordinator._config = opt_module.OptimizationConfig(horizon_hours=1)
     coordinator._enabled = False
+    coordinator._configured_load_entity_id = None
     coordinator._planned_ev_load_entity_id = "sensor.planned_ev_load"
     coordinator._last_solar_forecast = None
     coordinator._last_solar_nowcast_ratio = None
@@ -441,6 +443,42 @@ def test_planned_ev_load_settings_write_and_clear_without_ev_integration(opt_mod
     assert len(config_entries.updates) == 2
 
 
+def test_load_entity_setting_updates_estimator_without_reload(opt_module):
+    entry = _Entry(data={}, options={})
+    config_entries = _ConfigEntries()
+    coordinator = _planned_ev_load_coordinator(
+        opt_module,
+        [
+            _State("sensor.power_sync_home_load", "1.8"),
+            _State("sensor.household_power_no_ev", "820", unit="W"),
+        ],
+    )
+    coordinator.hass.data = {"power_sync": {"entry-1": {}}}
+    coordinator.hass.config_entries = config_entries
+    coordinator._entry = entry
+    coordinator._configured_load_entity_id = None
+    coordinator._load_estimator = SimpleNamespace(
+        load_entity_id="sensor.power_sync_home_load",
+        _history_cache={"stale": []},
+        _cache_time=object(),
+    )
+
+    result = asyncio.run(
+        coordinator.set_settings({"load_entity": " sensor.household_power_no_ev "})
+    )
+
+    assert result["success"] is True
+    assert coordinator._configured_load_entity_id == "sensor.household_power_no_ev"
+    assert coordinator._load_estimator.load_entity_id == "sensor.household_power_no_ev"
+    assert coordinator._load_estimator._history_cache == {}
+    assert coordinator._load_estimator._cache_time is None
+    assert entry.data["optimization_load_entity"] == "sensor.household_power_no_ev"
+    assert entry.options["optimization_load_entity"] == "sensor.household_power_no_ev"
+    assert coordinator.hass.data["power_sync"]["entry-1"]["_skip_reload"] is True
+    assert "load_entity: sensor.household_power_no_ev" in result["changes"]
+    assert len(config_entries.updates) == 1
+
+
 def _tariff_schedule() -> dict:
     return {
         "plan_name": "ZEROHERO",
@@ -607,6 +645,7 @@ def test_ev_integration_defaults_to_initial_config_data(opt_module):
 
 def test_load_sensor_auto_discovery_skips_generated_forecast_sensor(opt_module):
     coordinator = object.__new__(opt_module.OptimizationCoordinator)
+    coordinator._configured_load_entity_id = None
     coordinator.hass = SimpleNamespace(
         states=_States(
             [
@@ -621,6 +660,41 @@ def test_load_sensor_auto_discovery_skips_generated_forecast_sensor(opt_module):
     )
 
     assert coordinator._get_load_entity_id() == "sensor.house_load_power"
+
+
+def test_configured_load_sensor_overrides_power_sync_home_load(opt_module):
+    coordinator = object.__new__(opt_module.OptimizationCoordinator)
+    coordinator._configured_load_entity_id = "sensor.household_power_no_ev"
+    coordinator.hass = SimpleNamespace(
+        states=_States(
+            [
+                _State("sensor.power_sync_home_load", "1.8"),
+                _State("sensor.household_power_no_ev", "820", unit="W"),
+            ]
+        )
+    )
+
+    assert coordinator._get_load_entity_id() == "sensor.household_power_no_ev"
+
+
+def test_configured_generated_load_sensor_falls_back_to_auto_discovery(opt_module):
+    coordinator = object.__new__(opt_module.OptimizationCoordinator)
+    coordinator._configured_load_entity_id = "sensor.household_power_forecast"
+    coordinator.hass = SimpleNamespace(
+        states=_States(
+            [
+                _State(
+                    "sensor.household_power_forecast",
+                    "600",
+                    unit="W",
+                    friendly_name="Household Power Forecast",
+                ),
+                _State("sensor.power_sync_home_load", "0.9"),
+            ]
+        )
+    )
+
+    assert coordinator._get_load_entity_id() == "sensor.power_sync_home_load"
 
 
 def test_load_forecast_rediscovers_load_sensor_after_startup(opt_module):
@@ -640,6 +714,7 @@ def test_load_forecast_rediscovers_load_sensor_after_startup(opt_module):
     coordinator.hass = SimpleNamespace(
         states=_States([_State("sensor.power_sync_home_load", "0.52")])
     )
+    coordinator._configured_load_entity_id = None
     coordinator._load_estimator = estimator
     coordinator._config = SimpleNamespace(horizon_hours=48)
 
