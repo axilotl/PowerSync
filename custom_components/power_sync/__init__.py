@@ -585,12 +585,15 @@ from .const import (
     CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED,
     CONF_OPTIMIZATION_DISABLE_IDLE,
     CONF_PROFIT_MAX_ENABLED,
+    CONF_CHARGE_BY_TIME_ENABLED,
+    CONF_CHARGE_BY_TIME_TARGET_TIME,
+    CONF_CHARGE_BY_TIME_TARGET_SOC,
     CONF_PROFIT_MAX_TARGET_TIME,
     CONF_PROFIT_MAX_TARGET_SOC,
     DEFAULT_OPTIMIZATION_INTERVAL,
     DEFAULT_OPTIMIZATION_BACKUP_RESERVE,
-    DEFAULT_PROFIT_MAX_TARGET_TIME,
-    DEFAULT_PROFIT_MAX_TARGET_SOC,
+    DEFAULT_CHARGE_BY_TIME_TARGET_TIME,
+    DEFAULT_CHARGE_BY_TIME_TARGET_SOC,
     BATTERY_CAPACITY_DEFAULTS,
     BATTERY_POWER_DEFAULTS,
 )
@@ -3020,6 +3023,49 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
             config_entry, data=new_data, version=6
         )
         _LOGGER.info("Migration to version 6 complete")
+
+    if config_entry.version == 6:
+        # Migrate from version 6 to version 7
+        # Split Charge By Time prefill/deadline behavior from Profit Max while
+        # preserving existing Profit Max users' prefill behavior.
+        new_data = {**config_entry.data}
+        new_options = {**config_entry.options}
+
+        def _read_legacy(key: str, default: Any) -> Any:
+            return new_options.get(key, new_data.get(key, default))
+
+        if CONF_CHARGE_BY_TIME_ENABLED not in new_options and CONF_CHARGE_BY_TIME_ENABLED not in new_data:
+            legacy_enabled = bool(
+                _read_legacy(CONF_PROFIT_MAX_ENABLED, False)
+            )
+            new_data[CONF_CHARGE_BY_TIME_ENABLED] = legacy_enabled
+            new_options[CONF_CHARGE_BY_TIME_ENABLED] = legacy_enabled
+        if CONF_CHARGE_BY_TIME_TARGET_TIME not in new_options and CONF_CHARGE_BY_TIME_TARGET_TIME not in new_data:
+            target_time = _read_legacy(
+                CONF_PROFIT_MAX_TARGET_TIME,
+                DEFAULT_CHARGE_BY_TIME_TARGET_TIME,
+            )
+            new_data[CONF_CHARGE_BY_TIME_TARGET_TIME] = target_time
+            new_options[CONF_CHARGE_BY_TIME_TARGET_TIME] = target_time
+        if CONF_CHARGE_BY_TIME_TARGET_SOC not in new_options and CONF_CHARGE_BY_TIME_TARGET_SOC not in new_data:
+            target_soc = _read_legacy(
+                CONF_PROFIT_MAX_TARGET_SOC,
+                DEFAULT_CHARGE_BY_TIME_TARGET_SOC,
+            )
+            new_data[CONF_CHARGE_BY_TIME_TARGET_SOC] = target_soc
+            new_options[CONF_CHARGE_BY_TIME_TARGET_SOC] = target_soc
+
+        new_data[CONF_PROFIT_MAX_TARGET_TIME] = new_data[CONF_CHARGE_BY_TIME_TARGET_TIME]
+        new_options[CONF_PROFIT_MAX_TARGET_TIME] = new_options[CONF_CHARGE_BY_TIME_TARGET_TIME]
+        new_data[CONF_PROFIT_MAX_TARGET_SOC] = new_data[CONF_CHARGE_BY_TIME_TARGET_SOC]
+        new_options[CONF_PROFIT_MAX_TARGET_SOC] = new_options[CONF_CHARGE_BY_TIME_TARGET_SOC]
+        hass.config_entries.async_update_entry(
+            config_entry,
+            data=new_data,
+            options=new_options,
+            version=7,
+        )
+        _LOGGER.info("Migration to version 7 complete (Charge By Time split)")
 
     # Within-version migration: foxess_cloud_password → foxess_cloud_api_key
     if "foxess_cloud_password" in config_entry.data and "foxess_cloud_api_key" not in config_entry.data:
@@ -31903,6 +31949,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             add_profit_max = hass.data[DOMAIN][entry.entry_id].pop("switch_add_profit_max", None)
             if add_profit_max:
                 add_profit_max(optimization_coordinator)
+            add_charge_by_time = hass.data[DOMAIN][entry.entry_id].pop("switch_add_charge_by_time", None)
+            if add_charge_by_time:
+                add_charge_by_time(optimization_coordinator)
             add_disable_idle = hass.data[DOMAIN][entry.entry_id].pop("switch_add_disable_idle", None)
             if add_disable_idle:
                 add_disable_idle(optimization_coordinator)
@@ -32311,6 +32360,50 @@ class OptimizationSettingsView(HomeAssistantView):
                     parsed *= 100
                 return max(0, min(100, int(round(parsed))))
 
+            charge_by_time_enabled = bool(
+                config_entry
+                and config_entry.options.get(
+                    CONF_CHARGE_BY_TIME_ENABLED,
+                    config_entry.data.get(
+                        CONF_CHARGE_BY_TIME_ENABLED,
+                        config_entry.options.get(
+                            CONF_PROFIT_MAX_ENABLED,
+                            config_entry.data.get(CONF_PROFIT_MAX_ENABLED, False),
+                        ),
+                    ),
+                )
+            )
+            charge_by_time_target_time = (
+                config_entry.options.get(
+                    CONF_CHARGE_BY_TIME_TARGET_TIME,
+                    config_entry.data.get(
+                        CONF_CHARGE_BY_TIME_TARGET_TIME,
+                        config_entry.options.get(
+                            CONF_PROFIT_MAX_TARGET_TIME,
+                            config_entry.data.get(
+                                CONF_PROFIT_MAX_TARGET_TIME,
+                                DEFAULT_CHARGE_BY_TIME_TARGET_TIME,
+                            ),
+                        ),
+                    ),
+                )
+                if config_entry
+                else DEFAULT_CHARGE_BY_TIME_TARGET_TIME
+            )
+            charge_by_time_target_soc = _entry_percent_setting(
+                CONF_CHARGE_BY_TIME_TARGET_SOC,
+                DEFAULT_CHARGE_BY_TIME_TARGET_SOC,
+            )
+            if (
+                config_entry
+                and CONF_CHARGE_BY_TIME_TARGET_SOC not in config_entry.options
+                and CONF_CHARGE_BY_TIME_TARGET_SOC not in config_entry.data
+            ):
+                charge_by_time_target_soc = _entry_percent_setting(
+                    CONF_PROFIT_MAX_TARGET_SOC,
+                    DEFAULT_CHARGE_BY_TIME_TARGET_SOC,
+                )
+
             backup_reserve = DEFAULT_OPTIMIZATION_BACKUP_RESERVE
             hardware_reserve = 0
             auto_apply_reserve = False
@@ -32407,6 +32500,7 @@ class OptimizationSettingsView(HomeAssistantView):
                         config_entry.data.get(CONF_PROFIT_MAX_ENABLED, False),
                     )
                 ),
+                "charge_by_time_enabled": charge_by_time_enabled,
                 "spread_export_enabled": bool(
                     config_entry
                     and config_entry.options.get(
@@ -32487,21 +32581,11 @@ class OptimizationSettingsView(HomeAssistantView):
                         if manual_reserve is not None
                         else None
                     ),
-                    "profit_max_target_time": (
-                        config_entry.options.get(
-                            CONF_PROFIT_MAX_TARGET_TIME,
-                            config_entry.data.get(
-                                CONF_PROFIT_MAX_TARGET_TIME,
-                                DEFAULT_PROFIT_MAX_TARGET_TIME,
-                            ),
-                        )
-                        if config_entry
-                        else DEFAULT_PROFIT_MAX_TARGET_TIME
-                    ),
-                    "profit_max_target_soc": _entry_percent_setting(
-                        CONF_PROFIT_MAX_TARGET_SOC,
-                        DEFAULT_PROFIT_MAX_TARGET_SOC,
-                    ),
+                    "charge_by_time_enabled": charge_by_time_enabled,
+                    "charge_by_time_target_time": charge_by_time_target_time,
+                    "charge_by_time_target_soc": charge_by_time_target_soc,
+                    "profit_max_target_time": charge_by_time_target_time,
+                    "profit_max_target_soc": charge_by_time_target_soc,
                     "backup_reserve": round(backup_reserve * 100),
                     "hardware_backup_reserve": round(hardware_reserve),
                     "battery_specs_source": "manual"
@@ -32526,6 +32610,7 @@ class OptimizationSettingsView(HomeAssistantView):
             "ev_integration": opt_coordinator._ev_integration_enabled,
             "planned_ev_load_entity": opt_coordinator._planned_ev_load_entity_id,
             "profit_max_enabled": opt_coordinator.profit_max_mode,
+            "charge_by_time_enabled": opt_coordinator.charge_by_time_enabled,
             "spread_export_enabled": opt_coordinator._config.spread_export_enabled,
             "spread_import_enabled": opt_coordinator._config.spread_import_enabled,
             "disable_idle_enabled": opt_coordinator.disable_idle_enabled,
@@ -32546,6 +32631,7 @@ class OptimizationSettingsView(HomeAssistantView):
                 "spread_export_enabled": opt_coordinator._config.spread_export_enabled,
                 "spread_import_enabled": opt_coordinator._config.spread_import_enabled,
                 "disable_idle_enabled": opt_coordinator.disable_idle_enabled,
+                "charge_by_time_enabled": opt_coordinator.charge_by_time_enabled,
                 "auto_apply_reserve_enabled": opt_coordinator.auto_apply_reserve_enabled,
                 "manual_backup_reserve": (
                     round(opt_coordinator.manual_backup_reserve * 100)
@@ -32557,21 +32643,17 @@ class OptimizationSettingsView(HomeAssistantView):
                 "battery_specs_source": opt_coordinator._battery_specs_source,
                 "interval_minutes": opt_coordinator._config.interval_minutes,
                 "horizon_hours": opt_coordinator._config.horizon_hours,
-                "profit_max_target_time": (
-                    config_entry.options.get(
-                        CONF_PROFIT_MAX_TARGET_TIME,
-                        config_entry.data.get(
-                            CONF_PROFIT_MAX_TARGET_TIME,
-                            DEFAULT_PROFIT_MAX_TARGET_TIME,
-                        ),
-                    )
-                    if config_entry
-                    else DEFAULT_PROFIT_MAX_TARGET_TIME
+                "charge_by_time_target_time": opt_coordinator._config.charge_by_time_target_time,
+                "charge_by_time_target_soc": (
+                    max(0, min(100, int(round(opt_coordinator._charge_by_time_target_soc() * 100))))
+                    if hasattr(opt_coordinator, "_charge_by_time_target_soc")
+                    else int(round(DEFAULT_CHARGE_BY_TIME_TARGET_SOC * 100))
                 ),
+                "profit_max_target_time": opt_coordinator._config.charge_by_time_target_time,
                 "profit_max_target_soc": (
-                    max(0, min(100, int(round(opt_coordinator._profit_max_target_soc() * 100))))
-                    if hasattr(opt_coordinator, "_profit_max_target_soc")
-                    else int(round(DEFAULT_PROFIT_MAX_TARGET_SOC * 100))
+                    max(0, min(100, int(round(opt_coordinator._charge_by_time_target_soc() * 100))))
+                    if hasattr(opt_coordinator, "_charge_by_time_target_soc")
+                    else int(round(DEFAULT_CHARGE_BY_TIME_TARGET_SOC * 100))
                 ),
             }
         })
@@ -32648,23 +32730,46 @@ class OptimizationSettingsView(HomeAssistantView):
                 new_options[CONF_PROFIT_MAX_ENABLED] = bool(settings["profit_max_enabled"])
                 changes.append(f"Set profit maximisation mode to {settings['profit_max_enabled']}")
 
-            if "profit_max_target_time" in settings:
-                new_data[CONF_PROFIT_MAX_TARGET_TIME] = str(settings["profit_max_target_time"])
-                new_options[CONF_PROFIT_MAX_TARGET_TIME] = str(settings["profit_max_target_time"])
-                changes.append(f"Set Profit Max full by time to {settings['profit_max_target_time']}")
+            if "charge_by_time_enabled" in settings:
+                new_options[CONF_CHARGE_BY_TIME_ENABLED] = bool(settings["charge_by_time_enabled"])
+                changes.append(f"Set Charge By Time to {settings['charge_by_time_enabled']}")
 
-            if "profit_max_target_soc" in settings:
-                target_soc = settings["profit_max_target_soc"]
+            target_time_key = (
+                "charge_by_time_target_time"
+                if "charge_by_time_target_time" in settings
+                else "profit_max_target_time"
+                if "profit_max_target_time" in settings
+                else None
+            )
+            if target_time_key:
+                target_time = str(settings[target_time_key])
+                new_data[CONF_CHARGE_BY_TIME_TARGET_TIME] = target_time
+                new_options[CONF_CHARGE_BY_TIME_TARGET_TIME] = target_time
+                new_data[CONF_PROFIT_MAX_TARGET_TIME] = target_time
+                new_options[CONF_PROFIT_MAX_TARGET_TIME] = target_time
+                changes.append(f"Set Charge By Time target time to {target_time}")
+
+            target_soc_key = (
+                "charge_by_time_target_soc"
+                if "charge_by_time_target_soc" in settings
+                else "profit_max_target_soc"
+                if "profit_max_target_soc" in settings
+                else None
+            )
+            if target_soc_key:
+                target_soc = settings[target_soc_key]
                 try:
                     target_soc = float(target_soc)
                 except (TypeError, ValueError):
-                    target_soc = DEFAULT_PROFIT_MAX_TARGET_SOC
+                    target_soc = DEFAULT_CHARGE_BY_TIME_TARGET_SOC
                 if target_soc > 1:
                     target_soc = target_soc / 100.0
                 target_soc = max(0.0, min(1.0, target_soc))
+                new_data[CONF_CHARGE_BY_TIME_TARGET_SOC] = target_soc
+                new_options[CONF_CHARGE_BY_TIME_TARGET_SOC] = target_soc
                 new_data[CONF_PROFIT_MAX_TARGET_SOC] = target_soc
                 new_options[CONF_PROFIT_MAX_TARGET_SOC] = target_soc
-                changes.append(f"Set Profit Max target SOC to {int(round(target_soc * 100))}%")
+                changes.append(f"Set Charge By Time target SOC to {int(round(target_soc * 100))}%")
 
             if "allow_grid_charge" in settings:
                 new_options[CONF_OPTIMIZATION_ALLOW_GRID_CHARGE] = bool(settings["allow_grid_charge"])

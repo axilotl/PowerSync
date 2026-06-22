@@ -128,6 +128,8 @@ def test_optimizer_mode_switches_reoptimize_after_change():
     assert "await coordinator.force_reoptimize()" in switch_source
     assert "changed = self._coordinator.set_profit_max_mode(True)" in switch_source
     assert "changed = self._coordinator.set_profit_max_mode(False)" in switch_source
+    assert "changed = self._coordinator.set_charge_by_time_enabled(True)" in switch_source
+    assert "changed = self._coordinator.set_charge_by_time_enabled(False)" in switch_source
     assert "changed = self._coordinator.set_disable_idle_enabled(True)" in switch_source
     assert "changed = self._coordinator.set_disable_idle_enabled(False)" in switch_source
     assert "changed = self._coordinator.set_spread_export_enabled(True)" in switch_source
@@ -135,6 +137,36 @@ def test_optimizer_mode_switches_reoptimize_after_change():
     assert "changed = self._coordinator.set_spread_import_enabled(True)" in switch_source
     assert "changed = self._coordinator.set_spread_import_enabled(False)" in switch_source
     assert "def set_profit_max_mode(self, enabled: bool) -> bool:" in coordinator_source
+    assert "def set_charge_by_time_enabled(self, enabled: bool) -> bool:" in coordinator_source
+
+
+def test_charge_by_time_switch_is_registered_as_config_entity():
+    const_source = CONST_PATH.read_text()
+    switch_source = SWITCH_PATH.read_text()
+    init_source = INIT_PATH.read_text()
+
+    assert 'CONF_CHARGE_BY_TIME_ENABLED = "charge_by_time_enabled"' in const_source
+    assert 'CONF_CHARGE_BY_TIME_TARGET_TIME = "charge_by_time_target_time"' in const_source
+    assert 'CONF_CHARGE_BY_TIME_TARGET_SOC = "charge_by_time_target_soc"' in const_source
+    assert 'SWITCH_TYPE_CHARGE_BY_TIME = "charge_by_time"' in const_source
+    assert "ChargeByTimeSwitch(" in switch_source
+    assert "class ChargeByTimeSwitch(SwitchEntity):" in switch_source
+    assert 'self._attr_name = "Charge By Time"' in switch_source
+    assert 'hass.data[DOMAIN][entry.entry_id]["switch_add_charge_by_time"]' in switch_source
+    assert "switch_add_charge_by_time" in init_source
+
+
+def test_charge_by_time_config_migration_preserves_legacy_profit_max_targets():
+    init_source = INIT_PATH.read_text()
+    config_flow_source = (ROOT / "custom_components" / "power_sync" / "config_flow.py").read_text()
+
+    assert "VERSION = 7" in config_flow_source
+    assert "if config_entry.version == 6:" in init_source
+    assert "CONF_CHARGE_BY_TIME_ENABLED" in init_source
+    assert "_read_legacy(CONF_PROFIT_MAX_ENABLED, False)" in init_source
+    assert "CONF_CHARGE_BY_TIME_TARGET_TIME" in init_source
+    assert "CONF_CHARGE_BY_TIME_TARGET_SOC" in init_source
+    assert "version=7" in init_source
 
 
 def test_auto_apply_reserve_setting_is_exposed_through_api_and_coordinator():

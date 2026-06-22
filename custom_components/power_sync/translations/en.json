@@ -397,6 +397,7 @@
           "optimization_enabled": "Enable Smart Optimization",
           "optimization_auto_apply_reserve": "Auto-apply optimizer reserve",
           "optimization_ev_integration": "PowerSync EV charger plans",
+          "optimization_load_entity": "Historical load sensor",
           "optimization_planned_ev_load_entity": "Planned EV load forecast sensor",
           "monitoring_mode": "Monitoring mode",
           "optimization_backup_reserve": "Minimum discharge level",
@@ -411,14 +412,16 @@
           "optimization_spread_import_enabled": "Spread import across window",
           "optimization_disable_idle": "Disable idle mode",
           "profit_max_enabled": "Enable Profit Max",
-          "profit_max_target_time": "Profit Max target time",
-          "profit_max_target_soc": "Profit Max target SOC"
+          "charge_by_time_enabled": "Enable Charge By Time",
+          "charge_by_time_target_time": "Charge By Time target time",
+          "charge_by_time_target_soc": "Charge By Time target SOC"
         },
         "data_description": {
           "optimization_provider": "Smart Optimization uses an LP solver to minimise costs. Native mode uses your battery's built-in TOU scheduler.",
           "optimization_enabled": "Turn the LP optimizer on or off without changing the saved Smart Optimization settings.",
           "optimization_auto_apply_reserve": "Adjusts the software optimizer reserve floor from forecast recommendations. Your hardware backup reserve stays user controlled.",
           "optimization_ev_integration": "Adds EV demand from PowerSync-managed charger schedules to Smart Optimization. Leave this off when the planned EV load forecast sensor already represents the same charging demand.",
+          "optimization_load_entity": "Optional recorder-backed live household load sensor for Smart Optimization history. Use a no-EV load sensor here if your home load history includes EV charging and you also add planned EV load separately.",
           "optimization_planned_ev_load_entity": "Optional sensor with a planned_load attribute for forecast-only EV demand. PowerSync always adds this sensor to the load forecast when selected, but does not control the charger.",
           "monitoring_mode": "Block battery and inverter control commands while still updating prices, sensors, and plans for observation.",
           "optimization_backup_reserve": "The optimizer will never discharge below this percentage. Default 20% is a good starting point. Your battery's hardware backup reserve (set in the Tesla/Sigenergy app) is separate.",
@@ -433,8 +436,9 @@
           "optimization_spread_import_enabled": "When enabled on supported batteries, Smart Optimization spreads planned grid charging across each same-price import window instead of using maximum charge power.",
           "optimization_disable_idle": "For supported TOU plans, replace Smart Optimization idle hold actions with self-consumption.",
           "profit_max_enabled": "Let Smart Optimization prioritise profitable export opportunities instead of holding battery charge for later by default.",
-          "profit_max_target_time": "HH:MM time for Profit Max to reach the configured target SOC before the export window. Default 17:15.",
-          "profit_max_target_soc": "Battery SOC Profit Max should target before the export window. Default 100%."
+          "charge_by_time_enabled": "Force Smart Optimization to reach the configured target SOC by the configured time.",
+          "charge_by_time_target_time": "HH:MM time for Charge By Time to reach the configured target SOC. Default 17:15.",
+          "charge_by_time_target_soc": "Battery SOC Charge By Time should target by the configured time. Default 100%."
         },
         "submit": "Next"
       },
@@ -1059,6 +1063,7 @@
         "description": "Choose a section to configure. Changes take effect immediately.",
         "menu_options": {
           "pricing": "Electricity pricing & provider",
+          "battery_system": "Battery / control method",
           "provider_portal": "Provider portal login",
           "tesla_connection": "Tesla API connection",
           "sigenergy_connection": "Sigenergy connection",
@@ -1066,10 +1071,13 @@
           "history_relink": "Sungrow history relink",
           "foxess_connection_options": "FoxESS connection",
           "goodwe_connection_options": "GoodWe connection",
+          "alphaess_connection": "AlphaESS connection",
           "esy_sunhome_connection": "ESY Sunhome connection",
           "saj_h2_connection": "SAJ H2 connection",
           "fronius_reserva_connection": "Fronius GEN24 storage connection",
           "neovolt_connection": "Neovolt connection",
+          "anker_solix": "Anker Solix connection",
+          "custom_battery": "Custom external controller",
           "optimization": "Optimization mode",
           "inverter": "AC inverter curtailment",
           "curtailment": "Curtailment settings",
@@ -1079,6 +1087,67 @@
           "auto_update": "PowerSync auto-update",
           "solax_battery_options": "Solax connection"
         }
+      },
+      "battery_system": {
+        "title": "Battery / control method",
+        "description": "Change the battery or hybrid inverter that PowerSync controls. The selected method is saved before the connection page opens, and the integration reloads after the connection settings are saved.",
+        "data": {
+          "battery_system": "Battery / control method"
+        },
+        "data_description": {
+          "battery_system": "Choose the primary battery, inverter, or external controller PowerSync should use."
+        },
+        "submit": "Next"
+      },
+      "custom_battery": {
+        "title": "Custom external controller",
+        "description": "Select the Home Assistant entities PowerSync should use to model your battery system. PowerSync will generate optimizer plans in monitoring mode and will not send control commands.",
+        "data": {
+          "custom_battery_level_entity": "Battery level sensor",
+          "custom_battery_power_entity": "Battery power sensor",
+          "custom_grid_power_entity": "Grid power sensor",
+          "custom_solar_power_entity": "Solar power sensor",
+          "custom_load_power_entity": "Home load sensor",
+          "optimization_backup_reserve": "Minimum discharge level",
+          "optimization_battery_capacity_wh": "Battery capacity",
+          "optimization_max_charge_w": "Maximum charge power",
+          "optimization_max_discharge_w": "Maximum discharge power",
+          "optimization_max_grid_export_w": "Maximum grid export",
+          "optimization_max_grid_import_w": "Maximum grid import",
+          "optimization_allow_grid_charge": "Allow grid charging"
+        },
+        "submit": "Save"
+      },
+      "alphaess_connection": {
+        "title": "AlphaESS connection",
+        "description": "Update AlphaESS Modbus settings and optional AlphaESS Cloud fallback credentials.",
+        "data": {
+          "alphaess_modbus_host": "AlphaESS IP address",
+          "alphaess_modbus_port": "Modbus TCP port",
+          "alphaess_modbus_slave_id": "Slave ID",
+          "alphaess_export_limit_kw": "Export limit",
+          "alphaess_dc_curtailment_enabled": "Enable DC curtailment",
+          "alphaess_cloud_app_id": "Cloud App ID",
+          "alphaess_cloud_app_secret": "Cloud App Secret",
+          "alphaess_cloud_serial": "Cloud serial number"
+        },
+        "submit": "Save"
+      },
+      "anker_solix": {
+        "title": "Anker Solix connection",
+        "description": "Update Anker Solix direct Modbus or HA integration bridge settings.",
+        "data": {
+          "anker_solix_connection_type": "Connection type",
+          "anker_solix_modbus_host": "X1 IP address",
+          "anker_solix_modbus_port": "Modbus TCP port",
+          "anker_solix_modbus_slave_id": "Slave ID",
+          "anker_solix_config_entry_id": "Anker integration",
+          "anker_solix_entity_prefix": "Entity prefix override",
+          "anker_solix_battery_capacity_kwh": "Battery capacity",
+          "anker_solix_max_charge_kw": "Maximum charge power",
+          "anker_solix_max_discharge_kw": "Maximum discharge power"
+        },
+        "submit": "Save"
       },
       "history_relink": {
         "title": "Sungrow history relink",
@@ -1300,6 +1369,7 @@
           "optimization_enabled": "Enable Smart Optimization",
           "optimization_auto_apply_reserve": "Auto-apply optimizer reserve",
           "optimization_ev_integration": "PowerSync EV charger plans",
+          "optimization_load_entity": "Historical load sensor",
           "optimization_planned_ev_load_entity": "Planned EV load forecast sensor",
           "monitoring_mode": "Monitoring mode",
           "optimization_backup_reserve": "Minimum discharge level",
@@ -1314,14 +1384,16 @@
           "optimization_spread_import_enabled": "Spread import across window",
           "optimization_disable_idle": "Disable idle mode",
           "profit_max_enabled": "Enable Profit Max",
-          "profit_max_target_time": "Profit Max target time",
-          "profit_max_target_soc": "Profit Max target SOC"
+          "charge_by_time_enabled": "Enable Charge By Time",
+          "charge_by_time_target_time": "Charge By Time target time",
+          "charge_by_time_target_soc": "Charge By Time target SOC"
         },
         "data_description": {
           "optimization_provider": "Smart Optimization uses an LP solver to minimise costs. Native mode uses your battery's built-in TOU scheduler.",
           "optimization_enabled": "Turn the LP optimizer on or off without changing the saved Smart Optimization settings.",
           "optimization_auto_apply_reserve": "Adjusts the software optimizer reserve floor from forecast recommendations. Your hardware backup reserve stays user controlled.",
           "optimization_ev_integration": "Adds EV demand from PowerSync-managed charger schedules to Smart Optimization. Leave this off when the planned EV load forecast sensor already represents the same charging demand.",
+          "optimization_load_entity": "Optional recorder-backed live household load sensor for Smart Optimization history. Use a no-EV load sensor here if your home load history includes EV charging and you also add planned EV load separately.",
           "optimization_planned_ev_load_entity": "Optional sensor with a planned_load attribute for forecast-only EV demand. PowerSync always adds this sensor to the load forecast when selected, but does not control the charger.",
           "monitoring_mode": "Block battery and inverter control commands while still updating prices, sensors, and plans for observation.",
           "optimization_backup_reserve": "The optimizer will never discharge below this percentage. Default 20% is a good starting point. Your battery's hardware backup reserve (set in the Tesla/Sigenergy app) is separate.",
@@ -1336,8 +1408,9 @@
           "optimization_spread_import_enabled": "When enabled on supported batteries, Smart Optimization spreads planned grid charging across each same-price import window instead of using maximum charge power.",
           "optimization_disable_idle": "For supported TOU plans, replace Smart Optimization idle hold actions with self-consumption.",
           "profit_max_enabled": "Let Smart Optimization prioritise profitable export opportunities instead of holding battery charge for later by default.",
-          "profit_max_target_time": "HH:MM time for Profit Max to reach the configured target SOC before the export window. Default 17:15.",
-          "profit_max_target_soc": "Battery SOC Profit Max should target before the export window. Default 100%."
+          "charge_by_time_enabled": "Force Smart Optimization to reach the configured target SOC by the configured time.",
+          "charge_by_time_target_time": "HH:MM time for Charge By Time to reach the configured target SOC. Default 17:15.",
+          "charge_by_time_target_soc": "Battery SOC Charge By Time should target by the configured time. Default 100%."
         },
         "submit": "Save"
       },

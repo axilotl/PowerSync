@@ -834,9 +834,11 @@ def test_optimization_options_exposes_enabled_toggle():
     assert "if supports_no_idle_mode:" in method_source
     assert "CONF_PROFIT_MAX_ENABLED" in method_source
     assert "new_options[CONF_PROFIT_MAX_ENABLED] = profit_max_enabled" in method_source
+    assert "new_options[CONF_CHARGE_BY_TIME_ENABLED] = charge_by_time_enabled" in method_source
     assert (
         method_source.index("CONF_PROFIT_MAX_ENABLED")
-        < method_source.index("CONF_PROFIT_MAX_TARGET_TIME")
+        < method_source.index("CONF_CHARGE_BY_TIME_ENABLED")
+        < method_source.index("CONF_CHARGE_BY_TIME_TARGET_TIME")
     )
     assert "optimization_provider != OPT_PROVIDER_POWERSYNC" in method_source
 
@@ -1029,9 +1031,12 @@ def test_initial_smart_optimization_configuration_exposes_enabled_toggle():
     assert "if supports_no_idle_mode:" in method_source
     assert "CONF_PROFIT_MAX_ENABLED" in method_source
     assert "user_input.get(CONF_PROFIT_MAX_ENABLED, False)" in method_source
+    assert "CONF_CHARGE_BY_TIME_ENABLED" in method_source
+    assert "user_input.get(CONF_CHARGE_BY_TIME_ENABLED, False)" in method_source
     assert (
         method_source.index("CONF_PROFIT_MAX_ENABLED")
-        < method_source.index("CONF_PROFIT_MAX_TARGET_TIME")
+        < method_source.index("CONF_CHARGE_BY_TIME_ENABLED")
+        < method_source.index("CONF_CHARGE_BY_TIME_TARGET_TIME")
     )
 
     for path in (STRINGS_PATH, TRANSLATIONS_PATH):
@@ -1101,6 +1106,124 @@ def test_initial_setup_routes_to_combined_optimization_options_page():
     assert method_source is not None
     assert "return await self.async_step_ml_options()" in method_source
     assert "return await self.async_step_optimization_provider()" not in method_source
+
+
+def test_options_menu_exposes_editable_battery_system_section():
+    source = CONFIG_FLOW_PATH.read_text()
+    method = _options_flow_method("async_step_init")
+    method_source = ast.get_source_segment(source, method)
+
+    assert method_source is not None
+    assert 'menu_options = ["pricing", "battery_system"]' in method_source
+    assert "battery_system = self._effective_battery_system()" in method_source
+    assert 'menu_options.append("alphaess_connection")' in method_source
+    assert 'menu_options.append("anker_solix")' in method_source
+    assert 'menu_options.append("custom_battery")' in method_source
+
+
+def test_options_battery_system_selector_persists_and_routes_selection():
+    source = CONFIG_FLOW_PATH.read_text()
+    selector_method = _options_flow_method("async_step_battery_system")
+    selector_source = ast.get_source_segment(source, selector_method)
+    save_method = _options_flow_method("_save_battery_system_selection")
+    save_source = ast.get_source_segment(source, save_method)
+    route_method = _options_flow_method("_route_to_battery_options")
+    route_source = ast.get_source_segment(source, route_method)
+
+    assert selector_source is not None
+    assert save_source is not None
+    assert route_source is not None
+    assert "BATTERY_SYSTEMS.items()" in selector_source
+    assert "self._save_battery_system_selection(battery_system)" in selector_source
+    assert "return await self._route_to_battery_options(battery_system)" in selector_source
+    assert "new_data[CONF_BATTERY_SYSTEM] = battery_system" in save_source
+    assert "new_options[CONF_BATTERY_SYSTEM] = battery_system" in save_source
+    for target in (
+        "async_step_tesla_connection",
+        "async_step_sigenergy_connection",
+        "async_step_sungrow_connection",
+        "async_step_foxess_connection_options",
+        "async_step_goodwe_connection_options",
+        "async_step_alphaess_connection",
+        "async_step_esy_sunhome_connection",
+        "async_step_solax_battery_options",
+        "async_step_saj_h2_connection",
+        "async_step_fronius_reserva_connection",
+        "async_step_neovolt_connection",
+        "async_step_solaredge_connection",
+        "async_step_anker_solix",
+        "async_step_custom_battery",
+    ):
+        assert target in route_source
+
+
+def test_custom_battery_options_persist_custom_system_and_monitoring_mode():
+    source = CONFIG_FLOW_PATH.read_text()
+    method = _options_flow_method("async_step_custom_battery")
+    method_source = ast.get_source_segment(source, method)
+
+    assert method_source is not None
+    assert "CONF_BATTERY_SYSTEM: BATTERY_SYSTEM_CUSTOM" in method_source
+    assert "CONF_OPTIMIZATION_PROVIDER: OPT_PROVIDER_POWERSYNC" in method_source
+    assert "CONF_OPTIMIZATION_ENABLED: True" in method_source
+    assert "CONF_MONITORING_MODE: True" in method_source
+    assert "CONF_OPTIMIZATION_EV_INTEGRATION: False" in method_source
+    assert "CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED: False" in method_source
+    assert "CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED: False" in method_source
+    assert "return self._save_connection_and_reload(updates)" in method_source
+
+
+def test_options_optimization_uses_effective_battery_system():
+    source = CONFIG_FLOW_PATH.read_text()
+    method = _options_flow_method("async_step_optimization")
+    method_source = ast.get_source_segment(source, method)
+
+    assert method_source is not None
+    assert "battery_system = self._effective_battery_system()" in method_source
+    assert "is_custom = battery_system == BATTERY_SYSTEM_CUSTOM" in method_source
+    assert "if is_custom:\n                optimization_provider = OPT_PROVIDER_POWERSYNC" in method_source
+    assert "if is_custom:\n                monitoring_mode = True" in method_source
+
+
+def test_anker_and_alphaess_have_options_connection_pages():
+    source = CONFIG_FLOW_PATH.read_text()
+    anker_method = _options_flow_method("async_step_anker_solix")
+    anker_source = ast.get_source_segment(source, anker_method)
+    alphaess_method = _options_flow_method("async_step_alphaess_connection")
+    alphaess_source = ast.get_source_segment(source, alphaess_method)
+
+    assert anker_source is not None
+    assert alphaess_source is not None
+    assert "CONF_BATTERY_SYSTEM: BATTERY_SYSTEM_ANKER_SOLIX" in anker_source
+    assert "ANKER_SOLIX_CONNECTION_TYPES.items()" in anker_source
+    assert "AnkerSolixX1ModbusController" in anker_source
+    assert "AnkerSolixEntityController" in anker_source
+    assert "return self._save_connection_and_reload(updates)" in anker_source
+    assert "CONF_BATTERY_SYSTEM: BATTERY_SYSTEM_ALPHAESS" in alphaess_source
+    assert "AlphaESSController" in alphaess_source
+    assert "AlphaESSCloudClient" in alphaess_source
+    assert "CONF_ALPHAESS_CLOUD_APP_SECRET" in alphaess_source
+    assert "return self._save_connection_and_reload(updates, option_updates)" in alphaess_source
+
+
+def test_battery_system_options_labels_are_translated():
+    for path in (STRINGS_PATH, TRANSLATIONS_PATH):
+        data = json.loads(path.read_text())
+        menu_options = data["options"]["step"]["init"]["menu_options"]
+        battery_step = data["options"]["step"]["battery_system"]
+        custom_step = data["options"]["step"]["custom_battery"]
+        anker_step = data["options"]["step"]["anker_solix"]
+
+        assert menu_options["battery_system"] == "Battery / control method"
+        assert menu_options["custom_battery"] == "Custom external controller"
+        assert menu_options["anker_solix"] == "Anker Solix connection"
+        assert menu_options["alphaess_connection"] == "AlphaESS connection"
+        assert battery_step["data"]["battery_system"] == "Battery / control method"
+        assert "primary battery" in battery_step["data_description"]["battery_system"]
+        assert custom_step["data"]["custom_battery_level_entity"] == "Battery level sensor"
+        assert custom_step["data"]["optimization_allow_grid_charge"] == "Allow grid charging"
+        assert anker_step["data"]["anker_solix_connection_type"] == "Connection type"
+        assert anker_step["data"]["anker_solix_max_discharge_kw"] == "Maximum discharge power"
 
 
 def test_initial_config_flow_does_not_use_options_flow_get_option_helper():
@@ -1628,6 +1751,16 @@ def test_optimization_enabled_toggle_is_translated_in_config_and_options():
                 "optimization_ev_integration"
             ]
             assert (
+                step["data"]["optimization_load_entity"]
+                == "Historical load sensor"
+            )
+            assert "recorder-backed live household load sensor" in step[
+                "data_description"
+            ]["optimization_load_entity"]
+            assert "no-EV load sensor" in step["data_description"][
+                "optimization_load_entity"
+            ]
+            assert (
                 step["data"]["optimization_planned_ev_load_entity"]
                 == "Planned EV load forecast sensor"
             )
@@ -1655,10 +1788,15 @@ def test_optimization_enabled_toggle_is_translated_in_config_and_options():
             assert "spreads planned grid charging" in step["data_description"]["optimization_spread_import_enabled"]
             assert step["data"]["profit_max_enabled"] == "Enable Profit Max"
             assert "profitable export opportunities" in step["data_description"]["profit_max_enabled"]
+            assert step["data"]["charge_by_time_enabled"] == "Enable Charge By Time"
+            assert "configured target SOC" in step["data_description"]["charge_by_time_enabled"]
+            assert step["data"]["charge_by_time_target_time"] == "Charge By Time target time"
+            assert step["data"]["charge_by_time_target_soc"] == "Charge By Time target SOC"
             assert keys.index("optimization_enabled") < keys.index("optimization_ev_integration")
             assert keys.index("optimization_ev_integration") < keys.index("optimization_planned_ev_load_entity")
             assert keys.index("optimization_planned_ev_load_entity") < keys.index("monitoring_mode")
-            assert keys.index("profit_max_enabled") < keys.index("profit_max_target_time")
+            assert keys.index("profit_max_enabled") < keys.index("charge_by_time_enabled")
+            assert keys.index("charge_by_time_enabled") < keys.index("charge_by_time_target_time")
 
 
 def test_globird_tariff_guidance_is_translated():

@@ -4250,7 +4250,7 @@ class SungrowEnergyCoordinator(DataUpdateCoordinator):
             battery_power_w = data.get("battery_power", 0)  # Signed: positive = discharging
             export_power_w = data.get("export_power", 0)  # Signed: positive = exporting
             meter_power_w = data.get("meter_power")  # Signed: positive = importing, negative = exporting
-            load_power_w = data.get("load_power", 0)
+            load_power_w = data.get("load_power")
             pv_power_w = data.get("pv_power")  # Direct PV DC power from register 5017-5018
 
             # Convert to kW for consistency with other coordinators
@@ -4259,17 +4259,21 @@ class SungrowEnergyCoordinator(DataUpdateCoordinator):
                 grid_kw = meter_power_w / 1000
             else:
                 grid_kw = -export_power_w / 1000  # Invert: positive = importing, negative = exporting
-            load_kw = load_power_w / 1000
+            load_kw = (load_power_w or 0) / 1000
 
             # Use direct PV reading if available; otherwise calculate from energy balance
             if pv_power_w is not None:
                 solar_kw = max(0, pv_power_w / 1000)
                 # Derive load from energy balance: Load = Solar + Grid_Import + Battery_Discharge
                 # (more reliable than the load register on some firmware)
-                calc_load_kw = solar_kw + grid_kw + battery_kw
+                calc_load_kw = max(0.0, solar_kw + grid_kw + battery_kw)
                 if abs(load_kw) > 100:
                     # Load register is garbage, use calculated value
-                    load_kw = max(0, calc_load_kw)
+                    load_kw = calc_load_kw
+                elif load_power_w is None or (load_kw <= 0.01 and calc_load_kw > 0.05):
+                    # Some Sungrow firmware reports the load register as 0 W
+                    # while PV/grid/battery registers still describe real load.
+                    load_kw = calc_load_kw
             else:
                 # Fallback: estimate solar from energy balance
                 solar_kw = max(0, load_kw - grid_kw - battery_kw)

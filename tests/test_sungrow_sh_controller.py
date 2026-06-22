@@ -595,6 +595,41 @@ def test_sungrow_coordinator_includes_ac_inverter_power_in_home_load():
     assert round(energy_acc.updates[-1][3], 3) == 1.979
 
 
+def test_sungrow_coordinator_derives_zero_load_register_from_energy_balance():
+    SungrowEnergyCoordinator, restore = _load_sungrow_energy_coordinator()
+
+    class FakeController:
+        async def get_battery_data(self):
+            return {
+                "battery_soc": 100.0,
+                "battery_power": 0,
+                "meter_power": -511,
+                "load_power": 0,
+                "pv_power": 727,
+            }
+
+    async def run_update():
+        coordinator = _new_sungrow_coordinator(SungrowEnergyCoordinator, FakeController())
+        coordinator.hass = types.SimpleNamespace(
+            data={"power_sync": {"entry-1": {}}},
+        )
+        coordinator._entry_id = "entry-1"
+        coordinator._energy_acc = _FakeEnergyAccumulator()
+        data = await coordinator._async_update_data()
+        return data, coordinator._energy_acc
+
+    try:
+        data, energy_acc = asyncio.run(run_update())
+    finally:
+        restore()
+
+    assert data["solar_power"] == 0.727
+    assert data["grid_power"] == -0.511
+    assert data["battery_power"] == 0
+    assert round(data["load_power"], 3) == 0.216
+    assert round(energy_acc.updates[-1][3], 3) == 0.216
+
+
 def test_sungrow_coordinator_passes_requested_discharge_power_to_controller():
     SungrowEnergyCoordinator, restore = _load_sungrow_energy_coordinator()
 

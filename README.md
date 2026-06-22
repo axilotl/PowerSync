@@ -115,7 +115,7 @@ Or manually:
 | Feature | Description | Wiki |
 |---------|-------------|------|
 | **Battery System Setup** | Tesla, FoxESS, Sigenergy, GoodWe, Sungrow, AlphaESS, ESY Sunhome, Solax Hybrid, SAJ H2/HS2, Fronius GEN24 storage, SolarEdge, Anker Solix, and custom/external controller setup guides | [Setup Guide](https://github.com/bolagnaise/PowerSync/wiki/Battery-System-Setup) |
-| **Smart Optimization** | Built-in LP optimizer calculates optimal charge/discharge schedule using prices, solar, and load. It can optionally auto-apply the forecast-recommended software reserve floor, use a selected recorder-backed household load sensor, and include planned EV load from a Home Assistant sensor for read-only or dumb EVSE setups. **Solar forecasting via Solcast or Open-Meteo Solar Forecast must be configured for accurate scheduling.** | [Details](https://github.com/bolagnaise/PowerSync/wiki/Smart-Optimization) |
+| **Smart Optimization** | Built-in LP optimizer calculates optimal charge/discharge schedule using prices, solar, and load. Optional controls include Profit Max for more aggressive profitable export, Charge By Time for reaching a target battery SOC by a set time, auto-applied forecast reserve, selected household load history, and planned EV load from a Home Assistant sensor. **Solar forecasting via Solcast or Open-Meteo Solar Forecast must be configured for accurate scheduling.** | [Details](https://github.com/bolagnaise/PowerSync/wiki/Smart-Optimization) |
 | **EV Smart Charging** | Coordinate EV charging with battery optimization — Solar, Cheapest, Deadline modes | [Details](https://github.com/bolagnaise/PowerSync/wiki/EV-Smart-Charging) |
 | **Advanced Features** | AEMO spike detection, solar curtailment, spike protection, export boost, **off-grid control** | [Details](https://github.com/bolagnaise/PowerSync/wiki/Advanced-Features) |
 | **Sensors** | Core power sensors, daily energy tracking, FoxESS Modbus sensors, optimizer status | [Full List](https://github.com/bolagnaise/PowerSync/wiki/Sensors) |
@@ -140,7 +140,7 @@ Remote monitoring and control via iOS and Android.
 
 - **Dashboard** — Live pricing, power flow, energy summary
 - **Controls** — Force charge/discharge, backup reserve, off-grid/reconnect
-- **Smart Optimization** — 24-hour battery schedule, action plan, cost tracking
+- **Smart Optimization** — 24-hour battery schedule, action plan, cost tracking, Profit Max, and Charge By Time
 - **EV Charging** — Smart scheduling, solar surplus, price-level charging
 - **Automations** — Time, price, and grid-status triggers with battery/EV/grid actions
 - **Settings** — Battery, EV, provider, and optimization configuration

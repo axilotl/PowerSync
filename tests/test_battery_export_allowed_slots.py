@@ -143,9 +143,14 @@ def _install_power_sync_stubs() -> None:
     const_module.CONF_OPTIMIZATION_MAX_GRID_EXPORT_W = "optimization_max_grid_export_w"
     const_module.CONF_SIGENERGY_EXPORT_LIMIT_KW = "sigenergy_export_limit_kw"
     const_module.CONF_ALPHAESS_EXPORT_LIMIT_KW = "alphaess_export_limit_kw"
+    const_module.CONF_CHARGE_BY_TIME_ENABLED = "charge_by_time_enabled"
+    const_module.CONF_CHARGE_BY_TIME_TARGET_TIME = "charge_by_time_target_time"
+    const_module.CONF_CHARGE_BY_TIME_TARGET_SOC = "charge_by_time_target_soc"
     const_module.CONF_PROFIT_MAX_TARGET_TIME = "profit_max_target_time"
     const_module.CONF_PROFIT_MAX_TARGET_SOC = "profit_max_target_soc"
     const_module.CONF_PROFIT_MAX_ENABLED = "profit_max_enabled"
+    const_module.DEFAULT_CHARGE_BY_TIME_TARGET_TIME = "17:15"
+    const_module.DEFAULT_CHARGE_BY_TIME_TARGET_SOC = 1.0
     const_module.DEFAULT_PROFIT_MAX_TARGET_TIME = "17:15"
     const_module.DEFAULT_PROFIT_MAX_TARGET_SOC = 1.0
     const_module.DEFAULT_OPTIMIZATION_INTERVAL = 5
@@ -240,7 +245,13 @@ def opt_module():
                 sys.modules[name] = saved_modules[name]
 
 
-def _coordinator(opt_module, provider: str, profit_max: bool = False, **options):
+def _coordinator(
+    opt_module,
+    provider: str,
+    profit_max: bool = False,
+    charge_by_time: bool = False,
+    **options,
+):
     coordinator = object.__new__(opt_module.OptimizationCoordinator)
     base_options = {"electricity_provider": provider}
     base_options.update(options)
@@ -249,8 +260,15 @@ def _coordinator(opt_module, provider: str, profit_max: bool = False, **options)
         interval_minutes=5,
         horizon_hours=24,
         profit_max_enabled=profit_max,
-        profit_max_target_time=base_options.get("profit_max_target_time", "17:15"),
-        profit_max_target_soc=base_options.get("profit_max_target_soc", 1.0),
+        charge_by_time_enabled=charge_by_time,
+        charge_by_time_target_time=base_options.get(
+            "charge_by_time_target_time",
+            base_options.get("profit_max_target_time", "17:15"),
+        ),
+        charge_by_time_target_soc=base_options.get(
+            "charge_by_time_target_soc",
+            base_options.get("profit_max_target_soc", 1.0),
+        ),
     )
     coordinator._saving_session_coordinator = None
     coordinator._last_export_boost_allowed_slots = []
@@ -1191,10 +1209,6 @@ def test_optimizer_mode_setting_change_schedules_background_reoptimization(
     assert updates
     assert run_calls == []
     assert background_tasks == ["powersync_settings_reoptimize"]
-    if "profit_max_target_time" in settings:
-        assert coordinator._config.profit_max_target_time == settings["profit_max_target_time"]
-    if "profit_max_target_soc" in settings:
-        assert coordinator._config.profit_max_target_soc == 0.8
 
 
 def test_optimizer_config_setting_change_schedules_background_reoptimization(opt_module):
@@ -1214,11 +1228,14 @@ def test_optimizer_config_setting_change_schedules_background_reoptimization(opt
 @pytest.mark.parametrize(
     ("settings", "expected_change"),
     [
+        ({"charge_by_time_enabled": True}, "charge_by_time_enabled: True"),
+        ({"charge_by_time_target_time": "16:00"}, "charge_by_time_target_time: 16:00"),
+        ({"charge_by_time_target_soc": 80}, "charge_by_time_target_soc: 80%"),
         ({"profit_max_target_time": "16:00"}, "profit_max_target_time: 16:00"),
         ({"profit_max_target_soc": 80}, "profit_max_target_soc: 80%"),
     ],
 )
-def test_profit_max_target_setting_change_schedules_background_reoptimization(
+def test_charge_by_time_setting_change_schedules_background_reoptimization(
     opt_module,
     settings,
     expected_change,
@@ -1226,9 +1243,9 @@ def test_profit_max_target_setting_change_schedules_background_reoptimization(
     coordinator = _coordinator(
         opt_module,
         "flow_power",
-        profit_max=True,
-        profit_max_target_time="17:15",
-        profit_max_target_soc=1.0,
+        charge_by_time=False,
+        charge_by_time_target_time="17:15",
+        charge_by_time_target_soc=1.0,
     )
     updates, run_calls, background_tasks = _prepare_enabled_settings_coordinator(coordinator)
 
@@ -1238,6 +1255,11 @@ def test_profit_max_target_setting_change_schedules_background_reoptimization(
     assert expected_change in result["changes"]
     assert updates
     assert run_calls == []
+    assert background_tasks == ["powersync_settings_reoptimize"]
+    if "target_time" in next(iter(settings)):
+        assert coordinator._config.charge_by_time_target_time == "16:00"
+    if "target_soc" in next(iter(settings)):
+        assert coordinator._config.charge_by_time_target_soc == 0.8
     assert background_tasks == ["powersync_settings_reoptimize"]
 
 
@@ -1439,112 +1461,129 @@ def test_flow_power_profit_max_allows_only_happy_hour(opt_module):
     assert coordinator._profit_max_terminal_weight() == 0.3
 
 
-def test_flow_power_profit_max_uses_default_full_soc_target(opt_module):
+def test_profit_max_without_charge_by_time_does_not_set_prefill_target(opt_module):
     coordinator = _coordinator(
         opt_module,
-        "flow_power",
+        "amber",
         profit_max=True,
-        flow_power_state="NSW1",
+        charge_by_time=False,
     )
 
-    assert coordinator._next_profit_max_target_slot() == 105
+    assert coordinator._next_charge_by_time_target_slot() is None
+    assert coordinator._profit_max_terminal_weight() == 0.3
 
 
-def test_flow_power_profit_max_uses_configured_full_soc_target(opt_module):
+@pytest.mark.parametrize("provider", ["amber", "aemo_vpp", "globird", "octopus", "nz", "flow_power"])
+def test_charge_by_time_uses_default_target_for_all_providers(opt_module, provider):
     coordinator = _coordinator(
         opt_module,
-        "flow_power",
-        profit_max=True,
-        flow_power_state="NSW1",
-        profit_max_target_time="16:00",
+        provider,
+        charge_by_time=True,
     )
 
-    assert coordinator._next_profit_max_target_slot() == 90
+    assert coordinator._next_charge_by_time_target_slot() == 105
 
 
-def test_flow_power_profit_max_floors_non_boundary_full_soc_target(opt_module):
+def test_charge_by_time_uses_configured_target(opt_module):
     coordinator = _coordinator(
         opt_module,
-        "flow_power",
-        profit_max=True,
-        flow_power_state="NSW1",
-        profit_max_target_time="16:01",
+        "octopus",
+        charge_by_time=True,
+        charge_by_time_target_time="16:00",
     )
 
-    assert coordinator._next_profit_max_target_slot() == 90
+    assert coordinator._next_charge_by_time_target_slot() == 90
 
 
-def test_flow_power_profit_max_target_uses_live_coordinator_setting(opt_module):
+def test_charge_by_time_floors_non_boundary_target(opt_module):
     coordinator = _coordinator(
         opt_module,
-        "flow_power",
-        profit_max=True,
-        flow_power_state="NSW1",
-        profit_max_target_time="16:00",
+        "globird",
+        charge_by_time=True,
+        charge_by_time_target_time="16:01",
     )
+
+    assert coordinator._next_charge_by_time_target_slot() == 90
+
+
+def test_charge_by_time_target_uses_live_coordinator_setting(opt_module):
+    coordinator = _coordinator(
+        opt_module,
+        "aemo_vpp",
+        charge_by_time=True,
+        charge_by_time_target_time="16:00",
+    )
+    coordinator._entry.options["charge_by_time_target_time"] = "17:15"
+
+    assert coordinator._next_charge_by_time_target_slot() == 105
+
+
+def test_charge_by_time_accepts_legacy_live_target_setting(opt_module):
+    coordinator = _coordinator(
+        opt_module,
+        "aemo_vpp",
+        charge_by_time=True,
+        charge_by_time_target_time="16:00",
+    )
+    coordinator._entry.options.pop("charge_by_time_target_time", None)
     coordinator._entry.options["profit_max_target_time"] = "17:15"
 
-    assert coordinator._next_profit_max_target_slot() == 90
+    assert coordinator._next_charge_by_time_target_slot() == 105
 
 
-def test_flow_power_profit_max_accepts_compact_full_soc_target(opt_module):
+def test_charge_by_time_accepts_compact_target(opt_module):
+    coordinator = _coordinator(
+        opt_module,
+        "nz",
+        charge_by_time=True,
+        charge_by_time_target_time="1615",
+    )
+
+    assert coordinator._next_charge_by_time_target_slot() == 93
+
+
+def test_charge_by_time_uses_default_soc_target(opt_module):
     coordinator = _coordinator(
         opt_module,
         "flow_power",
-        profit_max=True,
-        flow_power_state="NSW1",
-        profit_max_target_time="1615",
+        charge_by_time=True,
     )
 
-    assert coordinator._next_profit_max_target_slot() == 93
+    assert coordinator._charge_by_time_target_soc() == 1.0
 
 
-def test_profit_max_uses_default_soc_target(opt_module):
+def test_charge_by_time_uses_configured_soc_target(opt_module):
     coordinator = _coordinator(
         opt_module,
         "flow_power",
-        profit_max=True,
-        flow_power_state="NSW1",
+        charge_by_time=True,
+        charge_by_time_target_soc=0.8,
     )
 
-    assert coordinator._profit_max_target_soc() == 1.0
+    assert coordinator._charge_by_time_target_soc() == 0.8
+    assert coordinator._next_charge_by_time_target_slot() == 105
 
 
-def test_profit_max_uses_configured_soc_target(opt_module):
+def test_charge_by_time_accepts_percent_soc_target(opt_module):
     coordinator = _coordinator(
         opt_module,
         "flow_power",
-        profit_max=True,
-        flow_power_state="NSW1",
-        profit_max_target_soc=0.8,
+        charge_by_time=True,
+        charge_by_time_target_soc=80,
     )
 
-    assert coordinator._profit_max_target_soc() == 0.8
-    assert coordinator._next_profit_max_target_slot() == 105
+    assert coordinator._charge_by_time_target_soc() == 0.8
 
 
-def test_profit_max_accepts_percent_soc_target(opt_module):
+def test_charge_by_time_accepts_target_after_flow_power_happy_hour_start(opt_module):
     coordinator = _coordinator(
         opt_module,
         "flow_power",
-        profit_max=True,
-        flow_power_state="NSW1",
-        profit_max_target_soc=80,
+        charge_by_time=True,
+        charge_by_time_target_time="18:00",
     )
 
-    assert coordinator._profit_max_target_soc() == 0.8
-
-
-def test_flow_power_profit_max_rejects_target_after_happy_hour_start(opt_module):
-    coordinator = _coordinator(
-        opt_module,
-        "flow_power",
-        profit_max=True,
-        flow_power_state="NSW1",
-        profit_max_target_time="18:00",
-    )
-
-    assert coordinator._next_profit_max_target_slot() == 105
+    assert coordinator._next_charge_by_time_target_slot() == 114
 
 
 def test_flow_power_blocks_battery_charge_during_happy_hour(opt_module):
@@ -3021,14 +3060,13 @@ def test_flow_power_no_idle_schedule_simulates_home_load(opt_module):
     assert converted.actions[1].soc < converted.actions[0].soc
 
 
-def test_flow_power_no_idle_preserves_profit_max_prefill_hold(opt_module):
+def test_no_idle_preserves_charge_by_time_prefill_hold(opt_module):
     coordinator = _coordinator(
         opt_module,
-        "flow_power",
-        profit_max=True,
-        flow_power_state="NSW1",
-        profit_max_target_time="16:01",
-        profit_max_target_soc=1.0,
+        "octopus",
+        charge_by_time=True,
+        charge_by_time_target_time="16:01",
+        charge_by_time_target_soc=1.0,
     )
     coordinator._config.disable_idle_enabled = True
     coordinator._config.battery_capacity_wh = 47900
@@ -3067,7 +3105,7 @@ def test_flow_power_no_idle_preserves_profit_max_prefill_hold(opt_module):
         initial_soc=0.80,
     )
 
-    assert coordinator._next_profit_max_target_slot() == 90
+    assert coordinator._next_charge_by_time_target_slot() == 90
     assert [action.action for action in converted.actions] == [
         "self_consumption",
         "idle",

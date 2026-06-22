@@ -140,8 +140,9 @@ class OptimizationConfig:
     horizon_hours: int = 48
     cost_function: str = "cost"
     profit_max_enabled: bool = False
-    profit_max_target_time: str = "17:15"
-    profit_max_target_soc: float = 1.0
+    charge_by_time_enabled: bool = False
+    charge_by_time_target_time: str = "17:15"
+    charge_by_time_target_soc: float = 1.0
     spread_export_enabled: bool = False
     spread_import_enabled: bool = False
     disable_idle_enabled: bool = False
@@ -718,6 +719,11 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return self._config.profit_max_enabled
 
     @property
+    def charge_by_time_enabled(self) -> bool:
+        """Return whether charge-by-time prefill is active."""
+        return self._config.charge_by_time_enabled
+
+    @property
     def spread_export_enabled(self) -> bool:
         """Return whether export spreading is active."""
         return self._config.spread_export_enabled
@@ -767,8 +773,9 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if self._config.spread_export_enabled == bool(enabled):
             return False
         self._config.spread_export_enabled = bool(enabled)
-        if self._load_estimator:
-            self._load_estimator.invalidate_cache()
+        load_estimator = getattr(self, "_load_estimator", None)
+        if load_estimator:
+            load_estimator.invalidate_cache()
         _LOGGER.info(
             "Spread Export Across Window %s",
             "ENABLED" if enabled else "DISABLED",
@@ -847,6 +854,34 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             from ..const import CONF_PROFIT_MAX_ENABLED, DOMAIN
             new_options = dict(self._entry.options)
             new_options[CONF_PROFIT_MAX_ENABLED] = enabled
+            self.hass.data.setdefault(DOMAIN, {}).setdefault(self.entry_id, {})["_skip_reload"] = True
+            self.hass.config_entries.async_update_entry(self._entry, options=new_options)
+        return True
+
+    def set_charge_by_time_enabled(self, enabled: bool) -> bool:
+        """Enable or disable charge-by-time prefill mode."""
+        enabled = bool(enabled)
+        if self._config.charge_by_time_enabled == enabled:
+            return False
+        self._config.charge_by_time_enabled = enabled
+        load_estimator = getattr(self, "_load_estimator", None)
+        if load_estimator:
+            load_estimator.invalidate_cache()
+        _LOGGER.info("Charge By Time %s", "ENABLED" if enabled else "DISABLED")
+        if self.hass and self.entry_id:
+            from homeassistant.helpers.dispatcher import async_dispatcher_send
+
+            from ..const import DOMAIN
+
+            async_dispatcher_send(
+                self.hass,
+                f"{DOMAIN}_{self.entry_id}_charge_by_time",
+                enabled,
+            )
+        if self._entry:
+            from ..const import CONF_CHARGE_BY_TIME_ENABLED, DOMAIN
+            new_options = dict(self._entry.options)
+            new_options[CONF_CHARGE_BY_TIME_ENABLED] = enabled
             self.hass.data.setdefault(DOMAIN, {}).setdefault(self.entry_id, {})["_skip_reload"] = True
             self.hass.config_entries.async_update_entry(self._entry, options=new_options)
         return True
@@ -1801,6 +1836,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if self._load_estimator and self._load_estimator._in_recovery else None
             ),
             "profit_max_mode": self.profit_max_mode,
+            "charge_by_time_enabled": self.charge_by_time_enabled,
         }
 
     async def async_setup(self) -> bool:
@@ -1875,10 +1911,13 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 CONF_OPTIMIZATION_SPREAD_EXPORT_ENABLED,
                 CONF_OPTIMIZATION_SPREAD_IMPORT_ENABLED,
                 CONF_PROFIT_MAX_ENABLED,
+                CONF_CHARGE_BY_TIME_ENABLED,
+                CONF_CHARGE_BY_TIME_TARGET_TIME,
+                CONF_CHARGE_BY_TIME_TARGET_SOC,
                 CONF_PROFIT_MAX_TARGET_TIME,
                 CONF_PROFIT_MAX_TARGET_SOC,
-                DEFAULT_PROFIT_MAX_TARGET_TIME,
-                DEFAULT_PROFIT_MAX_TARGET_SOC,
+                DEFAULT_CHARGE_BY_TIME_TARGET_TIME,
+                DEFAULT_CHARGE_BY_TIME_TARGET_SOC,
             )
             allow_grid_charge = self._entry.options.get(
                 CONF_OPTIMIZATION_ALLOW_GRID_CHARGE,
@@ -1920,29 +1959,51 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._entry.data.get(CONF_PROFIT_MAX_ENABLED, False),
             )
             self._config.profit_max_enabled = bool(profit_max)
-            self._config.profit_max_target_time = str(
+            charge_by_time = self._entry.options.get(
+                CONF_CHARGE_BY_TIME_ENABLED,
+                self._entry.data.get(
+                    CONF_CHARGE_BY_TIME_ENABLED,
+                    bool(profit_max),
+                ),
+            )
+            self._config.charge_by_time_enabled = bool(charge_by_time)
+            self._config.charge_by_time_target_time = str(
                 self._entry.options.get(
-                    CONF_PROFIT_MAX_TARGET_TIME,
+                    CONF_CHARGE_BY_TIME_TARGET_TIME,
                     self._entry.data.get(
-                        CONF_PROFIT_MAX_TARGET_TIME,
-                        DEFAULT_PROFIT_MAX_TARGET_TIME,
+                        CONF_CHARGE_BY_TIME_TARGET_TIME,
+                        self._entry.options.get(
+                            CONF_PROFIT_MAX_TARGET_TIME,
+                            self._entry.data.get(
+                                CONF_PROFIT_MAX_TARGET_TIME,
+                                DEFAULT_CHARGE_BY_TIME_TARGET_TIME,
+                            ),
+                        ),
                     ),
                 )
             )
-            self._config.profit_max_target_soc = self._soc_ratio(
+            self._config.charge_by_time_target_soc = self._soc_ratio(
                 self._entry.options.get(
-                    CONF_PROFIT_MAX_TARGET_SOC,
+                    CONF_CHARGE_BY_TIME_TARGET_SOC,
                     self._entry.data.get(
-                        CONF_PROFIT_MAX_TARGET_SOC,
-                        DEFAULT_PROFIT_MAX_TARGET_SOC,
+                        CONF_CHARGE_BY_TIME_TARGET_SOC,
+                        self._entry.options.get(
+                            CONF_PROFIT_MAX_TARGET_SOC,
+                            self._entry.data.get(
+                                CONF_PROFIT_MAX_TARGET_SOC,
+                                DEFAULT_CHARGE_BY_TIME_TARGET_SOC,
+                            ),
+                        ),
                     ),
                 ),
-                DEFAULT_PROFIT_MAX_TARGET_SOC,
+                DEFAULT_CHARGE_BY_TIME_TARGET_SOC,
             )
             if self._optimizer:
                 self._optimizer.terminal_weight = self._profit_max_terminal_weight()
             if profit_max:
                 _LOGGER.info("Restored profit maximisation mode: ENABLED")
+            if charge_by_time:
+                _LOGGER.info("Restored Charge By Time: ENABLED")
 
         # Initialize solar forecaster
         from ..const import (
@@ -2831,21 +2892,16 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             else:
                 self._optimizer.suppress_reserve_warning = False
 
-            # Pre-window SOC floor: in profit_max mode, force the battery to
-            # be filled by the configured target time before the next
-            # high-value export window (today's Flow Power Happy Hour).
-            # Without this, the LP's 48 h horizon places
-            # the planned grid-charge slots at the globally cheapest PEA
-            # periods, which often misses today's HH and leaves the user
-            # at ~80% SOC at 17:30.
+            # Pre-window SOC floor: in Charge By Time mode, force the battery
+            # to reach the configured SOC by the configured target time.
             _target_slot = (
-                self._next_profit_max_target_slot()
+                self._next_charge_by_time_target_slot()
                 if self._config.allow_grid_charge
                 else None
             )
             self._optimizer.pre_window_slot = _target_slot
             self._optimizer.pre_window_soc_target = (
-                self._profit_max_target_soc()
+                self._charge_by_time_target_soc()
                 if self._optimizer.pre_window_slot is not None
                 else 0.0
             )
@@ -3362,10 +3418,10 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         if soc_cursor is not None:
             self_consumption_floor = min(soc_cursor, self_consumption_floor)
-        profit_max_target_slot = self._next_profit_max_target_slot()
-        profit_max_target_soc = (
-            self._profit_max_target_soc()
-            if profit_max_target_slot is not None
+        charge_by_time_target_slot = self._next_charge_by_time_target_slot()
+        charge_by_time_target_soc = (
+            self._charge_by_time_target_soc()
+            if charge_by_time_target_slot is not None
             else 0.0
         )
 
@@ -3415,14 +3471,14 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 and action_charge_w <= 0
                 and action_discharge_w <= 0
             )
-            should_preserve_profit_max_hold = (
-                profit_max_target_slot is not None
-                and index < profit_max_target_slot
+            should_preserve_charge_by_time_hold = (
+                charge_by_time_target_slot is not None
+                and index < charge_by_time_target_slot
                 and soc_cursor is not None
-                and soc_cursor < profit_max_target_soc - 0.0001
+                and soc_cursor < charge_by_time_target_soc - 0.0001
                 and (action_name == "idle" or should_simulate_self_use)
             )
-            if should_preserve_profit_max_hold:
+            if should_preserve_charge_by_time_hold:
                 new_actions.append(
                     ScheduleAction(
                         timestamp=action.timestamp,
@@ -5794,50 +5850,39 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         return result
 
-    def _next_profit_max_target_slot(self) -> int | None:
-        """Slot index of the next Profit Max full-SOC target in the LP horizon.
-
-        Used to enforce a pre-window SOC floor when profit_max mode is on.
-        Returns None when the floor should not be applied (profit_max off,
-        unsupported provider, or no upcoming target in horizon).
-
-        Currently only Flow Power is supported. The default target is 17:15,
-        preserving the original 15-minute safety buffer before Happy Hour.
-        """
-        if not self._entry:
-            return None
-        if not self._config.profit_max_enabled:
+    def _next_charge_by_time_target_slot(self) -> int | None:
+        """Slot index of the next Charge By Time SOC target in the LP horizon."""
+        if not self._config.charge_by_time_enabled:
             return None
 
         from ..const import (
-            CONF_ELECTRICITY_PROVIDER,
-            CONF_FLOW_POWER_STATE,
-            DEFAULT_PROFIT_MAX_TARGET_TIME,
+            CONF_CHARGE_BY_TIME_TARGET_TIME,
+            CONF_PROFIT_MAX_TARGET_TIME,
+            DEFAULT_CHARGE_BY_TIME_TARGET_TIME,
         )
-        provider = self._entry.options.get(
-            CONF_ELECTRICITY_PROVIDER,
-            self._entry.data.get(CONF_ELECTRICITY_PROVIDER, ""),
+        target_time = getattr(
+            self._config,
+            "charge_by_time_target_time",
+            DEFAULT_CHARGE_BY_TIME_TARGET_TIME,
         )
-        if provider != "flow_power":
-            return None
-        state = self._entry.options.get(
-            CONF_FLOW_POWER_STATE,
-            self._entry.data.get(CONF_FLOW_POWER_STATE, ""),
-        )
-        if not state:
-            return None
-
-        happy_start_min = 17 * 60 + 30  # 17:30
+        if self._entry:
+            target_time = self._entry.options.get(
+                CONF_CHARGE_BY_TIME_TARGET_TIME,
+                self._entry.data.get(
+                    CONF_CHARGE_BY_TIME_TARGET_TIME,
+                    self._entry.options.get(
+                        CONF_PROFIT_MAX_TARGET_TIME,
+                        self._entry.data.get(
+                            CONF_PROFIT_MAX_TARGET_TIME,
+                            target_time,
+                        ),
+                    ),
+                ),
+            )
         target_min = _hhmm_to_minutes(
-            getattr(
-                self._config,
-                "profit_max_target_time",
-                DEFAULT_PROFIT_MAX_TARGET_TIME,
-            ),
-            DEFAULT_PROFIT_MAX_TARGET_TIME,
+            target_time,
+            DEFAULT_CHARGE_BY_TIME_TARGET_TIME,
         )
-        if target_min >= happy_start_min:
-            target_min = _hhmm_to_minutes(DEFAULT_PROFIT_MAX_TARGET_TIME)
         interval = self._config.interval_minutes
         target_slot_min = (target_min // interval) * interval
         n_steps = int(self._config.horizon_hours * 60) // interval
@@ -5857,25 +5902,32 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 return t
         return None
 
-    def _profit_max_target_soc(self) -> float:
-        """Return the configured Profit Max target SOC as a 0-1 ratio."""
+    def _charge_by_time_target_soc(self) -> float:
+        """Return the configured Charge By Time target SOC as a 0-1 ratio."""
         if not self._entry:
-            return self._soc_ratio(self._config.profit_max_target_soc, 1.0)
+            return self._soc_ratio(self._config.charge_by_time_target_soc, 1.0)
 
         from ..const import (
+            CONF_CHARGE_BY_TIME_TARGET_SOC,
             CONF_PROFIT_MAX_TARGET_SOC,
-            DEFAULT_PROFIT_MAX_TARGET_SOC,
+            DEFAULT_CHARGE_BY_TIME_TARGET_SOC,
         )
 
         return self._soc_ratio(
             self._entry.options.get(
-                CONF_PROFIT_MAX_TARGET_SOC,
+                CONF_CHARGE_BY_TIME_TARGET_SOC,
                 self._entry.data.get(
-                    CONF_PROFIT_MAX_TARGET_SOC,
-                    DEFAULT_PROFIT_MAX_TARGET_SOC,
+                    CONF_CHARGE_BY_TIME_TARGET_SOC,
+                    self._entry.options.get(
+                        CONF_PROFIT_MAX_TARGET_SOC,
+                        self._entry.data.get(
+                            CONF_PROFIT_MAX_TARGET_SOC,
+                            DEFAULT_CHARGE_BY_TIME_TARGET_SOC,
+                        ),
+                    ),
                 ),
             ),
-            DEFAULT_PROFIT_MAX_TARGET_SOC,
+            DEFAULT_CHARGE_BY_TIME_TARGET_SOC,
         )
 
     def _apply_flow_power_export(
@@ -8945,6 +8997,9 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "spread_export_enabled": self._config.spread_export_enabled,
             "spread_import_enabled": self._config.spread_import_enabled,
             "disable_idle_enabled": self.disable_idle_enabled,
+            "profit_max_enabled": self.profit_max_mode,
+            "profit_max_mode": self.profit_max_mode,
+            "charge_by_time_enabled": self.charge_by_time_enabled,
             "auto_apply_reserve_enabled": self.auto_apply_reserve_enabled,
             "manual_backup_reserve": self.manual_backup_reserve,
             "backup_reserve": self._config.backup_reserve,
@@ -8989,6 +9044,16 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "spread_export_enabled": self._config.spread_export_enabled,
                 "spread_import_enabled": self._config.spread_import_enabled,
                 "disable_idle_enabled": self.disable_idle_enabled,
+                "profit_max_enabled": self.profit_max_mode,
+                "charge_by_time_enabled": self.charge_by_time_enabled,
+                "charge_by_time_target_time": self._config.charge_by_time_target_time,
+                "charge_by_time_target_soc": int(
+                    round(self._charge_by_time_target_soc() * 100)
+                ),
+                "profit_max_target_time": self._config.charge_by_time_target_time,
+                "profit_max_target_soc": int(
+                    round(self._charge_by_time_target_soc() * 100)
+                ),
                 "auto_apply_reserve_enabled": self.auto_apply_reserve_enabled,
                 "manual_backup_reserve": self.manual_backup_reserve,
                 "battery_specs_source": self._battery_specs_source,
@@ -9033,6 +9098,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "temperature_adjusted": load_summary["temperature_adjusted"],
                 "away_mode": load_summary["away_mode"],
                 "profit_max_mode": load_summary.get("profit_max_mode", False),
+                "charge_by_time_enabled": load_summary.get("charge_by_time_enabled", False),
             }
 
         if self._last_planned_ev_load_forecast_w:
@@ -9424,6 +9490,15 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 response["changes"].append(f"profit_max_enabled: {settings['profit_max_enabled']}")
                 rerun_after_settings = True
 
+        if "charge_by_time_enabled" in settings:
+            new_val = bool(settings["charge_by_time_enabled"])
+            changed = self.set_charge_by_time_enabled(new_val)
+            if changed:
+                response["changes"].append(
+                    f"charge_by_time_enabled: {settings['charge_by_time_enabled']}"
+                )
+                rerun_after_settings = True
+
         if "spread_export_enabled" in settings:
             new_val = bool(settings["spread_export_enabled"])
             changed = self.set_spread_export_enabled(new_val)
@@ -9500,17 +9575,29 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 f"load_entity: {entity_id or 'auto-discovery'}"
             )
 
-        if "profit_max_target_time" in settings and self._entry:
-            from ..const import CONF_PROFIT_MAX_TARGET_TIME
-            target_time = str(settings["profit_max_target_time"])
+        target_time_key = (
+            "charge_by_time_target_time"
+            if "charge_by_time_target_time" in settings
+            else "profit_max_target_time"
+            if "profit_max_target_time" in settings
+            else None
+        )
+        if target_time_key and self._entry:
+            from ..const import (
+                CONF_CHARGE_BY_TIME_TARGET_TIME,
+                CONF_PROFIT_MAX_TARGET_TIME,
+            )
+            target_time = str(settings[target_time_key])
             changed = target_time != getattr(
                 self._config,
-                "profit_max_target_time",
+                "charge_by_time_target_time",
                 target_time,
             )
-            self._config.profit_max_target_time = target_time
+            self._config.charge_by_time_target_time = target_time
             new_data = dict(self._entry.data)
             new_options = dict(self._entry.options)
+            new_data[CONF_CHARGE_BY_TIME_TARGET_TIME] = target_time
+            new_options[CONF_CHARGE_BY_TIME_TARGET_TIME] = target_time
             new_data[CONF_PROFIT_MAX_TARGET_TIME] = target_time
             new_options[CONF_PROFIT_MAX_TARGET_TIME] = target_time
             from ..const import DOMAIN as _SKIP_DOM
@@ -9520,22 +9607,34 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 data=new_data,
                 options=new_options,
             )
-            response["changes"].append(f"profit_max_target_time: {target_time}")
+            response["changes"].append(f"{target_time_key}: {target_time}")
             if changed:
                 rerun_after_settings = True
 
-        if "profit_max_target_soc" in settings:
-            target_soc = self._soc_ratio(settings["profit_max_target_soc"], 1.0)
+        target_soc_key = (
+            "charge_by_time_target_soc"
+            if "charge_by_time_target_soc" in settings
+            else "profit_max_target_soc"
+            if "profit_max_target_soc" in settings
+            else None
+        )
+        if target_soc_key:
+            target_soc = self._soc_ratio(settings[target_soc_key], 1.0)
             changed = not math.isclose(
-                self._config.profit_max_target_soc,
+                self._config.charge_by_time_target_soc,
                 target_soc,
                 abs_tol=0.0001,
             )
-            self._config.profit_max_target_soc = target_soc
+            self._config.charge_by_time_target_soc = target_soc
             if self._entry:
-                from ..const import CONF_PROFIT_MAX_TARGET_SOC
+                from ..const import (
+                    CONF_CHARGE_BY_TIME_TARGET_SOC,
+                    CONF_PROFIT_MAX_TARGET_SOC,
+                )
                 new_data = dict(self._entry.data)
                 new_options = dict(self._entry.options)
+                new_data[CONF_CHARGE_BY_TIME_TARGET_SOC] = target_soc
+                new_options[CONF_CHARGE_BY_TIME_TARGET_SOC] = target_soc
                 new_data[CONF_PROFIT_MAX_TARGET_SOC] = target_soc
                 new_options[CONF_PROFIT_MAX_TARGET_SOC] = target_soc
                 from ..const import DOMAIN as _SKIP_DOM
@@ -9545,7 +9644,9 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     data=new_data,
                     options=new_options,
                 )
-            response["changes"].append(f"profit_max_target_soc: {int(round(target_soc * 100))}%")
+            response["changes"].append(
+                f"{target_soc_key}: {int(round(target_soc * 100))}%"
+            )
             if changed:
                 rerun_after_settings = True
 
