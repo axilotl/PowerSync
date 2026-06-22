@@ -274,6 +274,23 @@ def test_sigenergy_canonical_upload_converts_buy_and_sell_in_sync_helper():
     assert canonical_call_pos < sell_rates_pos < sell_convert_pos < sigenergy_upload_pos
 
 
+def test_sigenergy_canonical_upload_applies_provider_tariff_adjustments_first():
+    init_source = (COMPONENT_ROOT / "__init__.py").read_text()
+    helper_source = init_source[
+        init_source.index("async def _sync_tariff_to_sigenergy"):
+        init_source.index("async def _sync_tariff_to_foxess")
+    ]
+
+    canonical_call_pos = helper_source.index("canonical_tariff = convert_amber_to_tesla_tariff")
+    provider_adjust_pos = helper_source.index(
+        "canonical_tariff = _apply_provider_tariff_adjustments"
+    )
+    buy_rates_pos = helper_source.index("canonical_buy_rates =")
+    sigenergy_upload_pos = helper_source.index("client.set_tariff_rate")
+
+    assert canonical_call_pos < provider_adjust_pos < buy_rates_pos < sigenergy_upload_pos
+
+
 def test_sigenergy_sync_resolves_demand_settings_inside_helper():
     init_source = (COMPONENT_ROOT / "__init__.py").read_text()
     helper_source = init_source[

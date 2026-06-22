@@ -19585,6 +19585,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 export_boost_enabled=False,
                 currency=currency_for_entry(entry, hass),
             )
+            if canonical_tariff:
+                canonical_tariff = _apply_provider_tariff_adjustments(
+                    canonical_tariff,
+                    forecast_data,
+                    provider_for_tz,
+                )
 
             buy_prices = []
             sell_prices = []
