@@ -6995,16 +6995,20 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         )
                         is_flow_power = _provider == "flow_power"
                         if is_flow_power:
-                            fp_pea_enabled = self._entry.options.get(
+                            def _flow_power_option(key: str, default=None):
+                                return self._entry.options.get(
+                                    key,
+                                    self._entry.data.get(key, default),
+                                )
+
+                            fp_pea_enabled = _flow_power_option(
                                 CONF_PEA_ENABLED, True
                             )
-                            fp_base_rate = self._entry.options.get(
+                            fp_base_rate = _flow_power_option(
                                 CONF_FLOW_POWER_BASE_RATE,
                                 FLOW_POWER_DEFAULT_BASE_RATE,
                             )
-                            fp_custom_pea = self._entry.options.get(
-                                CONF_PEA_CUSTOM_VALUE
-                            )
+                            fp_custom_pea = _flow_power_option(CONF_PEA_CUSTOM_VALUE)
                             domain_data = self.hass.data.get(
                                 _DOMAIN, {}
                             ).get(self._entry.entry_id, {})

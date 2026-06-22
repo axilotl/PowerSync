@@ -1072,6 +1072,73 @@ def test_flow_power_optimizer_uses_v2_pea_formula(opt_module, monkeypatch):
     assert coordinator._last_display_import_prices[0] == pytest.approx(0.525)
 
 
+def test_flow_power_optimizer_uses_base_rate_from_entry_data(opt_module, monkeypatch):
+    async def _executor(fn, *args):
+        return fn(*args)
+
+    coordinator = object.__new__(opt_module.OptimizationCoordinator)
+    coordinator.hass = SimpleNamespace(
+        async_add_executor_job=_executor,
+        data={
+            "power_sync": {
+                "entry-1": {
+                    "fp_avg_daily_tariff": 5.0,
+                    "flow_power_twap_tracker": SimpleNamespace(twap=8.0),
+                }
+            }
+        },
+    )
+    coordinator._entry = SimpleNamespace(
+        entry_id="entry-1",
+        data={
+            "electricity_provider": "flow_power",
+            "flow_power_base_rate": 35.93,
+            "flow_power_state": "NSW1",
+            "fp_network": "Ausgrid",
+            "fp_tariff_code": "EA025",
+        },
+        options={},
+    )
+    coordinator._config = opt_module.OptimizationConfig(horizon_hours=1)
+    coordinator.price_coordinator = SimpleNamespace(
+        data={
+            "current": [
+                {
+                    "channelType": "general",
+                    "wholesaleKWHPrice": 20.0,
+                    "perKwh": 20.0,
+                    "nemTime": "2026-05-03T08:35:00+00:00",
+                    "duration": 5,
+                },
+                {
+                    "channelType": "feedIn",
+                    "perKwh": -1.0,
+                    "nemTime": "2026-05-03T08:35:00+00:00",
+                    "duration": 5,
+                },
+            ],
+            "forecast": [],
+        }
+    )
+    coordinator._last_display_import_prices = None
+    coordinator._last_display_export_prices = None
+    coordinator._apply_export_boost = lambda export, import_prices=None: (export, [])
+    coordinator._apply_saving_session_prices = lambda imports, exports: (imports, exports)
+    coordinator._apply_chip_mode = lambda exports: exports
+    coordinator._apply_demand_charge_penalty = lambda imports: imports
+    monkeypatch.setattr(
+        opt_module,
+        "_flow_power_network_tariff_rate",
+        lambda when, network, tariff_code: 12.0,
+    )
+
+    import_prices, _ = asyncio.run(coordinator._get_price_forecast())
+
+    # Base 35.93c + PEA (1.1*20c + 12c - 1.1*8c - 5c - 1.7c) = 54.43c/kWh.
+    assert import_prices[0] == pytest.approx(0.5443)
+    assert coordinator._last_display_import_prices[0] == pytest.approx(0.5443)
+
+
 def test_flow_power_optimizer_uses_raw_twap_with_portal_pricing_inputs(opt_module, monkeypatch):
     async def _executor(fn, *args):
         return fn(*args)
