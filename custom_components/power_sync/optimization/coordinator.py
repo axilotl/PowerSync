@@ -445,6 +445,14 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
             return False
 
+    def _should_restore_pre_idle_backup_reserve_from_polling(self) -> bool:
+        """Return True when the polling loop should retry a pending reserve restore."""
+        return (
+            self._pre_idle_backup_reserve is not None
+            and self._last_executed_action != "idle"
+            and not self._scheduled_ev_no_discharge_active
+        )
+
     def _scheduled_ev_preserve_active(self) -> bool:
         """Return True when scheduled EV charging requested no-discharge mode."""
         state = (
@@ -3125,7 +3133,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 # Safety: if a pre-IDLE backup reserve restore is pending,
                 # keep trying until it succeeds. This catches API failures
                 # during previous restore attempts.
-                if self._pre_idle_backup_reserve is not None and self._last_executed_action != "idle":
+                if self._should_restore_pre_idle_backup_reserve_from_polling():
                     battery = self._executor.battery_controller if self._executor else None
                     if battery:
                         await self._restore_pre_idle_backup_reserve(battery, "polling safety check")

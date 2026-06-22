@@ -1870,6 +1870,20 @@ def test_scheduled_ev_preserve_blocks_export_but_allows_charge(opt_module):
     assert energy.no_discharge_calls == 1
 
 
+def test_scheduled_ev_preserve_blocks_polling_backup_reserve_restore(opt_module):
+    battery = _FakeBattery()
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.80)
+    coordinator._pre_idle_backup_reserve = 20
+    coordinator._last_executed_action = "self_consumption"
+    coordinator._scheduled_ev_no_discharge_active = True
+
+    assert not coordinator._should_restore_pre_idle_backup_reserve_from_polling()
+
+    coordinator._scheduled_ev_no_discharge_active = False
+
+    assert coordinator._should_restore_pre_idle_backup_reserve_from_polling()
+
+
 def test_free_import_charge_uses_live_solar_headroom_under_site_import_cap(opt_module):
     battery = _FakeBattery()
     coordinator = _execution_coordinator(opt_module, battery, soc=0.25)
