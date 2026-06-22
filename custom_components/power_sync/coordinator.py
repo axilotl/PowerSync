@@ -5352,6 +5352,16 @@ class FoxESSEnergyCoordinator(DataUpdateCoordinator):
         async with self._modbus_lock, self._controller:
             return await self._controller.set_discharge_rate_limit(amps)
 
+    async def curtail(self, home_load_w: int | None = None) -> bool:
+        """Apply FoxESS solar export curtailment via the shared Modbus session."""
+        async with self._modbus_lock, self._controller:
+            return await self._controller.curtail(home_load_w)
+
+    async def restore_curtailment(self) -> bool:
+        """Restore FoxESS solar export after curtailment via the shared Modbus session."""
+        async with self._modbus_lock, self._controller:
+            return await self._controller.restore()
+
     async def async_shutdown(self) -> None:
         """Disconnect from FoxESS system on shutdown."""
         await self._controller.disconnect()

@@ -1038,6 +1038,23 @@ def test_foxess_force_charge_accepts_optimizer_min_timeout():
     assert "min_timeout_seconds=min_timeout_seconds" in method_source
 
 
+def test_foxess_direct_modbus_curtailment_uses_shared_modbus_session():
+    source = COORDINATOR_PATH.read_text()
+    tree = ast.parse(source)
+    curtail = _find_class_method(tree, "FoxESSEnergyCoordinator", "curtail")
+    restore = _find_class_method(tree, "FoxESSEnergyCoordinator", "restore_curtailment")
+
+    curtail_source = ast.get_source_segment(source, curtail)
+    restore_source = ast.get_source_segment(source, restore)
+
+    assert curtail_source is not None
+    assert restore_source is not None
+    assert "async with self._modbus_lock, self._controller:" in curtail_source
+    assert "return await self._controller.curtail(home_load_w)" in curtail_source
+    assert "async with self._modbus_lock, self._controller:" in restore_source
+    assert "return await self._controller.restore()" in restore_source
+
+
 def test_foxess_cloud_coordinator_exposes_modbus_control_surface():
     tree = ast.parse(COORDINATOR_PATH.read_text())
     expected_methods = {
