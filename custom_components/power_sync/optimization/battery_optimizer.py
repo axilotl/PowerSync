@@ -1156,9 +1156,10 @@ class BatteryOptimizer:
         bonus_export_periods = [
             idx for idx, price in enumerate(p_export_bonus) if price > 1e-6
         ]
-        bonus_offset = 4 * p_n
-        energy_offset = 5 * p_n if bonus_export_active else 4 * p_n
-        num_vars = (6 * p_n + 1) if bonus_export_active else (5 * p_n + 1)
+        curtail_offset = 4 * p_n
+        bonus_offset = 5 * p_n
+        energy_offset = 6 * p_n if bonus_export_active else 5 * p_n
+        num_vars = (7 * p_n + 1) if bonus_export_active else (6 * p_n + 1)
 
         def grid_import_var(t: int) -> int:
             return t
@@ -1171,6 +1172,9 @@ class BatteryOptimizer:
 
         def discharge_var(t: int) -> int:
             return 3 * p_n + t
+
+        def curtail_var(t: int) -> int:
+            return curtail_offset + t
 
         def bonus_export_var(t: int) -> int:
             return bonus_offset + t
@@ -1268,6 +1272,12 @@ class BatteryOptimizer:
                 # while exporting only the capped command amount.
                 c[grid_import_var(t)] += 0.02 * p_dt[t]
 
+            # Real systems can curtail solar when the battery cannot accept
+            # charge and the DNSP/export cap is binding. Penalize curtailment
+            # at the better of avoided import or export value so the LP only
+            # uses it after available charge/export outlets are exhausted.
+            c[curtail_var(t)] = max(0.01, p_import[t], p_export[t]) * p_dt[t]
+
         # === Terminal valuation: incentivize keeping charge at end of horizon ===
         # Use the cheapest available recharge price as the replacement cost.
         # The battery will recharge during the cheapest period in the horizon,
@@ -1329,8 +1339,11 @@ class BatteryOptimizer:
                 c[discharge_var(t)] += terminal_price * p_dt[t] / (eff * _terminal_unit_divisor)
 
         # === Equality constraints: power balance ===
-        # solar[t] + grid_import[t] + battery_discharge[t] = load[t] + grid_export[t] + battery_charge[t]
-        # Rearranged: grid_import[t] - grid_export[t] - battery_charge[t] + battery_discharge[t] = load[t] - solar[t]
+        # solar[t] + grid_import[t] + battery_discharge[t] =
+        # load[t] + grid_export[t] + battery_charge[t] + solar_curtail[t]
+        # Rearranged:
+        # grid_import[t] - grid_export[t] - battery_charge[t]
+        # + battery_discharge[t] - solar_curtail[t] = load[t] - solar[t]
         A_eq = _LpMatrix((2 * p_n, num_vars), dtype=float)
         b_eq = [0.0] * (2 * p_n)
 
@@ -1339,6 +1352,7 @@ class BatteryOptimizer:
             A_eq[t, grid_export_var(t)] = -1.0
             A_eq[t, charge_var(t)] = -1.0
             A_eq[t, discharge_var(t)] = 1.0
+            A_eq[t, curtail_var(t)] = -1.0
             b_eq[t] = p_load[t] - p_solar[t]
 
             # Energy transition: E[t+1] = E[t] + charge*eff*dt - discharge*dt/eff
@@ -1589,6 +1603,9 @@ class BatteryOptimizer:
                 ))
             else:
                 bounds.append((0, self.max_discharge_kw))  # battery_discharge
+
+        for t in range(p_n):
+            bounds.append((0, max(0.0, p_solar[t])))  # solar_curtail
 
         if bonus_export_active:
             for t in range(p_n):

@@ -166,7 +166,7 @@ def test_zero_grid_import_limit_is_treated_as_unset_cap(
     result = optimizer.optimize(
         import_prices=[0.05] * 6 + [0.50] * 6,
         export_prices=[0.0] * n,
-        solar_forecast=[1.1] * n,
+        solar_forecast=[0.0] * n,
         load_forecast=[0.6] * n,
         current_soc=0.95,
         allow_grid_charge=True,
@@ -698,7 +698,7 @@ def test_below_optimizer_reserve_blocks_lp_battery_export(
     )
 
     assert result.solver_used == "highs"
-    period_count = (captured["variable_count"] - 1) // 5
+    period_count = (captured["variable_count"] - 1) // 6
     grid_export_bounds = captured["bounds"][period_count:period_count * 2]
     assert grid_export_bounds
     assert all(bound[1] == 0.0 for bound in grid_export_bounds)
@@ -1471,6 +1471,7 @@ def test_export_reserve_floor_limits_planned_export_and_home_load_projection(
         hardware_reserve=0.05,
         interval_minutes=5,
         horizon_hours=3,
+        terminal_weight=0.0,
     )
     n = 36
 
@@ -1536,6 +1537,48 @@ def test_high_export_reserve_floor_limits_first_export_window(
     assert min(action.soc for action in schedule.actions) >= 0.92
     assert schedule.actions[2].action == "idle"
     assert schedule.actions[2].battery_discharge_w == 0
+
+
+def test_export_capped_solar_surplus_during_charge_block_stays_feasible(
+    battery_optimizer_module,
+):
+    if not battery_optimizer_module.HIGHS_AVAILABLE:
+        pytest.skip("requires HiGHS LP solver")
+
+    optimizer = battery_optimizer_module.BatteryOptimizer(
+        capacity_wh=30400,
+        max_charge_w=10600,
+        max_discharge_w=10600,
+        max_grid_export_w=5000,
+        backup_reserve=0.20,
+        interval_minutes=5,
+        horizon_hours=48,
+    )
+    optimizer.pre_window_slot = 36
+    optimizer.pre_window_soc_target = 1.0
+    n = 576
+    export_slots = [False] * n
+    for idx in range(40, 88):
+        export_slots[idx] = True
+    solar_forecast = [0.0] * n
+    for idx in range(121):
+        solar_forecast[idx] = max(0.0, 12.8 * (1 - abs(idx - 30) / 60))
+
+    result = optimizer.optimize(
+        import_prices=[0.25] * n,
+        export_prices=[0.45 if allowed else 0.0 for allowed in export_slots],
+        solar_forecast=solar_forecast,
+        load_forecast=[1.9] * n,
+        current_soc=1.0,
+        acquisition_cost_kwh=0.0,
+        allow_battery_export=export_slots,
+        block_battery_charge=export_slots,
+        allow_grid_charge=True,
+    )
+
+    assert result.feasible is True
+    assert result.solver_used == "highs"
+    assert max(result.grid_export_w) <= 5000.1
 
 
 def test_build_schedule_caps_export_actions_at_optimizer_reserve(
@@ -1990,6 +2033,6 @@ def test_sparse_lp_stats_and_schedule_expansion(
     assert result.lp_stats["backend"] == "highspy"
     assert result.lp_stats["base_steps"] == n
     assert result.lp_stats["period_count"] == 132
-    assert result.lp_stats["variables"] == 5 * 132 + 1
+    assert result.lp_stats["variables"] == 6 * 132 + 1
     assert result.lp_stats["constraints"] == captured["A_eq"].shape[0] + captured["A_ub"].shape[0]
     assert len(captured["bounds"]) == result.lp_stats["variables"]
