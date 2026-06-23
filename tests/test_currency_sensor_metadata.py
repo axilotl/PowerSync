@@ -219,6 +219,63 @@ def test_flow_power_import_price_uses_restored_state_before_coordinator_data():
     assert entity.native_value == 0.321
 
 
+def test_flow_power_current_import_price_prefers_tariff_schedule():
+    sensor = _sensor_module()
+    entity = sensor.FlowPowerPriceSensor(
+        SimpleNamespace(data={"current": [{"channelType": "general", "perKwh": 44.1}]}),
+        _entry("flow_power"),
+        "current_import_price",
+    )
+    entity.hass = SimpleNamespace(
+        config=SimpleNamespace(currency="AUD"),
+        data={
+            sensor.DOMAIN: {
+                "entry-1": {
+                    "tariff_schedule": {
+                        "currency": "AUD",
+                        "buy_prices": {"PEAK": 0.25},
+                        "sell_prices": {"PEAK": 0.08},
+                        "utility": "Flow Power",
+                        "plan_name": "PowerSync Flow Power",
+                    }
+                }
+            }
+        },
+    )
+
+    assert entity.native_value == 0.25
+    attrs = entity.extra_state_attributes
+    assert attrs["source"] == "tariff_schedule"
+    assert attrs["current_period"] == "PEAK"
+    assert attrs["final_rate_cents"] == 25.0
+    assert attrs["price_spike"] is None
+
+
+def test_dedicated_flow_power_import_price_keeps_coordinator_calculation():
+    sensor = _sensor_module()
+    entity = sensor.FlowPowerPriceSensor(
+        SimpleNamespace(data={"current": [{"channelType": "general", "perKwh": 44.1}]}),
+        _entry("flow_power"),
+        "flow_power_price",
+    )
+    entity.hass = SimpleNamespace(
+        config=SimpleNamespace(currency="AUD"),
+        data={
+            sensor.DOMAIN: {
+                "entry-1": {
+                    "tariff_schedule": {
+                        "currency": "AUD",
+                        "buy_prices": {"PEAK": 0.25},
+                        "sell_prices": {"PEAK": 0.08},
+                    }
+                }
+            }
+        },
+    )
+
+    assert entity.native_value != 0.25
+
+
 def test_daily_load_uses_total_state_class():
     sensor = _sensor_module()
     desc = next(d for d in sensor.ENERGY_SENSORS if d.key == "daily_load")

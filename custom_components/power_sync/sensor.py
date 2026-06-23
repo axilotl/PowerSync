@@ -4427,6 +4427,7 @@ class FlowPowerPriceSensor(PowerSyncCurrencyMixin, CoordinatorEntity, RestoredNu
         self._attr_currency_unit = "major_rate"
         self._attr_currency_attrs = True
         self._attr_suggested_display_precision = 4
+        self._current_period = None
 
     @property
     def device_info(self):
@@ -4477,6 +4478,38 @@ class FlowPowerPriceSensor(PowerSyncCurrencyMixin, CoordinatorEntity, RestoredNu
             self._entry.data,
             domain_data,
         )
+
+    @property
+    def _uses_standard_current_price_id(self) -> bool:
+        """Return true for standard dashboard/mobile current price entities."""
+        return self._sensor_type in (
+            SENSOR_TYPE_CURRENT_IMPORT_PRICE,
+            SENSOR_TYPE_CURRENT_EXPORT_PRICE,
+        )
+
+    def _get_current_tariff_price(self) -> tuple[float, dict[str, Any]] | None:
+        """Read the canonical tariff schedule for standard current price sensors."""
+        if not self._uses_standard_current_price_id or not hasattr(self, "hass"):
+            return None
+
+        tariff_data = (
+            self.hass.data.get(DOMAIN, {})
+            .get(self._entry.entry_id, {})
+            .get("tariff_schedule")
+        )
+        if not tariff_data:
+            return None
+
+        buy_price_cents, sell_price_cents, current_period = (
+            get_current_price_from_tariff_schedule(tariff_data)
+        )
+        self._current_period = current_period
+        price_cents = (
+            buy_price_cents
+            if self._sensor_type == SENSOR_TYPE_CURRENT_IMPORT_PRICE
+            else sell_price_cents
+        )
+        return max(0.0, price_cents / 100), tariff_data
 
     def _get_effective_twap(self) -> float:
         """Get effective raw wholesale TWAP: override -> tracker -> fallback."""
@@ -4560,6 +4593,11 @@ class FlowPowerPriceSensor(PowerSyncCurrencyMixin, CoordinatorEntity, RestoredNu
     @property
     def native_value(self) -> float | None:
         """Return the current price in $/kWh."""
+        tariff_price = self._get_current_tariff_price()
+        if tariff_price is not None:
+            value, _tariff_data = tariff_price
+            return round(value, 4)
+
         if self._is_import_sensor:
             value = self._calculate_import_price()
         else:
@@ -4597,6 +4635,24 @@ class FlowPowerPriceSensor(PowerSyncCurrencyMixin, CoordinatorEntity, RestoredNu
             "pea_enabled": pea_enabled,
             "base_rate_cents": base_rate,
         }
+
+        tariff_price = self._get_current_tariff_price()
+        if tariff_price is not None:
+            value, tariff_data = tariff_price
+            attributes.update(
+                {
+                    "source": "tariff_schedule",
+                    "current_period": self._current_period,
+                    "final_rate_cents": round(value * 100, 2),
+                    "utility": tariff_data.get("utility"),
+                    "plan_name": tariff_data.get("plan_name"),
+                }
+            )
+            if self._sensor_type == SENSOR_TYPE_CURRENT_IMPORT_PRICE:
+                attributes["price_spike"] = None
+            else:
+                attributes["channel_type"] = "feedIn"
+            return _entity_currency_attrs(self, attributes, tariff_data)
 
         if self._is_import_sensor:
             # Import price attributes
