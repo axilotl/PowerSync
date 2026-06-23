@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import aiohttp
 import asyncio
+import copy
 import json
 import logging
 import pathlib
@@ -20681,6 +20682,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         # Apply export price boost for Amber users (if enabled)
         if electricity_provider == "amber":
+            chip_reference_tariff = copy.deepcopy(tariff)
             export_boost_enabled = entry.options.get(CONF_EXPORT_BOOST_ENABLED, False)
             if export_boost_enabled:
                 from .tariff_converter import apply_export_boost
@@ -20706,7 +20708,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     "Applying Chip Mode: window=%s-%s, threshold=%.1fc",
                     chip_start, chip_end, chip_threshold
                 )
-                tariff = apply_chip_mode(tariff, chip_start, chip_end, chip_threshold)
+                tariff = apply_chip_mode(
+                    tariff,
+                    chip_start,
+                    chip_end,
+                    chip_threshold,
+                    reference_tariff=chip_reference_tariff,
+                )
 
         # Store tariff schedule in hass.data for the sensor to read
         from homeassistant.helpers.dispatcher import async_dispatcher_send

@@ -620,7 +620,7 @@ def _coordinator_with_epex_provider(
     coordinator._last_display_export_prices = None
     coordinator._apply_export_boost = lambda export, import_prices=None: (export, [])
     coordinator._apply_saving_session_prices = lambda imports, exports: (imports, exports)
-    coordinator._apply_chip_mode = lambda exports: exports
+    coordinator._apply_chip_mode = lambda exports, *args: exports
     coordinator._apply_demand_charge_penalty = lambda imports: imports
     coordinator._apply_confidence_decay = lambda imports, exports, **kwargs: (imports, exports)
     return coordinator
@@ -1057,7 +1057,7 @@ def test_flow_power_optimizer_uses_v2_pea_formula(opt_module, monkeypatch):
     coordinator._last_display_export_prices = None
     coordinator._apply_export_boost = lambda export, import_prices=None: (export, [])
     coordinator._apply_saving_session_prices = lambda imports, exports: (imports, exports)
-    coordinator._apply_chip_mode = lambda exports: exports
+    coordinator._apply_chip_mode = lambda exports, *args: exports
     coordinator._apply_demand_charge_penalty = lambda imports: imports
     monkeypatch.setattr(
         opt_module,
@@ -1124,7 +1124,7 @@ def test_flow_power_optimizer_uses_base_rate_from_entry_data(opt_module, monkeyp
     coordinator._last_display_export_prices = None
     coordinator._apply_export_boost = lambda export, import_prices=None: (export, [])
     coordinator._apply_saving_session_prices = lambda imports, exports: (imports, exports)
-    coordinator._apply_chip_mode = lambda exports: exports
+    coordinator._apply_chip_mode = lambda exports, *args: exports
     coordinator._apply_demand_charge_penalty = lambda imports: imports
     monkeypatch.setattr(
         opt_module,
@@ -1195,7 +1195,7 @@ def test_flow_power_optimizer_uses_raw_twap_with_portal_pricing_inputs(opt_modul
     coordinator._last_display_export_prices = None
     coordinator._apply_export_boost = lambda export, import_prices=None: (export, [])
     coordinator._apply_saving_session_prices = lambda imports, exports: (imports, exports)
-    coordinator._apply_chip_mode = lambda exports: exports
+    coordinator._apply_chip_mode = lambda exports, *args: exports
     coordinator._apply_demand_charge_penalty = lambda imports: imports
     monkeypatch.setattr(
         opt_module,
@@ -1230,7 +1230,7 @@ def test_dynamic_price_forecast_preserves_boundaries_after_leading_gap(
     coordinator._last_display_export_prices = None
     coordinator._apply_export_boost = lambda export, import_prices=None: (export, [])
     coordinator._apply_saving_session_prices = lambda imports, exports: (imports, exports)
-    coordinator._apply_chip_mode = lambda exports: exports
+    coordinator._apply_chip_mode = lambda exports, *args: exports
     coordinator._apply_demand_charge_penalty = lambda imports: imports
     coordinator._apply_confidence_decay = lambda imports, exports, **kwargs: (imports, exports)
     monkeypatch.setattr(

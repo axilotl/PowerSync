@@ -5780,12 +5780,14 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _apply_chip_mode(
         self,
         export_prices: list[float],
+        reference_export_prices: list[float] | None = None,
     ) -> list[float]:
         """Apply chip mode to LP export prices — suppress exports unless price exceeds threshold.
 
         During the configured window, sets export prices to 0 so the LP won't plan
-        exports. Preserves original price for spikes above threshold. Mirrors the
-        Tesla tariff pipeline logic but operates on flat 5-min price arrays.
+        exports. Preserves price for spikes above threshold. If export prices have
+        already been adjusted by Export Boost, reference_export_prices keeps the
+        Chip threshold tied to the real export price.
         """
         if not self._entry:
             return export_prices
@@ -5824,6 +5826,12 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         allowed_spikes = 0
 
         result = list(export_prices)
+        threshold_prices = (
+            reference_export_prices
+            if reference_export_prices is not None
+            and len(reference_export_prices) == len(result)
+            else result
+        )
         for t in range(len(result)):
             ts = now + timedelta(minutes=t * interval)
             minutes_of_day = ts.hour * 60 + ts.minute
@@ -5835,7 +5843,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 in_window = start_min <= minutes_of_day < end_min
 
             if in_window:
-                if result[t] >= threshold:
+                if threshold_prices[t] >= threshold:
                     allowed_spikes += 1  # Keep original price for spike
                 else:
                     result[t] = 0.0  # Suppress export
@@ -7343,10 +7351,16 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         self._last_display_import_prices = list(import_prices[:actual_price_intervals])
                         self._last_display_export_prices = list(display_export_raw[:actual_price_intervals])
 
-                        # Apply export boost, saving session overlay, and chip mode to LP prices
+                        # Apply export boost, saving session overlay, and chip mode to LP prices.
+                        # Chip mode uses the real export price as its threshold reference so
+                        # Export Boost cannot make a below-threshold export slot look allowed.
+                        chip_reference_export_prices = list(export_prices)
                         export_prices, _ = self._apply_export_boost(export_prices, import_prices)
                         import_prices, export_prices = self._apply_saving_session_prices(import_prices, export_prices)
-                        export_prices = self._apply_chip_mode(export_prices)
+                        export_prices = self._apply_chip_mode(
+                            export_prices,
+                            chip_reference_export_prices,
+                        )
 
                         # Apply demand charge penalty to LP import prices
                         import_prices = self._apply_demand_charge_penalty(import_prices)

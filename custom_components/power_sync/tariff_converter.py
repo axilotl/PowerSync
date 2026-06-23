@@ -2105,6 +2105,7 @@ def apply_chip_mode(
     chip_start: str = "22:00",
     chip_end: str = "06:00",
     threshold_cents: float = 30.0,
+    reference_tariff: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     """
     Apply Chip Mode - prevent Powerwall from exporting unless price exceeds threshold.
@@ -2112,6 +2113,9 @@ def apply_chip_mode(
     During the configured time window, this sets export prices to 0 (or very low)
     so Tesla's algorithm won't export. However, if the actual price is at or above
     the threshold, the original price is preserved to capture price spikes.
+    When reference_tariff is provided, that unadjusted tariff is used for the
+    threshold check so Export Boost cannot make a below-threshold slot pass Chip
+    Mode.
 
     This is the inverse of Export Boost:
     - Export Boost: Artificially increases prices to encourage export
@@ -2163,22 +2167,33 @@ def apply_chip_mode(
 
     # Process sell prices in the sell_tariff structure
     sell_tariff = tariff.get("sell_tariff", {})
+    reference_sell_tariff = (
+        reference_tariff.get("sell_tariff", {})
+        if isinstance(reference_tariff, dict)
+        else {}
+    )
     for season, season_data in sell_tariff.get("energy_charges", {}).items():
         sell_prices = season_data.get("rates", {})
+        reference_sell_prices = (
+            reference_sell_tariff.get("energy_charges", {})
+            .get(season, {})
+            .get("rates", {})
+        )
 
         for period in chip_periods:
             if period not in sell_prices:
                 continue
 
             original_dollars = sell_prices[period]
-            original_cents = original_dollars * 100
+            threshold_dollars = reference_sell_prices.get(period, original_dollars)
+            threshold_cents_actual = threshold_dollars * 100
 
             # If price is at or above threshold, allow export (keep original price)
-            if original_cents >= threshold_cents:
+            if threshold_cents_actual >= threshold_cents:
                 allowed_count += 1
                 _LOGGER.debug(
                     "%s: Chip Mode ALLOW - price %.2fc >= threshold %.1fc",
-                    period, original_cents, threshold_cents
+                    period, threshold_cents_actual, threshold_cents
                 )
                 continue
 
@@ -2186,7 +2201,7 @@ def apply_chip_mode(
             suppressed_count += 1
             _LOGGER.debug(
                 "%s: Chip Mode SUPPRESS - price %.2fc < threshold %.1fc → 0c",
-                period, original_cents, threshold_cents
+                period, threshold_cents_actual, threshold_cents
             )
             sell_prices[period] = 0.0
 

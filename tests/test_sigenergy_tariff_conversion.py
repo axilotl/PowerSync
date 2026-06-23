@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import importlib
 import asyncio
 import sys
@@ -257,6 +258,42 @@ def test_sigenergy_visible_upload_uses_distinct_30_min_buy_and_sell_slots(
     assert buy_by_start["20:30"] == 35.33
     assert sell_by_start["20:30"] == 9.82
     assert sell_by_start["20:30"] != buy_by_start["20:30"]
+
+
+def test_chip_mode_threshold_uses_unboosted_tesla_tariff_price(tariff_converter_module):
+    tariff = {
+        "sell_tariff": {
+            "energy_charges": {
+                "Summer": {
+                    "rates": {
+                        "PERIOD_17_00": 0.208,
+                        "PERIOD_17_30": 0.26,
+                    }
+                }
+            }
+        }
+    }
+    reference_tariff = copy.deepcopy(tariff)
+
+    boosted = tariff_converter_module.apply_export_boost(
+        tariff,
+        offset_cents=10.0,
+        boost_start="17:00",
+        boost_end="18:00",
+        activation_threshold_cents=0.0,
+    )
+    chipped = tariff_converter_module.apply_chip_mode(
+        boosted,
+        chip_start="17:00",
+        chip_end="18:00",
+        threshold_cents=25.0,
+        reference_tariff=reference_tariff,
+    )
+    sell_rates = chipped["sell_tariff"]["energy_charges"]["Summer"]["rates"]
+
+    assert boosted["sell_tariff"]["energy_charges"]["Summer"]["rates"]["PERIOD_17_30"] > 0.25
+    assert sell_rates["PERIOD_17_00"] == 0.0
+    assert sell_rates["PERIOD_17_30"] > 0.25
 
 
 def test_sigenergy_canonical_upload_converts_buy_and_sell_in_sync_helper():

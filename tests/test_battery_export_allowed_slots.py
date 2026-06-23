@@ -167,6 +167,13 @@ def _install_power_sync_stubs() -> None:
     const_module.DEFAULT_EXPORT_BOOST_START = "17:00"
     const_module.DEFAULT_EXPORT_BOOST_END = "21:00"
     const_module.DEFAULT_EXPORT_BOOST_THRESHOLD = 0.0
+    const_module.CONF_CHIP_MODE_ENABLED = "chip_mode_enabled"
+    const_module.CONF_CHIP_MODE_START = "chip_mode_start"
+    const_module.CONF_CHIP_MODE_END = "chip_mode_end"
+    const_module.CONF_CHIP_MODE_THRESHOLD = "chip_mode_threshold"
+    const_module.DEFAULT_CHIP_MODE_START = "22:00"
+    const_module.DEFAULT_CHIP_MODE_END = "06:00"
+    const_module.DEFAULT_CHIP_MODE_THRESHOLD = 30.0
     const_module.DISCHARGE_DURATIONS = [5, 10, 15, 30, 45, 60, 75, 90, 105, 120, 135, 150, 165, 180, 195, 210, 225, 240]
     const_module.TARGET_EXPORT_POWER_BATTERY_SYSTEMS = {
         "goodwe", "sigenergy", "sungrow", "foxess",
@@ -1621,6 +1628,29 @@ def test_export_boost_allows_only_configured_window_above_threshold(opt_module):
     assert _true_indexes(slots) == list(range(12))
     assert boosted[:6] == export_prices[:6]
     assert all(price > 0.12 for price in boosted[6:])
+
+
+def test_chip_mode_threshold_uses_real_export_price_after_boost(opt_module):
+    coordinator = _coordinator(
+        opt_module,
+        "amber",
+        export_boost_enabled=True,
+        export_price_offset=10.0,
+        export_boost_start="08:30",
+        export_boost_end="09:30",
+        export_boost_threshold=0.0,
+        chip_mode_enabled=True,
+        chip_mode_start="08:30",
+        chip_mode_end="09:30",
+        chip_mode_threshold=25.0,
+    )
+    export_prices = [0.208] * 12
+
+    boosted, _ = coordinator._apply_export_boost(export_prices, [0.05] * 12)
+    chipped = coordinator._apply_chip_mode(boosted, export_prices)
+
+    assert all(price > 0.25 for price in boosted)
+    assert chipped == [0.0] * 12
 
 
 class _FakeBattery:
