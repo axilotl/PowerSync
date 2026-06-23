@@ -19286,7 +19286,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         Caches the result in hass.data to avoid repeated API calls.
         """
         # Check cache first
-        cached_region = hass.data[DOMAIN][entry.entry_id].get("amber_nem_region")
+        domain_data = hass.data.get(DOMAIN, {})
+        entry_domain_data = domain_data.get(entry.entry_id, {})
+        cached_region = entry_domain_data.get("amber_nem_region")
         if cached_region:
             return cached_region
 
@@ -19364,7 +19366,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 return None
 
             _LOGGER.info(f"Auto-detected NEM region: {nem_region} (network: {network})")
-            hass.data[DOMAIN][entry.entry_id]["amber_nem_region"] = nem_region
+            if entry.entry_id in domain_data:
+                entry_domain_data["amber_nem_region"] = nem_region
             return nem_region
 
         except Exception as e:

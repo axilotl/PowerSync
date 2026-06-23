@@ -356,6 +356,19 @@ def test_sigenergy_tariff_sync_does_not_require_optional_device_id():
     assert "cloud_region=cloud_region" in helper_source
 
 
+def test_sigenergy_region_detection_tolerates_setup_time_cache_miss():
+    init_source = (COMPONENT_ROOT / "__init__.py").read_text()
+    helper_source = init_source[
+        init_source.index("async def _get_nem_region_from_amber"):
+        init_source.index("def _record_flow_power_twap_sample")
+    ]
+
+    assert "domain_data = hass.data.get(DOMAIN, {})" in helper_source
+    assert "entry_domain_data = domain_data.get(entry.entry_id, {})" in helper_source
+    assert 'hass.data[DOMAIN][entry.entry_id].get("amber_nem_region")' not in helper_source
+    assert "if entry.entry_id in domain_data:" in helper_source
+
+
 def test_sigenergy_cloud_region_is_collected_and_persisted():
     config_flow_source = (COMPONENT_ROOT / "config_flow.py").read_text()
 
