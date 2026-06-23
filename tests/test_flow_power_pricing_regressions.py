@@ -626,6 +626,20 @@ def test_flow_power_startup_populates_tariff_schedule_after_ha_started():
     assert "EVENT_HOMEASSISTANT_STARTED" in source
 
 
+def test_sigenergy_flow_power_sync_stores_canonical_tariff_schedule():
+    source = (COMPONENT_ROOT / "__init__.py").read_text()
+    sync_source = source[
+        source.index("async def _sync_tariff_to_sigenergy"):
+        source.index("async def _sync_tariff_to_foxess")
+    ]
+
+    assert '["tariff_schedule"] = {' in sync_source
+    assert '"buy_prices": canonical_buy_rates' in sync_source
+    assert '"sell_prices": canonical_sell_rates' in sync_source
+    assert 'f"power_sync_tariff_updated_{entry.entry_id}"' in sync_source
+    assert "Tariff schedule stored for sigenergy dashboard" in sync_source
+
+
 def test_flow_power_tariff_dependent_sensors_listen_for_tariff_updates():
     for class_name in (
         "FlowPowerNetworkTariffSensor",

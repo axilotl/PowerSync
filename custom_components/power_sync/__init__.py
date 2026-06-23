@@ -19698,6 +19698,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 )
                 buy_prices = convert_tariff_rates_to_sigenergy(canonical_buy_rates)
                 sell_prices = convert_tariff_rates_to_sigenergy(canonical_sell_rates)
+                if buy_prices:
+                    hass.data[DOMAIN][entry.entry_id]["tariff_schedule"] = {
+                        "buy_prices": canonical_buy_rates,
+                        "sell_prices": canonical_sell_rates,
+                        **currency_metadata(canonical_tariff.get("currency")),
+                        "last_sync": dt_util.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    }
+                    async_dispatcher_send(
+                        hass, f"power_sync_tariff_updated_{entry.entry_id}"
+                    )
+                    _LOGGER.info(
+                        "Tariff schedule stored for sigenergy dashboard (%d periods)",
+                        len(canonical_buy_rates),
+                    )
                 _LOGGER.info(
                     "Sigenergy tariff sync: using canonical tariff conversion "
                     "(%d buy periods, %d sell periods, timezone=%s)",
