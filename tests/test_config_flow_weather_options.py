@@ -1054,6 +1054,24 @@ def test_initial_smart_optimization_configuration_exposes_enabled_toggle():
         ]
 
 
+def test_initial_smart_optimization_saves_charge_by_time_aliases_to_ml_options():
+    source = CONFIG_FLOW_PATH.read_text()
+    method = _config_flow_method("async_step_ml_options")
+    method_source = ast.get_source_segment(source, method)
+
+    assert method_source is not None
+    assert "data[CONF_PROFIT_MAX_TARGET_TIME]" not in method_source
+    assert "data[CONF_PROFIT_MAX_TARGET_SOC]" not in method_source
+    assert (
+        "self._ml_options[CONF_PROFIT_MAX_TARGET_TIME] = self._ml_options[\n"
+        "                    CONF_CHARGE_BY_TIME_TARGET_TIME"
+    ) in method_source
+    assert (
+        "self._ml_options[CONF_PROFIT_MAX_TARGET_SOC] = self._ml_options[\n"
+        "                    CONF_CHARGE_BY_TIME_TARGET_SOC"
+    ) in method_source
+
+
 def test_no_idle_option_is_provider_scoped():
     source = CONFIG_FLOW_PATH.read_text()
     initial_method = _config_flow_method("async_step_ml_options")

@@ -2952,8 +2952,12 @@ class PowerSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         DEFAULT_CHARGE_BY_TIME_TARGET_SOC,
                     ),
                 })
-                data[CONF_PROFIT_MAX_TARGET_TIME] = data[CONF_CHARGE_BY_TIME_TARGET_TIME]
-                data[CONF_PROFIT_MAX_TARGET_SOC] = data[CONF_CHARGE_BY_TIME_TARGET_SOC]
+                self._ml_options[CONF_PROFIT_MAX_TARGET_TIME] = self._ml_options[
+                    CONF_CHARGE_BY_TIME_TARGET_TIME
+                ]
+                self._ml_options[CONF_PROFIT_MAX_TARGET_SOC] = self._ml_options[
+                    CONF_CHARGE_BY_TIME_TARGET_SOC
+                ]
                 max_grid_export_w = _form_optional_kw_to_w(
                     user_input.get(CONF_OPTIMIZATION_MAX_GRID_EXPORT_W)
                 )
