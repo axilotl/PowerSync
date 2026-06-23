@@ -30842,6 +30842,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     else:
         _LOGGER.info("✅ TOU sync wired: no automatic sync for %s", electricity_provider)
 
+    if electricity_provider == "flow_power":
+        async def _flow_power_startup_tariff_sync(_event=None) -> None:
+            """Populate the display tariff schedule shortly after startup."""
+            if not entry.options.get(
+                CONF_AUTO_SYNC_ENABLED,
+                entry.data.get(CONF_AUTO_SYNC_ENABLED, True),
+            ):
+                _LOGGER.debug("Flow Power startup tariff sync skipped - auto-sync disabled")
+                return
+            await handle_sync_rest_api_check(check_name="flow power startup")
+
+        if hass.is_running:
+            hass.async_create_task(_flow_power_startup_tariff_sync())
+        else:
+            hass.bus.async_listen_once(
+                EVENT_HOMEASSISTANT_STARTED,
+                _flow_power_startup_tariff_sync,
+            )
+
     # Set up automatic curtailment check every 5 minutes (same timing as TOU sync)
     # Triggers at :01:00, :06:00, :11:00, etc. - 60s after Amber price updates
     async def auto_curtailment_check(now):

@@ -615,6 +615,17 @@ def test_flow_power_price_sensor_listens_for_tariff_updates():
     assert "async_write_ha_state" in handler
 
 
+def test_flow_power_startup_populates_tariff_schedule_after_ha_started():
+    source = (COMPONENT_ROOT / "__init__.py").read_text()
+
+    assert 'if electricity_provider == "flow_power":' in source
+    assert "async def _flow_power_startup_tariff_sync" in source
+    assert 'handle_sync_rest_api_check(check_name="flow power startup")' in source
+    assert "CONF_AUTO_SYNC_ENABLED" in source
+    assert "hass.bus.async_listen_once(" in source
+    assert "EVENT_HOMEASSISTANT_STARTED" in source
+
+
 def test_flow_power_tariff_dependent_sensors_listen_for_tariff_updates():
     for class_name in (
         "FlowPowerNetworkTariffSensor",
