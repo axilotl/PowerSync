@@ -1210,6 +1210,85 @@ def test_flow_power_optimizer_uses_portal_twap_with_portal_pricing_inputs(opt_mo
     assert coordinator._last_display_import_prices[0] == pytest.approx(0.51)
 
 
+def test_flow_power_decays_far_future_import_spikes_but_keeps_happy_hour_export(
+    opt_module,
+    monkeypatch,
+):
+    now = datetime(2026, 5, 3, 8, 30, tzinfo=timezone.utc)
+    monkeypatch.setattr(opt_module.dt_util, "now", lambda *args, **kwargs: now)
+
+    coordinator = object.__new__(opt_module.OptimizationCoordinator)
+    coordinator.hass = SimpleNamespace(data={"power_sync": {"entry-1": {}}})
+    coordinator._entry = SimpleNamespace(
+        entry_id="entry-1",
+        data={},
+        options={
+            "electricity_provider": "flow_power",
+            "flow_power_state": "NSW1",
+        },
+    )
+    coordinator._config = opt_module.OptimizationConfig(
+        horizon_hours=24,
+        interval_minutes=5,
+        profit_max_enabled=True,
+    )
+    coordinator._last_display_import_prices = None
+    coordinator._last_display_export_prices = None
+    coordinator._apply_export_boost = lambda export, import_prices=None: (export, [])
+    coordinator._apply_saving_session_prices = lambda imports, exports: (imports, exports)
+    coordinator._apply_chip_mode = lambda exports, *args: exports
+    coordinator._apply_demand_charge_penalty = lambda imports: imports
+
+    def price_entry(start: datetime, import_cents: float, channel: str) -> dict:
+        end = start + opt_module.timedelta(minutes=30)
+        return {
+            "valid_from": start.isoformat(),
+            "valid_to": end.isoformat(),
+            "nemTime": end.isoformat(),
+            "duration": 30,
+            "perKwh": -1.0 if channel == "feedIn" else import_cents,
+            "channelType": channel,
+            "type": "ForecastInterval",
+        }
+
+    forecast = []
+    spike_start = now + opt_module.timedelta(hours=20)
+    for slot in range(48):
+        start = now + opt_module.timedelta(minutes=30 * slot)
+        import_cents = 2000.0 if start == spike_start else 20.0
+        forecast.append(price_entry(start, import_cents, "general"))
+        forecast.append(price_entry(start, import_cents, "feedIn"))
+
+    coordinator.price_coordinator = SimpleNamespace(
+        data={"current": [], "forecast": forecast}
+    )
+
+    import_prices, export_prices = asyncio.run(coordinator._get_price_forecast())
+
+    spike_slot = int((spike_start - now).total_seconds() // (5 * 60))
+    happy_hour_slot = int(
+        (
+            now.replace(hour=17, minute=30)
+            - now
+        ).total_seconds()
+        // (5 * 60)
+    )
+
+    # UI/display data preserves the raw forecast-derived price, but LP input
+    # decays the far-future speculative import spike toward the median.
+    assert coordinator._last_display_import_prices[spike_slot] == pytest.approx(
+        20.243
+    )
+    assert import_prices[spike_slot] < coordinator._last_display_import_prices[
+        spike_slot
+    ]
+    assert import_prices[spike_slot] > 0.443
+
+    # Happy Hour export is contractual and must not decay with speculative import
+    # forecasts, otherwise Profit Max can miss a valid fixed export window.
+    assert export_prices[happy_hour_slot] == pytest.approx(0.45)
+
+
 def test_dynamic_price_forecast_preserves_boundaries_after_leading_gap(
     opt_module,
     monkeypatch,

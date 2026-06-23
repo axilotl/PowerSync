@@ -7366,14 +7366,18 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         import_prices = self._apply_demand_charge_penalty(import_prices)
 
                         # Apply confidence decay for LP input.
-                        # Flow Power is skipped: Happy Hour export (45c) and the
-                        # base-rate import (34c) are contractual fixed rates, not
-                        # speculative spot prices. Decaying them toward the median
-                        # (0c export, ~26c import) makes overnight charging appear
-                        # unprofitable, causing the LP to undercharge the battery
-                        # before a Happy Hour window that is 18-24h away.
-                        if not is_flow_power:
-                            decay_horizon = 12.0 if self._config.profit_max_enabled else 6.0
+                        decay_horizon = 12.0 if self._config.profit_max_enabled else 6.0
+                        if is_flow_power:
+                            # Flow Power Happy Hour export is contractual, so keep
+                            # the export schedule fixed. Import PEA forecasts still
+                            # come from speculative wholesale forecasts and should
+                            # not let far-future spikes dominate the LP unchanged.
+                            import_prices, _ = self._apply_confidence_decay(
+                                import_prices,
+                                export_prices,
+                                confidence_horizon_hours=decay_horizon,
+                            )
+                        else:
                             import_prices, export_prices = self._apply_confidence_decay(
                                 import_prices, export_prices,
                                 confidence_horizon_hours=decay_horizon,
@@ -7387,7 +7391,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                             len(import_prices),
                             min(self._last_display_import_prices) * 100,
                             max(self._last_display_import_prices) * 100,
-                            "(no decay)" if is_flow_power else "(decayed)",
+                            "(import-decayed)" if is_flow_power else "(decayed)",
                             min(import_prices) * 100,
                             max(import_prices) * 100,
                         )
