@@ -633,7 +633,20 @@ def test_aemo_vpp_tariff_price_view_uses_tariff_schedule_path():
         )
     ]
 
-    assert dynamic_assignments == ['dynamic_providers = ("amber", "flow_power")']
+    assert dynamic_assignments == ['dynamic_providers = ("amber",)']
+
+
+def test_flow_power_tariff_price_view_prefers_canonical_tariff_schedule():
+    source = INIT_PATH.read_text()
+    tree = ast.parse(source)
+    method = _find_class_method(tree, "TariffPriceView", "get")
+    method_source = ast.get_source_segment(source, method)
+
+    assert method_source is not None
+    assert 'if electricity_provider == "flow_power":' in method_source
+    assert 'tariff_schedule = entry_data.get("tariff_schedule")' in method_source
+    assert "get_current_price_from_tariff_schedule(tariff_schedule)" in method_source
+    assert '"source": "flow_power_tariff_schedule"' in method_source
 
 
 def test_powerwall_settings_view_rejects_neovolt_systems():

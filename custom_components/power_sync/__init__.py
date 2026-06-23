@@ -8823,9 +8823,48 @@ class TariffPriceView(HomeAssistantView):
                 entry.data.get(CONF_ELECTRICITY_PROVIDER, "globird")
             )
 
-            # Dynamic pricing providers - fetch real-time prices from their API
-            # These are NOT affected by ML fake tariffs since they don't use Tesla tariff
-            dynamic_providers = ("amber", "flow_power")
+            if electricity_provider == "flow_power":
+                entry_data = self._hass.data.get(DOMAIN, {}).get(entry_id, {})
+                tariff_schedule = entry_data.get("tariff_schedule")
+                if tariff_schedule:
+                    buy_price_cents, sell_price_cents, current_period = (
+                        get_current_price_from_tariff_schedule(tariff_schedule)
+                    )
+                    result = {
+                        "success": True,
+                        "import": {
+                            "perKwh": buy_price_cents,
+                            "channelType": "general",
+                            "type": "TariffInterval",
+                            "duration": 30,
+                            "spikeStatus": None,
+                            "source": "flow_power_tariff_schedule",
+                        },
+                        "feedIn": {
+                            "perKwh": -sell_price_cents,
+                            "channelType": "feedIn",
+                            "type": "TariffInterval",
+                            "duration": 30,
+                            "spikeStatus": None,
+                            "source": "flow_power_tariff_schedule",
+                        },
+                        "provider": electricity_provider,
+                        "current_period": current_period,
+                        "utility": tariff_schedule.get("utility"),
+                        "plan_name": tariff_schedule.get("plan_name"),
+                    }
+                    _LOGGER.info(
+                        "✅ Flow Power tariff price response: period=%s, import=%.1fc, export=%.1fc",
+                        current_period,
+                        buy_price_cents,
+                        sell_price_cents,
+                    )
+                    return web.json_response(result)
+
+            # Dynamic pricing providers - fetch real-time prices from their API.
+            # Flow Power uses the canonical tariff schedule above because raw
+            # KWatch/AEMO prices are transformed by the Flow Power PEA formula.
+            dynamic_providers = ("amber",)
             if electricity_provider in dynamic_providers:
                 entry_data = self._hass.data.get(DOMAIN, {}).get(entry_id, {})
 
