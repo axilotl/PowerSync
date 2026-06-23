@@ -3644,7 +3644,7 @@ class PowerSyncEVPanel extends HTMLElement {
           ${loadpoint.blocking_reason ? `<div class="state-line">${this._escHtml(loadpoint.blocking_reason)}</div>` : ''}
           <div class="metrics">
             ${this._metric('Power', this._kw(loadpoint.current_power_kw))}
-            ${this._metric('Amps', this._amps(loadpoint.current_amps))}
+            ${this._metric('Amps', this._amps(loadpoint.current_amps, loadpoint))}
             ${this._metric('SoC', this._soc(loadpoint.soc))}
             ${this._metric('Source', source || '--')}
           </div>
@@ -4007,9 +4007,12 @@ class PowerSyncEVPanel extends HTMLElement {
     return Number.isFinite(number) ? `${number.toFixed(number >= 10 ? 1 : 2)} kW` : '--';
   }
 
-  _amps(value) {
+  _amps(value, loadpoint = null) {
     const number = Number(value);
-    return Number.isFinite(number) ? `${Math.round(number)} A` : '--';
+    if (Number.isFinite(number) && number > 0) return `${Math.round(number)} A`;
+    const power = Number(loadpoint?.current_power_kw);
+    if (Number.isFinite(power) && power > 0.05) return '--';
+    return Number.isFinite(number) ? '0 A' : '--';
   }
 
   _soc(value) {

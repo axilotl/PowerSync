@@ -7,6 +7,8 @@ from collections.abc import Iterable, Mapping
 from datetime import datetime, timezone
 from typing import Any
 
+from .ev_ownership import is_solar_surplus_owner_mode
+
 
 ACTIVE_POWER_THRESHOLD_KW = 0.05
 DEFAULT_LOADPOINT_KEYS = {"default", "genericev", "ev"}
@@ -375,6 +377,20 @@ def _status_source(
     return "solar" if solar_kw >= power_kw * 0.8 else "grid"
 
 
+def _loadpoint_source(
+    power_kw: float,
+    surplus_kw: float,
+    owner_mode: Any = None,
+    allocated_surplus_kw: float | None = None,
+) -> str:
+    if (
+        power_kw > ACTIVE_POWER_THRESHOLD_KW
+        and is_solar_surplus_owner_mode(owner_mode)
+    ):
+        return "solar"
+    return _status_source(power_kw, surplus_kw, allocated_surplus_kw)
+
+
 def charging_state_plugged_status(value: Any) -> bool | None:
     """Infer plug state from Tesla charging-state text when available."""
     if value is None:
@@ -625,7 +641,12 @@ def _dynamic_loadpoint(
             loadpoint_id = observation_vehicle_id
 
     current_amps = _int_value(state.get("current_amps"), 0)
+    observed_amps = _int_value((observation or {}).get("current_amps"), 0)
+    if current_amps <= 0 and observed_amps > 0:
+        current_amps = observed_amps
     target_amps = _int_value(state.get("target_amps"), current_amps)
+    if target_amps <= 0 and observed_amps > 0:
+        target_amps = observed_amps
     voltage = _float_value(params.get("voltage"), 240.0)
     phases = _float_value(params.get("phases"), 1.0)
     commanded_power_kw = current_amps * voltage * phases / 1000
@@ -697,7 +718,12 @@ def _dynamic_loadpoint(
         "status": status,
         "owner": owner,
         "owner_mode": owner_mode,
-        "source": _status_source(power_kw, site_surplus_kw, allocated_surplus_kw),
+        "source": _loadpoint_source(
+            power_kw,
+            site_surplus_kw,
+            owner_mode,
+            allocated_surplus_kw,
+        ),
         "current_power_kw": round(power_kw, 2),
         "commanded_power_kw": round(commanded_power_kw, 2),
         "current_amps": current_amps,
@@ -756,7 +782,11 @@ def _observed_loadpoint(
         "status": status,
         "owner": (ownership or {}).get("owner") or "external",
         "owner_mode": (ownership or {}).get("owner_mode") or observation.get("owner_mode"),
-        "source": _status_source(power_kw, site_surplus_kw),
+        "source": _loadpoint_source(
+            power_kw,
+            site_surplus_kw,
+            (ownership or {}).get("owner_mode") or observation.get("owner_mode"),
+        ),
         "current_power_kw": round(power_kw, 2),
         "commanded_power_kw": None,
         "current_amps": current_amps,

@@ -146,6 +146,16 @@ def test_dashboard_ev_panel_is_registered_and_api_cached():
     assert "policy: this._policy" in render_signature
 
 
+def test_ev_panel_hides_zero_amps_while_charging_without_amp_telemetry():
+    """Active chargers without current telemetry should not show a misleading 0 A."""
+    source = STRATEGY_PATH.read_text()
+
+    assert "this._amps(loadpoint.current_amps, loadpoint)" in source
+    assert "const power = Number(loadpoint?.current_power_kw);" in source
+    assert "if (Number.isFinite(power) && power > 0.05) return '--';" in source
+    assert "return Number.isFinite(number) ? '0 A' : '--';" in source
+
+
 def test_generic_dashboard_charts_do_not_rerender_on_unrelated_state_ticks():
     """Dashboard graph tooltips and legend buttons should survive unrelated HA ticks."""
     source = STRATEGY_PATH.read_text()

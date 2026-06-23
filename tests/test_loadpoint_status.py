@@ -726,6 +726,70 @@ def test_default_session_merges_with_single_observed_charging_vehicle():
     assert loadpoints[0]["confidence"] == "observed"
 
 
+def test_smart_schedule_solar_surplus_session_reports_solar_source_after_consuming_surplus():
+    loadpoints = build_loadpoint_status(
+        {
+            "_default": {
+                "active": True,
+                "vehicle_name": "EV",
+                "current_amps": 0,
+                "target_amps": 0,
+                "params": {
+                    "dynamic_mode": "solar_surplus",
+                    "owner_mode": "smart_schedule_solar_surplus",
+                    "charger_type": "sigenergy",
+                },
+            }
+        },
+        [
+            {
+                "vehicle_id": "sigenergy_charger",
+                "vehicle_name": "Sigenergy charger",
+                "charger_type": "sigenergy",
+                "ev_power_kw": 5.93,
+                "ev_soc": 41,
+                "is_connected": True,
+                "is_charging": True,
+                "current_amps": 0,
+            }
+        ],
+        site={"surplus_kw": 0.0},
+    )
+
+    assert loadpoints[0]["loadpoint_id"] == "sigenergy_charger"
+    assert loadpoints[0]["owner_mode"] == "smart_schedule_solar_surplus"
+    assert loadpoints[0]["source"] == "solar"
+    assert loadpoints[0]["current_power_kw"] == 5.93
+    assert loadpoints[0]["current_amps"] == 0
+
+
+def test_dynamic_session_prefers_observed_current_amps_when_command_state_is_zero():
+    loadpoints = build_loadpoint_status(
+        {
+            "VIN123": {
+                "active": True,
+                "vehicle_name": "Blue Car",
+                "current_amps": 0,
+                "target_amps": 0,
+                "params": {"dynamic_mode": "solar_surplus"},
+            }
+        },
+        [
+            {
+                "vehicle_id": "VIN123",
+                "vehicle_name": "Blue Car",
+                "ev_power_kw": 5.5,
+                "is_connected": True,
+                "is_charging": True,
+                "current_amps": 24,
+            }
+        ],
+    )
+
+    assert loadpoints[0]["current_amps"] == 24
+    assert loadpoints[0]["target_amps"] == 24
+
+
 def test_default_session_is_hidden_when_multiple_observed_vehicles_are_active():
     loadpoints = build_loadpoint_status(
         {
