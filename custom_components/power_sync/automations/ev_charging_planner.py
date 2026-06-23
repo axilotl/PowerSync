@@ -6308,6 +6308,48 @@ def _build_dynamic_stop_params(
     return params
 
 
+async def _resolve_unspecified_tesla_start_vin(
+    hass: "HomeAssistant",
+    config_entry: "ConfigEntry",
+    vehicle_vin: Optional[str],
+) -> Optional[str]:
+    """Resolve a default Tesla start to the single home plugged-in vehicle."""
+    if vehicle_vin:
+        return vehicle_vin
+
+    try:
+        vehicles = await discover_all_tesla_vehicles(hass, config_entry)
+    except Exception as err:
+        _LOGGER.debug("Tesla start VIN discovery unavailable: %s", err)
+        return None
+
+    candidates: list[str] = []
+    for vehicle in vehicles or []:
+        vin = str(vehicle.get("vin") or vehicle.get("vehicle_id") or "").strip()
+        if not vin:
+            continue
+        try:
+            location = await get_ev_location(hass, config_entry, vehicle_vin=vin)
+            if location not in ("home", "unknown"):
+                continue
+            if await is_ev_plugged_in(hass, config_entry, vehicle_vin=vin):
+                candidates.append(vin)
+        except Exception as err:
+            _LOGGER.debug("Tesla start VIN check failed for %s: %s", vin[:8], err)
+
+    if len(candidates) == 1:
+        _LOGGER.debug(
+            "Tesla coordinated start resolved default loadpoint to %s",
+            candidates[0][:8],
+        )
+        return candidates[0]
+    if len(candidates) > 1:
+        _LOGGER.debug(
+            "Tesla coordinated start found multiple plugged-in vehicles; keeping default loadpoint"
+        )
+    return None
+
+
 async def _start_coordinated_charging(
     hass: "HomeAssistant",
     domain: str,
@@ -6323,13 +6365,20 @@ async def _start_coordinated_charging(
 ) -> bool:
     """Start charging through the configured dynamic charger action."""
     opts = {**config_entry.data, **config_entry.options}
+    resolved_vehicle_vin = vehicle_vin
+    if _configured_charger_type(opts) == "tesla":
+        resolved_vehicle_vin = await _resolve_unspecified_tesla_start_vin(
+            hass,
+            config_entry,
+            vehicle_vin,
+        )
     params = _build_dynamic_charging_params(
         hass,
         domain,
         config_entry,
         opts,
         owner_mode=owner_mode,
-        vehicle_vin=vehicle_vin,
+        vehicle_vin=resolved_vehicle_vin,
         no_grid_import=no_grid_import,
         allow_ownership_takeover=allow_ownership_takeover,
     )

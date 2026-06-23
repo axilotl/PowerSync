@@ -775,6 +775,43 @@ def test_scheduled_no_grid_import_passes_dynamic_start_param(fake_actions):
     assert params["no_grid_import"] is True
 
 
+def test_scheduled_tesla_start_targets_single_plugged_home_vehicle(
+    monkeypatch,
+    fake_actions,
+):
+    first_vin = "XP7YHCEL7TB811704"
+    second_vin = "LRWYHCEKXTC687964"
+    fake_actions._dynamic_ev_state = {}
+    fake_actions._action_start_ev_charging_dynamic = AsyncMock(return_value=True)
+
+    async def two_vehicles(*args, **kwargs):
+        return [
+            {"vin": first_vin, "name": "Tesla_Flinn"},
+            {"vin": second_vin, "name": "Tesla_YF88"},
+        ]
+
+    async def at_home(_hass, _entry, vehicle_vin=None):
+        assert vehicle_vin in (first_vin, second_vin)
+        return "home"
+
+    async def plugged_in(_hass, _entry, vehicle_vin=None):
+        assert vehicle_vin in (first_vin, second_vin)
+        return vehicle_vin == second_vin
+
+    monkeypatch.setattr(ev_planner, "discover_all_tesla_vehicles", two_vehicles)
+    monkeypatch.setattr(ev_planner, "get_ev_location", at_home)
+    monkeypatch.setattr(ev_planner, "is_ev_plugged_in", plugged_in)
+
+    executor = ev_planner.ScheduledChargingExecutor(_FakeHass(), _FakeConfigEntry())
+    result = asyncio.run(executor._start_charging("Scheduled window"))
+
+    assert result is True
+    fake_actions._action_start_ev_charging_dynamic.assert_awaited_once()
+    _hass, _entry, params = fake_actions._action_start_ev_charging_dynamic.await_args.args
+    assert params["vehicle_id"] == second_vin
+    assert params["vehicle_vin"] == second_vin
+
+
 def test_price_level_preserve_home_battery_sets_optimizer_intent(fake_actions):
     fake_actions._action_start_ev_charging_dynamic = AsyncMock(return_value=True)
     fake_actions._action_stop_ev_charging_dynamic = AsyncMock(return_value=True)
