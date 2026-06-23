@@ -26949,6 +26949,28 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         _LOGGER.error("GoodWe: failed to restore export limit")
                 return
 
+            # Sigenergy: map rule to export limit register (REG_GRID_EXPORT_LIMIT = 40038)
+            sigen_coord = entry_data.get("sigenergy_coordinator")
+            if sigen_coord and hasattr(sigen_coord, "_controller") and sigen_coord._controller:
+                controller = sigen_coord._controller
+                if rule == "never":
+                    success = await controller.curtail()
+                    if success:
+                        entry_data["sigenergy_curtailment_state"] = "curtailed"
+                        _LOGGER.info("Sigenergy: grid export set to never (export limit = 0W)")
+                    else:
+                        _LOGGER.error("Sigenergy: failed to set zero export")
+                else:
+                    # battery_ok and pv_only both map to unrestricted export —
+                    # Sigenergy has no hardware-level PV-only export restriction
+                    success = await controller.restore()
+                    if success:
+                        entry_data["sigenergy_curtailment_state"] = "normal"
+                        _LOGGER.info("Sigenergy: grid export set to %s (export limit restored)", rule)
+                    else:
+                        _LOGGER.error("Sigenergy: failed to restore export limit")
+                return
+
             from .const import CONF_POWERWALL_LOCAL_DIN
             from .powerwall_local.dispatch import dispatch_powerwall_write
 
@@ -27029,6 +27051,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             entry_data = hass.data.setdefault(DOMAIN, {}).setdefault(entry.entry_id, {})
             entry_data["manual_export_override"] = False
             entry_data["manual_export_rule"] = None
+
+            # Restore Sigenergy if it was curtailed
+            sigen_coord = entry_data.get("sigenergy_coordinator")
+            if sigen_coord and hasattr(sigen_coord, "_controller") and sigen_coord._controller:
+                controller = sigen_coord._controller
+                try:
+                    success = await controller.restore()
+                    if success:
+                        entry_data["sigenergy_curtailment_state"] = "normal"
+                        _LOGGER.info("Sigenergy: export limit restored to normal")
+                    else:
+                        _LOGGER.warning("Sigenergy: failed to restore export limit")
+                except Exception as e:
+                    _LOGGER.warning("Sigenergy restore error: %s", e)
+
             # Clear persisted override so it doesn't come back after a reload
             try:
                 _store = entry_data.get("store")
