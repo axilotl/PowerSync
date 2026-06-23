@@ -211,6 +211,50 @@ def test_sigenergy_upload_prices_use_canonical_tariff_rates(
     assert by_start["20:30"] == 35.33
 
 
+def test_flow_power_canonical_tariff_ignores_raw_current_wholesale_spike(
+    tariff_converter_module,
+    monkeypatch,
+):
+    brisbane = ZoneInfo("Australia/Brisbane")
+
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 6, 23, 18, 38, tzinfo=brisbane).astimezone(tz)
+
+    monkeypatch.setattr(tariff_converter_module, "datetime", FixedDatetime)
+
+    forecast = _day_intervals(datetime(2026, 6, 23, tzinfo=brisbane))
+    for point in forecast:
+        interval_start = datetime.fromisoformat(point["nemTime"]) - timedelta(
+            minutes=point["duration"]
+        )
+        if point["channelType"] == "general" and (
+            interval_start.hour,
+            interval_start.minute,
+        ) == (18, 30):
+            point["perKwh"] = 38.91
+            point["advancedPrice"] = {"predicted": 38.91}
+
+    current_actual = {
+        "general": {"perKwh": 593.84},
+        "feedIn": {"perKwh": -35.0},
+    }
+
+    tariff = tariff_converter_module.convert_amber_to_tesla_tariff(
+        forecast,
+        tesla_energy_site_id="none",
+        forecast_type="predicted",
+        powerwall_timezone="Australia/Brisbane",
+        current_actual_interval=current_actual,
+        electricity_provider="flow_power",
+    )
+
+    rates = tariff["energy_charges"]["Summer"]["rates"]
+    assert rates["PERIOD_18_30"] == 0.3891
+    assert rates["PERIOD_18_30"] != 5.9384
+
+
 def test_sigenergy_visible_upload_uses_distinct_30_min_buy_and_sell_slots(
     sigenergy_api_module,
     tariff_converter_module,

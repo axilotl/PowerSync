@@ -583,6 +583,15 @@ def convert_amber_to_tesla_tariff(
         _LOGGER.warning("No forecast data provided")
         return None
 
+    if electricity_provider == "flow_power" and current_actual_interval:
+        # Flow Power current intervals from KWatch are raw 5-minute wholesale values.
+        # The canonical tariff schedule must use the same all-in 30-minute tariff
+        # formula as Flow Power's actual price chart, not a raw spike substitute.
+        _LOGGER.info(
+            "Ignoring raw Flow Power current interval for canonical tariff schedule"
+        )
+        current_actual_interval = None
+
     _LOGGER.info("Converting %d forecast points to tariff schedule", len(forecast_data))
 
     # Timezone handling:
