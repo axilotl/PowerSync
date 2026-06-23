@@ -1210,6 +1210,94 @@ def test_flow_power_optimizer_uses_portal_twap_with_portal_pricing_inputs(opt_mo
     assert coordinator._last_display_import_prices[0] == pytest.approx(0.51)
 
 
+def test_flow_power_optimizer_uses_current_interval_for_active_tariff_slot(
+    opt_module,
+    monkeypatch,
+):
+    nem_tz = opt_module.timezone(opt_module.timedelta(hours=10))
+    now = datetime(2026, 6, 23, 21, 5, tzinfo=nem_tz)
+    monkeypatch.setattr(opt_module.dt_util, "now", lambda *args, **kwargs: now)
+
+    async def _executor(fn, *args):
+        return fn(*args)
+
+    coordinator = object.__new__(opt_module.OptimizationCoordinator)
+    coordinator.hass = SimpleNamespace(
+        async_add_executor_job=_executor,
+        data={
+            "power_sync": {
+                "entry-1": {
+                    "fp_avg_daily_tariff": 5.0,
+                    "flow_power_portal_data": {
+                        "twap": 10.0,
+                        "bpea": 2.0,
+                        "gst_multiplier": 1.2,
+                    },
+                }
+            }
+        },
+    )
+    coordinator._entry = SimpleNamespace(
+        entry_id="entry-1",
+        data={},
+        options={
+            "electricity_provider": "flow_power",
+            "flow_power_state": "NSW1",
+            "fp_network": "Ausgrid",
+            "fp_tariff_code": "EA025",
+        },
+    )
+    coordinator._config = opt_module.OptimizationConfig(horizon_hours=1)
+    coordinator._last_display_import_prices = None
+    coordinator._last_display_export_prices = None
+    coordinator._apply_export_boost = lambda export, import_prices=None: (export, [])
+    coordinator._apply_saving_session_prices = lambda imports, exports: (imports, exports)
+    coordinator._apply_chip_mode = lambda exports, *args: exports
+    coordinator._apply_demand_charge_penalty = lambda imports: imports
+    coordinator._apply_confidence_decay = lambda imports, exports, **kwargs: (
+        imports,
+        exports,
+    )
+    monkeypatch.setattr(
+        opt_module,
+        "_flow_power_network_tariff_rate",
+        lambda when, network, tariff_code: 12.0,
+    )
+
+    def price_entry(end: datetime, import_cents: float, channel: str, duration: int) -> dict:
+        return {
+            "nemTime": end.isoformat(),
+            "duration": duration,
+            "perKwh": -1.0 if channel == "feedIn" else import_cents,
+            "wholesaleKWHPrice": import_cents,
+            "channelType": channel,
+            "type": "CurrentInterval" if duration == 5 else "ForecastInterval",
+        }
+
+    current_end = datetime(2026, 6, 23, 21, 5, tzinfo=nem_tz)
+    forecast_end = datetime(2026, 6, 23, 21, 30, tzinfo=nem_tz)
+    coordinator.price_coordinator = SimpleNamespace(
+        data={
+            "current": [
+                price_entry(current_end, 20.0, "general", 5),
+                price_entry(current_end, 20.0, "feedIn", 5),
+            ],
+            "forecast": [
+                price_entry(forecast_end, 60.0, "general", 30),
+                price_entry(forecast_end, 60.0, "feedIn", 30),
+            ],
+        }
+    )
+
+    import_prices, _ = asyncio.run(coordinator._get_price_forecast())
+
+    # The forecast for the active half-hour would produce 99c/kWh. The live
+    # KWatch current interval must override that active tariff slot, matching
+    # the canonical Flow Power tariff schedule/current-price sensor.
+    assert import_prices[0] == pytest.approx(0.51)
+    assert coordinator._last_display_import_prices[0] == pytest.approx(0.51)
+
+
 def test_flow_power_decays_far_future_import_spikes_but_keeps_happy_hour_export(
     opt_module,
     monkeypatch,

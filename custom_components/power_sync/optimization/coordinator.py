@@ -6985,6 +6985,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     # Separate by channel type
                     general = [e for e in all_entries if e.get("channelType") == "general"]
                     feed_in = [e for e in all_entries if e.get("channelType") == "feedIn"]
+                    is_flow_power_provider = self._electricity_provider() == "flow_power"
 
                     # Sort by start time (works for Octopus, Amber, and AEMO)
                     for lst in (general, feed_in):
@@ -7002,6 +7003,52 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         minute=(now.minute // 5) * 5,
                         second=0, microsecond=0,
                     )
+                    fp_current_general = None
+                    fp_current_period_start = None
+                    fp_current_period_end = None
+                    if is_flow_power_provider:
+                        current_general = [
+                            e
+                            for e in data.get("current", []) or []
+                            if e.get("channelType") == "general"
+                        ]
+                        current_feedin = [
+                            e
+                            for e in data.get("current", []) or []
+                            if e.get("channelType") == "feedIn"
+                        ]
+                        current_general.sort(key=lambda e: self._get_entry_end_time(e))
+                        current_feedin.sort(key=lambda e: self._get_entry_end_time(e))
+                        if current_general:
+                            fp_current_general = current_general[-1]
+                            current_nem_start = self._get_entry_start_datetime(
+                                fp_current_general,
+                                current_window,
+                            ).astimezone(FLOW_POWER_NEM_TZ)
+                            fp_current_period_start = current_nem_start.replace(
+                                minute=0 if current_nem_start.minute < 30 else 30,
+                                second=0,
+                                microsecond=0,
+                            )
+                            fp_current_period_end = fp_current_period_start + timedelta(
+                                minutes=30
+                            )
+
+                            def _flow_power_current_period_entry(source: dict) -> dict:
+                                entry = dict(source)
+                                entry["nemTime"] = fp_current_period_end.isoformat()
+                                entry["duration"] = 30
+                                entry["type"] = "CurrentInterval"
+                                return entry
+
+                            general.append(
+                                _flow_power_current_period_entry(fp_current_general)
+                            )
+                            if current_feedin:
+                                feed_in.append(
+                                    _flow_power_current_period_entry(current_feedin[-1])
+                                )
+
                     for lst in (general, feed_in):
                         original_len = len(lst)
                         filtered = []
@@ -7188,6 +7235,33 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                                 wholesale_cents = e.get("wholesaleKWHPrice")
                                 if wholesale_cents is None:
                                     wholesale_cents = e.get("perKwh", 0)
+                                if (
+                                    fp_current_general
+                                    and fp_current_period_start is not None
+                                ):
+                                    entry_period_start = self._get_entry_start_datetime(
+                                        e,
+                                        current_window,
+                                    ).astimezone(FLOW_POWER_NEM_TZ)
+                                    entry_period_start = entry_period_start.replace(
+                                        minute=(
+                                            0
+                                            if entry_period_start.minute < 30
+                                            else 30
+                                        ),
+                                        second=0,
+                                        microsecond=0,
+                                    )
+                                    if entry_period_start == fp_current_period_start:
+                                        current_wholesale_cents = (
+                                            fp_current_general.get("wholesaleKWHPrice")
+                                        )
+                                        if current_wholesale_cents is None:
+                                            current_wholesale_cents = (
+                                                fp_current_general.get("perKwh")
+                                            )
+                                        if current_wholesale_cents is not None:
+                                            wholesale_cents = current_wholesale_cents
                                 tariff_rate = fp_tariff_rates.get(id(e))
                                 if (
                                     tariff_rate is not None
