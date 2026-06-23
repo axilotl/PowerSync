@@ -255,6 +255,82 @@ def test_flow_power_canonical_tariff_ignores_raw_current_wholesale_spike(
     assert rates["PERIOD_18_30"] != 5.9384
 
 
+def test_flow_power_pea_uses_current_wholesale_without_raw_tariff_injection(
+    tariff_converter_module,
+    monkeypatch,
+):
+    brisbane = ZoneInfo("Australia/Brisbane")
+
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 6, 23, 18, 38, tzinfo=brisbane).astimezone(tz)
+
+    monkeypatch.setattr(tariff_converter_module, "datetime", FixedDatetime)
+
+    forecast = _day_intervals(datetime(2026, 6, 23, tzinfo=brisbane))
+    for point in forecast:
+        interval_start = datetime.fromisoformat(point["nemTime"]) - timedelta(
+            minutes=point["duration"]
+        )
+        if point["channelType"] == "general" and (
+            interval_start.hour,
+            interval_start.minute,
+        ) == (18, 30):
+            point["perKwh"] = 65.46
+            point["advancedPrice"] = {"predicted": 65.46}
+
+    current_actual = {
+        "general": {
+            "nemTime": datetime(2026, 6, 23, 18, 35, tzinfo=brisbane).isoformat(),
+            "duration": 5,
+            "type": "CurrentInterval",
+            "channelType": "general",
+            "perKwh": 15.55,
+        },
+        "feedIn": {
+            "nemTime": datetime(2026, 6, 23, 18, 35, tzinfo=brisbane).isoformat(),
+            "duration": 5,
+            "type": "CurrentInterval",
+            "channelType": "feedIn",
+            "perKwh": 0.0,
+        },
+    }
+
+    tariff = tariff_converter_module.convert_amber_to_tesla_tariff(
+        forecast,
+        tesla_energy_site_id="none",
+        forecast_type="predicted",
+        powerwall_timezone="Australia/Brisbane",
+        current_actual_interval=current_actual,
+        electricity_provider="flow_power",
+    )
+    rates = tariff["energy_charges"]["Summer"]["rates"]
+    assert rates["PERIOD_18_30"] == 0.6546
+    assert rates["PERIOD_18_30"] != 0.1555
+
+    wholesale_lookup = tariff_converter_module.get_wholesale_lookup(
+        forecast,
+        current_actual_interval=current_actual,
+    )
+    assert wholesale_lookup["PERIOD_18_30"] == 0.1555
+
+    adjusted = tariff_converter_module.apply_flow_power_pea(
+        tariff,
+        wholesale_lookup,
+        base_rate=31.707,
+        twap=13.55,
+        tariff_rate_lookup={"PERIOD_18_30": 8.05},
+        avg_daily_tariff=8.85,
+        bpea=0.0,
+        gst_multiplier=1.1,
+    )
+
+    adjusted_rates = adjusted["energy_charges"]["Summer"]["rates"]
+    assert adjusted_rates["PERIOD_18_30"] == 0.3311
+    assert adjusted_rates["PERIOD_18_30"] != 0.8801
+
+
 def test_sigenergy_visible_upload_uses_distinct_30_min_buy_and_sell_slots(
     sigenergy_api_module,
     tariff_converter_module,

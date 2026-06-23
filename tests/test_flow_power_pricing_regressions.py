@@ -658,6 +658,7 @@ def test_sigenergy_flow_power_sync_stores_canonical_tariff_schedule():
     assert '"sell_prices": canonical_sell_rates' in sync_source
     assert 'f"power_sync_tariff_updated_{entry.entry_id}"' in sync_source
     assert "Tariff schedule stored for sigenergy dashboard" in sync_source
+    assert "current_actual_interval=current_actual_interval" in sync_source
 
 
 def test_sigenergy_force_session_can_refresh_display_schedule_without_cloud_upload():

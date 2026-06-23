@@ -1905,7 +1905,31 @@ def apply_flow_power_pea(
     return tariff
 
 
-def get_wholesale_lookup(forecast_data: list[dict[str, Any]]) -> dict[str, float]:
+def _period_key_from_price_interval(point: dict[str, Any]) -> str | None:
+    """Return the 30-minute PERIOD key covered by an Amber-compatible interval."""
+    nem_time = point.get("nemTime", "")
+    if not nem_time:
+        return None
+
+    try:
+        timestamp = datetime.fromisoformat(nem_time.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+
+    try:
+        duration = int(point.get("duration", 30) or 30)
+    except (TypeError, ValueError):
+        duration = 30
+
+    interval_start = timestamp - timedelta(minutes=duration)
+    start_minute_bucket = 0 if interval_start.minute < 30 else 30
+    return f"PERIOD_{interval_start.hour:02d}_{start_minute_bucket:02d}"
+
+
+def get_wholesale_lookup(
+    forecast_data: list[dict[str, Any]],
+    current_actual_interval: dict[str, Any] | None = None,
+) -> dict[str, float]:
     """
     Extract wholesale prices from forecast data into a period lookup.
 
@@ -1913,6 +1937,11 @@ def get_wholesale_lookup(forecast_data: list[dict[str, Any]]) -> dict[str, float
 
     Args:
         forecast_data: List of price forecast points (5-min or 30-min resolution)
+        current_actual_interval: Optional current/actual interval from a live price source.
+            When provided, its general-channel wholesale value overrides the active
+            30-minute period so Flow Power PEA uses the same spot input as the
+            current price sensor without treating that wholesale value as the final
+            retail tariff.
 
     Returns:
         Dict mapping PERIOD_HH_MM to wholesale price in $/kWh
@@ -1921,10 +1950,7 @@ def get_wholesale_lookup(forecast_data: list[dict[str, Any]]) -> dict[str, float
 
     for point in forecast_data:
         try:
-            nem_time = point.get("nemTime", "")
-            timestamp = datetime.fromisoformat(nem_time.replace("Z", "+00:00"))
             channel_type = point.get("channelType", "")
-            duration = point.get("duration", 30)
 
             # Only use general (import) prices
             if channel_type != "general":
@@ -1939,12 +1965,9 @@ def get_wholesale_lookup(forecast_data: list[dict[str, Any]]) -> dict[str, float
 
             wholesale_dollars = wholesale_cents / 100
 
-            # Use interval START time for bucketing (same as tariff converter)
-            interval_start = timestamp - timedelta(minutes=duration)
-
-            # Round to nearest 30-minute interval
-            start_minute_bucket = 0 if interval_start.minute < 30 else 30
-            period_key = f"PERIOD_{interval_start.hour:02d}_{start_minute_bucket:02d}"
+            period_key = _period_key_from_price_interval(point)
+            if period_key is None:
+                continue
 
             # Store in lookup (average if multiple intervals in same 30-min period)
             if period_key not in wholesale_lookup:
@@ -1959,6 +1982,26 @@ def get_wholesale_lookup(forecast_data: list[dict[str, Any]]) -> dict[str, float
     result: dict[str, float] = {}
     for period, prices in wholesale_lookup.items():
         result[period] = sum(prices) / len(prices)
+
+    if current_actual_interval and current_actual_interval.get("general"):
+        current_general = current_actual_interval["general"]
+        period_key = _period_key_from_price_interval(current_general)
+        if period_key:
+            wholesale_cents = current_general.get("wholesaleKWHPrice")
+            if wholesale_cents is None:
+                wholesale_cents = current_general.get("perKwh")
+            try:
+                result[period_key] = float(wholesale_cents) / 100
+                _LOGGER.info(
+                    "Using current wholesale interval for Flow Power PEA %s: %.2fc/kWh",
+                    period_key,
+                    float(wholesale_cents),
+                )
+            except (TypeError, ValueError):
+                _LOGGER.debug(
+                    "Skipping current wholesale interval with invalid price: %s",
+                    wholesale_cents,
+                )
 
     _LOGGER.debug("Built wholesale lookup with %d periods", len(result))
     return result

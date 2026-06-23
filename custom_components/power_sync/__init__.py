@@ -19433,7 +19433,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if fp_tracker:
             fp_tracker.record_price(price)
 
-    def _apply_provider_tariff_adjustments(tariff: dict, forecast_data: list, electricity_provider: str) -> dict:
+    def _apply_provider_tariff_adjustments(
+        tariff: dict,
+        forecast_data: list,
+        electricity_provider: str,
+        current_actual_interval: dict | None = None,
+    ) -> dict:
         """Apply provider-specific rate adjustments to a raw wholesale tariff.
 
         Called from battery-system early-return paths (FoxESS, Sungrow) that build
@@ -19465,7 +19470,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
             base_rate = entry.options.get(CONF_FLOW_POWER_BASE_RATE, FLOW_POWER_DEFAULT_BASE_RATE)
             custom_pea = entry.options.get(CONF_PEA_CUSTOM_VALUE)
-            wholesale_prices = get_wholesale_lookup(forecast_data)
+            wholesale_prices = get_wholesale_lookup(
+                forecast_data,
+                current_actual_interval=current_actual_interval,
+            )
             domain_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
             pricing = resolve_flow_power_pricing_context(
                 entry.options,
@@ -19680,6 +19688,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     canonical_tariff,
                     forecast_data,
                     provider_for_tz,
+                    current_actual_interval=current_actual_interval,
                 )
 
             buy_prices = []
@@ -20579,7 +20588,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 currency=currency_for_entry(entry, hass),
             )
             if tariff:
-                tariff = _apply_provider_tariff_adjustments(tariff, forecast_data, electricity_provider)
+                tariff = _apply_provider_tariff_adjustments(
+                    tariff,
+                    forecast_data,
+                    electricity_provider,
+                    current_actual_interval=current_actual_interval,
+                )
                 from homeassistant.helpers.dispatcher import async_dispatcher_send
                 buy_prices = tariff.get("energy_charges", {}).get("Summer", {}).get("rates", {})
                 sell_prices = tariff.get("sell_tariff", {}).get("energy_charges", {}).get("Summer", {}).get("rates", {})
@@ -20619,7 +20633,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 currency=currency_for_entry(entry, hass),
             )
             if tariff:
-                tariff = _apply_provider_tariff_adjustments(tariff, forecast_data, electricity_provider)
+                tariff = _apply_provider_tariff_adjustments(
+                    tariff,
+                    forecast_data,
+                    electricity_provider,
+                    current_actual_interval=current_actual_interval,
+                )
                 from homeassistant.helpers.dispatcher import async_dispatcher_send
                 buy_prices = tariff.get("energy_charges", {}).get("Summer", {}).get("rates", {})
                 sell_prices = tariff.get("sell_tariff", {}).get("energy_charges", {}).get("Summer", {}).get("rates", {})
@@ -20687,7 +20706,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
                 # Build wholesale price lookup from forecast data
                 # get_wholesale_lookup() handles both AEMO and Amber data formats
-                wholesale_prices = get_wholesale_lookup(forecast_data)
+                wholesale_prices = get_wholesale_lookup(
+                    forecast_data,
+                    current_actual_interval=current_actual_interval,
+                )
                 domain_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
                 pricing = resolve_flow_power_pricing_context(
                     entry.options,
