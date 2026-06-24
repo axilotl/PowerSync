@@ -217,6 +217,30 @@ def test_h3_smart_direct_modbus_reads_pv3_power(tmp_path: Path):
         _restore_modules(snapshot)
 
 
+def test_h1_kh_h3_direct_modbus_uses_pv2_power_register(tmp_path: Path):
+    snapshot = _snapshot_modules()
+    original_path = list(sys.path)
+    try:
+        _clear_test_modules()
+        _write_fake_pymodbus(tmp_path)
+        sys.path.insert(0, str(tmp_path))
+        _install_power_sync_package()
+        module = importlib.import_module("power_sync.inverters.foxess")
+
+        for family in (
+            module.FoxESSModelFamily.H1,
+            module.FoxESSModelFamily.KH,
+            module.FoxESSModelFamily.H3,
+        ):
+            register_map = module.REGISTER_MAPS[family]
+
+            assert register_map.pv1_power == 31002
+            assert register_map.pv2_power == 31005
+    finally:
+        sys.path[:] = original_path
+        _restore_modules(snapshot)
+
+
 def test_h3_smart_direct_modbus_keeps_last_valid_calculated_load(tmp_path: Path):
     snapshot = _snapshot_modules()
     original_path = list(sys.path)
