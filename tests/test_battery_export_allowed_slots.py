@@ -3536,6 +3536,29 @@ def test_export_command_power_respects_grid_export_cap(opt_module):
     assert battery.force_discharge_calls == [(15, 5000, False, None)]
 
 
+def test_goodwe_export_command_uses_planned_battery_discharge(opt_module):
+    battery = _FakeBattery()
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.80)
+    coordinator.battery_system = "goodwe"
+    coordinator._config.max_discharge_w = 15000
+    coordinator._config.max_grid_export_w = 5000
+    start = datetime(2026, 5, 3, 18, 30, tzinfo=timezone.utc)
+    actions = [
+        SimpleNamespace(
+            action="export",
+            power_w=5000,
+            battery_discharge_w=7000,
+            timestamp=start + idx * timedelta(minutes=5),
+        )
+        for idx in range(3)
+    ]
+    coordinator._current_schedule = SimpleNamespace(actions=actions)
+
+    asyncio.run(coordinator._execute_optimizer_action(actions[0]))
+
+    assert battery.force_discharge_calls == [(15, 7000, False, None)]
+
+
 @pytest.mark.parametrize(
     "battery_system",
     [
