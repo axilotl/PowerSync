@@ -461,6 +461,8 @@ class _FakeSungrowController:
             "export_limit_w": 0,
         }
         self.fail_zero_discharge_limit = False
+        self.fail_discharge_limit = False
+        self._rate_limit_writable: bool | None = None
         self.force_discharge_result = True
 
     async def __aenter__(self):
@@ -475,8 +477,10 @@ class _FakeSungrowController:
 
     async def set_discharge_rate_limit(self, kw: float) -> bool:
         self.discharge_rate_limits.append(kw)
-        if kw == 0 and self.fail_zero_discharge_limit:
+        if self.fail_discharge_limit or (kw == 0 and self.fail_zero_discharge_limit):
+            self._rate_limit_writable = False
             return False
+        self._rate_limit_writable = True
         return True
 
     async def set_export_limit(self, watts: int | None) -> bool:
@@ -505,6 +509,10 @@ class _FakeSungrowController:
 
     async def get_battery_data(self) -> dict:
         return self.battery_data
+
+    @property
+    def rate_limit_writable(self) -> bool | None:
+        return self._rate_limit_writable
 
 
 class _FakeEnergyAccumulator:
@@ -840,6 +848,50 @@ def test_sungrow_spread_export_uses_export_limit_not_discharge_cap():
     assert fake_controller.force_discharge_power_w == [7900]
     assert fake_controller.restore_normal_calls == 1
     assert fake_controller.discharge_rate_limits == [7.9, 7.9]
+    assert fake_controller.export_limits == [4400, 5000]
+
+
+def test_sungrow_spread_export_continues_when_discharge_limit_unsupported():
+    SungrowEnergyCoordinator, restore = _load_sungrow_energy_coordinator()
+
+    async def run_force_export_cycle():
+        fake_controller = _FakeSungrowController()
+        fake_controller.fail_discharge_limit = True
+        fake_controller.battery_data = {
+            "charge_rate_limit_kw": 7.9,
+            "discharge_rate_limit_kw": 4.4,
+            "export_limit_enabled": True,
+            "export_limit_w": 5000,
+        }
+        coordinator = _new_sungrow_coordinator(SungrowEnergyCoordinator, fake_controller)
+        coordinator.data = {
+            "battery_max_charge_power": 7.9,
+            "battery_max_charge_power_w": 7900,
+            "battery_max_discharge_power": 4.4,
+            "battery_max_discharge_power_w": 4400,
+            "charge_rate_limit_kw": 7.9,
+            "discharge_rate_limit_kw": 4.4,
+            "export_limit_enabled": True,
+            "export_limit_w": 5000,
+        }
+
+        force_result = await coordinator.force_grid_export(
+            duration_minutes=30,
+            export_limit_w=4400,
+        )
+        restore_result = await coordinator.restore_normal()
+        return force_result, restore_result, fake_controller
+
+    try:
+        force_result, restore_result, fake_controller = asyncio.run(run_force_export_cycle())
+    finally:
+        restore()
+
+    assert force_result
+    assert restore_result
+    assert fake_controller.force_discharge_power_w == [7900]
+    assert fake_controller.restore_normal_calls == 1
+    assert fake_controller.discharge_rate_limits == [7.9]
     assert fake_controller.export_limits == [4400, 5000]
 
 
