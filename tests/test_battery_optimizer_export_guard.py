@@ -275,7 +275,44 @@ def test_pre_window_reachability_uses_grid_import_charge_limit_source():
     pre_window_block = pre_window_block.split("# === Variable bounds ===", 1)[0]
 
     assert "self._charge_limit_kw(" in pre_window_block
+    assert "_deadline_charge_limit_kw(t)" in pre_window_block
+    assert "p_block_charge[t]" in pre_window_block
     assert "self.max_charge_kw * eff * sum" not in pre_window_block
+
+
+def test_pre_window_target_is_capped_by_charge_blocked_slots(
+    battery_optimizer_module,
+):
+    if not battery_optimizer_module.HIGHS_AVAILABLE:
+        pytest.skip("requires HiGHS LP solver")
+
+    optimizer = battery_optimizer_module.BatteryOptimizer(
+        capacity_wh=13500,
+        max_charge_w=7000,
+        max_discharge_w=7000,
+        backup_reserve=0.16,
+        hardware_reserve=0.10,
+        interval_minutes=5,
+        horizon_hours=1,
+    )
+    optimizer.pre_window_slot = 6
+    optimizer.pre_window_soc_target = 1.0
+    n = 12
+
+    result = optimizer.optimize(
+        import_prices=[0.05] * n,
+        export_prices=[0.0] * n,
+        solar_forecast=[0.0] * n,
+        load_forecast=[0.5] * n,
+        current_soc=0.201,
+        acquisition_cost_kwh=0.0,
+        allow_battery_export=[False] * n,
+        block_battery_charge=[True] * 6 + [False] * 6,
+        allow_grid_charge=True,
+    )
+
+    assert result.feasible is True
+    assert result.solver_used == "highs"
 
 
 def test_lp_solver_uses_extended_time_limit(battery_optimizer_module, monkeypatch):

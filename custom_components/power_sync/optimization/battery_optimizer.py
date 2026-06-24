@@ -1098,6 +1098,9 @@ class BatteryOptimizer:
             allow_grid_charge,
             acquisition_cost_kwh,
         )
+        future_self_consumption_values = self._future_self_consumption_values(
+            p_n, p_import, p_solar, p_load
+        )
         optimizer_reserve = self.backup_reserve
         self_consumption_floor = (
             max(0.0, min(soc_0, self.hardware_reserve))
@@ -1380,11 +1383,29 @@ class BatteryOptimizer:
             )
             if pre_window_boundary > 0:
                 slots_to_window = pre_window_boundary
+
+                def _deadline_charge_limit_kw(t: int) -> float:
+                    export_profitable_slot = (
+                        p_allow_export[t]
+                        and self._is_export_profitable(
+                            p_export[t] + p_export_bonus[t],
+                            p_import[t],
+                            acquisition_cost_kwh,
+                            p_effective_acquisition[t],
+                        )
+                    )
+                    if p_block_charge[t] or (
+                        export_profitable_slot
+                        and not future_self_consumption_values[t]
+                    ):
+                        return 0.0
+                    return self._charge_limit_kw(
+                        p_load[t], p_solar[t], allow_grid_charge
+                    )
+
                 max_soc_gain = (
                     sum(
-                        self._charge_limit_kw(
-                            p_load[t], p_solar[t], allow_grid_charge
-                        )
+                        _deadline_charge_limit_kw(t)
                         * p_dt[t]
                         for t in range(slots_to_window)
                     )
@@ -1485,10 +1506,6 @@ class BatteryOptimizer:
         bounds = []
         for t in range(p_n):
             bounds.append((0, max_grid_kw))  # grid_import
-
-        future_self_consumption_values = self._future_self_consumption_values(
-            p_n, p_import, p_solar, p_load
-        )
 
         # Grid export is always allowed for solar surplus. When battery export is
         # disabled, cap export to exogenous surplus so the LP cannot invent
