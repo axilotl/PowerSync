@@ -4108,6 +4108,36 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
         return live_limit_w
 
+    def _tesla_force_charge_should_yield_to_live_solar(self) -> bool:
+        """Return True when Tesla force charge should avoid curtailing live solar."""
+        if self.battery_system != "tesla":
+            return False
+        if self._supports_target_charge_power():
+            return False
+
+        data = self._get_energy_data()
+        if not isinstance(data, dict):
+            return False
+
+        solar_w = self._kw_to_w(data.get("solar_power"))
+        if solar_w is None or solar_w < 500.0:
+            return False
+
+        try:
+            battery_level = float(data.get("battery_level", 0) or 0)
+        except (TypeError, ValueError):
+            battery_level = 0.0
+        if battery_level >= 98.0:
+            return False
+
+        _LOGGER.info(
+            "Optimizer: Blocking Tesla force charge while %.0fW live solar is "
+            "available; Tesla TOU force charge cannot target partial charge "
+            "power and may curtail AC-coupled solar",
+            solar_w,
+        )
+        return True
+
     async def _execute_optimizer_action(self, action: Any) -> None:
         """Execute an optimizer action on the battery."""
         if not self._executor or not self._executor.battery_controller:
@@ -4205,6 +4235,26 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                                 "discharge failed: %s",
                                 reserve_err,
                             )
+
+                    if (
+                        force_type == "charge"
+                        and self._tesla_force_charge_should_yield_to_live_solar()
+                    ):
+                        _LOGGER.info(
+                            "Optimizer: Canceling active Tesla force charge — "
+                            "live solar is available, restoring self_consumption"
+                        )
+                        if force_state.get("scope") == "optimizer":
+                            self._clear_optimizer_force_state()
+                        elif self._force_state_clearer:
+                            self._force_state_clearer()
+                        if hasattr(battery, "restore_normal"):
+                            await battery.restore_normal()
+                        elif hasattr(battery, "set_self_consumption_mode"):
+                            await battery.set_self_consumption_mode()
+                        self._last_executed_planned_action = action.action
+                        self._last_executed_action = "self_consumption"
+                        return
 
                     # Extend the expiry timer so the force mode doesn't expire
                     # between optimizer cycles (avoids restore→re-issue gap).
@@ -4577,6 +4627,17 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
             if effective_action == "charge":
                 if hasattr(battery, "force_charge"):
+                    if self._tesla_force_charge_should_yield_to_live_solar():
+                        effective_action = "self_consumption"
+                        if hasattr(battery, "set_self_consumption_mode"):
+                            await battery.set_self_consumption_mode()
+                        elif hasattr(battery, "restore_normal"):
+                            await battery.restore_normal()
+                    if effective_action != "charge":
+                        self._last_executed_planned_action = action.action
+                        self._last_executed_action = effective_action
+                        return
+
                     charge_power_w = self._charge_command_power_w(action)
                     charge_duration = self._force_duration_for_action_window(
                         action,
