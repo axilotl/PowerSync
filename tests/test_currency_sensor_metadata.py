@@ -291,6 +291,29 @@ def test_foxess_sensor_descriptions_include_pv4_power():
     assert sensor.SENSOR_KEY_TO_FAMILY["pv4_power"] == sensor.SENSOR_FAMILY_SOLAR_INVERTER
 
 
+def test_foxess_battery_energy_sensor_names_are_distinct_from_generic_totals():
+    sensor = _sensor_module()
+    generic_names = {
+        description.key: description.name
+        for description in sensor.ENERGY_SENSORS
+        if description.key in {"daily_battery_charge", "daily_battery_discharge"}
+    }
+    foxess_names = {
+        description.key: description.name
+        for description in sensor.FOXESS_SENSORS
+        if description.key
+        in {"daily_battery_charge_foxess", "daily_battery_discharge_foxess"}
+    }
+
+    assert foxess_names["daily_battery_charge_foxess"] != generic_names["daily_battery_charge"]
+    assert (
+        foxess_names["daily_battery_discharge_foxess"]
+        != generic_names["daily_battery_discharge"]
+    )
+    assert foxess_names["daily_battery_charge_foxess"] == "FoxESS Daily Battery Charge"
+    assert foxess_names["daily_battery_discharge_foxess"] == "FoxESS Daily Battery Discharge"
+
+
 def test_sungrow_solar_sensor_adds_configured_ac_inverter_output():
     sensor = _sensor_module()
     desc = next(d for d in sensor.ENERGY_SENSORS if d.key == "solar_power")

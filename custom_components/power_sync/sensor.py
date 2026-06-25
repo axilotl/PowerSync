@@ -763,7 +763,7 @@ FOXESS_SENSORS: tuple[PowerSyncSensorEntityDescription, ...] = (
     ),
     PowerSyncSensorEntityDescription(
         key=SENSOR_TYPE_DAILY_BATTERY_CHARGE_FOXESS,
-        name="Daily Battery Charge",
+        name="FoxESS Daily Battery Charge",
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         device_class=SensorDeviceClass.ENERGY,
         state_class=SensorStateClass.TOTAL_INCREASING,
@@ -773,7 +773,7 @@ FOXESS_SENSORS: tuple[PowerSyncSensorEntityDescription, ...] = (
     ),
     PowerSyncSensorEntityDescription(
         key=SENSOR_TYPE_DAILY_BATTERY_DISCHARGE_FOXESS,
-        name="Daily Battery Discharge",
+        name="FoxESS Daily Battery Discharge",
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         device_class=SensorDeviceClass.ENERGY,
         state_class=SensorStateClass.TOTAL_INCREASING,
