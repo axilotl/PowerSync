@@ -215,6 +215,8 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._last_custom_energy_warning: str | None = None
         self._auto_apply_reserve_enabled = False
         self._manual_backup_reserve: float | None = None
+        self._active_export_reserve_floor_slots: list[float] | None = None
+        self._active_export_reserve_floor_timestamps: list[datetime] | None = None
         if self._entry:
             from ..const import (
                 CONF_OPTIMIZATION_AUTO_APPLY_RESERVE,
@@ -1096,9 +1098,17 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         target_percent = max(float(hardware_percent), min(100.0, suggested_percent))
         return max(0.0, min(1.0, target_percent / 100.0))
 
-    def _force_discharge_reserve_floor(self) -> float:
+    def _force_discharge_reserve_floor(self, action: Any | None = None) -> float:
         """Return the software floor used before force discharge/export commands."""
         floor = self._reserve_ratio(self._config.backup_reserve, 0.0) or 0.0
+        action_timestamp = getattr(action, "timestamp", None)
+        if action_timestamp is not None:
+            timestamps = getattr(self, "_active_export_reserve_floor_timestamps", None) or []
+            floors = getattr(self, "_active_export_reserve_floor_slots", None) or []
+            for idx, timestamp in enumerate(timestamps):
+                if timestamp == action_timestamp and idx < len(floors):
+                    floor = max(floor, floors[idx])
+                    break
         if self.auto_apply_reserve_enabled:
             recommendation = (
                 getattr(getattr(self, "_last_optimizer_result", None), "reserve_recommendation", {})
@@ -1201,6 +1211,165 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         for idx in range(start_slot, slot_count):
             floors[idx] = export_floor
         return floors
+
+    def _hardware_reserve_ratio(self) -> float:
+        """Return the configured hardware backup reserve as a ratio."""
+        startup_reserve = getattr(self, "_startup_backup_reserve", None)
+        if startup_reserve is not None:
+            try:
+                return max(0.0, min(1.0, float(startup_reserve) / 100.0))
+            except (TypeError, ValueError):
+                pass
+        optimizer = getattr(self, "_optimizer", None)
+        if getattr(optimizer, "hardware_reserve_known", False):
+            try:
+                return max(
+                    0.0,
+                    min(
+                        1.0,
+                        float(getattr(optimizer, "hardware_reserve", 0.0) or 0.0),
+                    ),
+                )
+            except (TypeError, ValueError):
+                pass
+        return 0.0
+
+    def _post_processed_export_reserve_floor_slots(
+        self,
+        schedule: OptimizationSchedule | None,
+        solar_forecast: list[float] | None,
+        load_forecast: list[float] | None,
+    ) -> tuple[list[float] | None, dict[str, Any]]:
+        """Build export-only reserve floors from the final candidate schedule."""
+        if not self.auto_apply_reserve_enabled:
+            return None, {}
+        actions = list(getattr(schedule, "actions", None) or [])
+        if not actions:
+            return None, {}
+
+        capacity_kwh = max(
+            0.0,
+            float(getattr(self._config, "battery_capacity_wh", 0) or 0) / 1000.0,
+        )
+        if capacity_kwh <= 0:
+            return None, {}
+
+        interval_hours = max(
+            1,
+            int(getattr(self._config, "interval_minutes", 5) or 5),
+        ) / 60.0
+        efficiency = max(
+            0.001,
+            float(getattr(getattr(self, "_optimizer", None), "efficiency", 0.95) or 0.95),
+        )
+        hardware_reserve = self._hardware_reserve_ratio()
+        active_floor = self._reserve_ratio(self._config.backup_reserve, 0.0) or 0.0
+        threshold_kw = 0.1
+        floors = [0.0] * len(actions)
+        best_floor = 0.0
+        best_meta: dict[str, Any] = {}
+
+        def _forecast_kw(values: list[float] | None, index: int) -> float:
+            if not values or index >= len(values):
+                return 0.0
+            try:
+                return max(0.0, float(values[index]))
+            except (TypeError, ValueError):
+                return 0.0
+
+        def _charge_opportunity(index: int) -> tuple[bool, str | None]:
+            action = actions[index]
+            if float(getattr(action, "battery_charge_w", 0.0) or 0.0) > 100.0:
+                return (
+                    True,
+                    "scheduled_grid_charge"
+                    if getattr(action, "action", None) == "charge"
+                    else "forecast_solar_surplus",
+                )
+            if _forecast_kw(solar_forecast, index) - _forecast_kw(load_forecast, index) > threshold_kw:
+                return True, "forecast_solar_surplus"
+            return False, None
+
+        for idx, action in enumerate(actions):
+            if getattr(action, "action", None) not in EXPORT_ACTIONS:
+                continue
+            discharge_w = float(
+                getattr(action, "battery_discharge_w", None)
+                or getattr(action, "power_w", 0.0)
+                or 0.0
+            )
+            if discharge_w <= 100.0:
+                continue
+
+            bridge_kwh = 0.0
+            next_charge_idx: int | None = None
+            next_charge_reason: str | None = None
+            for scan_idx in range(idx + 1, len(actions)):
+                is_charge, reason = _charge_opportunity(scan_idx)
+                if is_charge:
+                    next_charge_idx = scan_idx
+                    next_charge_reason = reason
+                    break
+                bridge_kwh += max(
+                    0.0,
+                    _forecast_kw(load_forecast, scan_idx)
+                    - _forecast_kw(solar_forecast, scan_idx),
+                ) * interval_hours
+
+            bridge_soc = bridge_kwh / max(capacity_kwh * efficiency, 0.001)
+            floor = max(hardware_reserve, min(1.0, hardware_reserve + bridge_soc))
+            if floor <= active_floor + 0.0001:
+                continue
+
+            floors[idx] = floor
+            if floor > best_floor:
+                best_floor = floor
+                protects_until_idx = (
+                    next_charge_idx if next_charge_idx is not None else len(actions) - 1
+                )
+                bridge_start_idx = min(idx + 1, len(actions) - 1)
+                best_meta = {
+                    "home_load_export_floor_percent": max(
+                        0,
+                        min(100, int(round(floor * 100))),
+                    ),
+                    "home_load_bridge_kwh": round(bridge_kwh, 3),
+                    "home_load_bridge_start": actions[
+                        bridge_start_idx
+                    ].timestamp.isoformat(),
+                    "home_load_bridge_until": actions[
+                        protects_until_idx
+                    ].timestamp.isoformat(),
+                    "home_load_bridge_next_charge_reason": (
+                        next_charge_reason or "no_charge_in_horizon"
+                    ),
+                    "home_load_bridge_after_export_start": action.timestamp.isoformat(),
+                }
+
+        if best_floor <= 0.0:
+            return None, {}
+        return floors, best_meta
+
+    def _set_active_export_reserve_floor_slots(
+        self,
+        floors: list[float] | None,
+        schedule: OptimizationSchedule | None,
+    ) -> None:
+        """Store transient export floors for runtime export guards."""
+        if not floors:
+            self._active_export_reserve_floor_slots = None
+            self._active_export_reserve_floor_timestamps = None
+            return
+        actions = list(getattr(schedule, "actions", None) or [])
+        normalized = [
+            max(0.0, min(1.0, float(value or 0.0)))
+            for value in floors[: len(actions)]
+        ]
+        self._active_export_reserve_floor_slots = normalized
+        self._active_export_reserve_floor_timestamps = [
+            getattr(action, "timestamp", None)
+            for action in actions[: len(normalized)]
+        ]
 
     def _force_discharge_reaches_reserve(
         self,
@@ -3021,14 +3190,24 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 reserve_recommendation = dict(
                     getattr(result, "reserve_recommendation", {}) or {}
                 )
-            export_reserve_floor = self._auto_export_reserve_floor(
-                reserve_recommendation
-            )
-            if export_reserve_floor is None:
-                export_reserve_floor = self._auto_export_reserve_floor_slots(
-                    reserve_recommendation,
-                    len(import_prices),
+            export_reserve_floor, export_reserve_metadata = (
+                self._post_processed_export_reserve_floor_slots(
+                    self._current_schedule,
+                    solar_forecast,
+                    load_forecast,
                 )
+            )
+            if export_reserve_metadata:
+                reserve_recommendation.update(export_reserve_metadata)
+            if export_reserve_floor is None:
+                export_reserve_floor = self._auto_export_reserve_floor(
+                    reserve_recommendation
+                )
+                if export_reserve_floor is None:
+                    export_reserve_floor = self._auto_export_reserve_floor_slots(
+                        reserve_recommendation,
+                        len(import_prices),
+                    )
             if (
                 reserve_changed
                 or used_recommendation_floor
@@ -3101,6 +3280,34 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                             ),
                         )
                 self._last_update_time = dt_util.now()
+
+            final_export_reserve_floor, final_export_reserve_metadata = (
+                self._post_processed_export_reserve_floor_slots(
+                    self._current_schedule,
+                    solar_forecast,
+                    load_forecast,
+                )
+            )
+            if final_export_reserve_floor is not None:
+                self._set_active_export_reserve_floor_slots(
+                    final_export_reserve_floor,
+                    self._current_schedule,
+                )
+                result.reserve_recommendation = dict(
+                    getattr(result, "reserve_recommendation", {}) or {}
+                )
+                result.reserve_recommendation.update(final_export_reserve_metadata)
+                result.reserve_recommendation.setdefault(
+                    "applied_export_reserve_floor_percent",
+                    int(round(max(final_export_reserve_floor) * 100)),
+                )
+            elif export_reserve_floor is not None:
+                self._set_active_export_reserve_floor_slots(
+                    export_reserve_floor if isinstance(export_reserve_floor, list) else None,
+                    self._current_schedule,
+                )
+            else:
+                self._set_active_export_reserve_floor_slots(None, None)
 
             # Store forecast data for LP forecast sensors
             self._has_solar_forecast = solar_forecast is not None and any(v > 0 for v in (solar_forecast or []))
@@ -4198,7 +4405,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     if force_type == "discharge":
                         try:
                             soc_now, _ = await self._get_battery_state()
-                            opt_reserve = self._force_discharge_reserve_floor()
+                            opt_reserve = self._force_discharge_reserve_floor(action)
                             reaches_reserve, projected_soc = (
                                 self._force_discharge_reaches_reserve(
                                     action,
@@ -4601,7 +4808,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if effective_action in ("discharge", "export"):
                 try:
                     soc_now, _ = await self._get_battery_state()
-                    opt_reserve = self._force_discharge_reserve_floor()
+                    opt_reserve = self._force_discharge_reserve_floor(action)
                     reaches_reserve, projected_soc = (
                         self._force_discharge_reaches_reserve(
                             action,

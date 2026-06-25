@@ -1045,6 +1045,119 @@ def test_auto_export_reserve_floor_applies_same_day_export_bridge(opt_module):
     assert floor == pytest.approx(0.83)
 
 
+def test_auto_apply_export_bridge_floor_can_exceed_lowered_active_reserve(opt_module):
+    coordinator = _coordinator(
+        opt_module,
+        "flow_power",
+        profit_max=True,
+        optimization_backup_reserve=0.40,
+        optimization_manual_reserve=0.40,
+        optimization_auto_apply_reserve=True,
+        hardware_backup_reserve=0.0,
+    )
+    coordinator._auto_apply_reserve_enabled = True
+    coordinator._manual_backup_reserve = 0.40
+    coordinator._config.backup_reserve = 0.40
+    coordinator._config.battery_capacity_wh = 40000
+    coordinator._startup_backup_reserve = 0
+    update_calls = []
+    coordinator._optimizer = SimpleNamespace(
+        update_config=lambda **kwargs: update_calls.append(kwargs),
+        efficiency=0.95,
+        hardware_reserve_known=True,
+        hardware_reserve=0.0,
+        max_grid_export_w=None,
+        terminal_weight=0,
+    )
+
+    changed = coordinator._apply_auto_reserve_recommendation(
+        SimpleNamespace(
+            reserve_recommendation={"suggested_optimizer_reserve_percent": 20}
+        )
+    )
+
+    assert changed is True
+    assert coordinator._config.backup_reserve == pytest.approx(0.20)
+    start = datetime(2026, 5, 3, 17, 30, tzinfo=timezone.utc)
+    actions = [
+        opt_module.ScheduleAction(
+            timestamp=start + idx * timedelta(minutes=5),
+            action="export" if idx < 3 else ("charge" if idx == 30 else "idle"),
+            power_w=20000 if idx < 3 else 0,
+            soc=0.70,
+            battery_charge_w=20000 if idx == 30 else 0,
+            battery_discharge_w=20000 if idx < 3 else 0,
+        )
+        for idx in range(36)
+    ]
+    schedule = opt_module.OptimizationSchedule(
+        actions=actions,
+        predicted_cost=0,
+        predicted_savings=0,
+        last_updated=start,
+    )
+
+    floors, metadata = coordinator._post_processed_export_reserve_floor_slots(
+        schedule,
+        solar_forecast=[0.0] * 30 + [10.0] * 6,
+        load_forecast=[5.0] * 36,
+    )
+
+    assert floors is not None
+    assert max(floors) > coordinator._config.backup_reserve
+    assert metadata["home_load_export_floor_percent"] > 20
+    assert metadata["home_load_bridge_next_charge_reason"] == "scheduled_grid_charge"
+
+
+def test_auto_apply_export_bridge_includes_post_no_idle_home_load(opt_module):
+    coordinator = _coordinator(
+        opt_module,
+        "flow_power",
+        profit_max=True,
+        optimization_backup_reserve=0.05,
+        optimization_auto_apply_reserve=True,
+        hardware_backup_reserve=0.05,
+    )
+    coordinator._auto_apply_reserve_enabled = True
+    coordinator._config.backup_reserve = 0.05
+    coordinator._config.battery_capacity_wh = 10000
+    coordinator._startup_backup_reserve = 5
+    coordinator._optimizer = SimpleNamespace(
+        efficiency=0.95,
+        hardware_reserve_known=True,
+        hardware_reserve=0.05,
+    )
+    start = datetime(2026, 5, 3, 18, 0, tzinfo=timezone.utc)
+    actions = [
+        opt_module.ScheduleAction(
+            timestamp=start + idx * timedelta(minutes=5),
+            action="export" if idx == 0 else ("charge" if idx == 13 else "self_consumption"),
+            power_w=5000 if idx == 0 else 0,
+            soc=0.70,
+            battery_charge_w=5000 if idx == 13 else 0,
+            battery_discharge_w=5000 if idx == 0 else 0,
+        )
+        for idx in range(18)
+    ]
+    schedule = opt_module.OptimizationSchedule(
+        actions=actions,
+        predicted_cost=0,
+        predicted_savings=0,
+        last_updated=start,
+    )
+
+    floors, metadata = coordinator._post_processed_export_reserve_floor_slots(
+        schedule,
+        solar_forecast=[0.0] * 13 + [6.0] * 5,
+        load_forecast=[2.0] * 18,
+    )
+
+    assert floors is not None
+    assert floors[0] > 0.05
+    assert metadata["home_load_bridge_kwh"] == pytest.approx(2.0)
+    assert metadata["home_load_bridge_next_charge_reason"] == "scheduled_grid_charge"
+
+
 def test_force_discharge_reserve_floor_ignores_future_export_bridge(opt_module):
     coordinator = _coordinator(
         opt_module,
@@ -2228,6 +2341,31 @@ def test_auto_apply_home_load_export_floor_blocks_projected_export_without_profi
         timestamp=datetime(2026, 5, 3, 8, 30, tzinfo=timezone.utc),
     )
     coordinator._current_schedule = SimpleNamespace(actions=[action])
+
+    asyncio.run(coordinator._execute_optimizer_action(action))
+
+    assert battery.force_discharge_calls == []
+    assert coordinator._last_executed_action == "self_consumption"
+
+
+def test_auto_apply_per_slot_export_floor_blocks_projected_export(opt_module):
+    battery = _FakeBattery()
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.30)
+    coordinator.battery_system = "goodwe"
+    coordinator._config.backup_reserve = 0.05
+    coordinator._auto_apply_reserve_enabled = True
+    timestamp = datetime(2026, 5, 3, 8, 30, tzinfo=timezone.utc)
+    action = SimpleNamespace(
+        action="export",
+        power_w=5000,
+        soc=0.24,
+        timestamp=timestamp,
+    )
+    coordinator._current_schedule = SimpleNamespace(actions=[action])
+    coordinator._set_active_export_reserve_floor_slots(
+        [0.25],
+        coordinator._current_schedule,
+    )
 
     asyncio.run(coordinator._execute_optimizer_action(action))
 
