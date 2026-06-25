@@ -200,8 +200,8 @@ class FoxESSRegisterMap:
     supports_charge_periods: bool = False
     # H3-Pro and H3 Smart use holding registers for ALL data (no input registers)
     all_holding: bool = False
-    # H3-Pro/H3-Smart grid CT returns inverted sign (positive=export, negative=import)
-    # compared to H1/H3/KH (positive=import, negative=export). Negate to normalize.
+    # Some FoxESS families return grid CT with positive=export, negative=import.
+    # Negate those families to normalize to PowerSync's positive=import convention.
     grid_sign_inverted: bool = False
 
     def get_work_mode_names(self) -> dict[int, str]:
@@ -267,6 +267,7 @@ REGISTER_MAPS: dict[FoxESSModelFamily, FoxESSRegisterMap] = {
         supports_energy_totals=True,
         supports_work_mode_rw=True,
         supports_charge_periods=False,
+        grid_sign_inverted=True,
     ),
     FoxESSModelFamily.H3: FoxESSRegisterMap(
         battery_soc=31038,
@@ -752,7 +753,7 @@ class FoxESSController(InverterController):
                 grid_power_kw = self._to_signed16(gp_raw[0]) / grid_gain if gp_raw else None
             else:
                 grid_power_kw = None
-            # H3-Pro/H3-Smart grid CT has inverted sign (pos=export, neg=import).
+            # Some FoxESS grid CT registers have inverted sign (pos=export, neg=import).
             # Negate to normalize to our convention (pos=import, neg=export).
             if reg.grid_sign_inverted and grid_power_kw is not None:
                 grid_power_kw = -grid_power_kw
