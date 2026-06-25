@@ -1687,6 +1687,7 @@ class TeslaEnergyCoordinator(DataUpdateCoordinator):
         self._site_info_fetch_failed = False  # Negative cache to avoid retrying on every sync cycle
         self._energy_acc = EnergyAccumulator(hass, "tesla")
         self._firmware = None  # Extracted from site_info gateways
+        self._last_valid_battery_level_pct: float | None = None
 
         # Tesla Energy Site capability detection (populated by probe on first site_info fetch).
         # Keys: storm_mode, off_grid_vehicle_charging_reserve, vpp_programs.
@@ -1738,6 +1739,28 @@ class TeslaEnergyCoordinator(DataUpdateCoordinator):
             name=f"{DOMAIN}_tesla_energy",
             update_interval=UPDATE_INTERVAL_ENERGY,
         )
+
+    def _resolve_battery_level_pct(self, live_status: dict[str, Any]) -> float | None:
+        """Return Tesla SOC, preserving the last valid value when omitted."""
+        raw_soc = live_status.get("percentage_charged")
+        if raw_soc is not None:
+            try:
+                soc = float(raw_soc)
+            except (TypeError, ValueError):
+                soc = None
+            if soc is not None and 0 <= soc <= 100:
+                self._last_valid_battery_level_pct = soc
+                return soc
+
+        if self._last_valid_battery_level_pct is not None:
+            _LOGGER.debug(
+                "Tesla live_status omitted percentage_charged; keeping last valid SOC %.1f%%",
+                self._last_valid_battery_level_pct,
+            )
+            return self._last_valid_battery_level_pct
+
+        _LOGGER.debug("Tesla live_status omitted percentage_charged and no cached SOC is available")
+        return None
 
     def _get_current_token(self) -> str | None:
         """Get the current API token, fetching fresh if token_getter is available.
@@ -1995,7 +2018,7 @@ class TeslaEnergyCoordinator(DataUpdateCoordinator):
                     except (TypeError, ValueError):
                         pass
 
-            soc_pct = live_status.get("percentage_charged", 0) or 0
+            soc_pct = self._resolve_battery_level_pct(live_status)
             energy_left_kwh: float | None = None
             el_w = live_status.get("energy_left")
             if el_w is not None:
@@ -2003,7 +2026,7 @@ class TeslaEnergyCoordinator(DataUpdateCoordinator):
                     energy_left_kwh = round(float(el_w) / 1000.0, 2)
                 except (TypeError, ValueError):
                     energy_left_kwh = None
-            if energy_left_kwh is None and total_pack_kwh is not None:
+            if energy_left_kwh is None and total_pack_kwh is not None and soc_pct is not None:
                 energy_left_kwh = round(total_pack_kwh * (soc_pct / 100.0), 2)
 
             # Backup time remaining (hours): stored kWh / current home load.
@@ -2030,7 +2053,7 @@ class TeslaEnergyCoordinator(DataUpdateCoordinator):
                 "grid_power": grid_kw,
                 "battery_power": battery_kw,
                 "load_power": load_kw,
-                "battery_level": live_status.get("percentage_charged", 0),
+                "battery_level": soc_pct,
                 "grid_status": grid_status,
                 "ev_power": ev_power_kw,
                 "last_update": dt_util.utcnow(),
