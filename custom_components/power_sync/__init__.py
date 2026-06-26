@@ -19516,9 +19516,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
             base_rate = entry.options.get(CONF_FLOW_POWER_BASE_RATE, FLOW_POWER_DEFAULT_BASE_RATE)
             custom_pea = entry.options.get(CONF_PEA_CUSTOM_VALUE)
+            # Flow Power's displayed billing price is a canonical 30-minute
+            # tariff value. Do not inject the raw 5-minute KWatch dispatch
+            # interval here, or the current price sensor jitters near boundaries.
             wholesale_prices = get_wholesale_lookup(
                 forecast_data,
-                current_actual_interval=current_actual_interval,
+                current_actual_interval=None,
             )
             domain_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
             pricing = resolve_flow_power_pricing_context(
@@ -20752,9 +20755,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
                 # Build wholesale price lookup from forecast data
                 # get_wholesale_lookup() handles both AEMO and Amber data formats
+                # Flow Power's displayed billing price is a canonical 30-minute
+                # tariff value. Do not inject the raw 5-minute KWatch dispatch
+                # interval here, or the current price sensor jitters near boundaries.
                 wholesale_prices = get_wholesale_lookup(
                     forecast_data,
-                    current_actual_interval=current_actual_interval,
+                    current_actual_interval=None,
                 )
                 domain_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
                 pricing = resolve_flow_power_pricing_context(

@@ -661,6 +661,33 @@ def test_sigenergy_flow_power_sync_stores_canonical_tariff_schedule():
     assert "current_actual_interval=current_actual_interval" in sync_source
 
 
+def test_flow_power_display_schedule_pea_ignores_raw_current_interval():
+    source = (COMPONENT_ROOT / "__init__.py").read_text()
+    helper_source = source[
+        source.index("def _apply_provider_tariff_adjustments"):
+        source.index("async def _sync_tariff_to_sigenergy")
+    ]
+
+    assert "raw 5-minute KWatch dispatch" in helper_source
+    assert "current_actual_interval=None" in helper_source
+
+
+def test_flow_power_main_schedule_pea_ignores_raw_current_interval():
+    source = (COMPONENT_ROOT / "__init__.py").read_text()
+    sync_start = source.index("async def _handle_sync_tou_internal")
+    sync_source = source[
+        sync_start:
+        source.index("hass.services.async_register(DOMAIN, SERVICE_SYNC_TOU", sync_start)
+    ]
+    flow_power_pea_source = sync_source[
+        sync_source.index("# Apply Flow Power PEA pricing"):
+        sync_source.index("elif flow_power_price_source in")
+    ]
+
+    assert "raw 5-minute KWatch dispatch" in flow_power_pea_source
+    assert "current_actual_interval=None" in flow_power_pea_source
+
+
 def test_sigenergy_force_session_can_refresh_display_schedule_without_cloud_upload():
     source = (COMPONENT_ROOT / "__init__.py").read_text()
     sigenergy_source = source[
