@@ -24722,6 +24722,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                             #           3) Tesla API value (ONLY if not 100% — force charge sets it to 100%)
                             #           4) Default to 0% (safe — won't force charge)
                             api_reserve = site_info.get("backup_reserve_percent")
+                            site_state["force_discharge_start_reserve"] = api_reserve
                             opt_coord = hass.data.get(DOMAIN, {}).get(entry.entry_id, {}).get("optimization_coordinator")
                             startup_reserve = getattr(opt_coord, "_startup_backup_reserve", None) if opt_coord else None
                             pre_idle = getattr(opt_coord, "_pre_idle_backup_reserve", None) if opt_coord else None
@@ -24786,19 +24787,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                                             )
                                         except Exception as notify_err:
                                             _LOGGER.debug(f"Could not send notification: {notify_err}")
-
-                    # Set backup reserve to 0% to allow full discharge
-                    _LOGGER.info("Setting backup reserve to 0%% for site %s...", site_id)
-                    async with session.post(
-                        f"{api_base}/api/1/energy_sites/{site_id}/backup",
-                        headers=headers,
-                        json={"backup_reserve_percent": 0},
-                        timeout=aiohttp.ClientTimeout(total=30),
-                    ) as response:
-                        if response.status == 200:
-                            _LOGGER.info("Set backup reserve to 0%% for site %s", site_id)
-                        else:
-                            _LOGGER.warning("Could not set backup reserve to 0%% for site %s: %s", site_id, response.status)
 
                     # Set export rule to battery_ok to allow battery export during discharge
                     if site_state.get("saved_export_rule") != "battery_ok":
@@ -24919,6 +24907,88 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     await asyncio.sleep(1)
 
             if all_success or accepted_sites:
+                if all_success:
+                    active_site_ids = {
+                        site_id for site_id, _token, _provider in site_configs
+                    }
+                else:
+                    active_site_ids = set(accepted_sites)
+
+                async def _set_force_discharge_backup_reserve(
+                    site_id: str,
+                    api_base: str,
+                    headers: dict[str, str],
+                    percent: int,
+                    label: str,
+                ) -> None:
+                    _LOGGER.info(
+                        "Setting backup reserve to %d%% for site %s (%s)...",
+                        percent,
+                        site_id,
+                        label,
+                    )
+                    async with session.post(
+                        f"{api_base}/api/1/energy_sites/{site_id}/backup",
+                        headers=headers,
+                        json={"backup_reserve_percent": percent},
+                        timeout=aiohttp.ClientTimeout(total=30),
+                    ) as response:
+                        if response.status == 200:
+                            _LOGGER.info(
+                                "Set backup reserve to %d%% for site %s (%s)",
+                                percent,
+                                site_id,
+                                label,
+                            )
+                        else:
+                            text = await response.text()
+                            _LOGGER.warning(
+                                "Could not set backup reserve to %d%% for site %s (%s): %s - %s",
+                                percent,
+                                site_id,
+                                label,
+                                response.status,
+                                text[:200],
+                            )
+
+                for site_id, current_token, provider in site_configs:
+                    if site_id not in active_site_ids:
+                        continue
+
+                    headers = {
+                        "Authorization": f"Bearer {current_token}",
+                        "Content-Type": "application/json",
+                    }
+                    api_base = get_tesla_api_base_url(
+                        provider,
+                        entry.data.get(CONF_FLEET_API_BASE_URL),
+                    )
+                    site_state = saved_states.get(site_id, {})
+
+                    # Tesla sometimes accepts the force tariff but does not act on
+                    # it until a later state change. Make backup reserve the final
+                    # write, and nudge already-zero reserves so there is a real
+                    # state transition after the tariff upload.
+                    if site_state.get("force_discharge_start_reserve") == 0:
+                        await _set_force_discharge_backup_reserve(
+                            site_id,
+                            api_base,
+                            headers,
+                            20,
+                            "force discharge apply nudge",
+                        )
+                        await asyncio.sleep(3)
+
+                    await _set_force_discharge_backup_reserve(
+                        site_id,
+                        api_base,
+                        headers,
+                        0,
+                        "force discharge final apply",
+                    )
+                    if len(site_configs) > 1:
+                        await asyncio.sleep(1)
+
                 force_discharge_state["active"] = True
                 force_discharge_state["source"] = source
                 # Use the requested duration for the countdown timer, not the

@@ -974,6 +974,25 @@ def test_tesla_force_discharge_tariff_discourages_grid_import():
     assert rates["sell_rate_discharge"] == 99.0
 
 
+def test_tesla_force_discharge_applies_backup_reserve_after_tariff_upload():
+    source = INIT_PATH.read_text()
+    tree = ast.parse(source)
+    function = _find_function(tree, "handle_force_discharge")
+    function_source = ast.get_source_segment(source, function)
+
+    assert function_source is not None
+    tariff_upload_index = function_source.index("send_tariff_to_tesla(")
+    reserve_payload_index = function_source.index('json={"backup_reserve_percent": percent}')
+    reserve_nudge_index = function_source.index('"force discharge apply nudge"')
+    reserve_final_index = function_source.index('"force discharge final apply"')
+
+    assert 'site_state["force_discharge_start_reserve"] = api_reserve' in function_source
+    assert 'site_state.get("force_discharge_start_reserve") == 0' in function_source
+    assert "await asyncio.sleep(3)" in function_source
+    assert tariff_upload_index < reserve_payload_index
+    assert reserve_nudge_index < reserve_final_index
+
+
 def test_tesla_force_discharge_arms_cleanup_for_unconfirmed_accepted_upload():
     source = INIT_PATH.read_text()
     tree = ast.parse(source)
