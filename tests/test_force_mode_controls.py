@@ -955,6 +955,24 @@ def test_tesla_force_discharge_disables_grid_charging_before_tariff_upload():
     assert grid_disable_index < tariff_upload_index
 
 
+def test_tesla_force_discharge_tariff_uses_export_spread():
+    source = INIT_PATH.read_text()
+    tree = ast.parse(source)
+    function = _find_function(tree, "_create_discharge_tariff")
+
+    rates = {
+        node.targets[0].id: node.value.value
+        for node in ast.walk(function)
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+        and node.targets[0].id in {"buy_rate_discharge", "sell_rate_discharge"}
+        and isinstance(node.value, ast.Constant)
+    }
+
+    assert rates["buy_rate_discharge"] < rates["sell_rate_discharge"]
+
+
 def test_tesla_force_discharge_arms_cleanup_for_unconfirmed_accepted_upload():
     source = INIT_PATH.read_text()
     tree = ast.parse(source)
