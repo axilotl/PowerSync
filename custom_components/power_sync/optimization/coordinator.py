@@ -73,6 +73,7 @@ FIXED_OPTIMIZATION_INTERVAL_MINUTES = DEFAULT_OPTIMIZATION_INTERVAL
 FLOW_POWER_NEM_TZ = timezone(timedelta(hours=10))
 EXPORT_ACTIONS = {"discharge", "export"}
 SELF_USE_ACTIONS = {"consume", "self_consumption"}
+OPTIMIZER_FORCE_CHARGE_MIN_COMMITMENT = timedelta(minutes=20)
 
 
 def _flow_power_network_tariff_rate(
@@ -379,6 +380,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "expires_at": None,
             "hardware_expires_at": None,
             "power_w": 0,
+            "started_at": None,
             "source": "optimizer",
             "scope": "optimizer",
         }
@@ -4033,6 +4035,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "expires_at": None,
                 "hardware_expires_at": None,
                 "power_w": 0,
+                "started_at": None,
                 "source": "optimizer",
                 "scope": "optimizer",
             }
@@ -4047,15 +4050,47 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Record an optimizer-owned hardware force command."""
         now = dt_util.utcnow()
         expires_at = now + timedelta(minutes=max(1, int(duration_minutes)))
+        existing_state = getattr(self, "_optimizer_force_state", None)
+        started_at = None
+        if (
+            isinstance(existing_state, dict)
+            and existing_state.get("active")
+            and existing_state.get("type") == force_type
+        ):
+            started_at = self._as_utc_datetime(existing_state.get("started_at"))
         self._optimizer_force_state = {
             "active": True,
             "type": force_type,
             "expires_at": expires_at,
             "hardware_expires_at": expires_at,
             "power_w": power_w,
+            "started_at": started_at or now,
             "source": "optimizer",
             "scope": "optimizer",
         }
+
+    def _optimizer_force_charge_commitment_remaining(
+        self,
+        force_state: dict[str, Any],
+    ) -> timedelta | None:
+        """Return remaining minimum hold time for optimizer-owned force charge."""
+        if (
+            force_state.get("scope") != "optimizer"
+            or force_state.get("type") != "charge"
+        ):
+            return None
+
+        started_at = self._as_utc_datetime(force_state.get("started_at"))
+        if started_at is None:
+            return None
+
+        remaining = (
+            OPTIMIZER_FORCE_CHARGE_MIN_COMMITMENT
+            - (dt_util.utcnow() - started_at)
+        )
+        if remaining <= timedelta(0):
+            return None
+        return remaining
 
     def _get_active_force_state(self) -> dict[str, Any]:
         """Return user-visible force state or private optimizer force state."""
@@ -4668,6 +4703,23 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     return
 
                 # LP changed its mind — cancel the optimizer's force mode.
+                if action.action in SELF_USE_ACTIONS or action.action == "idle":
+                    commitment_remaining = (
+                        self._optimizer_force_charge_commitment_remaining(force_state)
+                    )
+                    if commitment_remaining is not None:
+                        remaining_minutes = max(
+                            1,
+                            int((commitment_remaining.total_seconds() + 59) // 60),
+                        )
+                        _LOGGER.info(
+                            "Optimizer: Holding active force charge for %d more min "
+                            "despite LP now wanting %s",
+                            remaining_minutes,
+                            action.action,
+                        )
+                        return
+
                 # Clear force state BEFORE calling restore_normal so that
                 # TOU sync (triggered inside restore_normal) doesn't skip
                 # due to seeing force_charge_state["active"]=True.

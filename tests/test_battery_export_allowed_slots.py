@@ -1910,6 +1910,7 @@ def _execution_coordinator(opt_module, battery: _FakeBattery, soc: float):
         "expires_at": None,
         "hardware_expires_at": None,
         "power_w": 0,
+        "started_at": None,
         "source": "optimizer",
         "scope": "optimizer",
     }
@@ -2710,11 +2711,13 @@ def test_charge_executes_immediately_above_reserve(opt_module):
     assert coordinator._last_executed_action == "charge"
 
 
-def test_optimizer_owned_force_charge_restores_when_current_slot_stops_charging(opt_module):
+def test_optimizer_owned_force_charge_holds_when_current_slot_stops_charging(opt_module):
     battery = _FakeBattery()
     coordinator = _execution_coordinator(opt_module, battery, soc=0.50)
     coordinator.battery_system = "foxess"
     start = datetime(2026, 5, 3, 8, 30, tzinfo=timezone.utc)
+    current_time = {"now": start}
+    opt_module.dt_util.utcnow = lambda *args, **kwargs: current_time["now"]
     initial_actions = [
         SimpleNamespace(
             action="charge",
@@ -2730,6 +2733,7 @@ def test_optimizer_owned_force_charge_restores_when_current_slot_stops_charging(
     coordinator._current_schedule = SimpleNamespace(actions=initial_actions)
 
     asyncio.run(coordinator._execute_optimizer_action(initial_actions[0]))
+    current_time["now"] = start + timedelta(minutes=5)
 
     shuffled_actions = [
         SimpleNamespace(
@@ -2748,10 +2752,45 @@ def test_optimizer_owned_force_charge_restores_when_current_slot_stops_charging(
     asyncio.run(coordinator._execute_optimizer_action(shuffled_actions[0]))
 
     assert battery.force_charge_calls == [(10, 23500, False)]
-    assert battery.self_consumption_calls == 1
-    assert battery.restore_normal_calls == 1
-    assert coordinator._optimizer_force_state["active"] is False
-    assert coordinator._last_executed_action == "self_consumption"
+    assert battery.self_consumption_calls == 0
+    assert battery.restore_normal_calls == 0
+    assert coordinator._optimizer_force_state["active"] is True
+    assert coordinator._last_executed_action == "charge"
+
+
+def test_optimizer_owned_force_charge_preserves_commitment_start_on_refresh(opt_module):
+    start = datetime(2026, 5, 3, 8, 30, tzinfo=timezone.utc)
+    current_time = {"now": start}
+    opt_module.dt_util.utcnow = lambda *args, **kwargs: current_time["now"]
+    battery = _FakeBattery()
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.64)
+    coordinator.battery_system = "foxess"
+    coordinator.energy_coordinator = SimpleNamespace(
+        data={
+            "work_mode_name": "Self Use",
+            "battery_power": -3.4,
+        }
+    )
+    actions = [
+        SimpleNamespace(
+            action="charge",
+            power_w=10000,
+            timestamp=start + idx * timedelta(minutes=5),
+        )
+        for idx in range(6)
+    ]
+    coordinator._current_schedule = SimpleNamespace(actions=actions)
+    coordinator._set_optimizer_force_state("charge", 120, 10000)
+    coordinator._optimizer_force_state["hardware_expires_at"] = (
+        start + timedelta(minutes=4)
+    )
+
+    current_time["now"] = start + timedelta(minutes=10)
+    asyncio.run(coordinator._execute_optimizer_action(actions[2]))
+
+    assert battery.force_charge_calls == [(20, 10000, True)]
+    assert coordinator._optimizer_force_state["active"] is True
+    assert coordinator._optimizer_force_state["started_at"] == start
 
 
 def test_optimizer_owned_force_charge_reissues_when_foxess_mode_drops_to_self_use(opt_module):
@@ -2896,6 +2935,8 @@ def test_optimizer_owned_force_charge_does_not_override_idle_with_lookahead_char
     coordinator = _execution_coordinator(opt_module, battery, soc=0.50)
     coordinator.battery_system = "foxess"
     start = datetime(2026, 5, 3, 8, 30, tzinfo=timezone.utc)
+    current_time = {"now": start}
+    opt_module.dt_util.utcnow = lambda *args, **kwargs: current_time["now"]
     initial_action = SimpleNamespace(
         action="charge",
         power_w=23500,
@@ -2904,6 +2945,8 @@ def test_optimizer_owned_force_charge_does_not_override_idle_with_lookahead_char
     coordinator._current_schedule = SimpleNamespace(actions=[initial_action])
 
     asyncio.run(coordinator._execute_optimizer_action(initial_action))
+    coordinator._optimizer_force_state["expires_at"] = start + timedelta(hours=1)
+    current_time["now"] = start + timedelta(minutes=21)
 
     shuffled_actions = [
         SimpleNamespace(
@@ -2933,10 +2976,14 @@ def test_optimizer_owned_force_charge_clears_when_lp_really_stops_charging(opt_m
     coordinator = _execution_coordinator(opt_module, battery, soc=0.50)
     coordinator.battery_system = "foxess"
     start = datetime(2026, 5, 3, 8, 30, tzinfo=timezone.utc)
+    current_time = {"now": start}
+    opt_module.dt_util.utcnow = lambda *args, **kwargs: current_time["now"]
     charge_action = SimpleNamespace(action="charge", power_w=23500, timestamp=start)
     coordinator._current_schedule = SimpleNamespace(actions=[charge_action])
 
     asyncio.run(coordinator._execute_optimizer_action(charge_action))
+    coordinator._optimizer_force_state["expires_at"] = start + timedelta(hours=1)
+    current_time["now"] = start + timedelta(minutes=21)
 
     stop_actions = [
         SimpleNamespace(
