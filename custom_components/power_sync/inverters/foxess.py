@@ -1328,6 +1328,8 @@ class FoxESSController(InverterController):
                     result["charge_today_kwh"] = val / gain
             else:
                 raw = await self._read_data_register(reg.charge_energy_today, 1)
+                if raw is None and not reg.all_holding:
+                    raw = await self._read_holding_registers(reg.charge_energy_today, 1)
                 if raw:
                     result["charge_today_kwh"] = raw[0] / gain
 
@@ -1339,6 +1341,8 @@ class FoxESSController(InverterController):
                     result["discharge_today_kwh"] = val / gain
             else:
                 raw = await self._read_data_register(reg.discharge_energy_today, 1)
+                if raw is None and not reg.all_holding:
+                    raw = await self._read_holding_registers(reg.discharge_energy_today, 1)
                 if raw:
                     result["discharge_today_kwh"] = raw[0] / gain
 
