@@ -4329,6 +4329,13 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if self._supports_target_charge_power():
             return False
 
+        if self._current_import_price_is_free():
+            _LOGGER.debug(
+                "Optimizer: Allowing Tesla force charge with live solar during "
+                "free import"
+            )
+            return False
+
         data = self._get_energy_data()
         if not isinstance(data, dict):
             return False

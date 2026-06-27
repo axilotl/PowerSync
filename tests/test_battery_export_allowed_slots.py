@@ -319,6 +319,7 @@ def test_initial_optimization_task_handle_clears_after_startup_pass(opt_module):
 def test_tesla_force_charge_yields_to_live_solar(opt_module):
     coordinator = _coordinator(opt_module, "amber")
     coordinator.battery_system = "tesla"
+    coordinator._last_import_prices = [0.12]
     coordinator.energy_coordinator = SimpleNamespace(
         data={
             "solar_power": 3.8,
@@ -330,6 +331,23 @@ def test_tesla_force_charge_yields_to_live_solar(opt_module):
     )
 
     assert coordinator._tesla_force_charge_should_yield_to_live_solar() is True
+
+
+def test_tesla_force_charge_allowed_during_free_import(opt_module):
+    coordinator = _coordinator(opt_module, "globird")
+    coordinator.battery_system = "tesla"
+    coordinator._last_import_prices = [0.0]
+    coordinator.energy_coordinator = SimpleNamespace(
+        data={
+            "solar_power": 3.8,
+            "load_power": 0.7,
+            "battery_power": 0.0,
+            "grid_power": 0.0,
+            "battery_level": 46.0,
+        }
+    )
+
+    assert coordinator._tesla_force_charge_should_yield_to_live_solar() is False
 
 
 def test_tesla_force_charge_allowed_without_live_solar(opt_module):
@@ -2220,7 +2238,7 @@ def test_tesla_force_charge_action_yields_to_live_solar(opt_module):
     coordinator.battery_system = "tesla"
     coordinator._config.max_grid_import_w = 10000
     coordinator._config.max_charge_w = 13600
-    coordinator._last_import_prices = [0.0]
+    coordinator._last_import_prices = [0.12]
     coordinator.energy_coordinator = SimpleNamespace(
         data={
             "solar_power": 3.8,
@@ -2240,6 +2258,33 @@ def test_tesla_force_charge_action_yields_to_live_solar(opt_module):
     assert battery.force_charge_calls == []
     assert battery.self_consumption_calls == 1
     assert coordinator._last_executed_action == "self_consumption"
+
+
+def test_tesla_force_charge_action_runs_during_free_import_with_live_solar(opt_module):
+    battery = _FakeBattery()
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.25)
+    coordinator.battery_system = "tesla"
+    coordinator._config.max_grid_import_w = 10000
+    coordinator._config.max_charge_w = 13600
+    coordinator._last_import_prices = [0.0]
+    coordinator.energy_coordinator = SimpleNamespace(
+        data={
+            "solar_power": 3.8,
+            "load_power": 0.7,
+            "grid_power": 0.0,
+            "battery_power": -0.5,
+            "battery_level": 46.0,
+        }
+    )
+
+    asyncio.run(
+        coordinator._execute_optimizer_action(
+            SimpleNamespace(action="charge", power_w=10000)
+        )
+    )
+
+    assert battery.force_charge_calls == [(10, 10000, False)]
+    assert battery.self_consumption_calls == 0
 
 
 def test_scheduled_ev_preserve_cancels_active_optimizer_export(opt_module):
