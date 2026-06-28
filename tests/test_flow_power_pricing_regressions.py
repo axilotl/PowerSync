@@ -424,7 +424,7 @@ def test_flow_power_pricing_context_uses_account_twap_with_portal_account_values
         context,
         tariff_rate=12.0,
         avg_daily_tariff=5.0,
-    ), 2) == 4.3
+    ), 2) == 9.3
 
 
 def test_flow_power_pricing_context_uses_portal_twap_for_pea():
@@ -472,7 +472,52 @@ def test_flow_power_pricing_context_uses_portal_twap_for_pea():
         context,
         tariff_rate=5.85,
         avg_daily_tariff=10.48,
-    ), 2) == -17.33
+    ), 2) == -6.85
+
+
+def test_flow_power_v2_pea_does_not_subtract_average_daily_tariff():
+    saved_power_sync = sys.modules.get("power_sync")
+    saved_const = sys.modules.get("power_sync.const")
+    saved_helper = sys.modules.get("power_sync.flow_power_pricing")
+    try:
+        package = types.ModuleType("power_sync")
+        package.__path__ = [str(COMPONENT_ROOT)]
+        sys.modules["power_sync"] = package
+        sys.modules.pop("power_sync.flow_power_pricing", None)
+        helper = importlib.import_module("power_sync.flow_power_pricing")
+    finally:
+        if saved_power_sync is None:
+            sys.modules.pop("power_sync", None)
+        else:
+            sys.modules["power_sync"] = saved_power_sync
+        if saved_helper is None:
+            sys.modules.pop("power_sync.flow_power_pricing", None)
+        else:
+            sys.modules["power_sync.flow_power_pricing"] = saved_helper
+        if saved_const is None:
+            sys.modules.pop("power_sync.const", None)
+        else:
+            sys.modules["power_sync.const"] = saved_const
+
+    context = helper.FlowPowerPricingContext(
+        twap=21.19,
+        twap_source="portal",
+        bpea=0.0,
+        bpea_source="portal",
+        gst_multiplier=1.1,
+        gst_source="portal",
+        portal_active=True,
+    )
+
+    pea = helper.calculate_flow_power_pea(
+        10.43,
+        context,
+        tariff_rate=29.25,
+        avg_daily_tariff=11.18,
+    )
+
+    assert round(pea, 2) == 17.41
+    assert round(34.0 + pea, 2) == 51.41
 
 
 def test_flow_power_pricing_context_uses_override_before_portal_twap():

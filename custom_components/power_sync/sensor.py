@@ -4527,7 +4527,7 @@ class FlowPowerPriceSensor(PowerSyncCurrencyMixin, CoordinatorEntity, RestoredNu
         """Calculate Flow Power import price with PEA in $/kWh.
 
         V2 formula (when tariff configured):
-            PEA = GST*Spot + Tariff - GST*TWAP - AvgDailyTariff - BPEA
+            PEA = GST*Spot + Tariff - GST*TWAP - BPEA
             Final = Base + PEA
 
         Legacy formula (no tariff configured):

@@ -153,7 +153,6 @@ def calculate_flow_power_pea(
             pricing.gst_multiplier * wholesale_cents
             + tariff_rate
             - pricing.gst_multiplier * pricing.twap
-            - avg_daily_tariff
             - pricing.bpea
         )
 
