@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import ast
 import importlib
+import inspect
 import sys
 import types
 from datetime import datetime, timezone
@@ -1495,6 +1496,16 @@ def test_schedule_polling_sleep_aligns_to_next_interval_boundary(opt_module, mon
         lambda *args, **kwargs: datetime(2026, 5, 8, 17, 32, 30, tzinfo=timezone.utc),
     )
     assert coordinator._seconds_until_next_interval() == 150
+
+
+def test_schedule_polling_executes_cached_action_before_reoptimizing(opt_module):
+    source = inspect.getsource(opt_module.OptimizationCoordinator._schedule_polling_loop)
+
+    cached_action_call = "await self._execute_cached_current_action_if_changed()"
+    optimization_call = "await self._run_optimization()"
+
+    assert cached_action_call in source
+    assert source.index(cached_action_call) < source.index(optimization_call)
 
 
 def test_flow_power_aemo_price_source_is_provider_gated():

@@ -3441,6 +3441,11 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         continue
                     self._initial_opt_task = None
 
+                # Apply the already-computed slot at the wall-clock boundary
+                # before any forecast/API work in the next LP solve can delay
+                # hardware control.
+                await self._execute_cached_current_action_if_changed()
+
                 # Re-optimize on each interval (executes the resulting action internally)
                 await self._run_optimization()
 
