@@ -293,7 +293,7 @@ def test_monitoring_mode_blocks_automation_but_allows_manual_controls():
     assert '{"duration": duration, "source": "automation"}' in automation_source
 
 
-def test_monitoring_mode_blocks_persisted_force_replay_after_restart():
+def test_monitoring_mode_restores_persisted_force_without_replay_after_restart():
     source = INIT_PATH.read_text()
     tree = ast.parse(source)
     restore = ast.get_source_segment(
@@ -312,8 +312,12 @@ def test_monitoring_mode_blocks_persisted_force_replay_after_restart():
         "SERVICE_FORCE_DISCHARGE"
     )
     assert "Persisted Sigenergy force %s will not be" in restore
+    assert "Persisted force %s will not be replayed; restoring normal operation" in restore
+    assert 'state["active"] = True' in restore
     assert '"_native_control": True' in restore
+    assert '"_force_restore": True' in restore
     assert '"_allow_monitoring_restore": True' in restore
+    assert "SERVICE_RESTORE_NORMAL" in restore
     assert 'stored_data["force_mode_state"] = None' in restore
 
 
@@ -438,6 +442,7 @@ def test_restore_normal_suppresses_tesla_force_toggle_during_dynamic_sync():
     assert '"_allow_monitoring_tou_sync_once"' in sync_source
     assert "Allowing one Tesla TOU sync during restore cleanup" in sync_source
     assert "Skipping force mode toggle" in sync_source
+    assert "monitoring restore cleanup must not re-enter TOU mode" in sync_source
 
 
 def test_restore_normal_allows_monitoring_tou_sync_for_force_cleanup():
@@ -474,12 +479,13 @@ def test_sigenergy_restore_normal_uses_context_aware_native_control():
     assert "OPT_PROVIDER_POWERSYNC" in owner_helper_source
     assert "return not _powersync_optimization_control_active()" in helper_source
     assert "sigenergy_native_control = _sigenergy_restore_native_control(call)" in restore_source
-    assert "monitoring_restore_allowed = allow_monitoring_restore or sigenergy_native_control" in restore_source
+    assert "force_restore = bool(call.data.get(\"_force_restore\"))" in restore_source
+    assert "monitoring_restore_allowed = allow_monitoring_restore or sigenergy_native_control or force_restore" in restore_source
     assert "native_control = sigenergy_native_control" in restore_source
     assert "native_control=native_control" in restore_source
 
 
-def test_provider_config_monitoring_enable_restores_sigenergy_native_control():
+def test_provider_config_monitoring_enable_forces_restore_normal():
     source = INIT_PATH.read_text()
     tree = ast.parse(source)
     method = _find_class_method(tree, "ProviderConfigView", "post")
@@ -489,7 +495,22 @@ def test_provider_config_monitoring_enable_restores_sigenergy_native_control():
     assert 'if "monitoring_mode" in data:' in method_source
     assert "CONF_SIGENERGY_STATION_ID" in method_source
     assert "SERVICE_RESTORE_NORMAL" in method_source
-    assert '{"source": "manual", "_native_control": True}' in method_source
+    assert 'restore_data = {"source": "manual", "_force_restore": True}' in method_source
+    assert 'restore_data["_native_control"] = True' in method_source
+
+
+def test_restore_normal_force_restore_releases_tesla_even_without_saved_state():
+    source = INIT_PATH.read_text()
+    tree = ast.parse(source)
+    restore = _find_function(tree, "handle_restore_normal")
+    restore_source = ast.get_source_segment(source, restore)
+
+    assert restore_source is not None
+    assert 'force_restore = bool(call.data.get("_force_restore"))' in restore_source
+    assert "if not force_restore and not has_active_force and not has_saved_state:" in restore_source
+    assert "if force_restore:" in restore_source
+    assert "force restore requested without saved tariff" in restore_source
+    assert "Force restore: leaving Tesla in self_consumption" in restore_source
 
 
 def test_restore_normal_treats_octopus_as_dynamic_sync_provider():
@@ -1067,6 +1088,19 @@ def test_tesla_force_charge_enables_grid_charging_before_tariff_upload():
     )
     tariff_upload_index = function_source.index("send_tariff_to_tesla(")
     assert grid_enable_index < tariff_upload_index
+
+
+def test_tesla_charge_kick_reenables_grid_charging_after_force_charge_bounce():
+    source = INIT_PATH.read_text()
+    tree = ast.parse(source)
+    function = _find_function(tree, "_tesla_charge_kick")
+    function_source = ast.get_source_segment(source, function)
+
+    assert function_source is not None
+    assert 'ensure_grid_charging = reason in {"force_charge", "backup_reserve_100"}' in function_source
+    assert "async def _enable_grid_charging_after_bounce()" in function_source
+    assert '"disallow_charge_from_grid_with_solar_installed": False' in function_source
+    assert function_source.count("await _enable_grid_charging_after_bounce()") >= 2
 
 
 def test_optimizer_backup_reserve_writes_do_not_persist_as_user_reserve():

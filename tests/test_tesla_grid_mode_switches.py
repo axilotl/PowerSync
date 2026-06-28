@@ -119,6 +119,7 @@ _ps_const.SWITCH_TYPE_FORCE_CHARGE = "force_charge"
 _ps_const.SWITCH_TYPE_MONITORING_MODE = "monitoring_mode"
 _ps_const.SWITCH_TYPE_AWAY_MODE = "away_mode"
 _ps_const.SWITCH_TYPE_PROFIT_MAX_MODE = "profit_max_mode"
+_ps_const.SWITCH_TYPE_CHARGE_BY_TIME = "charge_by_time"
 _ps_const.SWITCH_TYPE_OPTIMIZATION_DISABLE_IDLE = "optimization_disable_idle"
 _ps_const.SWITCH_TYPE_OPTIMIZATION_SPREAD_EXPORT = "optimization_spread_export"
 _ps_const.SWITCH_TYPE_OPTIMIZATION_SPREAD_IMPORT = "optimization_spread_import"
@@ -307,7 +308,7 @@ def test_monitoring_switch_restores_sigenergy_native_control_when_enabled():
         (
             "power_sync",
             "restore_normal",
-            {"source": "manual", "_native_control": True},
+            {"source": "manual", "_force_restore": True, "_native_control": True},
             True,
         ),
     ]

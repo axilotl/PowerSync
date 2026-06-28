@@ -8795,20 +8795,20 @@ class ProviderConfigView(HomeAssistantView):
                     f"{DOMAIN}_{entry.entry_id}_monitoring_mode",
                     bool(new_options.get(CONF_MONITORING_MODE, False)),
                 )
-                if (
-                    bool(new_options.get(CONF_MONITORING_MODE, False))
-                    and bool(entry.data.get(CONF_SIGENERGY_STATION_ID))
-                ):
+                if bool(new_options.get(CONF_MONITORING_MODE, False)):
+                    restore_data = {"source": "manual", "_force_restore": True}
+                    if entry.data.get(CONF_SIGENERGY_STATION_ID):
+                        restore_data["_native_control"] = True
                     try:
                         await self._hass.services.async_call(
                             DOMAIN,
                             SERVICE_RESTORE_NORMAL,
-                            {"source": "manual", "_native_control": True},
+                            restore_data,
                             blocking=True,
                         )
                     except Exception as err:
                         _LOGGER.warning(
-                            "Monitoring mode enabled but Sigenergy native/VPP restore failed: %s",
+                            "Monitoring mode enabled but restore normal failed: %s",
                             err,
                         )
 
@@ -18691,6 +18691,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 "Authorization": f"Bearer {current_token}",
                 "Content-Type": "application/json",
             }
+            ensure_grid_charging = reason in {"force_charge", "backup_reserve_100"}
+
+            async def _enable_grid_charging_after_bounce() -> None:
+                if not ensure_grid_charging:
+                    return
+                async with session.post(
+                    f"{api_base}/api/1/energy_sites/{site_id}/grid_import_export",
+                    headers=headers,
+                    json={"disallow_charge_from_grid_with_solar_installed": False},
+                    timeout=aiohttp.ClientTimeout(total=30),
+                ) as resp:
+                    if resp.status == 200:
+                        _LOGGER.info("Charge kick (%s): ensured grid charging is enabled", reason)
+                    else:
+                        text = await resp.text()
+                        _LOGGER.warning(
+                            "Charge kick (%s): could not enable grid charging after bounce %s - %s",
+                            reason, resp.status, text[:200],
+                        )
 
             async def _mode_bounce() -> bool:
                 """Execute self_consumption → 5s → autonomous bounce.
@@ -18747,6 +18766,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                                 mode = data.get("response", {}).get("default_real_mode")
                                 if mode == "autonomous":
                                     _LOGGER.info("Charge kick (%s): switched back to autonomous", reason)
+                                    await _enable_grid_charging_after_bounce()
                                     return True
                                 _LOGGER.warning(
                                     "Charge kick (%s): mode is '%s' not 'autonomous' (attempt %d/3)",
@@ -18758,6 +18778,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                                     "Charge kick (%s): couldn't verify mode (status %s), assuming success",
                                     reason, verify_resp.status,
                                 )
+                                await _enable_grid_charging_after_bounce()
                                 return True
                     except Exception as e:
                         _LOGGER.warning(
@@ -21061,6 +21082,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 entry.data.get(CONF_FORCE_TARIFF_MODE_TOGGLE, False)
             )
             _toggle_entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+            if _is_monitoring_mode() and _monitoring_sync_override:
+                _LOGGER.info(
+                    "Skipping force mode toggle - monitoring restore cleanup must not re-enter TOU mode"
+                )
+                force_mode_toggle = False
             suppress_toggle_reason = _toggle_entry_data.pop(
                 "_suppress_force_mode_toggle_once",
                 None,
@@ -23306,6 +23332,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
 
             if _is_monitoring_mode():
+                saved_tariff = _select_restorable_tesla_tariff(
+                    persisted_force_state.get("saved_tariff"),
+                    _cached_restorable_tesla_tariff(),
+                    _configured_restorable_tesla_tariff(),
+                )
+                state = force_charge_state if mode == "charge" else force_discharge_state
+                state["active"] = True
+                state["expires_at"] = expires_at
+                state["hardware_expires_at"] = hardware_expires_at
+                state["duration"] = persisted_force_state.get("duration")
+                state["power_w"] = persisted_power_w
+                state["source"] = persisted_source
+                state["saved_tariff"] = saved_tariff
+                state["saved_operation_mode"] = persisted_force_state.get("saved_operation_mode")
+                state["saved_backup_reserve"] = persisted_force_state.get("saved_backup_reserve")
+                state["saved_export_rule"] = persisted_force_state.get("saved_export_rule")
+                state["saved_grid_charging_enabled"] = persisted_force_state.get("saved_grid_charging_enabled")
                 if is_sigenergy:
                     _LOGGER.info(
                         "[MONITORING] Persisted Sigenergy force %s will not be "
@@ -23333,9 +23376,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         )
                 else:
                     _LOGGER.info(
-                        "[MONITORING] Persisted force %s was not replayed or restored after restart — blocked by monitoring mode",
+                        "[MONITORING] Persisted force %s will not be replayed; restoring normal operation",
                         mode,
                     )
+                    try:
+                        await hass.services.async_call(
+                            DOMAIN,
+                            SERVICE_RESTORE_NORMAL,
+                            {
+                                "source": persisted_source,
+                                "_force_restore": True,
+                                "_allow_monitoring_restore": True,
+                            },
+                            blocking=True,
+                        )
+                    except Exception as e:
+                        _LOGGER.error(
+                            "Error restoring normal operation after persisted force %s in monitoring mode: %s",
+                            mode,
+                            e,
+                            exc_info=True,
+                        )
                 if persisted_source == "optimizer":
                     hass.data[DOMAIN][entry.entry_id]["optimizer_force_restart_restore_pending"] = False
                 stored_data = await store.async_load() or {}
@@ -26769,6 +26830,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         source = _control_call_source(call)
         _LOGGER.info(f"🔄 Restore normal service called (context: user_id={context.user_id}, parent_id={context.parent_id}, source={source})")
         _LOGGER.info("🔄 RESTORE NORMAL: Restoring normal operation")
+        force_restore = bool(call.data.get("_force_restore"))
         optimizer_owned_restore = (
             source == "optimizer"
             or force_discharge_state.get("source") == "optimizer"
@@ -26782,7 +26844,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             call.data.get("_allow_monitoring_restore")
             and (optimizer_owned_restore or force_mode_cleanup_restore)
         )
-        monitoring_restore_allowed = allow_monitoring_restore or sigenergy_native_control
+        monitoring_restore_allowed = allow_monitoring_restore or sigenergy_native_control or force_restore
 
         if _monitoring_mode_should_block_control(call) and not monitoring_restore_allowed:
             _LOGGER.info(
@@ -27469,7 +27531,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             force_charge_state.get("saved_backup_reserve") is not None or
             saved_grid_charging_enabled is not None
         )
-        if not has_active_force and not has_saved_state:
+        if not force_restore and not has_active_force and not has_saved_state:
             _LOGGER.info("Restore normal: no force mode active and no saved state — nothing to restore")
             return
 
@@ -27583,7 +27645,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             else:
                 # No saved tariff - for tariff-backed spike users this is a problem
                 # because sync_tou_schedule intentionally skips these providers.
-                if electricity_provider in ("globird", "aemo_vpp"):
+                if force_restore:
+                    _LOGGER.info(
+                        "Restore normal: force restore requested without saved tariff; leaving current tariff unchanged"
+                    )
+                elif electricity_provider in ("globird", "aemo_vpp"):
                     _LOGGER.warning(
                         "No saved tariff to restore for %s user - tariff may need manual reconfiguration",
                         electricity_provider,
@@ -27621,7 +27687,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     force_charge_state.get("saved_operation_mode") or
                     "autonomous"
                 )
-                if optimizer_owned_restore and restore_mode != "self_consumption":
+                if force_restore and restore_mode != "self_consumption":
+                    _LOGGER.info(
+                        "Force restore: leaving Tesla in self_consumption instead of restoring saved mode %s",
+                        restore_mode,
+                    )
+                    restore_mode = "self_consumption"
+                elif optimizer_owned_restore and restore_mode != "self_consumption":
                     _LOGGER.info(
                         "Optimizer restore: leaving Tesla in self_consumption "
                         "instead of restoring saved mode %s during tariff handoff",

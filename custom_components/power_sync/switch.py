@@ -1166,19 +1166,21 @@ class MonitoringModeSwitch(SwitchEntity):
             options=new_options,
         )
 
+        restore_data = {"source": "manual", "_force_restore": True}
         if self._entry.data.get(CONF_SIGENERGY_STATION_ID):
-            try:
-                await self.hass.services.async_call(
-                    DOMAIN,
-                    SERVICE_RESTORE_NORMAL,
-                    {"source": "manual", "_native_control": True},
-                    blocking=True,
-                )
-            except Exception as err:
-                _LOGGER.warning(
-                    "Monitoring mode enabled but Sigenergy native/VPP restore failed: %s",
-                    err,
-                )
+            restore_data["_native_control"] = True
+        try:
+            await self.hass.services.async_call(
+                DOMAIN,
+                SERVICE_RESTORE_NORMAL,
+                restore_data,
+                blocking=True,
+            )
+        except Exception as err:
+            _LOGGER.warning(
+                "Monitoring mode enabled but restore normal failed: %s",
+                err,
+            )
 
         self.async_write_ha_state()
 
