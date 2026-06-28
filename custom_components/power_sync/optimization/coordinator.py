@@ -2391,7 +2391,11 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return
 
         coordinator_name = type(self.price_coordinator).__name__
-        dynamic_providers = ["AmberPriceCoordinator", "AEMOPriceCoordinator"]
+        dynamic_providers = [
+            "AmberPriceCoordinator",
+            "AEMOPriceCoordinator",
+            "FlowPowerKWatchPriceCoordinator",
+        ]
 
         if coordinator_name == "OctopusPriceCoordinator" and self._is_octopus_dynamic_tariff():
             dynamic_providers.append("OctopusPriceCoordinator")
@@ -3935,7 +3939,11 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if getattr(self, "_is_dynamic_pricing", False):
             return True
         coordinator_name = type(getattr(self, "price_coordinator", None)).__name__
-        return coordinator_name in {"AmberPriceCoordinator", "AEMOPriceCoordinator"}
+        return coordinator_name in {
+            "AmberPriceCoordinator",
+            "AEMOPriceCoordinator",
+            "FlowPowerKWatchPriceCoordinator",
+        }
 
     @staticmethod
     def _short_export_gap_prices_match(

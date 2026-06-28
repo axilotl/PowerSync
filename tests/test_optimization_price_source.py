@@ -206,6 +206,10 @@ class AEMOPriceCoordinator:
         return lambda: None
 
 
+class FlowPowerKWatchPriceCoordinator(AEMOPriceCoordinator):
+    pass
+
+
 class _State:
     def __init__(
         self,
@@ -1004,6 +1008,25 @@ def test_static_tou_provider_does_not_attach_dynamic_aemo_listener(opt_module):
 
     assert coordinator._is_dynamic_pricing is False
     assert coordinator.price_coordinator.listener_added is False
+
+
+def test_flow_power_kwatch_attaches_dynamic_price_listener(opt_module):
+    coordinator = object.__new__(opt_module.OptimizationCoordinator)
+    coordinator.hass = SimpleNamespace(data={"power_sync": {"entry-1": {}}})
+    coordinator.entry_id = "entry-1"
+    coordinator._entry = SimpleNamespace(
+        data={},
+        options={"electricity_provider": "flow_power"},
+    )
+    coordinator.price_coordinator = FlowPowerKWatchPriceCoordinator()
+    coordinator._price_listener_unsub = None
+    coordinator._octopus_gate_listener_unsub = None
+    coordinator._is_dynamic_pricing = False
+
+    asyncio.run(coordinator._setup_price_listener())
+
+    assert coordinator._is_dynamic_pricing is True
+    assert coordinator.price_coordinator.listener_added is True
 
 
 def test_flow_power_optimizer_uses_v2_pea_formula(opt_module, monkeypatch):
