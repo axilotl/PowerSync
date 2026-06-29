@@ -692,6 +692,21 @@ def test_force_session_refreshes_display_tariff_before_upload_skip():
     assert force_guard_pos < start_sync_pos < display_store_pos < upload_skip_pos < token_pos
 
 
+def test_tesla_force_discharge_refresh_reuses_saved_states():
+    source = (COMPONENT_ROOT / "__init__.py").read_text()
+    start = source.index("async def handle_force_discharge")
+    end = source.index("def _create_discharge_tariff", start)
+    discharge_source = source[start:end]
+
+    init_pos = discharge_source.index(
+        'saved_states = force_discharge_state.get("saved_states") or {}'
+    )
+    save_guard_pos = discharge_source.index("if not was_already_force_discharging:")
+    backup_pos = discharge_source.index("site_state = saved_states.get(site_id, {})")
+
+    assert init_pos < save_guard_pos < backup_pos
+
+
 def test_sigenergy_flow_power_sync_stores_canonical_tariff_schedule():
     source = (COMPONENT_ROOT / "__init__.py").read_text()
     sync_source = source[

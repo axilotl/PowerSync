@@ -24777,6 +24777,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 return
 
             session = async_get_clientsession(hass)
+            saved_states = force_discharge_state.get("saved_states") or {}
 
             # Step 1: Save current tariff and state (if not already in discharge mode)
             if not was_already_force_discharging:

@@ -7,6 +7,7 @@ to produce a schedule, which the execution layer then applies.
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import math
 from dataclasses import dataclass
@@ -4489,6 +4490,13 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Execute an optimizer action on the battery."""
         if not self._executor or not self._executor.battery_controller:
             return
+
+        if (
+            getattr(action, "action", None) == "idle"
+            and self._should_disable_idle_schedule()
+        ):
+            action = copy.copy(action)
+            action.action = "self_consumption"
 
         # Monitoring mode — log what would happen but don't execute
         if self._monitoring_mode_active():

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import logging
 import sys
 import types
 from dataclasses import dataclass
@@ -3736,6 +3737,27 @@ def test_flow_power_no_idle_executor_overrides_idle(opt_module):
     assert battery.self_consumption_calls == 1
     assert battery.backup_reserve_calls == [20]
     assert coordinator._last_executed_action == "self_consumption"
+
+
+def test_flow_power_no_idle_monitoring_reports_self_consumption(opt_module, caplog):
+    battery = _FakeBattery(backup_reserve=20)
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.80)
+    coordinator._entry.data["monitoring_mode"] = True
+    coordinator._entry.options["electricity_provider"] = "flow_power"
+    coordinator._config.disable_idle_enabled = True
+    coordinator._last_executed_action = "export"
+
+    with caplog.at_level(logging.INFO):
+        asyncio.run(
+            coordinator._execute_optimizer_action(
+                SimpleNamespace(action="idle", power_w=0)
+            )
+        )
+
+    assert battery.self_consumption_calls == 0
+    assert coordinator._last_executed_action == "export"
+    assert "Optimizer would execute: self_consumption" in caplog.text
+    assert "Optimizer would execute: idle" not in caplog.text
 
 
 def test_single_slot_export_gap_with_price_change_is_not_bridged(opt_module):
