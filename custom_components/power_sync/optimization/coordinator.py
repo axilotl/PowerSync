@@ -75,6 +75,7 @@ FLOW_POWER_NEM_TZ = timezone(timedelta(hours=10))
 EXPORT_ACTIONS = {"discharge", "export"}
 SELF_USE_ACTIONS = {"consume", "self_consumption"}
 OPTIMIZER_FORCE_CHARGE_MIN_COMMITMENT = timedelta(minutes=20)
+OPTIMIZER_FORCE_DISCHARGE_MIN_COMMITMENT = timedelta(minutes=20)
 
 
 def _flow_power_network_tariff_rate(
@@ -4115,6 +4116,62 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return None
         return remaining
 
+    def _optimizer_force_discharge_commitment_remaining(
+        self,
+        force_state: dict[str, Any],
+        action: Any,
+    ) -> timedelta | None:
+        """Return remaining hold time for optimizer-owned force discharge."""
+        if (
+            force_state.get("scope") != "optimizer"
+            or force_state.get("type") != "discharge"
+        ):
+            return None
+
+        started_at = self._as_utc_datetime(force_state.get("started_at"))
+        if started_at is None:
+            return None
+
+        remaining = (
+            OPTIMIZER_FORCE_DISCHARGE_MIN_COMMITMENT
+            - (dt_util.utcnow() - started_at)
+        )
+        if remaining <= timedelta(0):
+            return None
+
+        if not self._schedule_has_future_action(action, EXPORT_ACTIONS, remaining):
+            return None
+        return remaining
+
+    def _schedule_has_future_action(
+        self,
+        action: Any,
+        matching_actions: set[str],
+        horizon: timedelta,
+    ) -> bool:
+        """Return true when the active schedule still wants a matching future action."""
+        schedule = getattr(self, "_current_schedule", None)
+        actions = getattr(schedule, "actions", None)
+        if not actions:
+            return False
+
+        now = dt_util.utcnow()
+        action_ts = self._as_utc_datetime(getattr(action, "timestamp", None))
+        start_at = max(now, action_ts) if action_ts is not None else now
+        horizon_end = now + horizon
+
+        for scheduled_action in actions:
+            scheduled_ts = self._as_utc_datetime(
+                getattr(scheduled_action, "timestamp", None)
+            )
+            if scheduled_ts is None or scheduled_ts < start_at:
+                continue
+            if scheduled_ts > horizon_end:
+                continue
+            if getattr(scheduled_action, "action", None) in matching_actions:
+                return True
+        return False
+
     def _get_active_force_state(self) -> dict[str, Any]:
         """Return user-visible force state or private optimizer force state."""
         force_state_getter = getattr(self, "_force_state_getter", None)
@@ -4774,17 +4831,28 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
                 # LP changed its mind — cancel the optimizer's force mode.
                 if action.action in SELF_USE_ACTIONS or action.action == "idle":
-                    commitment_remaining = (
-                        self._optimizer_force_charge_commitment_remaining(force_state)
-                    )
+                    if force_type == "charge":
+                        commitment_remaining = (
+                            self._optimizer_force_charge_commitment_remaining(
+                                force_state
+                            )
+                        )
+                    else:
+                        commitment_remaining = (
+                            self._optimizer_force_discharge_commitment_remaining(
+                                force_state,
+                                action,
+                            )
+                        )
                     if commitment_remaining is not None:
                         remaining_minutes = max(
                             1,
                             int((commitment_remaining.total_seconds() + 59) // 60),
                         )
                         _LOGGER.info(
-                            "Optimizer: Holding active force charge for %d more min "
+                            "Optimizer: Holding active force %s for %d more min "
                             "despite LP now wanting %s",
+                            force_type,
                             remaining_minutes,
                             action.action,
                         )

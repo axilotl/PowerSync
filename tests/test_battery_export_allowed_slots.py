@@ -2828,6 +2828,91 @@ def test_optimizer_owned_force_charge_holds_when_current_slot_stops_charging(opt
     assert coordinator._last_executed_action == "charge"
 
 
+def test_optimizer_owned_force_discharge_holds_when_future_export_remains(opt_module):
+    battery = _FakeBattery()
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.60)
+    coordinator.battery_system = "foxess"
+    start = datetime(2026, 5, 3, 8, 30, tzinfo=timezone.utc)
+    current_time = {"now": start}
+    opt_module.dt_util.utcnow = lambda *args, **kwargs: current_time["now"]
+    initial_actions = [
+        SimpleNamespace(
+            action="export",
+            power_w=5000,
+            timestamp=start,
+        ),
+        SimpleNamespace(
+            action="export",
+            power_w=5000,
+            timestamp=start + timedelta(minutes=5),
+        ),
+    ]
+    coordinator._current_schedule = SimpleNamespace(actions=initial_actions)
+
+    asyncio.run(coordinator._execute_optimizer_action(initial_actions[0]))
+    current_time["now"] = start + timedelta(minutes=5)
+
+    shuffled_actions = [
+        SimpleNamespace(
+            action="self_consumption",
+            power_w=0,
+            timestamp=start + timedelta(minutes=5),
+        ),
+        SimpleNamespace(
+            action="export",
+            power_w=5000,
+            timestamp=start + timedelta(minutes=10),
+        ),
+    ]
+    coordinator._current_schedule = SimpleNamespace(actions=shuffled_actions)
+
+    asyncio.run(coordinator._execute_optimizer_action(shuffled_actions[0]))
+
+    assert battery.force_discharge_calls == [(10, 5000.0, False, None)]
+    assert battery.restore_normal_calls == 0
+    assert coordinator._optimizer_force_state["active"] is True
+    assert coordinator._last_executed_action == "export"
+
+
+def test_optimizer_owned_force_discharge_cancels_when_export_window_ends(opt_module):
+    battery = _FakeBattery()
+    coordinator = _execution_coordinator(opt_module, battery, soc=0.60)
+    coordinator.battery_system = "foxess"
+    start = datetime(2026, 5, 3, 8, 30, tzinfo=timezone.utc)
+    current_time = {"now": start}
+    opt_module.dt_util.utcnow = lambda *args, **kwargs: current_time["now"]
+    initial_actions = [
+        SimpleNamespace(
+            action="export",
+            power_w=5000,
+            timestamp=start,
+        ),
+        SimpleNamespace(
+            action="export",
+            power_w=5000,
+            timestamp=start + timedelta(minutes=5),
+        ),
+    ]
+    coordinator._current_schedule = SimpleNamespace(actions=initial_actions)
+
+    asyncio.run(coordinator._execute_optimizer_action(initial_actions[0]))
+    current_time["now"] = start + timedelta(minutes=5)
+
+    end_action = SimpleNamespace(
+        action="self_consumption",
+        power_w=0,
+        timestamp=start + timedelta(minutes=5),
+    )
+    coordinator._current_schedule = SimpleNamespace(actions=[end_action])
+
+    asyncio.run(coordinator._execute_optimizer_action(end_action))
+
+    assert battery.force_discharge_calls == [(10, 5000.0, False, None)]
+    assert battery.restore_normal_calls == 1
+    assert coordinator._optimizer_force_state["active"] is False
+    assert coordinator._last_executed_action == "self_consumption"
+
+
 def test_optimizer_owned_force_charge_preserves_commitment_start_on_refresh(opt_module):
     start = datetime(2026, 5, 3, 8, 30, tzinfo=timezone.utc)
     current_time = {"now": start}
