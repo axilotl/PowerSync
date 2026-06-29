@@ -161,6 +161,23 @@ def test_recent_load_regime_ignores_short_spike(monkeypatch):
     assert max(forecast) < 900.0
 
 
+def test_recent_load_regime_ignores_short_ev_charging_spike(monkeypatch):
+    module = _load_estimator_module(monkeypatch)
+    estimator = module.LoadEstimator(SimpleNamespace(), "sensor.load", interval_minutes=5)
+    start = datetime(2026, 6, 2, 12, tzinfo=timezone.utc)
+
+    history = []
+    for hour_offset in range(30 * 24, 48, -1):
+        history.append((start - timedelta(hours=hour_offset), 500.0))
+    for hour_offset in range(48, 0, -1):
+        value = 13_000.0 if 24 >= hour_offset > 21 else 500.0
+        history.append((start - timedelta(hours=hour_offset), value))
+
+    forecast = estimator._forecast_from_history(history, start, 12)
+
+    assert max(forecast) < 900.0
+
+
 def test_history_outlier_does_not_dominate_bucket(monkeypatch):
     module = _load_estimator_module(monkeypatch)
     estimator = module.LoadEstimator(SimpleNamespace(), "sensor.load", interval_minutes=5)

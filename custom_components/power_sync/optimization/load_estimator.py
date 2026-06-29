@@ -451,9 +451,17 @@ class LoadEstimator:
         if not actual_values or matched_coverage < RECENT_LOAD_MIN_COVERAGE_HOURS:
             return None
 
+        ratios = [
+            actual / expected
+            for actual, expected in zip(actual_values, expected_values)
+            if expected > 0
+        ]
+        if not ratios:
+            return None
+
         recent_avg = sum(actual_values) / len(actual_values)
         baseline_avg = sum(expected_values) / len(expected_values)
-        ratio = recent_avg / baseline_avg
+        ratio = self._median(ratios)
         if abs(ratio - 1.0) < RECENT_LOAD_DEADBAND:
             return None
 
@@ -461,10 +469,11 @@ class LoadEstimator:
         scale = max(RECENT_LOAD_MIN_SCALE, min(RECENT_LOAD_MAX_SCALE, scale))
         _LOGGER.info(
             "Recent load regime adjustment: recent=%.0fW over %.1fh, "
-            "matched_history=%.0fW, scale=%.2fx",
+            "matched_history=%.0fW, median_ratio=%.2fx, scale=%.2fx",
             recent_avg,
             matched_coverage,
             baseline_avg,
+            ratio,
             scale,
         )
         return scale
