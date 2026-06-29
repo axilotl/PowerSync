@@ -4305,12 +4305,47 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         return True
 
-    def _current_import_price_is_free(self) -> bool:
+    def _current_import_price_for_action(
+        self,
+        prices: list[float],
+        action: Any | None,
+    ) -> float | None:
+        """Return the tariff price for an action's scheduled interval."""
+        if action is None:
+            return None
+        action_time = self._as_utc_datetime(getattr(action, "timestamp", None))
+        if action_time is None:
+            return None
+        timestamps = getattr(self, "_last_price_timestamps", None)
+        if not timestamps:
+            return None
+
+        interval_minutes = max(
+            1,
+            int(getattr(self._config, "interval_minutes", 5) or 5),
+        )
+        slot_limit = timedelta(minutes=interval_minutes)
+        n = min(len(prices), len(timestamps))
+        for idx in range(n):
+            slot_start = self._as_utc_datetime(timestamps[idx])
+            if slot_start is None:
+                continue
+            if slot_start <= action_time < slot_start + slot_limit:
+                try:
+                    return float(prices[idx])
+                except (TypeError, ValueError):
+                    return None
+        return None
+
+    def _current_import_price_is_free(self, action: Any | None = None) -> bool:
         prices = getattr(self, "_last_display_import_prices", None) or getattr(
             self, "_last_import_prices", None
         )
         if not prices:
             return False
+        action_price = self._current_import_price_for_action(prices, action)
+        if action_price is not None:
+            return action_price <= 0.001
         try:
             return float(prices[0]) <= 0.001
         except (TypeError, ValueError):
@@ -4379,14 +4414,17 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
         return live_limit_w
 
-    def _tesla_force_charge_should_yield_to_live_solar(self) -> bool:
+    def _tesla_force_charge_should_yield_to_live_solar(
+        self,
+        action: Any | None = None,
+    ) -> bool:
         """Return True when Tesla force charge should avoid curtailing solar surplus."""
         if self.battery_system != "tesla":
             return False
         if self._supports_target_charge_power():
             return False
 
-        if self._current_import_price_is_free():
+        if self._current_import_price_is_free(action):
             _LOGGER.debug(
                 "Optimizer: Allowing Tesla force charge with live solar during "
                 "free import"
@@ -4547,7 +4585,9 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
                     if (
                         force_type == "charge"
-                        and self._tesla_force_charge_should_yield_to_live_solar()
+                        and self._tesla_force_charge_should_yield_to_live_solar(
+                            action
+                        )
                     ):
                         _LOGGER.info(
                             "Optimizer: Canceling active Tesla force charge — "
@@ -4953,7 +4993,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
             if effective_action == "charge":
                 if hasattr(battery, "force_charge"):
-                    if self._tesla_force_charge_should_yield_to_live_solar():
+                    if self._tesla_force_charge_should_yield_to_live_solar(action):
                         effective_action = "self_consumption"
                         if hasattr(battery, "set_self_consumption_mode"):
                             await battery.set_self_consumption_mode()

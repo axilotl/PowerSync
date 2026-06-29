@@ -352,6 +352,35 @@ def test_tesla_force_charge_allowed_during_free_import(opt_module):
     assert coordinator._tesla_force_charge_should_yield_to_live_solar() is False
 
 
+def test_tesla_force_charge_allowed_when_action_slot_is_free(opt_module):
+    coordinator = _coordinator(opt_module, "globird")
+    coordinator.battery_system = "tesla"
+    start = datetime(2026, 6, 29, 10, 50, tzinfo=timezone(timedelta(hours=10)))
+    coordinator._last_display_import_prices = [0.55, 0.55, 0.0]
+    coordinator._last_price_timestamps = [
+        start,
+        start + timedelta(minutes=5),
+        start + timedelta(minutes=10),
+    ]
+    coordinator.energy_coordinator = SimpleNamespace(
+        data={
+            "solar_power": 6.3,
+            "load_power": 2.7,
+            "battery_power": -3.6,
+            "grid_power": 0.0,
+            "battery_level": 14.0,
+        }
+    )
+
+    action = SimpleNamespace(
+        action="charge",
+        timestamp=start + timedelta(minutes=10),
+    )
+
+    assert coordinator._tesla_force_charge_should_yield_to_live_solar() is True
+    assert coordinator._tesla_force_charge_should_yield_to_live_solar(action) is False
+
+
 def test_tesla_force_charge_allowed_without_live_solar(opt_module):
     coordinator = _coordinator(opt_module, "amber")
     coordinator.battery_system = "tesla"
