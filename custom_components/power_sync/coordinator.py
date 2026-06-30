@@ -65,6 +65,8 @@ ENERGY_ACC_STORE_VERSION = 1
 ENERGY_ACC_SAVE_DELAY = 300  # Flush at most every 5 minutes
 SOLAREDGE_DAILY_TOTALS_STORE_VERSION = 1
 LIFETIME_TOTALS_STORE_VERSION = 1
+TESLA_OUTAGE_NOTIFY_FAILURES = 5
+TESLA_OUTAGE_NOTIFY_MIN_SECONDS = 300
 LIFETIME_TOTAL_KEYS = (
     "lifetime_solar_kwh",
     "lifetime_grid_import_kwh",
@@ -1707,6 +1709,7 @@ class TeslaEnergyCoordinator(DataUpdateCoordinator):
 
         # Tesla server outage tracking
         self._consecutive_failures: int = 0
+        self._failure_streak_start: float = 0  # monotonic timestamp
         self._outage_notified: bool = False
         self._outage_start: float = 0  # monotonic timestamp
         self._last_outage_notification: float = 0  # monotonic timestamp (cooldown)
@@ -1761,6 +1764,19 @@ class TeslaEnergyCoordinator(DataUpdateCoordinator):
 
         _LOGGER.debug("Tesla live_status omitted percentage_charged and no cached SOC is available")
         return None
+
+    def _record_tesla_update_failure(self, now: float) -> tuple[bool, float]:
+        """Record a Tesla update failure and return whether to send outage notice."""
+        self._consecutive_failures += 1
+        if self._consecutive_failures == 1 or not self._failure_streak_start:
+            self._failure_streak_start = now
+        failure_duration = now - self._failure_streak_start
+        should_notify = (
+            self._consecutive_failures >= TESLA_OUTAGE_NOTIFY_FAILURES
+            and failure_duration >= TESLA_OUTAGE_NOTIFY_MIN_SECONDS
+            and not self._outage_notified
+        )
+        return should_notify, failure_duration
 
     def _get_current_token(self) -> str | None:
         """Get the current API token, fetching fresh if token_getter is available.
@@ -2099,6 +2115,7 @@ class TeslaEnergyCoordinator(DataUpdateCoordinator):
                 except Exception:
                     pass
             self._consecutive_failures = 0
+            self._failure_streak_start = 0
             self._outage_notified = False
 
             return energy_data
@@ -2107,17 +2124,20 @@ class TeslaEnergyCoordinator(DataUpdateCoordinator):
             # Don't retry — let HA's reauth flow take over
             raise
         except (UpdateFailed, Exception) as err:
-            self._consecutive_failures += 1
             now = time.monotonic()
+            should_notify, failure_duration = self._record_tesla_update_failure(now)
 
-            # After 5 consecutive failures (~5 min), notify once per 30 min
-            if self._consecutive_failures >= 5 and not self._outage_notified:
+            # Notify only after a sustained failure window. Refreshes can be
+            # requested faster than the normal update interval, so attempt
+            # count alone can report a short Tesla empty-response burst as a
+            # server outage.
+            if should_notify:
                 self._outage_notified = True
-                self._outage_start = now
+                self._outage_start = self._failure_streak_start
                 self._last_outage_notification = now
                 _LOGGER.error(
-                    "Tesla server outage detected: %d consecutive failures (site %s)",
-                    self._consecutive_failures, self.site_id,
+                    "Tesla server outage detected: %d consecutive failures over %.0fs (site %s)",
+                    self._consecutive_failures, failure_duration, self.site_id,
                 )
                 try:
                     from .automations.actions import _send_expo_push
