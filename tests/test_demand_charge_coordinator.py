@@ -47,8 +47,9 @@ def _install_coordinator_stubs(monkeypatch: pytest.MonkeyPatch) -> None:
             self.data = None
 
     class Store:
-        def __init__(self, *args, **kwargs) -> None:
+        def __init__(self, hass, version, path) -> None:
             self._data = None
+            self._path = path  # Store the path to verify scoping
 
         async def async_load(self):
             return self._data
@@ -208,3 +209,83 @@ def test_rolling_window_prunes_old_samples(
 
     # Only the 2.0 samples should remain (6.0 is older than 3 mins)
     assert data["rolling_avg_kw"] == pytest.approx(2.0)
+
+
+def test_rolling_window_only_collects_during_peak_period(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Samples outside peak period should not contaminate rolling average."""
+    coordinator_module = _coordinator_module(monkeypatch)
+    energy = SimpleNamespace(data={"grid_power": 0.0})
+    demand = coordinator_module.DemandChargeCoordinator(
+        hass=SimpleNamespace(),
+        energy_coordinator=energy,
+        enabled=True,
+        rate=7.0,
+        start_time="17:00",
+        end_time="21:00",
+        days="All Days",
+        billing_day=1,
+        averaging_minutes=5,
+    )
+
+    base_time = datetime(2026, 6, 1, 16, 30, tzinfo=timezone.utc)
+
+    # Pre-window sample (16:30, outside peak 17:00-21:00): 10 kW
+    _Clock.current = base_time
+    energy.data = {"grid_power": 10.0}
+    asyncio.run(demand._async_update_data())
+    assert len(demand._samples) == 0  # Should not be collected
+
+    # Enter peak period at 17:00, add low samples
+    _Clock.current = base_time + timedelta(minutes=30)  # 17:00
+    energy.data = {"grid_power": 2.0}
+    asyncio.run(demand._async_update_data())
+    assert len(demand._samples) == 1
+
+    # Additional in-peak samples
+    _Clock.current = base_time + timedelta(minutes=31)
+    energy.data = {"grid_power": 2.0}
+    data = asyncio.run(demand._async_update_data())
+
+    # Average should be ~2.0, NOT contaminated by the 10 kW pre-window sample
+    assert data["rolling_avg_kw"] == pytest.approx(2.0)
+    assert data["in_peak_period"] is True
+
+
+def test_store_key_scoped_by_entry_id(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Multiple coordinator instances should have separate store keys."""
+    coordinator_module = _coordinator_module(monkeypatch)
+    energy = SimpleNamespace(data={"grid_power": 0.0})
+
+    # Create two coordinators with different entry_ids
+    demand1 = coordinator_module.DemandChargeCoordinator(
+        hass=SimpleNamespace(),
+        energy_coordinator=energy,
+        enabled=True,
+        rate=7.0,
+        start_time="16:00",
+        end_time="21:00",
+        days="All Days",
+        billing_day=1,
+        entry_id="entry_1",
+    )
+
+    demand2 = coordinator_module.DemandChargeCoordinator(
+        hass=SimpleNamespace(),
+        energy_coordinator=energy,
+        enabled=True,
+        rate=5.0,
+        start_time="16:00",
+        end_time="21:00",
+        days="All Days",
+        billing_day=1,
+        entry_id="entry_2",
+    )
+
+    # Verify store paths are different (scoped by entry_id)
+    assert demand1._store._path != demand2._store._path
+    assert "entry_1" in demand1._store._path
+    assert "entry_2" in demand2._store._path
