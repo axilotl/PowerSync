@@ -3584,6 +3584,20 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._config.disable_idle_enabled
         )
 
+    def _effective_runtime_action(
+        self,
+        action_name: str | None,
+        timestamp: datetime | None = None,
+    ) -> str | None:
+        """Return the action that runtime execution will apply."""
+        if action_name != "idle":
+            return action_name
+        if self._should_disable_idle_schedule():
+            return "self_consumption"
+        if timestamp is not None and self._is_in_demand_window_at(timestamp):
+            return "self_consumption"
+        return action_name
+
     def _disable_idle_schedule(
         self,
         schedule: OptimizationSchedule,
@@ -9612,6 +9626,10 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 current_power_w = ca.power_w
                 planned_current_action = current_action
                 planned_current_power_w = current_power_w
+                runtime_current_action = self._effective_runtime_action(
+                    planned_current_action,
+                    ca.timestamp,
+                )
                 last_executed_action = getattr(self, "_last_executed_action", None)
                 last_executed_planned_action = getattr(
                     self,
@@ -9644,7 +9662,10 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     if current_action in ("idle", "no_discharge", "self_consumption"):
                         current_power_w = actual_battery_power_w
                 else:
-                    effective_current_action = current_action
+                    effective_current_action = runtime_current_action or current_action
+                    current_action = effective_current_action
+                    if current_action in ("idle", "no_discharge", "self_consumption"):
+                        current_power_w = actual_battery_power_w
 
             now = dt_util.now()
 
@@ -9659,10 +9680,22 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
             # Find next different action (used by the Next Scheduled Change sensor)
             for a in self._current_schedule.actions:
+                runtime_next_action = self._effective_runtime_action(
+                    a.action,
+                    a.timestamp,
+                )
                 if a.timestamp > now and a.action != planned_current_action:
-                    next_action = a.action
+                    next_action = runtime_next_action
                     next_action_time = a.timestamp.isoformat()
-                    next_action_power_w = a.power_w
+                    next_action_power_w = (
+                        actual_battery_power_w
+                        if runtime_next_action in (
+                            "idle",
+                            "no_discharge",
+                            "self_consumption",
+                        )
+                        else a.power_w
+                    )
                     break
 
         # LP-specific stats
@@ -9963,10 +9996,13 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             interval_delta = timedelta(minutes=self._config.interval_minutes)
             for a in self._current_schedule.actions[:intervals_24h]:
                 ad = a.to_dict()
-                # Match executor behavior: override idle → self_consumption
-                # during demand windows (executor does this at runtime)
-                if ad["action"] == "idle" and self._is_in_demand_window_at(a.timestamp):
-                    ad["action"] = "self_consumption"
+                runtime_action = self._effective_runtime_action(
+                    ad.get("action"),
+                    a.timestamp,
+                )
+                if runtime_action != ad.get("action"):
+                    ad["planned_action"] = ad.get("action")
+                    ad["action"] = runtime_action
                 # end_time = end of this interval (start + duration).
                 # Use the raw datetime (a.timestamp) since ad["timestamp"]
                 # is already an ISO string from to_dict().
@@ -9991,6 +10027,11 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         start_soc = action_ranges[-1]["soc"]
                     action_ranges.append({
                         "action": ad["action"],
+                        **(
+                            {"planned_action": ad["planned_action"]}
+                            if ad.get("planned_action")
+                            else {}
+                        ),
                         "timestamp": ad["timestamp"],
                         "end_time": interval_end,
                         "power_w": ad["power_w"],
