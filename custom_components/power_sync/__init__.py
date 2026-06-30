@@ -17757,6 +17757,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             daily_supply_charge=daily_supply_charge,
             monthly_supply_charge=monthly_supply_charge,
             averaging_minutes=demand_charge_averaging_minutes,
+            entry_id=entry.entry_id,
         )
         await demand_charge_coordinator.async_config_entry_first_refresh()
         _LOGGER.info("Demand charge coordinator initialized")

@@ -2895,6 +2895,7 @@ class DemandChargeCoordinator(DataUpdateCoordinator):
         daily_supply_charge: float = 0.0,
         monthly_supply_charge: float = 0.0,
         averaging_minutes: int = 30,
+        entry_id: str = "default",
     ) -> None:
         """Initialize the coordinator."""
         self.tesla_coordinator = energy_coordinator
@@ -2915,8 +2916,8 @@ class DemandChargeCoordinator(DataUpdateCoordinator):
         # Rolling window buffer: list of (timestamp, kW) tuples
         self._samples: list[tuple[datetime, float]] = []
 
-        # Persistence: survive HA restarts
-        self._store = Store(hass, 1, f"{DOMAIN}_demand_charge_peak")
+        # Persistence: survive HA restarts (scoped by entry_id for multi-instance support)
+        self._store = Store(hass, 1, f"{DOMAIN}_demand_charge_peak_{entry_id}")
         self._store_loaded = False
 
         super().__init__(
@@ -3010,10 +3011,12 @@ class DemandChargeCoordinator(DataUpdateCoordinator):
         # Check if in peak period
         in_peak_period = self._is_in_peak_period(now)
 
-        # Rolling window: add sample, prune old entries, compute average
-        self._samples.append((now, grid_import_kw))
-        cutoff = now - timedelta(minutes=self.averaging_minutes)
-        self._samples = [(t, v) for t, v in self._samples if t > cutoff]
+        # Rolling window: only add samples during peak periods to avoid pre-window contamination
+        if in_peak_period:
+            self._samples.append((now, grid_import_kw))
+            cutoff = now - timedelta(minutes=self.averaging_minutes)
+            self._samples = [(t, v) for t, v in self._samples if t > cutoff]
+
         rolling_avg_kw = (
             sum(v for _, v in self._samples) / len(self._samples)
             if self._samples
