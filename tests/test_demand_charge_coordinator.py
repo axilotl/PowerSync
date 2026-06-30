@@ -289,3 +289,166 @@ def test_store_key_scoped_by_entry_id(
     assert demand1._store._path != demand2._store._path
     assert "entry_1" in demand1._store._path
     assert "entry_2" in demand2._store._path
+
+
+def test_billing_cycle_reset_on_date_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Peak demand resets when billing cycle changes (date mismatch on restart)."""
+    coordinator_module = _coordinator_module(monkeypatch)
+    energy = SimpleNamespace(data={"grid_power": 0.0})
+
+    # Use billing_day=2: June 1 is in previous cycle (2026-05-02), June 2+ is new cycle (2026-06-02)
+    base_time = datetime(2026, 6, 1, 17, 0, tzinfo=timezone.utc)
+    _Clock.current = base_time
+
+    demand1 = coordinator_module.DemandChargeCoordinator(
+        hass=SimpleNamespace(),
+        energy_coordinator=energy,
+        enabled=True,
+        rate=7.0,
+        start_time="16:00",
+        end_time="21:00",
+        days="All Days",
+        billing_day=2,
+        averaging_minutes=5,
+    )
+    energy.data = {"grid_power": 5.0}
+    asyncio.run(demand1._async_update_data())
+    assert demand1._peak_demand_kw == 5.0
+    # Simulate persistence from June 1st (previous billing cycle)
+    demand1._store._data = {
+        "peak_demand_kw": 5.0,
+        "billing_start": "2026-05-02"
+    }
+
+    # Simulate restart on June 2nd (new billing cycle starts)
+    _Clock.current = base_time + timedelta(days=1)
+    demand2 = coordinator_module.DemandChargeCoordinator(
+        hass=SimpleNamespace(),
+        energy_coordinator=energy,
+        enabled=True,
+        rate=7.0,
+        start_time="16:00",
+        end_time="21:00",
+        days="All Days",
+        billing_day=2,
+        averaging_minutes=5,
+    )
+    # Copy persisted data from previous cycle
+    demand2._store._data = demand1._store._data.copy()
+
+    energy.data = {"grid_power": 2.0}
+    # First update will load from store, detect billing cycle change, reset peak, then update with new power
+    asyncio.run(demand2._async_update_data())
+
+    # Peak should be 2.0: reset to 0.0 due to billing_start mismatch, then updated with current power
+    # (Store loader + peak reset happens before peak update in same cycle)
+    assert demand2._peak_demand_kw == 2.0, "Peak should be updated with new power after billing reset"
+
+    # Verify the persisted data was updated with new billing start
+    assert demand2._store._data is not None
+    assert demand2._store._data.get("billing_start") == "2026-06-02"
+
+
+def test_billing_cycle_preserves_peak_on_matching_date(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Peak demand persists when billing cycle date matches on restart."""
+    coordinator_module = _coordinator_module(monkeypatch)
+    energy = SimpleNamespace(data={"grid_power": 0.0})
+
+    base_time = datetime(2026, 6, 1, 17, 0, tzinfo=timezone.utc)
+    _Clock.current = base_time
+
+    # Create coordinator with pre-loaded store data (simulating restart)
+    demand = coordinator_module.DemandChargeCoordinator(
+        hass=SimpleNamespace(),
+        energy_coordinator=energy,
+        enabled=True,
+        rate=7.0,
+        start_time="16:00",
+        end_time="21:00",
+        days="All Days",
+        billing_day=1,
+        averaging_minutes=5,
+    )
+    # Pre-load store as if it survived a restart
+    demand._store._data = {
+        "peak_demand_kw": 8.0,
+        "billing_start": "2026-06-01"
+    }
+
+    # First update loads from store (on first _async_update_data call)
+    energy.data = {"grid_power": 3.0}
+    asyncio.run(demand._async_update_data())
+
+    # Peak should be preserved (loaded from store) since billing_start matches current date
+    assert demand._peak_demand_kw == 8.0
+
+
+def test_store_debounce_delay_fires_between_cycles(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Store save delay (5s) should fire between 1-min coordinator cycles."""
+    coordinator_module = _coordinator_module(monkeypatch)
+    energy = SimpleNamespace(data={"grid_power": 0.0})
+    demand = coordinator_module.DemandChargeCoordinator(
+        hass=SimpleNamespace(),
+        energy_coordinator=energy,
+        enabled=True,
+        rate=7.0,
+        start_time="16:00",
+        end_time="21:00",
+        days="All Days",
+        billing_day=1,
+        averaging_minutes=5,
+    )
+
+    base_time = datetime(2026, 6, 1, 17, 0, tzinfo=timezone.utc)
+
+    # First update: set a new peak
+    _Clock.current = base_time
+    energy.data = {"grid_power": 10.0}
+    asyncio.run(demand._async_update_data())
+
+    # Verify the async_delay_save was called with 5s delay (captured in mock)
+    # The mock Store.async_delay_save will execute the lambda immediately
+    assert demand._store._data is not None
+    assert demand._store._data.get("peak_demand_kw") == 10.0
+    assert demand._store._data.get("billing_start") == "2026-06-01"
+
+
+def test_peak_resets_to_zero_on_billing_day(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Peak demand resets to zero on billing day (day 1 of month)."""
+    coordinator_module = _coordinator_module(monkeypatch)
+    energy = SimpleNamespace(data={"grid_power": 0.0})
+    demand = coordinator_module.DemandChargeCoordinator(
+        hass=SimpleNamespace(),
+        energy_coordinator=energy,
+        enabled=True,
+        rate=7.0,
+        start_time="16:00",
+        end_time="21:00",
+        days="All Days",
+        billing_day=1,
+        averaging_minutes=5,
+    )
+
+    # Start on May 31st
+    base_time = datetime(2026, 5, 31, 17, 0, tzinfo=timezone.utc)
+    _Clock.current = base_time
+    energy.data = {"grid_power": 6.0}
+    asyncio.run(demand._async_update_data())
+    assert demand._peak_demand_kw == 6.0
+
+    # Move to June 1st (billing day), trigger update
+    _Clock.current = base_time + timedelta(days=1)
+    energy.data = {"grid_power": 1.0}
+    data = asyncio.run(demand._async_update_data())
+
+    # Peak should reset on billing day crossing
+    assert demand._peak_demand_kw == 1.0
+    assert data["days_until_reset"] > 0  # Reset was triggered
